@@ -1,39 +1,24 @@
 [project]
-name = "property-research-tool"
+name = "hillsborough-property-data"
 version = "0.1.0"
-description = "A Python tool to search and analyze property records from Hillsborough County public websites."
-authors = [
-    {name = "Your Name", email = "you@example.com"},
+description = "A tool to acquire and analyze property data from Hillsborough County."
+dependencies = [
+    "ruff",
+    "typer[all]",
+    "playwright",
+    "lxml",
 ]
 requires-python = ">=3.12"
-dependencies = [
-    "requests",
-    "easyocr",
-    "pdf2image",
-    "Pillow",
-    "numpy",
-    "duckdb",
-    # easyocr depends on torch and torchvision, listing them explicitly can be helpful
-    "torch",
-    "torchvision"
-]
 
 [tool.ruff]
-# Set the minimum Python version to target for linting.
-target-version = "py312"
+line-length = 88
 
 [tool.ruff.lint]
-# Select all standard rules by default.
-select = ["ALL"]
-
-# Ignore specific rules that can be considered "annoyances".
-ignore = [
-    "E501",  # Line too long (often triggered by long URLs or comments)
-    "ARG001",# Unused function argument (useful for callbacks or overridden methods)
-    "D100",  # Missing docstring in public module
-    "D101",  # Missing docstring in public class
-    "D102",  # Missing docstring in public method
-    "D103",  # Missing docstring in public function
-    "D104",  # Missing docstring in public package
-    "D107",  # Missing docstring in __init__
+select = [
+    "E",  # pycodestyle errors
+    "F",  # pyflakes
+    "W",  # pycodestyle warnings
 ]
+
+[tool.ruff.format]
+quote-style = "double"
