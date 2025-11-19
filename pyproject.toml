@@ -11,8 +11,8 @@ dependencies = [
 ]
 requires-python = ">=3.12"
 
-[tool.setuptools]
-py_modules = ["main", "data_store"]
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 line-length = 88
@@ -26,3 +26,10 @@ select = [
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
+testpaths = [
+    "tests",
+]
