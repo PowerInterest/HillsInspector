@@ -242,8 +242,12 @@ def run_search(search_by: str, search_value: str, db_manager: DatabaseManager, o
 # --- Main execution ---
 if __name__ == "__main__":
     db = DatabaseManager()
-    print("Initializing EasyOCR Reader...")
-    reader = easyocr.Reader(['en'], gpu=True)
+    
+    # Check environment variable for GPU usage (defaults to True if not set, but Dockerfile sets it to False)
+    use_gpu = os.environ.get('EASYOCR_GPU', 'True').lower() == 'true'
+    print(f"Initializing EasyOCR Reader (GPU={use_gpu})...")
+    reader = easyocr.Reader(['en'], gpu=use_gpu)
+    
     print("EasyOCR Reader initialized.")
 
     # --- Example Searches ---

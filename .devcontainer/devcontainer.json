@@ -1,0 +1,21 @@
+{
+    "name": "HillsInspector Dev",
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "charliermarsh.ruff",
+                "ms-azuretools.vscode-docker"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/local/bin/python",
+                "ruff.path": ["/root/.local/bin/ruff"]
+            }
+        }
+    },
+    "postCreateCommand": "uv sync",
+    "remoteUser": "root"
+}
