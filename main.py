@@ -1,35 +1,37 @@
 import typer
+from src.database import DatabaseManager
 
-def main():
+def main(
+    search_by: str = typer.Option("INSTRUMENT", help="Search criteria: INSTRUMENT or NAME"),
+    search_value: str = typer.Option(..., help="The value to search for (e.g., instrument number or name)"),
+):
     """
     Hillsborough County Property Data Acquisition Tool
     """
     print("Welcome to the Hillsborough County Property Data Acquisition Tool!")
 
-if __name__ == "__main__":
-    typer.run(main)
-
     db = DatabaseManager()
-    
-    # Check environment variable for GPU usage (defaults to True if not set, but Dockerfile sets it to False)
-    use_gpu = os.environ.get('EASYOCR_GPU', 'True').lower() == 'true'
-    print(f"Initializing EasyOCR Reader (GPU={use_gpu})...")
-    reader = easyocr.Reader(['en'], gpu=use_gpu)
-    
-    print("EasyOCR Reader initialized.")
 
-    # --- Example Searches ---
-    # 1. Search Clerk's office by Instrument Number
-    run_search(search_by="INSTRUMENT", search_value="2025120873", db_manager=db, ocr_reader=reader)
+    print(f"Starting search for {search_by}: {search_value}")
 
-    # 2. Search Clerk's office by Name
-    # run_search(search_by="NAME", search_value="DUCK HOLDINGS LLC", db_manager=db, ocr_reader=reader)
+    # Placeholder for actual scraping logic
+    # In a real scenario, we would call a scraper from src/scrapers/ here
+    # and use the AI client to parse results.
 
-    # --- Example Analysis ---
-    # After running a search, you can get a combined summary for a folio you discovered
-    # The folio number below was found in the example document.
-    discovered_folio = "U-11-28-19-123-A00001-00001.0" 
-    db.get_summary_by_folio(discovered_folio)
+    # Example usage of the DB
+    if search_by == "INSTRUMENT":
+         # Mock data saving
+        mock_data = {
+            "folio_number": f"MOCK-{search_value}",
+            "owner_name": "JOHN DOE",
+            "address": "123 EXAMPLE ST",
+            "status": "Found via CLI",
+            "data_source": "CLI_MOCK"
+        }
+        db.save_property(mock_data)
 
     db.close()
-    print("\nScript finished.")
+    print("Script finished.")
+
+if __name__ == "__main__":
+    typer.run(main)
