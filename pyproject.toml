@@ -8,6 +8,8 @@ dependencies = [
     "playwright",
     "lxml",
     "pytest",
+    "duckdb>=1.4.2",
+    "openai>=2.8.1",
 ]
 requires-python = ">=3.12"
 

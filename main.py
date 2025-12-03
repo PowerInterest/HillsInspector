@@ -1,35 +1,47 @@
 import typer
+from src.database import DatabaseManager
+from src.scrapers.hillsborough_clerk import HillsboroughClerkScraper
+from src.models import ScrapeStatus
 
-def main():
+def main(
+    search_by: str = typer.Option("INSTRUMENT", help="Search criteria: INSTRUMENT or NAME"),
+    search_value: str = typer.Option(..., help="The value to search for (e.g., instrument number or name)"),
+):
     """
     Hillsborough County Property Data Acquisition Tool
     """
     print("Welcome to the Hillsborough County Property Data Acquisition Tool!")
 
-if __name__ == "__main__":
-    typer.run(main)
-
     db = DatabaseManager()
-    
-    # Check environment variable for GPU usage (defaults to True if not set, but Dockerfile sets it to False)
-    use_gpu = os.environ.get('EASYOCR_GPU', 'True').lower() == 'true'
-    print(f"Initializing EasyOCR Reader (GPU={use_gpu})...")
-    reader = easyocr.Reader(['en'], gpu=use_gpu)
-    
-    print("EasyOCR Reader initialized.")
 
-    # --- Example Searches ---
-    # 1. Search Clerk's office by Instrument Number
-    run_search(search_by="INSTRUMENT", search_value="2025120873", db_manager=db, ocr_reader=reader)
+    print(f"Starting search for {search_by}: {search_value}")
 
-    # 2. Search Clerk's office by Name
-    # run_search(search_by="NAME", search_value="DUCK HOLDINGS LLC", db_manager=db, ocr_reader=reader)
+    # Initialize Scraper
+    scraper = HillsboroughClerkScraper()
+    result = scraper.search(search_value)
 
-    # --- Example Analysis ---
-    # After running a search, you can get a combined summary for a folio you discovered
-    # The folio number below was found in the example document.
-    discovered_folio = "U-11-28-19-123-A00001-00001.0" 
-    db.get_summary_by_folio(discovered_folio)
+    # Handle Results
+    if result.status == ScrapeStatus.SUCCESS:
+        print(f"✅ Success! Found {len(result.data)} records.")
+        for record in result.data:
+            # Convert model to dict for DB
+            db.save_property(record.model_dump(exclude_none=True))
+    elif result.status == ScrapeStatus.NO_RESULTS:
+        print(f"⚠️ Search completed, but no results were found for '{search_value}'.")
+    elif result.status == ScrapeStatus.BLOCKED:
+        print(f"🚫 Access Denied! The scraper was blocked. Message: {result.message}")
+    elif result.status == ScrapeStatus.NETWORK_ERROR:
+        print(f"🌐 Network Error. Could not reach the site. Message: {result.message}")
+    else:
+        print(f"❌ An error occurred: {result.status}. Message: {result.message}")
+        if result.error_details:
+            print("Details written to logs.")
+
+    # Log the attempt (Pseudo-code as DB schema for logs isn't fully set up yet)
+    # db.log_scrape_attempt(result)
 
     db.close()
-    print("\nScript finished.")
+    print("Script finished.")
+
+if __name__ == "__main__":
+    typer.run(main)
