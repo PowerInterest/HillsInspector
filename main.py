@@ -9,6 +9,7 @@ Supports modes:
 import argparse
 import asyncio
 import sys
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +24,7 @@ logger.remove()
 logger.add(sys.stderr, level="INFO", format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}")
 
 DB_PATH = Path("data/property_master.db")
+DEBUG_DB_PATH = Path("data/debug.db")
 
 def handle_new():
     """Create a new database, archiving the old one."""
@@ -51,6 +53,17 @@ async def handle_update():
 
     logger.success("Full update complete.")
 
+async def handle_debug():
+    """Debug run: process a single auction property end-to-end."""
+    logger.info("Running DEBUG pipeline (single property)...")
+    # Isolate to a clean debug database
+    DEBUG_DB_PATH.unlink(missing_ok=True)
+    DEBUG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    os.environ["HILLS_DB_PATH"] = str(DEBUG_DB_PATH)
+    create_database(str(DEBUG_DB_PATH))
+    await run_full_pipeline(max_auctions=1, property_limit=1)
+    logger.success("Debug run complete.")
+
 def handle_web():
     """Start the web server."""
     logger.info("Starting Web Server...")
@@ -67,6 +80,7 @@ def main():
     parser = argparse.ArgumentParser(description="HillsInspector Main Controller")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--test", action="store_true", help="Run pipeline for next auction data (small set)")
+    group.add_argument("--debug", action="store_true", help="Run pipeline for a single auction property")
     group.add_argument("--new", action="store_true", help="Create new database (renaming old one)")
     group.add_argument("--update", action="store_true", help="Run full update for next 60 days")
     group.add_argument("--web", action="store_true", help="Start web server")
@@ -77,6 +91,8 @@ def main():
         handle_new()
     elif args.test:
         asyncio.run(handle_test())
+    elif args.debug:
+        asyncio.run(handle_debug())
     elif args.update:
         asyncio.run(handle_update())
     elif args.web:

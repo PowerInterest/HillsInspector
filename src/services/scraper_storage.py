@@ -56,6 +56,7 @@ Usage:
 
 import json
 import hashlib
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
@@ -106,7 +107,7 @@ class ScraperStorage:
         Args:
             db_path: Optional custom database path
         """
-        self.db_path = db_path or self.DB_PATH
+        self.db_path = db_path or os.environ.get("HILLS_DB_PATH", self.DB_PATH)
         self.BASE_DIR.mkdir(parents=True, exist_ok=True)
         self._init_database()
 

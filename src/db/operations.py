@@ -2,6 +2,7 @@
 Database operations for property data.
 Provides high-level functions for inserting and querying data.
 """
+import os
 import duckdb
 from datetime import date, datetime
 from typing import List, Optional, Dict, Any, Any as AnyType
@@ -10,8 +11,9 @@ import json
 from src.models.property import Property, Lien
 
 class PropertyDB:
-    def __init__(self, db_path: str = "data/property_master.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None):
+        # Allow overriding via env for test/debug runs
+        self.db_path = db_path or os.environ.get("HILLS_DB_PATH", "data/property_master.db")
         self.conn = None
     
     def connect(self):

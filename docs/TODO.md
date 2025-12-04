@@ -2,6 +2,9 @@
 
 ## High Priority
 
+### Get the pipeline working
+- Primary blocker: title analysis is not running—fix legal_description propagation, ORI ingestion crashes, and avoid dropping chain/encumbrance tables on pipeline start.
+
 ### OnBase API Discovery
 The backend is **Hyland OnBase**. Leverage [OnBase Documentation](https://support.hyland.com/r/OnBase/Public-Sector-Constituency-Web-Access/English/Foundation-22.1/Public-Sector-Constituency-Web-Access/Configuration/Front-End-Client-Configuration/Search-Panel-Settings/Configuring-Custom-Queries/Predefine-Keyword-Values-to-Search/Dynamic-Keyword-Values) to discover more advanced search capabilities and potential API endpoints.
 
@@ -10,6 +13,9 @@ Implement scraping for CQIDs 324-348 to find foreclosure and probate cases.
 
 ### Permit Analysis
 Integrate `HillsGovHubScraper` to verify NOCs (Notice of Commencement) against actual permits.
+
+### Async Pipeline Refactor
+Implement bounded async orchestration and checkpointed stages (see `docs/async.md`) so reruns skip completed work and IO-heavy scrapes run concurrently with rate limits.
 
 ## Medium Priority
 

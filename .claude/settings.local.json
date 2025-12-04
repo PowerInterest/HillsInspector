@@ -32,7 +32,9 @@
       "Bash(wmic process where \"name=''python.exe''\" get processid,commandline)",
       "Bash(git restore:*)",
       "Bash(git checkout:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(uv run:*)",
+      "Bash(tee:*)"
     ],
     "deny": [],
     "ask": []

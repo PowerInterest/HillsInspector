@@ -217,8 +217,13 @@ def is_entity_name(name: str) -> bool:
     return any(kw in name_upper for kw in entity_keywords)
 
 
-async def run_full_pipeline(max_auctions: int = 10):
-    """Run the complete property analysis pipeline with smart skip logic."""
+async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int] = None):
+    """Run the complete property analysis pipeline with smart skip logic.
+
+    Args:
+        max_auctions: Limit applied to later market data steps.
+        property_limit: Optional cap on total auctions ingested (foreclosure + tax deed).
+    """
 
     logger.info("=" * 60)
     logger.info("STARTING FULL PIPELINE")
@@ -245,6 +250,8 @@ async def run_full_pipeline(max_auctions: int = 10):
         logger.info(f"Scraping foreclosures from {start_date} to {end_date}...")
         # The scraper handles calendar logic internally via scrape_all
         properties = await foreclosure_scraper.scrape_all(start_date, end_date)
+        if property_limit:
+            properties = properties[:property_limit]
         logger.success(f"Scraped {len(properties)} foreclosure auctions")
 
         # Save to DB
@@ -267,6 +274,9 @@ async def run_full_pipeline(max_auctions: int = 10):
     try:
         logger.info(f"Scraping tax deeds from {start_date} to {end_date}...")
         tax_properties = await tax_deed_scraper.scrape_all(start_date, end_date)
+        if property_limit:
+            remaining = max(property_limit - len(properties), 0)
+            tax_properties = tax_properties[:remaining]
         logger.success(f"Scraped {len(tax_properties)} tax deed auctions")
 
         # Save to DB

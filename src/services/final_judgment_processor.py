@@ -37,9 +37,9 @@ class FinalJudgmentProcessor:
             # Open PDF with PyMuPDF
             doc = fitz.open(pdf_path)
             total_pages = len(doc)
-            num_pages = min(3, total_pages)  # Process first 3 pages
+            num_pages = total_pages  # Process all pages to capture full judgment details
             
-            logger.info(f"PDF has {total_pages} pages, processing first {num_pages}")
+            logger.info(f"PDF has {total_pages} pages, processing all pages")
             
             # Process each page and merge results
             all_data = []
