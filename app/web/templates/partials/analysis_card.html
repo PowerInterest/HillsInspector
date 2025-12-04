@@ -1,0 +1,33 @@
+<div class="analysis-card">
+    <div class="equity-breakdown">
+        <div class="equity-line">
+            <span>Market Value (Est.)</span>
+            <span class="money positive">{{ "${:,.0f}".format(market_value) }}</span>
+        </div>
+        {% set auction = property.auction %}
+        <div class="equity-line subtract">
+            <span>Final Judgment</span>
+            <span class="money">- {{ "${:,.0f}".format(auction.final_judgment_amount) if auction.final_judgment_amount else '$0' }}</span>
+        </div>
+        <div class="equity-line subtract">
+            <span>Est. Surviving Liens</span>
+            <span class="money">- {{ "${:,.0f}".format(auction.est_surviving_debt) if auction.est_surviving_debt else '$0' }}</span>
+        </div>
+        <div class="equity-line total">
+            <span>NET EQUITY</span>
+            <span class="money {% if net_equity > 0 %}positive{% elif net_equity < 0 %}negative{% endif %}">
+                {{ "${:,.0f}".format(net_equity) }}
+            </span>
+        </div>
+    </div>
+
+    {% if net_equity < 0 %}
+    <div class="equity-warning">
+        Warning: Negative equity - potential loss of {{ "${:,.0f}".format(net_equity|abs) }}
+    </div>
+    {% elif net_equity > 50000 %}
+    <div class="equity-opportunity">
+        Potential equity spread: {{ "${:,.0f}".format(net_equity) }}
+    </div>
+    {% endif %}
+</div>

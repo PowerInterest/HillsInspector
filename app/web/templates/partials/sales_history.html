@@ -1,0 +1,47 @@
+{% if sales %}
+<table class="data-table">
+    <thead>
+        <tr>
+            <th>Date</th>
+            <th>Type</th>
+            <th>Sale Price</th>
+            <th>Book/Page</th>
+            <th>Instrument</th>
+            <th>Links</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for sale in sales %}
+        <tr>
+            <td>{{ sale.sale_date or '-' }}</td>
+            <td>
+                <span class="badge {% if sale.doc_type == 'WD' %}badge-info{% elif sale.doc_type == 'CT' %}badge-warning{% elif sale.doc_type == 'FD' %}badge-danger{% else %}badge-secondary{% endif %}">
+                    {{ sale.doc_type or '-' }}
+                </span>
+            </td>
+            <td class="text-right">${{ "{:,.0f}".format(sale.sale_price) if sale.sale_price else '-' }}</td>
+            <td>{{ sale.book }}/{{ sale.page }}</td>
+            <td>{{ sale.instrument or '-' }}</td>
+            <td>
+                {% if sale.ori_link %}
+                <a href="{{ sale.ori_link }}" target="_blank" class="btn btn-sm">View Deed</a>
+                {% else %}
+                <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=319&OBKey__1530_1=O&OBKey__573_1={{ sale.book }}&OBKey__1049_1={{ sale.page }}" target="_blank" class="btn btn-sm">ORI</a>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+<div class="doc-type-legend">
+    <small>
+        <strong>Doc Types:</strong>
+        WD = Warranty Deed |
+        CT = Certificate of Title |
+        FD = Final Deed |
+        QC = Quit Claim
+    </small>
+</div>
+{% else %}
+<p class="empty-state">No sales history found. <a href="#" hx-get="/property/{{ folio }}/enrich" hx-target="#sales-history-section" hx-swap="innerHTML">Fetch from HCPA?</a></p>
+{% endif %}

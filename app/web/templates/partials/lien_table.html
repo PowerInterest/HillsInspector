@@ -1,0 +1,77 @@
+{% if liens or encumbrances %}
+<table class="lien-table">
+    <thead>
+        <tr>
+            <th>Recording Date</th>
+            <th>Type</th>
+            <th>Amount</th>
+            <th>Holder</th>
+            <th>Survives?</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for lien in liens %}
+        <tr class="{% if lien.is_surviving %}surviving{% else %}wiped{% endif %}">
+            <td>{{ lien.recording_date.strftime('%m/%d/%Y') if lien.recording_date else '-' }}</td>
+            <td>{{ lien.document_type or '-' }}</td>
+            <td class="money-cell">{{ "${:,.0f}".format(lien.amount) if lien.amount else '-' }}</td>
+            <td>{{ lien.grantee or lien.grantor or '-' }}</td>
+            <td>
+                {% if lien.is_surviving == True %}
+                <span class="survival-badge survives">SURVIVES</span>
+                {% elif lien.is_surviving == False %}
+                <span class="survival-badge wiped">WIPED</span>
+                {% else %}
+                <span class="survival-badge unknown">UNKNOWN</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+
+        {% for enc in encumbrances %}
+        <tr class="{% if enc.survival_status == 'SURVIVES' %}surviving{% elif enc.survival_status == 'WIPED' %}wiped{% endif %}">
+            <td>{{ enc.recording_date.strftime('%m/%d/%Y') if enc.recording_date else '-' }}</td>
+            <td>{{ enc.encumbrance_type or '-' }}</td>
+            <td class="money-cell">
+                {{ "${:,.0f}".format(enc.amount) if enc.amount else '-' }}
+                {% if enc.amount_confidence and enc.amount_confidence != 'HIGH' %}
+                <span class="confidence-badge {{ enc.amount_confidence|lower }}">{{ enc.amount_confidence }}</span>
+                {% endif %}
+            </td>
+            <td>{{ enc.creditor or '-' }}</td>
+            <td>
+                {% if enc.survival_status == 'SURVIVES' %}
+                <span class="survival-badge survives">SURVIVES</span>
+                {% elif enc.survival_status == 'WIPED' %}
+                <span class="survival-badge wiped">WIPED</span>
+                {% elif enc.survival_status == 'SATISFIED' %}
+                <span class="survival-badge satisfied">SATISFIED</span>
+                {% else %}
+                <span class="survival-badge unknown">{{ enc.survival_status or 'UNKNOWN' }}</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+{% if liens %}
+<div class="lien-summary">
+    <strong>Total Liens Found:</strong> {{ liens|length }}
+    {% set surviving_count = liens|selectattr('is_surviving', 'equalto', True)|list|length %}
+    {% if surviving_count > 0 %}
+    | <span class="warning">{{ surviving_count }} surviving</span>
+    {% endif %}
+</div>
+{% endif %}
+
+{% else %}
+<p class="no-data">No liens found for this property.</p>
+<p class="no-data-hint">This could mean:
+    <ul>
+        <li>Lien research hasn't been run yet</li>
+        <li>No liens were found in Official Records</li>
+        <li>The property has a clean title</li>
+    </ul>
+</p>
+{% endif %}

@@ -1,0 +1,27 @@
+{% if documents %}
+<ul class="document-list">
+    {% for doc in documents %}
+    <li class="document-item">
+        <span class="doc-icon">
+            {% if doc.document_type == 'FINAL_JUDGMENT' %}PDF{% elif doc.document_type == 'LIS_PENDENS' %}LP{% else %}DOC{% endif %}
+        </span>
+        <div class="doc-info">
+            <span class="doc-type">{{ doc.document_type or 'Document' }}</span>
+            <span class="doc-date">{{ doc.recording_date.strftime('%m/%d/%Y') if doc.recording_date else '' }}</span>
+        </div>
+        {% if doc.file_path %}
+        <a href="/static/documents/{{ doc.file_path }}" target="_blank" class="doc-download">View</a>
+        {% endif %}
+    </li>
+    {% endfor %}
+</ul>
+{% else %}
+<p class="no-data">No documents available.</p>
+<p class="no-data-hint">Documents will appear here after:
+    <ul>
+        <li>Final Judgment PDF is downloaded from HOVER</li>
+        <li>ORI documents are retrieved</li>
+        <li>Market screenshots are captured</li>
+    </ul>
+</p>
+{% endif %}

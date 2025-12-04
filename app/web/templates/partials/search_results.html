@@ -1,0 +1,25 @@
+{% if results %}
+<ul class="search-results-list">
+    {% for result in results %}
+    <li class="search-result-item">
+        <a href="/property/{{ result.folio or result.case_number }}">
+            <div class="result-address">{{ result.property_address or 'No Address' }}</div>
+            <div class="result-meta">
+                <span class="result-folio">{{ result.folio }}</span>
+                {% if result.auction_date %}
+                <span class="result-date">{{ result.auction_date.strftime('%m/%d/%Y') }}</span>
+                {% endif %}
+                {% if result.auction_type %}
+                <span class="result-type badge-{{ result.auction_type|lower }}">{{ result.auction_type }}</span>
+                {% endif %}
+            </div>
+            {% if result.owner_name %}
+            <div class="result-owner">{{ result.owner_name }}</div>
+            {% endif %}
+        </a>
+    </li>
+    {% endfor %}
+</ul>
+{% elif query %}
+<div class="no-results">No results found for "{{ query }}"</div>
+{% endif %}

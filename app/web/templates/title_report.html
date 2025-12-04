@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Title Report - {{ property.folio }}</title>
+    <style>
+        :root {
+            --primary: #2c3e50;
+            --secondary: #34495e;
+            --accent: #3498db;
+            --text: #333;
+            --light-gray: #f5f6fa;
+            --border: #dcdde1;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: var(--text);
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            background-color: #f0f2f5;
+        }
+
+        .report-container {
+            max-width: 800px;
+            margin: 40px auto;
+            background: white;
+            padding: 60px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+        }
+
+        .report-header {
+            text-align: center;
+            border-bottom: 2px solid var(--primary);
+            padding-bottom: 20px;
+            margin-bottom: 40px;
+        }
+
+        .report-title {
+            font-size: 28px;
+            font-weight: bold;
+            color: var(--primary);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin: 0;
+        }
+
+        .report-meta {
+            color: var(--secondary);
+            font-size: 14px;
+            margin-top: 10px;
+        }
+
+        .section {
+            margin-bottom: 30px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: bold;
+            color: var(--primary);
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 5px;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .field {
+            margin-bottom: 10px;
+        }
+
+        .label {
+            font-weight: bold;
+            color: var(--secondary);
+            font-size: 12px;
+            text-transform: uppercase;
+            display: block;
+        }
+
+        .value {
+            font-size: 16px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 14px;
+        }
+
+        th, td {
+            text-align: left;
+            padding: 10px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            background-color: var(--light-gray);
+            font-weight: bold;
+            color: var(--secondary);
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .status-open { background: #ffeaa7; color: #d35400; }
+        .status-satisfied { background: #55efc4; color: #00b894; }
+        .status-wiped { background: #fab1a0; color: #d63031; }
+        .status-surviving { background: #ff7675; color: #d63031; }
+
+        .print-btn {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: bold;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+
+        .print-btn:hover {
+            background: #2980b9;
+        }
+
+        @media print {
+            body { background: white; }
+            .report-container { box-shadow: none; margin: 0; padding: 0; max-width: 100%; }
+            .print-btn { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+    <button class="print-btn" onclick="window.print()">Print Report</button>
+
+    <div class="report-container">
+        <div class="report-header">
+            <h1 class="report-title">Property Title Report</h1>
+            <div class="report-meta">Generated on {{ generated_date }}</div>
+            <div class="report-meta">HillsInspector Analysis</div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Property Identification</div>
+            <div class="grid">
+                <div class="field">
+                    <span class="label">Folio Number</span>
+                    <span class="value">{{ property.folio }}</span>
+                </div>
+                <div class="field">
+                    <span class="label">Case Number</span>
+                    <span class="value">{{ property.auction.case_number }}</span>
+                </div>
+                <div class="field">
+                    <span class="label">Property Address</span>
+                    <span class="value">{{ property.auction.property_address }}</span>
+                </div>
+                <div class="field">
+                    <span class="label">Current Owner (Record)</span>
+                    <span class="value">{{ property.parcel.owner_name or "Unknown" }}</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Legal Description</div>
+            <div class="field">
+                <span class="value">{{ property.parcel.legal_description or "See attached deed." }}</span>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Assessment & Tax Info</div>
+            <div class="grid">
+                <div class="field">
+                    <span class="label">Assessed Value</span>
+                    <span class="value">${{ "{:,.2f}".format(property.auction.assessed_value or 0) }}</span>
+                </div>
+                <div class="field">
+                    <span class="label">Market Value (Est)</span>
+                    <span class="value">${{ "{:,.2f}".format(property.market_value or 0) }}</span>
+                </div>
+                <div class="field">
+                    <span class="label">Year Built</span>
+                    <span class="value">{{ property.parcel.year_built or "N/A" }}</span>
+                </div>
+                <div class="field">
+                    <span class="label">Living Area</span>
+                    <span class="value">{{ property.parcel.heated_area }} sqft</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Encumbrances & Liens</div>
+            {% if property.encumbrances or property.liens %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>Date</th>
+                        <th>Creditor</th>
+                        <th>Amount</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for enc in property.encumbrances %}
+                    <tr>
+                        <td>{{ enc.encumbrance_type }}</td>
+                        <td>{{ enc.recording_date }}</td>
+                        <td>{{ enc.creditor }}</td>
+                        <td>${{ "{:,.2f}".format(enc.amount or 0) }}</td>
+                        <td>
+                            <span class="status-badge 
+                                {% if enc.survival_status == 'SURVIVING' %}status-surviving
+                                {% elif enc.is_satisfied %}status-satisfied
+                                {% else %}status-open{% endif %}">
+                                {{ enc.survival_status or ("SATISFIED" if enc.is_satisfied else "OPEN") }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                    
+                    {% for lien in property.liens %}
+                    <tr>
+                        <td>{{ lien.document_type }}</td>
+                        <td>{{ lien.recording_date }}</td>
+                        <td>{{ lien.grantee }}</td>
+                        <td>${{ "{:,.2f}".format(lien.amount or 0) }}</td>
+                        <td>
+                            <span class="status-badge {% if lien.is_surviving %}status-surviving{% else %}status-wiped{% endif %}">
+                                {{ "SURVIVING" if lien.is_surviving else "WIPED" }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p>No recorded encumbrances found in analysis.</p>
+            {% endif %}
+        </div>
+
+        <div class="section">
+            <div class="section-title">Chain of Title (Ownership History)</div>
+            {% if property.chain %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Grantor (Seller)</th>
+                        <th>Grantee (Buyer)</th>
+                        <th>Document</th>
+                        <th>Price</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for transfer in property.chain %}
+                    <tr>
+                        <td>{{ transfer.acquisition_date }}</td>
+                        <td>{{ transfer.acquired_from }}</td>
+                        <td>{{ transfer.owner_name }}</td>
+                        <td>{{ transfer.acquisition_doc_type }}</td>
+                        <td>${{ "{:,.2f}".format(transfer.acquisition_price or 0) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p>Chain of title data not available.</p>
+            {% endif %}
+        </div>
+
+        <div class="section">
+            <div class="section-title">Disclaimer</div>
+            <p style="font-size: 12px; color: #7f8c8d;">
+                This report is generated automatically by HillsInspector based on public records. 
+                It is NOT a certified title search or title insurance policy. 
+                Information may be incomplete or inaccurate. Verify all data with official county records.
+            </p>
+        </div>
+    </div>
+
+</body>
+</html>

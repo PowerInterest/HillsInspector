@@ -1,35 +1,86 @@
-import typer
+"""
+Main entry point for HillsInspector.
+Supports modes:
+  --test: Run pipeline for next auction data (small set)
+  --new: Create new database (renaming old one)
+  --update: Run full pipeline for next 60 days
+  --web: Start web server
+"""
+import argparse
+import asyncio
+import sys
+import shutil
+from datetime import datetime
+from pathlib import Path
+from loguru import logger
+
+# Import modules
+from src.db.new import create_database
+from src.pipeline import run_full_pipeline
+
+# Configure logging
+logger.remove()
+logger.add(sys.stderr, level="INFO", format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}")
+
+DB_PATH = Path("data/property_master.db")
+
+def handle_new():
+    """Create a new database, archiving the old one."""
+    if DB_PATH.exists():
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archive_path = DB_PATH.parent / f"property_master_{timestamp}.db"
+        logger.info(f"Archiving existing database to {archive_path}")
+        shutil.move(str(DB_PATH), str(archive_path))
+    
+    logger.info("Creating new database...")
+    create_database(str(DB_PATH))
+    logger.success("New database created successfully.")
+
+async def handle_test():
+    """Run pipeline for next auction data (small set)."""
+    logger.info("Running TEST pipeline (small batch)...")
+    # Run full pipeline with limited auctions
+    await run_full_pipeline(max_auctions=5)
+
+async def handle_update():
+    """Run full update for next 60 days."""
+    logger.info("Running FULL UPDATE pipeline...")
+
+    # 1. Run main pipeline (Scrape -> Extract -> Ingest -> Analyze -> Enrich)
+    await run_full_pipeline(max_auctions=1000)
+
+    logger.success("Full update complete.")
+
+def handle_web():
+    """Start the web server."""
+    logger.info("Starting Web Server...")
+    from nicegui import ui
+    import app.ui as ui_module
+    
+    # Initialize UI
+    ui_module.init_ui()
+    
+    # Run UI
+    ui.run(title='HillsInspector', storage_secret='secret', port=8089, reload=False)
 
 def main():
-    """
-    Hillsborough County Property Data Acquisition Tool
-    """
-    print("Welcome to the Hillsborough County Property Data Acquisition Tool!")
+    parser = argparse.ArgumentParser(description="HillsInspector Main Controller")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--test", action="store_true", help="Run pipeline for next auction data (small set)")
+    group.add_argument("--new", action="store_true", help="Create new database (renaming old one)")
+    group.add_argument("--update", action="store_true", help="Run full update for next 60 days")
+    group.add_argument("--web", action="store_true", help="Start web server")
+    
+    args = parser.parse_args()
+    
+    if args.new:
+        handle_new()
+    elif args.test:
+        asyncio.run(handle_test())
+    elif args.update:
+        asyncio.run(handle_update())
+    elif args.web:
+        handle_web()
 
 if __name__ == "__main__":
-    typer.run(main)
-
-    db = DatabaseManager()
-    
-    # Check environment variable for GPU usage (defaults to True if not set, but Dockerfile sets it to False)
-    use_gpu = os.environ.get('EASYOCR_GPU', 'True').lower() == 'true'
-    print(f"Initializing EasyOCR Reader (GPU={use_gpu})...")
-    reader = easyocr.Reader(['en'], gpu=use_gpu)
-    
-    print("EasyOCR Reader initialized.")
-
-    # --- Example Searches ---
-    # 1. Search Clerk's office by Instrument Number
-    run_search(search_by="INSTRUMENT", search_value="2025120873", db_manager=db, ocr_reader=reader)
-
-    # 2. Search Clerk's office by Name
-    # run_search(search_by="NAME", search_value="DUCK HOLDINGS LLC", db_manager=db, ocr_reader=reader)
-
-    # --- Example Analysis ---
-    # After running a search, you can get a combined summary for a folio you discovered
-    # The folio number below was found in the example document.
-    discovered_folio = "U-11-28-19-123-A00001-00001.0" 
-    db.get_summary_by_folio(discovered_folio)
-
-    db.close()
-    print("\nScript finished.")
+    main()

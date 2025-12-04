@@ -1,0 +1,214 @@
+from typing import List, Dict, Optional, Tuple
+from datetime import datetime
+import re
+
+class TitleChainService:
+    """
+    Service to analyze a list of official records and build a Chain of Title
+    and identify surviving encumbrances.
+    """
+    
+    def __init__(self):
+        # Regex for finding Book/Page references
+        # Matches: "Book 123 Page 456", "Bk 123 Pg 456", "B: 123 P: 456"
+        self.bk_pg_regex = re.compile(r'(?:BK|B|BOOK)\W+(\d+)\W+(?:PG|P|PAGE)\W+(\d+)', re.IGNORECASE)
+        # Matches: "Instrument 2020123456", "Inst # 2020123456"
+        self.inst_regex = re.compile(r'(?:INST|INSTRUMENT)\W+(?:NO|#)?\W*(\d+)', re.IGNORECASE)
+
+    def build_chain_and_analyze(self, documents: List[Dict]) -> Dict:
+        """
+        Main entry point. Takes raw documents and returns analysis.
+        """
+        # 1. Sort documents by date (oldest to newest)
+        sorted_docs = sorted(documents, key=lambda x: self._parse_date(x.get('recording_date', '')))
+        
+        # 2. Separate into categories
+        deeds = [d for d in sorted_docs if 'DEED' in d.get('doc_type', '').upper()]
+        
+        # Encumbrances: Mortgages, Liens, Judgments, Lis Pendens
+        # Exclude Satisfactions from this list initially
+        encumbrance_keywords = ['MORTGAGE', 'LIEN', 'JUDGMENT', 'LIS PENDENS']
+        satisfaction_keywords = ['SATISFACTION', 'RELEASE', 'RECONVEYANCE', 'DISCHARGE']
+        modification_keywords = ['MODIFICATION', 'ASSIGNMENT', 'AMENDMENT']
+        restriction_keywords = ['EASEMENT', 'RESTRICTION', 'COVENANT', 'DECLARATION', 'PLAT']
+        
+        potential_encumbrances = []
+        satisfactions = []
+        nocs = []
+        modifications = []
+        restrictions = []
+        
+        for d in sorted_docs:
+            doc_type = d.get('doc_type', '').upper()
+            
+            if 'NOTICE OF COMMENCEMENT' in doc_type or 'NOC' in doc_type:
+                nocs.append(d)
+            elif any(k in doc_type for k in satisfaction_keywords):
+                satisfactions.append(d)
+            elif any(k in doc_type for k in modification_keywords):
+                modifications.append(d)
+            elif any(k in doc_type for k in restriction_keywords):
+                restrictions.append(d)
+            elif any(k in doc_type for k in encumbrance_keywords):
+                potential_encumbrances.append(d)
+        
+        # 3. Build Chain of Title
+        chain = self._build_deed_chain(deeds)
+        
+        # 4. Analyze Encumbrances (Mortgages & Liens)
+        encumbrances = self._analyze_encumbrances(potential_encumbrances, satisfactions)
+        
+        return {
+            'chain': chain,
+            'encumbrances': encumbrances,
+            'nocs': nocs,
+            'modifications': modifications,
+            'restrictions': restrictions,
+            'summary': {
+                'total_deeds': len(deeds),
+                'active_liens': len([e for e in encumbrances if e['status'] == 'OPEN']),
+                'total_nocs': len(nocs),
+                'current_owner': chain[-1]['grantee'] if chain else "Unknown"
+            }
+        }
+
+    def _build_deed_chain(self, deeds: List[Dict]) -> List[Dict]:
+        """
+        Link deeds together to form a chain of ownership.
+        """
+        chain = []
+        for i, deed in enumerate(deeds):
+            entry = {
+                'date': deed.get('recording_date'),
+                'grantor': deed.get('party1', '').strip(), # Usually Grantor
+                'grantee': deed.get('party2', '').strip(), # Usually Grantee
+                'doc_type': deed.get('doc_type'),
+                'book_page': f"{deed.get('book')}/{deed.get('page')}",
+                'notes': []
+            }
+            
+            # Check for gaps
+            if i > 0:
+                prev_grantee = chain[-1]['grantee']
+                curr_grantor = entry['grantor']
+                
+                # Simple fuzzy check (names can be messy)
+                if not self._names_match(prev_grantee, curr_grantor):
+                    entry['notes'].append(f"GAP IN TITLE? Previous owner was {prev_grantee}, but Grantor is {curr_grantor}")
+            
+            chain.append(entry)
+        return chain
+
+    def _extract_refs(self, text: str) -> Tuple[List[Tuple[str, str]], List[str]]:
+        """Extract Book/Page and Instrument pairs from text."""
+        if not text:
+            return [], []
+        bk_pgs = self.bk_pg_regex.findall(text)
+        insts = self.inst_regex.findall(text)
+        return bk_pgs, insts
+
+    def _analyze_encumbrances(self, encumbrances: List[Dict], satisfactions: List[Dict]) -> List[Dict]:
+        """
+        Determine which encumbrances are still active.
+        """
+        results = []
+        
+        for enc in encumbrances:
+            status = 'OPEN'
+            matched_satisfaction = None
+            match_method = None
+            
+            enc_date = self._parse_date(enc.get('recording_date'))
+            enc_book = str(enc.get('book', '')).strip()
+            enc_page = str(enc.get('page', '')).strip()
+            enc_inst = str(enc.get('instrument_number', '')).strip()
+            
+            enc_lender = enc.get('party2', '').strip() # Party 2 is usually the Lender/Lienor
+            
+            for sat in satisfactions:
+                sat_date = self._parse_date(sat.get('recording_date'))
+                if sat_date <= enc_date:
+                    continue
+                
+                # 1. Check Specific Reference (Book/Page or Instrument)
+                # Check legal description or notes for references
+                sat_text = (sat.get('legal_description') or '') + " " + (sat.get('notes') or '')
+                ref_bk_pgs, ref_insts = self._extract_refs(sat_text)
+                
+                # Check Book/Page match
+                if enc_book and enc_page:
+                    for ref_bk, ref_pg in ref_bk_pgs:
+                        if ref_bk == enc_book and ref_pg == enc_page:
+                            status = 'SATISFIED'
+                            matched_satisfaction = sat
+                            match_method = 'BOOK_PAGE_REF'
+                            break
+                
+                if status == 'SATISFIED': break
+
+                # Check Instrument match
+                if enc_inst and enc_inst in ref_insts:
+                    status = 'SATISFIED'
+                    matched_satisfaction = sat
+                    match_method = 'INSTRUMENT_REF'
+                    break
+                
+                # 2. Fallback: Check Names + Logic
+                # In a Satisfaction, Party 1 is usually the Bank/Lienor (releasing)
+                sat_releasor = sat.get('party1', '').strip()
+                
+                if self._names_match(enc_lender, sat_releasor):
+                    # Only match if we haven't found a specific ref yet
+                    # And maybe check amounts if available? (TODO)
+                    status = 'SATISFIED'
+                    matched_satisfaction = sat
+                    match_method = 'NAME_MATCH'
+                    break
+            
+            results.append({
+                'type': enc.get('doc_type'),
+                'date': enc.get('recording_date'),
+                'amount': enc.get('amount', 'Unknown'),
+                'creditor': enc_lender,
+                'debtor': enc.get('party1', '').strip(),
+                'book_page': f"{enc.get('book')}/{enc.get('page')}",
+                'status': status,
+                'satisfaction_ref': f"{matched_satisfaction.get('book')}/{matched_satisfaction.get('page')}" if matched_satisfaction else None,
+                'match_method': match_method
+            })
+            
+        return results
+
+    def _names_match(self, name1: str, name2: str) -> bool:
+        """
+        Fuzzy name matching.
+        """
+        if not name1 or not name2:
+            return False
+            
+        # Tokenize and clean
+        def clean_tokens(n):
+            return set(n.upper().replace(',', '').replace('.', '').split())
+            
+        t1 = clean_tokens(name1)
+        t2 = clean_tokens(name2)
+        
+        # Intersection of tokens
+        common = t1.intersection(t2)
+        
+        # If they share significant words (ignoring common stopwords like LLC, INC, BANK)
+        stopwords = {'LLC', 'INC', 'CORP', 'COMPANY', 'BANK', 'NA', 'ASSOCIATION', 'THE', 'OF', 'AND'}
+        significant_common = common - stopwords
+        
+        if len(significant_common) >= 1:
+            # If they share at least one significant word (e.g. "WELLS" in "WELLS FARGO")
+            # This is loose, but better than just first word.
+            return True
+            
+        return False
+
+    def _parse_date(self, date_str: str) -> datetime:
+        try:
+            return datetime.strptime(date_str, "%m/%d/%Y")
+        except:
+            return datetime.min

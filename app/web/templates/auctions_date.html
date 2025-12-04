@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}Auctions on {{ auction_date.strftime('%B %d, %Y') }} - HillsInspector{% endblock %}
+
+{% block content %}
+<div class="auctions-date-page">
+    <nav class="breadcrumb">
+        <a href="/">Dashboard</a> &raquo;
+        <span>{{ auction_date.strftime('%B %d, %Y') }}</span>
+    </nav>
+
+    <h1>Auctions on {{ auction_date.strftime('%B %d, %Y') }}</h1>
+
+    <div class="table-container">
+        <table class="auction-table">
+            <thead>
+                <tr>
+                    <th>Address</th>
+                    <th>Case #</th>
+                    <th>Type</th>
+                    <th>Owner</th>
+                    <th>Assessed</th>
+                    <th>Judgment</th>
+                    <th>Opening Bid</th>
+                    <th>Flags</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for auction in auctions %}
+                <tr class="auction-row {% if auction.is_toxic_title %}toxic{% endif %}">
+                    <td class="address-cell">
+                        <a href="/property/{{ auction.folio or auction.case_number }}">
+                            {{ auction.property_address or 'No Address' }}
+                        </a>
+                    </td>
+                    <td class="case-cell">{{ auction.case_number }}</td>
+                    <td class="type-cell">
+                        <span class="badge badge-{{ auction.auction_type|lower }}">
+                            {{ 'FC' if auction.auction_type == 'FORECLOSURE' else 'TD' }}
+                        </span>
+                    </td>
+                    <td>{{ auction.owner_name or '-' }}</td>
+                    <td class="money-cell">
+                        {{ "${:,.0f}".format(auction.assessed_value) if auction.assessed_value else '-' }}
+                    </td>
+                    <td class="money-cell">
+                        {{ "${:,.0f}".format(auction.final_judgment_amount) if auction.final_judgment_amount else '-' }}
+                    </td>
+                    <td class="money-cell">
+                        {{ "${:,.0f}".format(auction.opening_bid) if auction.opening_bid else '-' }}
+                    </td>
+                    <td class="flags-cell">
+                        {% if auction.is_toxic_title %}
+                        <span class="flag flag-danger">TOXIC</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="8" class="empty-row">No auctions scheduled for this date</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <p class="auction-count">Total: {{ auctions|length }} auction(s)</p>
+</div>
+{% endblock %}

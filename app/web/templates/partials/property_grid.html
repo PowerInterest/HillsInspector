@@ -1,0 +1,35 @@
+<!-- Property Card Grid -->
+<div class="property-grid">
+    {% for auction in auctions %}
+    {% include "partials/property_card.html" %}
+    {% else %}
+    <div class="empty-state">
+        <div class="empty-icon">🏠</div>
+        <h3>No Foreclosures Found</h3>
+        <p>No upcoming foreclosure auctions match your filters.</p>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Pagination -->
+{% if pagination.total_pages > 1 %}
+<div class="pagination">
+    {% if pagination.page > 1 %}
+    <a href="?page={{ pagination.page - 1 }}&auction_type={{ filters.auction_type or '' }}&sort_by={{ filters.sort_by }}&sort_order={{ filters.sort_order }}&view=grid"
+       hx-get="/auctions?page={{ pagination.page - 1 }}&auction_type={{ filters.auction_type or '' }}&sort_by={{ filters.sort_by }}&sort_order={{ filters.sort_order }}&view=grid"
+       hx-target="#property-grid-container"
+       class="page-link">&laquo; Prev</a>
+    {% endif %}
+
+    <span class="page-info">
+        Showing {{ ((pagination.page - 1) * pagination.per_page) + 1 }}-{{ [pagination.page * pagination.per_page, pagination.total]|min }} of {{ pagination.total }} properties
+    </span>
+
+    {% if pagination.page < pagination.total_pages %}
+    <a href="?page={{ pagination.page + 1 }}&auction_type={{ filters.auction_type or '' }}&sort_by={{ filters.sort_by }}&sort_order={{ filters.sort_order }}&view=grid"
+       hx-get="/auctions?page={{ pagination.page + 1 }}&auction_type={{ filters.auction_type or '' }}&sort_by={{ filters.sort_by }}&sort_order={{ filters.sort_order }}&view=grid"
+       hx-target="#property-grid-container"
+       class="page-link">Next &raquo;</a>
+    {% endif %}
+</div>
+{% endif %}

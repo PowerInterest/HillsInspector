@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+
+{% block title %}Foreclosure Auctions - HillsInspector{% endblock %}
+
+{% block content %}
+<div class="dashboard">
+    <!-- Hero Stats Bar -->
+    <div class="stats-bar">
+        <div class="stat-item">
+            <span class="stat-number">{{ stats.foreclosures }}</span>
+            <span class="stat-label">Foreclosures</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-number">{{ stats.this_week }}</span>
+            <span class="stat-label">This Week</span>
+        </div>
+        <div class="stat-item stat-warning">
+            <span class="stat-number">{{ stats.toxic_flagged }}</span>
+            <span class="stat-label">Title Issues</span>
+        </div>
+        <div class="stat-item stat-info">
+            <span class="stat-number">{{ stats.tax_deeds }}</span>
+            <span class="stat-label">Tax Deeds</span>
+        </div>
+    </div>
+
+    <!-- Filters Bar -->
+    <div class="filters-bar">
+        <div class="filters-left">
+            <h2 class="section-title">Upcoming Foreclosure Auctions</h2>
+        </div>
+        <div class="filters-right">
+            <!-- View Toggle -->
+            <div class="view-toggle">
+                <button class="view-btn {% if view == 'grid' %}active{% endif %}"
+                        hx-get="/auctions?view=grid&auction_type={{ filters.auction_type or '' }}&sort_by={{ filters.sort_by }}&sort_order={{ filters.sort_order }}"
+                        hx-target="#property-grid-container"
+                        hx-push-url="true"
+                        title="Grid View">
+                    ▦
+                </button>
+                <button class="view-btn {% if view == 'table' %}active{% endif %}"
+                        hx-get="/auctions?view=table&auction_type={{ filters.auction_type or '' }}&sort_by={{ filters.sort_by }}&sort_order={{ filters.sort_order }}"
+                        hx-target="#property-grid-container"
+                        hx-push-url="true"
+                        title="Table View">
+                    ☰
+                </button>
+            </div>
+
+            <!-- Sort -->
+            <div class="filter-group">
+                <label>Sort:</label>
+                <select id="sort-filter"
+                        hx-get="/auctions"
+                        hx-target="#property-grid-container"
+                        hx-include="[name='auction_type'], [name='sort_order'], [name='view']"
+                        name="sort_by">
+                    <option value="auction_date" {% if filters.sort_by == 'auction_date' %}selected{% endif %}>Auction Date</option>
+                    <option value="net_equity" {% if filters.sort_by == 'net_equity' %}selected{% endif %}>Est. Equity</option>
+                    <option value="assessed_value" {% if filters.sort_by == 'assessed_value' %}selected{% endif %}>Assessed Value</option>
+                    <option value="final_judgment_amount" {% if filters.sort_by == 'final_judgment_amount' %}selected{% endif %}>Judgment</option>
+                </select>
+                <input type="hidden" name="view" value="{{ view or 'grid' }}">
+            </div>
+
+            <!-- Order -->
+            <div class="filter-group">
+                <select id="order-filter"
+                        hx-get="/auctions"
+                        hx-target="#property-grid-container"
+                        hx-include="[name='auction_type'], [name='sort_by'], [name='view']"
+                        name="sort_order">
+                    <option value="asc" {% if filters.sort_order == 'asc' %}selected{% endif %}>Low to High</option>
+                    <option value="desc" {% if filters.sort_order == 'desc' %}selected{% endif %}>High to Low</option>
+                </select>
+            </div>
+
+            <!-- Auction Type (hidden, defaults to foreclosure) -->
+            <input type="hidden" name="auction_type" value="{{ filters.auction_type or 'FORECLOSURE' }}">
+        </div>
+    </div>
+
+    <!-- Property Grid Container -->
+    <div id="property-grid-container">
+        {% if view == 'table' %}
+        {% include "partials/auction_table.html" %}
+        {% else %}
+        {% include "partials/property_grid.html" %}
+        {% endif %}
+    </div>
+</div>
+
+<!-- Map Toggle (collapsible) -->
+<details class="map-section">
+    <summary class="map-toggle">📍 Show Map View</summary>
+    <div class="map-container">
+        <div id="auction-map"></div>
+    </div>
+    {% include "partials/map_script.html" %}
+</details>
+{% endblock %}

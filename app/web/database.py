@@ -1,0 +1,694 @@
+"""
+Database queries for web interface.
+Uses the existing PropertyDB from src/db/operations.py
+"""
+import duckdb
+import json
+from datetime import date, datetime, timedelta
+from typing import List, Dict, Any, Optional
+from pathlib import Path
+from loguru import logger
+
+
+DB_PATH = Path(__file__).resolve().parents[2] / "data" / "property_master.db"
+SCRAPER_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "scraper_outputs.db"
+
+
+def get_connection() -> duckdb.DuckDBPyConnection:
+    """Get a database connection."""
+    return duckdb.connect(str(DB_PATH), read_only=True)
+
+
+def get_upcoming_auctions(
+    days_ahead: int = 60,
+    auction_type: Optional[str] = None,
+    sort_by: str = "auction_date",
+    sort_order: str = "asc",
+    limit: int = 100,
+    offset: int = 0
+) -> List[Dict[str, Any]]:
+    """
+    Get upcoming auctions with property details.
+
+    Args:
+        days_ahead: Number of days to look ahead
+        auction_type: Filter by FORECLOSURE or TAX_DEED
+        sort_by: Column to sort by
+        sort_order: asc or desc
+        limit: Max results
+        offset: Pagination offset
+
+    Returns:
+        List of auction dicts with joined property data
+    """
+    conn = get_connection()
+
+    today = date.today()
+    end_date = today + timedelta(days=days_ahead)
+
+    # Build query with optional joins to bulk_parcels
+    # Note: auctions.folio matches bulk_parcels.strap (not folio)
+    query = """
+        SELECT
+            a.id,
+            a.case_number,
+            a.folio,
+            a.auction_type,
+            a.auction_date,
+            a.property_address,
+            a.assessed_value,
+            a.final_judgment_amount,
+            a.opening_bid,
+            a.est_surviving_debt,
+            a.is_toxic_title,
+            a.status,
+            a.plaintiff_max_bid,
+            -- Joined from bulk_parcels (if available)
+            bp.owner_name,
+            bp.beds,
+            bp.baths,
+            bp.heated_area,
+            bp.year_built,
+            bp.market_value as hcpa_market_value,
+            bp.land_use_desc,
+            -- Calculated fields
+            COALESCE(bp.market_value, a.assessed_value, 0) -
+                COALESCE(a.final_judgment_amount, 0) -
+                COALESCE(a.est_surviving_debt, 0) as net_equity
+        FROM auctions a
+        LEFT JOIN bulk_parcels bp ON a.folio = bp.strap
+        WHERE a.auction_date >= ? AND a.auction_date <= ?
+    """
+
+    params = [today, end_date]
+
+    if auction_type:
+        query += " AND a.auction_type = ?"
+        params.append(auction_type)
+
+    # Validate sort column to prevent SQL injection
+    valid_sort_cols = [
+        "auction_date", "property_address", "assessed_value",
+        "final_judgment_amount", "net_equity", "case_number"
+    ]
+    if sort_by not in valid_sort_cols:
+        sort_by = "auction_date"
+
+    sort_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
+    query += f" ORDER BY {sort_by} {sort_dir}"
+    query += f" LIMIT {limit} OFFSET {offset}"
+
+    try:
+        results = conn.execute(query, params).fetchall()
+        columns = [desc[0] for desc in conn.description]
+        return [dict(zip(columns, row)) for row in results]
+    except Exception as e:
+        logger.error(f"Error fetching auctions: {e}")
+        # Fallback query without bulk_parcels join
+        fallback_query = """
+            SELECT
+                a.*,
+                NULL as owner_name,
+                NULL as beds,
+                NULL as baths,
+                NULL as heated_area,
+                NULL as year_built,
+                NULL as hcpa_market_value,
+                NULL as land_use_desc,
+                COALESCE(a.assessed_value, 0) -
+                    COALESCE(a.final_judgment_amount, 0) -
+                    COALESCE(a.est_surviving_debt, 0) as net_equity
+            FROM auctions a
+            WHERE a.auction_date >= ? AND a.auction_date <= ?
+            ORDER BY auction_date ASC
+            LIMIT ? OFFSET ?
+        """
+        results = conn.execute(fallback_query, [today, end_date, limit, offset]).fetchall()
+        columns = [desc[0] for desc in conn.description]
+        return [dict(zip(columns, row)) for row in results]
+    finally:
+        conn.close()
+
+
+def get_auction_map_points(days_ahead: int = 60) -> List[Dict[str, Any]]:
+    """Return auctions with lat/lon for map display."""
+    conn = get_connection()
+    try:
+        results = conn.execute(f"""
+            SELECT
+                a.case_number,
+                a.auction_date,
+                a.auction_type,
+                a.property_address,
+                a.final_judgment_amount,
+                p.latitude,
+                p.longitude
+            FROM auctions a
+            LEFT JOIN parcels p ON a.folio = p.folio OR a.parcel_id = p.parcel_id
+            WHERE a.auction_date >= CURRENT_DATE
+              AND a.auction_date <= CURRENT_DATE + INTERVAL {days_ahead} DAY
+        """).fetchall()
+        columns = [desc[0] for desc in conn.description]
+        return [dict(zip(columns, row)) for row in results]
+    except Exception as e:
+        logger.error(f"Error fetching map points: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_auction_count(
+    days_ahead: int = 60,
+    auction_type: Optional[str] = None
+) -> int:
+    """Get total count of upcoming auctions."""
+    conn = get_connection()
+
+    today = date.today()
+    end_date = today + timedelta(days=days_ahead)
+
+    query = """
+        SELECT COUNT(*) FROM auctions
+        WHERE auction_date >= ? AND auction_date <= ?
+    """
+    params = [today, end_date]
+
+    if auction_type:
+        query += " AND auction_type = ?"
+        params.append(auction_type)
+
+    try:
+        result = conn.execute(query, params).fetchone()
+        return result[0] if result else 0
+    except Exception as e:
+        logger.error(f"Error counting auctions: {e}")
+        return 0
+    finally:
+        conn.close()
+
+
+def get_property_detail(folio: str) -> Optional[Dict[str, Any]]:
+    """
+    Get full property details including auction, liens, and parcel data.
+
+    Args:
+        folio: Property folio number
+
+    Returns:
+        Dict with all property data or None
+    """
+    conn = get_connection()
+
+    try:
+        # Get auction data
+        auction_query = """
+            SELECT * FROM auctions WHERE folio = ?
+            ORDER BY auction_date DESC LIMIT 1
+        """
+        auction_result = conn.execute(auction_query, [folio]).fetchone()
+
+        if not auction_result:
+            # Try by case_number if folio not found
+            return None
+
+        auction_cols = [desc[0] for desc in conn.description]
+        auction = dict(zip(auction_cols, auction_result))
+
+        # Get bulk parcel data (join on strap, not folio)
+        parcel = None
+        try:
+            parcel_query = "SELECT * FROM bulk_parcels WHERE strap = ?"
+            parcel_result = conn.execute(parcel_query, [folio]).fetchone()
+            if parcel_result:
+                parcel_cols = [desc[0] for desc in conn.description]
+                parcel = dict(zip(parcel_cols, parcel_result))
+        except:
+            pass
+
+        # Get liens
+        liens = []
+        try:
+            liens_query = """
+                SELECT * FROM liens
+                WHERE case_number = ?
+                ORDER BY recording_date
+            """
+            liens_result = conn.execute(liens_query, [auction.get("case_number")]).fetchall()
+            if liens_result:
+                liens_cols = [desc[0] for desc in conn.description]
+                liens = [dict(zip(liens_cols, row)) for row in liens_result]
+        except:
+            pass
+
+        # Get encumbrances (from chain analysis)
+        encumbrances = []
+        try:
+            enc_query = """
+                SELECT * FROM encumbrances
+                WHERE folio = ?
+                ORDER BY recording_date
+            """
+            enc_result = conn.execute(enc_query, [folio]).fetchall()
+            if enc_result:
+                enc_cols = [desc[0] for desc in conn.description]
+                encumbrances = [dict(zip(enc_cols, row)) for row in enc_result]
+        except:
+            pass
+
+        # Get Chain of Title
+        chain = []
+        try:
+            chain_query = """
+                SELECT * FROM chain_of_title
+                WHERE folio = ?
+                ORDER BY acquisition_date DESC
+            """
+            chain_result = conn.execute(chain_query, [folio]).fetchall()
+            if chain_result:
+                chain_cols = [desc[0] for desc in conn.description]
+                chain = [dict(zip(chain_cols, row)) for row in chain_result]
+        except:
+            pass
+
+        # Calculate net equity
+        market_value = (parcel or {}).get("market_value") or auction.get("assessed_value") or 0
+        judgment = auction.get("final_judgment_amount") or 0
+        surviving = auction.get("est_surviving_debt") or 0
+        net_equity = market_value - judgment - surviving
+
+        return {
+            "folio": folio,
+            "auction": auction,
+            "parcel": parcel,
+            "liens": liens,
+            "encumbrances": encumbrances,
+            "chain": chain,
+            "net_equity": net_equity,
+            "market_value": market_value,
+            "sources": get_sources_for_property(folio)
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching property {folio}: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def get_property_by_case(case_number: str) -> Optional[Dict[str, Any]]:
+    """Get property by case number instead of folio."""
+    conn = get_connection()
+
+    try:
+        query = "SELECT folio FROM auctions WHERE case_number = ?"
+        result = conn.execute(query, [case_number]).fetchone()
+        if result and result[0]:
+            return get_property_detail(result[0])
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching by case {case_number}: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def get_sources_for_property(folio: str) -> List[Dict[str, Any]]:
+    """Get data sources for a property."""
+    conn = get_connection()
+    try:
+        # Check if table exists first
+        try:
+            conn.execute("SELECT 1 FROM property_sources LIMIT 1")
+        except:
+            return []
+            
+        query = """
+            SELECT * FROM property_sources
+            WHERE folio = ?
+            ORDER BY created_at DESC
+        """
+        results = conn.execute(query, [folio]).fetchall()
+        if results:
+            columns = [desc[0] for desc in conn.description]
+            return [dict(zip(columns, row)) for row in results]
+        return []
+    except Exception as e:
+        logger.warning(f"Error fetching sources: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def search_properties(
+    query: str,
+    limit: int = 20
+) -> List[Dict[str, Any]]:
+    """
+    Search properties by address, folio, or owner name.
+
+    Args:
+        query: Search term
+        limit: Max results
+
+    Returns:
+        List of matching properties
+    """
+    conn = get_connection()
+    search_term = f"%{query}%"
+
+    try:
+        # Search auctions (join on strap, not folio)
+        sql = """
+            SELECT
+                a.folio,
+                a.case_number,
+                a.property_address,
+                a.auction_date,
+                a.auction_type,
+                bp.owner_name
+            FROM auctions a
+            LEFT JOIN bulk_parcels bp ON a.folio = bp.strap
+            WHERE
+                a.property_address ILIKE ?
+                OR a.folio ILIKE ?
+                OR a.case_number ILIKE ?
+                OR bp.owner_name ILIKE ?
+            ORDER BY a.auction_date DESC
+            LIMIT ?
+        """
+        results = conn.execute(sql, [search_term, search_term, search_term, search_term, limit]).fetchall()
+        columns = [desc[0] for desc in conn.description]
+        return [dict(zip(columns, row)) for row in results]
+    except Exception as e:
+        logger.error(f"Error searching: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_auctions_by_date(auction_date: date) -> List[Dict[str, Any]]:
+    """Get all auctions for a specific date."""
+    conn = get_connection()
+
+    try:
+        # Join on strap, not folio
+        query = """
+            SELECT
+                a.*,
+                bp.owner_name,
+                bp.beds,
+                bp.baths,
+                bp.heated_area,
+                bp.year_built,
+                bp.market_value as hcpa_market_value
+            FROM auctions a
+            LEFT JOIN bulk_parcels bp ON a.folio = bp.strap
+            WHERE a.auction_date = ?
+            ORDER BY a.case_number
+        """
+        results = conn.execute(query, [auction_date]).fetchall()
+        columns = [desc[0] for desc in conn.description]
+        return [dict(zip(columns, row)) for row in results]
+    except Exception as e:
+        logger.error(f"Error fetching auctions for date {auction_date}: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_liens_for_property(case_number: str) -> List[Dict[str, Any]]:
+    """Get all liens for a property by case number."""
+    conn = get_connection()
+
+    try:
+        query = """
+            SELECT * FROM liens
+            WHERE case_number = ?
+            ORDER BY recording_date
+        """
+        results = conn.execute(query, [case_number]).fetchall()
+        columns = [desc[0] for desc in conn.description]
+        return [dict(zip(columns, row)) for row in results]
+    except Exception as e:
+        logger.error(f"Error fetching liens for {case_number}: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_documents_for_property(folio: str) -> List[Dict[str, Any]]:
+    """Get all documents for a property."""
+    conn = get_connection()
+
+    try:
+        # Check if documents table exists
+        query = """
+            SELECT * FROM documents
+            WHERE folio = ?
+            ORDER BY recording_date DESC
+        """
+        results = conn.execute(query, [folio]).fetchall()
+        columns = [desc[0] for desc in conn.description]
+        return [dict(zip(columns, row)) for row in results]
+    except Exception as e:
+        logger.warning(f"Documents table may not exist or error: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_sales_history(folio: str) -> List[Dict[str, Any]]:
+    """Get sales history for a property by folio or strap."""
+    conn = get_connection()
+
+    try:
+        # Try by strap first (matches auction folio format)
+        query = """
+            SELECT * FROM sales_history
+            WHERE strap = ?
+            ORDER BY sale_date DESC
+        """
+        results = conn.execute(query, [folio]).fetchall()
+
+        if not results:
+            # Try by numeric folio
+            query = """
+                SELECT * FROM sales_history
+                WHERE folio = ?
+                ORDER BY sale_date DESC
+            """
+            results = conn.execute(query, [folio]).fetchall()
+
+        if results:
+            columns = [desc[0] for desc in conn.description]
+            return [dict(zip(columns, row)) for row in results]
+        return []
+    except Exception as e:
+        logger.warning(f"Error fetching sales history: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_dashboard_stats() -> Dict[str, Any]:
+    """Get summary statistics for the dashboard."""
+    conn = get_connection()
+
+    today = date.today()
+
+    try:
+        stats = {}
+
+        # Total upcoming auctions
+        stats["total_auctions"] = conn.execute("""
+            SELECT COUNT(*) FROM auctions WHERE auction_date >= ?
+        """, [today]).fetchone()[0]
+
+        # Foreclosures vs Tax Deeds
+        stats["foreclosures"] = conn.execute("""
+            SELECT COUNT(*) FROM auctions
+            WHERE auction_date >= ? AND auction_type = 'FORECLOSURE'
+        """, [today]).fetchone()[0]
+
+        stats["tax_deeds"] = conn.execute("""
+            SELECT COUNT(*) FROM auctions
+            WHERE auction_date >= ? AND auction_type = 'TAX_DEED'
+        """, [today]).fetchone()[0]
+
+        # Auctions this week
+        week_end = today + timedelta(days=7)
+        stats["this_week"] = conn.execute("""
+            SELECT COUNT(*) FROM auctions
+            WHERE auction_date >= ? AND auction_date <= ?
+        """, [today, week_end]).fetchone()[0]
+
+        # Toxic titles flagged
+        try:
+            stats["toxic_flagged"] = conn.execute("""
+                SELECT COUNT(*) FROM auctions
+                WHERE auction_date >= ? AND is_toxic_title = TRUE
+            """, [today]).fetchone()[0]
+        except:
+            stats["toxic_flagged"] = 0
+
+        return stats
+
+    except Exception as e:
+        logger.error(f"Error getting stats: {e}")
+        return {
+            "total_auctions": 0,
+            "foreclosures": 0,
+            "tax_deeds": 0,
+            "this_week": 0,
+            "toxic_flagged": 0
+        }
+    finally:
+        conn.close()
+
+
+# -------------------------------------------------------------------------
+# Enrichment Data Functions
+# -------------------------------------------------------------------------
+
+def get_property_enrichments(folio: str) -> Dict[str, Any]:
+    """
+    Get all enrichment data for a property from scraper outputs.
+
+    Returns dict with:
+        - flood_zone: FEMA zone info
+        - permits: Open/closed permit counts
+        - liens: Surviving lien count and total
+        - sunbiz: Owner business entity status
+        - market: Zestimate/listing price if available
+    """
+    enrichments = {
+        "flood_zone": None,
+        "flood_risk": None,
+        "insurance_required": False,
+        "permits_total": 0,
+        "permits_open": 0,
+        "liens_surviving": 0,
+        "liens_total_amount": 0,
+        "sunbiz_entities": 0,
+        "sunbiz_active": 0,
+        "market_value": None,
+        "zestimate": None,
+        "has_enrichments": False
+    }
+
+    # Try to get from scraper_outputs database
+    try:
+        if SCRAPER_DB_PATH.exists():
+            conn = duckdb.connect(str(SCRAPER_DB_PATH), read_only=True)
+
+            # Get latest for each scraper type
+            for scraper in ["fema", "permits", "sunbiz", "realtor"]:
+                try:
+                    result = conn.execute("""
+                        SELECT extracted_summary FROM scraper_outputs
+                        WHERE property_id = ? AND scraper = ? AND extraction_success = TRUE
+                        ORDER BY scraped_at DESC LIMIT 1
+                    """, [folio, scraper]).fetchone()
+
+                    if result and result[0]:
+                        summary = json.loads(result[0]) if isinstance(result[0], str) else result[0]
+                        enrichments["has_enrichments"] = True
+
+                        if scraper == "fema":
+                            enrichments["flood_zone"] = summary.get("flood_zone")
+                            enrichments["flood_risk"] = summary.get("risk_level")
+                            enrichments["insurance_required"] = summary.get("insurance_required", False)
+                        elif scraper == "permits":
+                            enrichments["permits_total"] = summary.get("total", 0)
+                            enrichments["permits_open"] = summary.get("open", 0)
+                        elif scraper == "sunbiz":
+                            enrichments["sunbiz_entities"] = summary.get("found", 0)
+                            enrichments["sunbiz_active"] = summary.get("active", 0)
+                        elif scraper == "realtor":
+                            enrichments["market_value"] = summary.get("price")
+                            enrichments["zestimate"] = summary.get("zestimate")
+
+                except Exception as e:
+                    logger.debug(f"Error getting {scraper} enrichment for {folio}: {e}")
+
+            conn.close()
+    except Exception as e:
+        logger.debug(f"Scraper DB not available: {e}")
+
+    # Also get lien data from main DB
+    try:
+        conn = get_connection()
+        result = conn.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN survival_status = 'SURVIVED' THEN 1 ELSE 0 END) as surviving,
+                SUM(CASE WHEN survival_status = 'SURVIVED' THEN COALESCE(amount, 0) ELSE 0 END) as amount
+            FROM encumbrances
+            WHERE folio = ?
+        """, [folio]).fetchone()
+
+        if result:
+            enrichments["liens_surviving"] = result[1] or 0
+            enrichments["liens_total_amount"] = result[2] or 0
+            if result[0] and result[0] > 0:
+                enrichments["has_enrichments"] = True
+
+        conn.close()
+    except Exception as e:
+        logger.debug(f"Error getting liens for {folio}: {e}")
+
+    return enrichments
+
+
+def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    Get enrichments for multiple properties at once (for grid view).
+
+    Returns dict keyed by folio with enrichment data for each.
+    """
+    result = {}
+    for folio in folios:
+        result[folio] = get_property_enrichments(folio)
+    return result
+
+
+def get_upcoming_auctions_with_enrichments(
+    days_ahead: int = 60,
+    auction_type: Optional[str] = None,
+    sort_by: str = "auction_date",
+    sort_order: str = "asc",
+    limit: int = 24,
+    offset: int = 0
+) -> List[Dict[str, Any]]:
+    """
+    Get upcoming auctions with enrichment data attached.
+    Designed for card-grid view.
+    """
+    # Get base auctions
+    auctions = get_upcoming_auctions(
+        days_ahead=days_ahead,
+        auction_type=auction_type,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        limit=limit,
+        offset=offset
+    )
+
+    # Get enrichments for all folios
+    folios = [a.get("folio") for a in auctions if a.get("folio")]
+    enrichments = get_bulk_enrichments(folios)
+
+    # Attach enrichments to each auction
+    for auction in auctions:
+        folio = auction.get("folio")
+        if folio and folio in enrichments:
+            auction["enrichments"] = enrichments[folio]
+        else:
+            auction["enrichments"] = {
+                "has_enrichments": False,
+                "flood_zone": None,
+                "permits_open": 0,
+                "liens_surviving": 0
+            }
+
+    return auctions

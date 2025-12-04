@@ -1,0 +1,96 @@
+<div class="table-container">
+    <table class="auction-table">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Address</th>
+                <th>Case #</th>
+                <th>Type</th>
+                <th>Assessed</th>
+                <th>Judgment</th>
+                <th>Opening Bid</th>
+                <th>Surviving Debt</th>
+                <th>Net Equity</th>
+                <th>Flags</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for auction in auctions %}
+            <tr class="auction-row {% if auction.is_toxic_title %}toxic{% endif %}">
+                <td class="date-cell">
+                    {{ auction.auction_date.strftime('%m/%d/%Y') if auction.auction_date else 'N/A' }}
+                </td>
+                <td class="address-cell">
+                    <a href="/property/{{ auction.folio or auction.case_number }}">
+                        {{ auction.property_address or 'No Address' }}
+                    </a>
+                    {% if auction.owner_name %}
+                    <div class="owner-name">{{ auction.owner_name }}</div>
+                    {% endif %}
+                </td>
+                <td class="case-cell">
+                    <a href="https://hover.hillsclerk.com" target="_blank" title="View on HOVER">
+                        {{ auction.case_number[:20] }}...
+                    </a>
+                </td>
+                <td class="type-cell">
+                    <span class="badge badge-{{ auction.auction_type|lower }}">
+                        {{ 'FC' if auction.auction_type == 'FORECLOSURE' else 'TD' }}
+                    </span>
+                </td>
+                <td class="money-cell">
+                    {{ "${:,.0f}".format(auction.assessed_value) if auction.assessed_value else '-' }}
+                </td>
+                <td class="money-cell">
+                    {{ "${:,.0f}".format(auction.final_judgment_amount) if auction.final_judgment_amount else '-' }}
+                </td>
+                <td class="money-cell">
+                    {{ "${:,.0f}".format(auction.opening_bid) if auction.opening_bid else '-' }}
+                </td>
+                <td class="money-cell warning">
+                    {{ "${:,.0f}".format(auction.est_surviving_debt) if auction.est_surviving_debt else '-' }}
+                </td>
+                <td class="money-cell {% if auction.net_equity and auction.net_equity > 0 %}positive{% elif auction.net_equity and auction.net_equity < 0 %}negative{% endif %}">
+                    {{ "${:,.0f}".format(auction.net_equity) if auction.net_equity else '-' }}
+                </td>
+                <td class="flags-cell">
+                    {% if auction.is_toxic_title %}
+                    <span class="flag flag-danger" title="Toxic Title">TOXIC</span>
+                    {% endif %}
+                    {% if auction.est_surviving_debt and auction.est_surviving_debt > 0 %}
+                    <span class="flag flag-warning" title="Surviving Liens">LIENS</span>
+                    {% endif %}
+                    {% if not auction.final_judgment_amount %}
+                    <span class="flag flag-info" title="Missing Judgment">NO JDG</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="10" class="empty-row">No auctions found</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Pagination -->
+{% if pagination.total_pages > 1 %}
+<div class="pagination">
+    {% if pagination.page > 1 %}
+    <a href="?page={{ pagination.page - 1 }}&auction_type={{ filters.auction_type or '' }}&sort_by={{ filters.sort_by }}&sort_order={{ filters.sort_order }}"
+       hx-get="/auctions?page={{ pagination.page - 1 }}&auction_type={{ filters.auction_type or '' }}&sort_by={{ filters.sort_by }}&sort_order={{ filters.sort_order }}"
+       hx-target="#auction-table-container"
+       class="page-link">&laquo; Prev</a>
+    {% endif %}
+
+    <span class="page-info">Page {{ pagination.page }} of {{ pagination.total_pages }} ({{ pagination.total }} total)</span>
+
+    {% if pagination.page < pagination.total_pages %}
+    <a href="?page={{ pagination.page + 1 }}&auction_type={{ filters.auction_type or '' }}&sort_by={{ filters.sort_by }}&sort_order={{ filters.sort_order }}"
+       hx-get="/auctions?page={{ pagination.page + 1 }}&auction_type={{ filters.auction_type or '' }}&sort_by={{ filters.sort_by }}&sort_order={{ filters.sort_order }}"
+       hx-target="#auction-table-container"
+       class="page-link">Next &raquo;</a>
+    {% endif %}
+</div>
+{% endif %}

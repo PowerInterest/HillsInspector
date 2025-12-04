@@ -1,0 +1,154 @@
+<!-- Property Card - Auction.com Style with Enrichments -->
+<div class="property-card {% if auction.is_toxic_title %}toxic{% endif %}" data-folio="{{ auction.folio }}">
+    <!-- Photo / Placeholder -->
+    <div class="card-image">
+        {% if auction.photo_url %}
+        <img src="{{ auction.photo_url }}" alt="{{ auction.property_address }}" loading="lazy">
+        {% else %}
+        <div class="card-image-placeholder">
+            <span class="placeholder-icon">🏠</span>
+            <span class="placeholder-text">No Photo</span>
+        </div>
+        {% endif %}
+
+        <!-- Auction Type Badge -->
+        <div class="card-type-badge badge-{{ auction.auction_type|lower }}">
+            {{ 'Foreclosure' if auction.auction_type == 'FORECLOSURE' else 'Tax Deed' }}
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="card-actions">
+            <button class="action-btn" title="Save for later">
+                <span>☆</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Enrichment Badges Row -->
+    <div class="enrichment-badges">
+        <!-- Flood Zone -->
+        {% if auction.enrichments.flood_zone %}
+        <span class="badge-enrichment badge-flood-{{ 'high' if auction.enrichments.insurance_required else 'low' }}"
+              title="{{ auction.enrichments.flood_risk or 'Flood Zone' }}">
+            🌊 {{ auction.enrichments.flood_zone }}
+        </span>
+        {% endif %}
+
+        <!-- Open Permits -->
+        {% if auction.enrichments.permits_open > 0 %}
+        <span class="badge-enrichment badge-permits-open" title="{{ auction.enrichments.permits_open }} open permits">
+            🔨 {{ auction.enrichments.permits_open }} Open
+        </span>
+        {% elif auction.enrichments.permits_total > 0 %}
+        <span class="badge-enrichment badge-permits-clear" title="All {{ auction.enrichments.permits_total }} permits closed">
+            ✓ Permits
+        </span>
+        {% endif %}
+
+        <!-- Surviving Liens -->
+        {% if auction.enrichments.liens_surviving > 0 %}
+        <span class="badge-enrichment badge-liens" title="${:,.0f} in surviving liens".format(auction.enrichments.liens_total_amount)>
+            ⚠️ {{ auction.enrichments.liens_surviving }} Liens
+        </span>
+        {% elif auction.est_surviving_debt and auction.est_surviving_debt > 0 %}
+        <span class="badge-enrichment badge-liens" title="Estimated surviving debt">
+            ⚠️ Liens
+        </span>
+        {% endif %}
+
+        <!-- Toxic Title -->
+        {% if auction.is_toxic_title %}
+        <span class="badge-enrichment badge-toxic" title="Title issues detected">
+            ☠️ Toxic
+        </span>
+        {% endif %}
+
+        <!-- Clear Title (if analyzed and no issues) -->
+        {% if auction.enrichments.has_enrichments and not auction.is_toxic_title and auction.enrichments.liens_surviving == 0 %}
+        <span class="badge-enrichment badge-clear" title="No title issues found">
+            ✓ Clear
+        </span>
+        {% endif %}
+    </div>
+
+    <!-- Card Body -->
+    <div class="card-body">
+        <!-- Price -->
+        <div class="card-price">
+            {% if auction.opening_bid %}
+            <span class="price-amount">${{ "{:,.0f}".format(auction.opening_bid) }}</span>
+            <span class="price-label">Opening Bid</span>
+            {% elif auction.final_judgment_amount %}
+            <span class="price-amount">${{ "{:,.0f}".format(auction.final_judgment_amount) }}</span>
+            <span class="price-label">Judgment</span>
+            {% else %}
+            <span class="price-amount">TBD</span>
+            <span class="price-label">Opening Bid</span>
+            {% endif %}
+        </div>
+
+        <!-- Address -->
+        <div class="card-address">
+            <a href="/property/{{ auction.folio or auction.case_number }}">
+                {{ auction.property_address or 'Address Not Available' }}
+            </a>
+        </div>
+
+        <!-- Property Details -->
+        <div class="card-details">
+            {% if auction.beds %}
+            <span class="detail-item">{{ auction.beds|int }} bd</span>
+            <span class="detail-sep">|</span>
+            {% endif %}
+            {% if auction.baths %}
+            <span class="detail-item">{{ auction.baths }} ba</span>
+            <span class="detail-sep">|</span>
+            {% endif %}
+            {% if auction.heated_area %}
+            <span class="detail-item">{{ "{:,.0f}".format(auction.heated_area) }} sqft</span>
+            {% endif %}
+            {% if auction.year_built %}
+            <span class="detail-sep">|</span>
+            <span class="detail-item">{{ auction.year_built|int }}</span>
+            {% endif %}
+        </div>
+
+        <!-- Divider -->
+        <div class="card-divider"></div>
+
+        <!-- Financial Summary -->
+        <div class="card-financials">
+            <div class="financial-row">
+                <span class="financial-label">Assessed:</span>
+                <span class="financial-value">{{ "${:,.0f}".format(auction.assessed_value) if auction.assessed_value else '-' }}</span>
+            </div>
+            <div class="financial-row">
+                <span class="financial-label">Judgment:</span>
+                <span class="financial-value">{{ "${:,.0f}".format(auction.final_judgment_amount) if auction.final_judgment_amount else '-' }}</span>
+            </div>
+            <div class="financial-row equity-row">
+                <span class="financial-label">Est. Equity:</span>
+                <span class="financial-value {% if auction.net_equity and auction.net_equity > 0 %}positive{% elif auction.net_equity and auction.net_equity < 0 %}negative{% endif %}">
+                    {% if auction.net_equity %}
+                    {{ "${:+,.0f}".format(auction.net_equity) }}
+                    {% else %}
+                    -
+                    {% endif %}
+                </span>
+            </div>
+        </div>
+
+        <!-- Auction Date -->
+        <div class="card-auction-date">
+            <span class="auction-date-icon">📅</span>
+            <span class="auction-date-text">
+                {{ auction.auction_date.strftime('%b %d, %Y') if auction.auction_date else 'Date TBD' }}
+            </span>
+        </div>
+
+        <!-- View Details Button -->
+        <a href="/property/{{ auction.folio or auction.case_number }}" class="card-button">
+            View Details
+        </a>
+    </div>
+</div>

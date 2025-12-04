@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}HillsInspector{% endblock %}</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-XQoYMqMTK8LvdlDXvXO0A6P82j3DgkJCX1pPa09u+3s=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-vsA+4Jknhk+L9A6fWQBa+gGbcU9IiVbGiWFVY3FQF3s=" crossorigin=""></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <a href="/" class="logo">HillsInspector</a>
+            <nav class="nav">
+                <a href="/" class="nav-link">Dashboard</a>
+                <a href="/auctions" class="nav-link">Auctions</a>
+            </nav>
+            <div class="search-box">
+                <input type="text"
+                       name="q"
+                       placeholder="Search address, folio, or owner..."
+                       hx-get="/api/search"
+                       hx-trigger="keyup changed delay:500ms"
+                       hx-target="#search-results"
+                       hx-indicator="#search-spinner"
+                       autocomplete="off">
+                <span id="search-spinner" class="htmx-indicator">...</span>
+                <div id="search-results" class="search-results"></div>
+            </div>
+        </div>
+    </header>
+
+    <main class="main-content">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <p>HillsInspector - Hillsborough County Property Auction Analysis</p>
+    </footer>
+</body>
+</html>

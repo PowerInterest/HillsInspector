@@ -1,0 +1,281 @@
+{% extends "base.html" %}
+
+{% block title %}{{ auction.property_address or 'Property' }} - HillsInspector{% endblock %}
+
+{% block content %}
+<div class="property-detail">
+    <!-- Breadcrumb -->
+    <nav class="breadcrumb">
+        <a href="/">Dashboard</a> &raquo;
+        <span>{{ auction.property_address or auction.folio }}</span>
+    </nav>
+
+    <!-- Header -->
+    <div class="property-header">
+        <div class="property-title">
+            <h1>{{ auction.property_address or 'Address Unknown' }}</h1>
+            <div class="property-meta">
+                <span class="folio">Folio: {{ property.folio }}</span>
+                <span class="badge badge-{{ auction.auction_type|lower }}">
+                    {{ auction.auction_type or 'UNKNOWN' }}
+                </span>
+                {% if auction.is_toxic_title %}
+                <span class="flag flag-danger">TOXIC TITLE</span>
+                {% endif %}
+            </div>
+        </div>
+        {% if auction.auction_date %}
+        <div class="auction-date-box">
+            <div class="auction-date-label">Auction Date</div>
+            <div class="auction-date-value">{{ auction.auction_date.strftime('%B %d, %Y') }}</div>
+        </div>
+        {% endif %}
+        <div class="property-actions" style="margin-left: 20px;">
+            <a href="/property/{{ property.folio }}/title-report" target="_blank" class="btn btn-primary" style="background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+                Generate Title Report
+            </a>
+        </div>
+    </div>
+
+    <div class="property-grid">
+        <!-- Left Column: Property Info -->
+        <div class="property-column">
+            <!-- Property Overview -->
+            <section class="card">
+                <h2>Property Overview</h2>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <span class="info-label">Owner</span>
+                        <span class="info-value">{{ parcel.owner_name or auction.owner_name or 'Unknown' }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Beds</span>
+                        <span class="info-value">{{ parcel.beds|int if parcel.beds else '-' }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Baths</span>
+                        <span class="info-value">{{ parcel.baths if parcel.baths else '-' }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Sq Ft</span>
+                        <span class="info-value">{{ "{:,.0f}".format(parcel.heated_area) if parcel.heated_area else '-' }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Year Built</span>
+                        <span class="info-value">{{ parcel.year_built|int if parcel.year_built else '-' }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Land Use</span>
+                        <span class="info-value">{{ parcel.land_use_desc or parcel.land_use or '-' }}</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Valuation -->
+            <section class="card">
+                <h2>Valuation</h2>
+                <div class="valuation-grid">
+                    <div class="valuation-item">
+                        <span class="valuation-label">HCPA Assessed</span>
+                        <span class="valuation-value">{{ "${:,.0f}".format(parcel.assessed_value) if parcel and parcel.assessed_value else '-' }}</span>
+                    </div>
+                    <div class="valuation-item">
+                        <span class="valuation-label">HCPA Market</span>
+                        <span class="valuation-value">{{ "${:,.0f}".format(parcel.market_value) if parcel and parcel.market_value else '-' }}</span>
+                    </div>
+                    <div class="valuation-item">
+                        <span class="valuation-label">Auction Assessed</span>
+                        <span class="valuation-value">{{ "${:,.0f}".format(auction.assessed_value) if auction.assessed_value else '-' }}</span>
+                    </div>
+                    {% if parcel and parcel.last_sale_price %}
+                    <div class="valuation-item">
+                        <span class="valuation-label">Last Sale</span>
+                        <span class="valuation-value">{{ "${:,.0f}".format(parcel.last_sale_price) }} ({{ parcel.last_sale_date }})</span>
+                    </div>
+                    {% endif %}
+                </div>
+            </section>
+
+            <!-- Auction Info -->
+            <section class="card">
+                <h2>Auction Information</h2>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <span class="info-label">Case Number</span>
+                        <span class="info-value">
+                            <a href="https://hover.hillsclerk.com" target="_blank">{{ auction.case_number }}</a>
+                        </span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Auction Type</span>
+                        <span class="info-value">{{ auction.auction_type }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Final Judgment</span>
+                        <span class="info-value money">{{ "${:,.2f}".format(auction.final_judgment_amount) if auction.final_judgment_amount else 'Not Available' }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Opening Bid</span>
+                        <span class="info-value money">{{ "${:,.2f}".format(auction.opening_bid) if auction.opening_bid else 'Not Published Yet' }}</span>
+                    </div>
+                    {% if auction.plaintiff_max_bid %}
+                    <div class="info-item">
+                        <span class="info-label">Plaintiff Max Bid</span>
+                        <span class="info-value money">{{ auction.plaintiff_max_bid }}</span>
+                    </div>
+                    {% endif %}
+                    <div class="info-item">
+                        <span class="info-label">Status</span>
+                        <span class="info-value">{{ auction.status or 'PENDING' }}</span>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- Right Column: Analysis -->
+        <div class="property-column">
+            <!-- Net Equity Calculator -->
+            <section class="card equity-card">
+                <h2>Net Equity Analysis</h2>
+                <div class="equity-breakdown">
+                    <div class="equity-line">
+                        <span>Market Value (Est.)</span>
+                        <span class="money positive">{{ "${:,.0f}".format(market_value) }}</span>
+                    </div>
+                    <div class="equity-line subtract">
+                        <span>Final Judgment</span>
+                        <span class="money">- {{ "${:,.0f}".format(auction.final_judgment_amount) if auction.final_judgment_amount else '$0' }}</span>
+                    </div>
+                    <div class="equity-line subtract">
+                        <span>Est. Surviving Liens</span>
+                        <span class="money">- {{ "${:,.0f}".format(auction.est_surviving_debt) if auction.est_surviving_debt else '$0' }}</span>
+                    </div>
+                    <div class="equity-line total">
+                        <span>NET EQUITY</span>
+                        <span class="money {% if net_equity > 0 %}positive{% elif net_equity < 0 %}negative{% endif %}">
+                            {{ "${:,.0f}".format(net_equity) }}
+                        </span>
+                    </div>
+                </div>
+                {% if net_equity < 0 %}
+                <div class="equity-warning">
+                    Warning: Negative equity - potential loss
+                </div>
+                {% endif %}
+            </section>
+
+            <!-- Liens Table (HTMX loaded) -->
+            <section class="card">
+                <h2>Liens & Encumbrances</h2>
+                <div hx-get="/property/{{ property.folio }}/liens"
+                     hx-trigger="load"
+                     hx-swap="innerHTML"
+                     class="htmx-loading">
+                    Loading liens...
+                </div>
+            </section>
+
+            <!-- Documents (HTMX loaded) -->
+            <section class="card">
+                <h2>Documents</h2>
+                <div hx-get="/property/{{ property.folio }}/documents"
+                     hx-trigger="load"
+                     hx-swap="innerHTML"
+                     class="htmx-loading">
+                    Loading documents...
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <!-- Chain of Title -->
+    <section class="card" id="chain-title-section" style="margin-bottom: 1.5rem;">
+        <h2>Chain of Title (Ownership History)</h2>
+        {% if property.chain %}
+        <div class="table-container">
+            <table class="auction-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Grantor (Seller)</th>
+                        <th>Grantee (Buyer)</th>
+                        <th>Document</th>
+                        <th>Price</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for transfer in property.chain %}
+                    <tr class="auction-row">
+                        <td>{{ transfer.acquisition_date }}</td>
+                        <td>{{ transfer.acquired_from or '-' }}</td>
+                        <td>{{ transfer.owner_name }}</td>
+                        <td>{{ transfer.acquisition_doc_type }}</td>
+                        <td class="money-cell">{{ "${:,.0f}".format(transfer.acquisition_price) if transfer.acquisition_price else '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="no-data">
+            <p>Chain of title analysis not available.</p>
+        </div>
+        {% endif %}
+    </section>
+
+    <!-- Sales History (Full Width) -->
+    <section class="card" id="sales-history-section">
+        <h2>Sales History</h2>
+        <div hx-get="/property/{{ property.folio }}/sales"
+             hx-trigger="load"
+             hx-swap="innerHTML"
+             class="htmx-loading">
+            Loading sales history...
+        </div>
+    </section>
+
+    <!-- OCR Content (if available) -->
+    {% if auction.final_judgment_content %}
+    <section class="card ocr-section">
+        <h2>Final Judgment OCR Text</h2>
+        <details>
+            <summary>Show extracted text</summary>
+            <pre class="ocr-text">{{ auction.final_judgment_content }}</pre>
+        </details>
+    </section>
+    {% endif %}
+    
+    <!-- Data Sources -->
+    {% if property.sources %}
+    <section class="card sources-section">
+        <h2>Data Sources</h2>
+        <div class="table-container">
+            <table class="auction-table">
+                <thead>
+                    <tr>
+                        <th>Source</th>
+                        <th>URL</th>
+                        <th>Description</th>
+                        <th>Captured At</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for source in property.sources %}
+                    <tr class="auction-row">
+                        <td>{{ source.source_name }}</td>
+                        <td>
+                            <a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">
+                                {{ source.url[:60] }}{% if source.url|length > 60 %}...{% endif %}
+                            </a>
+                        </td>
+                        <td>{{ source.description }}</td>
+                        <td>{{ source.created_at }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {% endif %}
+</div>
+{% endblock %}

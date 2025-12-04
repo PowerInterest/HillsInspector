@@ -1,0 +1,39 @@
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const map = L.map('auction-map', { zoomControl: true }).setView([27.95, -82.46], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    fetch('/api/map-auctions')
+      .then((res) => res.json())
+      .then((data) => {
+        const markers = L.layerGroup().addTo(map);
+        data.features.forEach((feature) => {
+          const { lat, lon, address, case_number, auction_date, final_judgment_amount, url } = feature;
+          if (lat == null || lon == null) {
+            return;
+          }
+          const marker = L.marker([lat, lon]);
+          const popup = `
+            <div class="map-popup">
+              <div class="popup-address"><a href="${url}">${address || 'Unknown'}</a></div>
+              <div class="popup-case">Case: ${case_number || 'N/A'}</div>
+              <div class="popup-date">Auction: ${auction_date || 'N/A'}</div>
+              <div class="popup-judgment">Judgment: ${final_judgment_amount ? '$' + Number(final_judgment_amount).toLocaleString() : 'N/A'}</div>
+            </div>
+          `;
+          marker.bindPopup(popup);
+          marker.on('click', () => {
+            window.location.href = url;
+          });
+          marker.addTo(markers);
+        });
+        const bounds = markers.getBounds();
+        if (bounds.isValid()) {
+          map.fitBounds(bounds.pad(0.15));
+        }
+      })
+      .catch((err) => console.error('Map load error:', err));
+  });
+</script>
