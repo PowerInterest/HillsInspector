@@ -4,17 +4,18 @@ Full end-to-end pipeline for property analysis.
 Steps:
 1. Scrape auctions (foreclosure + tax deed) - calendar-based skip logic
 1.5. Scrape tax deed auctions
-2. Extract Final Judgment data from PDFs
-3. HCPA GIS - Sales history & property details
-4. Ingest ORI data & build chain of title
-5. Analyze lien survival
-6. Sunbiz - Business entity lookup (if LLC/Corp)
-7. Scrape building permits
-8. FEMA flood zone lookup
-9. Market data - Zillow (always refresh)
-10. Market data - Realtor.com
-11. Property enrichment - HCPA
-12. Tax payment status
+2. Extract Final Judgment data from PDFs (includes legal description)
+3. Property Enrichment from BULK DATA (owner, legal description from 4 fields)
+4. HCPA GIS - Sales history & additional property details
+5. Ingest ORI data & build chain of title (uses legal description permutations)
+6. Analyze lien survival
+7. Sunbiz - Business entity lookup (if LLC/Corp)
+8. Scrape building permits
+9. FEMA flood zone lookup
+10. Market data - Zillow (always refresh)
+11. Market data - Realtor.com
+12. Property enrichment - HCPA (fallback for missing data)
+13. Tax payment status
 """
 
 import asyncio
@@ -44,6 +45,8 @@ from src.services.final_judgment_processor import FinalJudgmentProcessor
 from src.services.lien_survival_analyzer import LienSurvivalAnalyzer
 from src.services.ingestion_service import IngestionService
 from src.services.scraper_storage import ScraperStorage
+from src.ingest.bulk_parcel_ingest import enrich_auctions_from_bulk
+from src.utils.legal_description import build_ori_search_terms
 from src.db.operations import PropertyDB
 from src.models.property import Lien, Property
 
@@ -236,6 +239,8 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
     today = datetime.now(UTC).date()
     start_date = today
     end_date = start_date + timedelta(days=60)
+    if property_limit:
+        end_date = start_date  # constrain debug runs to the nearest auction day
 
     # =========================================================================
     # STEP 1: Scrape Foreclosure Auctions (Calendar-based skip logic)
@@ -249,9 +254,7 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
     try:
         logger.info(f"Scraping foreclosures from {start_date} to {end_date}...")
         # The scraper handles calendar logic internally via scrape_all
-        properties = await foreclosure_scraper.scrape_all(start_date, end_date)
-        if property_limit:
-            properties = properties[:property_limit]
+        properties = await foreclosure_scraper.scrape_all(start_date, end_date, max_properties=property_limit)
         logger.success(f"Scraped {len(properties)} foreclosure auctions")
 
         # Save to DB
@@ -269,22 +272,23 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
     logger.info("STEP 1.5: SCRAPING TAX DEED AUCTIONS")
     logger.info("=" * 60)
 
-    tax_deed_scraper = TaxDeedScraper()
+    tax_properties: list[Property] = []
+    if property_limit and len(properties) >= property_limit:
+        logger.info("Property limit reached; skipping tax deed scrape")
+    else:
+        tax_deed_scraper = TaxDeedScraper()
 
-    try:
-        logger.info(f"Scraping tax deeds from {start_date} to {end_date}...")
-        tax_properties = await tax_deed_scraper.scrape_all(start_date, end_date)
-        if property_limit:
-            remaining = max(property_limit - len(properties), 0)
-            tax_properties = tax_properties[:remaining]
-        logger.success(f"Scraped {len(tax_properties)} tax deed auctions")
+        try:
+            logger.info(f"Scraping tax deeds from {start_date} to {end_date}...")
+            tax_properties = await tax_deed_scraper.scrape_all(start_date, end_date)
+            logger.success(f"Scraped {len(tax_properties)} tax deed auctions")
 
-        # Save to DB
-        for p in tax_properties:
-            db.upsert_auction(p)
-        logger.success(f"Saved {len(tax_properties)} tax deed auctions to DB")
-    except Exception as e:
-        logger.error(f"Tax deed scrape failed: {e}")
+            # Save to DB
+            for p in tax_properties:
+                db.upsert_auction(p)
+            logger.success(f"Saved {len(tax_properties)} tax deed auctions to DB")
+        except Exception as e:
+            logger.error(f"Tax deed scrape failed: {e}")
 
     # =========================================================================
     # STEP 2: Extract Final Judgment Data
@@ -349,11 +353,53 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
     logger.success(f"Extracted data from {extracted_count} Final Judgments")
 
     # =========================================================================
-    # STEP 3: HCPA GIS - Sales History & Property Details
+    # STEP 3: BULK DATA ENRICHMENT
+    # Enrich parcels table from bulk_parcels (owner, legal description, etc.)
+    # This MUST run before ORI ingestion which needs legal descriptions
+    # =========================================================================
+    logger.info("\n" + "=" * 60)
+    logger.info("STEP 3: BULK DATA ENRICHMENT")
+    logger.info("=" * 60)
+
+    try:
+        enrichment_stats = enrich_auctions_from_bulk()
+        logger.success(f"Bulk enrichment: {enrichment_stats}")
+    except Exception as e:
+        logger.error(f"Bulk enrichment failed: {e}")
+
+    # Also update legal descriptions from Final Judgment extractions
+    # (more authoritative than bulk data for specific properties)
+    try:
+        auctions_with_judgment = db.execute_query(
+            """SELECT parcel_id, extracted_judgment_data FROM auctions
+               WHERE parcel_id IS NOT NULL AND extracted_judgment_data IS NOT NULL"""
+        )
+        for row in auctions_with_judgment:
+            folio = row["parcel_id"]
+            try:
+                judgment_data = json.loads(row["extracted_judgment_data"])
+                legal_desc = judgment_data.get("legal_description")
+                if legal_desc:
+                    conn = db.connect()
+                    # Only update if better than what we have (judgment > bulk)
+                    conn.execute("""
+                        UPDATE parcels SET
+                            judgment_legal_description = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE folio = ?
+                    """, [legal_desc, folio])
+                    logger.debug(f"Updated judgment legal for {folio}")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Could not update judgment legal descriptions: {e}")
+
+    # =========================================================================
+    # STEP 4: HCPA GIS - Sales History & Property Details
     # Skip if: folio already has sales_history records
     # =========================================================================
     logger.info("\n" + "=" * 60)
-    logger.info("STEP 3: HCPA GIS - SALES HISTORY")
+    logger.info("STEP 4: HCPA GIS - SALES HISTORY")
     logger.info("=" * 60)
 
     try:
@@ -365,7 +411,21 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
         pending = []
 
     gis_count = 0
+    gis_errors = 0
+    max_consecutive_errors = 5  # Skip GIS if website appears down
+    gis_limit = 10  # Limit GIS lookups per run to avoid timeouts
+
     for row in pending:
+        # Stop if we hit the GIS limit
+        if gis_count >= gis_limit:
+            logger.info(f"Reached GIS limit ({gis_limit}), moving on...")
+            break
+
+        # Skip GIS entirely if website appears down
+        if gis_errors >= max_consecutive_errors:
+            logger.warning(f"HCPA GIS website appears down ({gis_errors} consecutive failures), skipping remaining GIS lookups")
+            break
+
         folio = row["parcel_id"]
         if not folio:
             continue
@@ -377,24 +437,42 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
 
         logger.info(f"Fetching HCPA GIS for {folio}...")
         try:
-            # scrape_hcpa_property is a sync function
-            result = scrape_hcpa_property(folio=folio)
+            # scrape_hcpa_property is an async function
+            result = await scrape_hcpa_property(folio=folio)
             if result and result.get("sales_history"):
                 db.save_sales_history(
                     folio, result.get("strap", ""), result["sales_history"]
                 )
                 gis_count += 1
+                gis_errors = 0  # Reset error count on success
+
+            # Save legal description for ORI search in Step 4
+            if result and result.get("legal_description"):
+                conn = db.connect()
+                conn.execute("""
+                    ALTER TABLE parcels ADD COLUMN IF NOT EXISTS legal_description VARCHAR
+                """)
+                conn.execute("""
+                    INSERT OR IGNORE INTO parcels (folio) VALUES (?)
+                """, [folio])
+                conn.execute("""
+                    UPDATE parcels SET legal_description = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE folio = ?
+                """, [result["legal_description"], folio])
+                logger.info(f"Saved legal description for {folio}")
         except Exception as e:
             logger.error(f"GIS scrape failed for {folio}: {e}")
+            gis_errors += 1
 
     logger.success(f"Scraped GIS data for {gis_count} properties")
 
     # =========================================================================
-    # STEP 4: Ingest ORI Data & Build Chain of Title
+    # STEP 5: Ingest ORI Data & Build Chain of Title
     # Skip if: folio has chain data AND last_analyzed_case_number = current case
+    # Uses legal description permutations for robust ORI search
     # =========================================================================
     logger.info("\n" + "=" * 60)
-    logger.info("STEP 4: ORI INGESTION & CHAIN OF TITLE")
+    logger.info("STEP 5: ORI INGESTION & CHAIN OF TITLE")
     logger.info("=" * 60)
 
     ingestion_service = IngestionService()
@@ -421,14 +499,57 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
             logger.debug(f"Skipping ORI for {folio} - already analyzed for {case_number}")
             continue
 
+        # Get legal descriptions from multiple sources for permutation search
+        legal_desc = None
+        judgment_legal = None
+        raw_legal1 = None
+        raw_legal2 = None
+        raw_legal3 = None
+        raw_legal4 = None
+
+        try:
+            parcel_data = db.connect().execute(
+                """SELECT legal_description, judgment_legal_description,
+                          raw_legal1, raw_legal2, raw_legal3, raw_legal4
+                   FROM parcels WHERE folio = ?""", [folio]
+            ).fetchone()
+            if parcel_data:
+                legal_desc = parcel_data[0]
+                judgment_legal = parcel_data[1]
+                raw_legal1 = parcel_data[2]
+                raw_legal2 = parcel_data[3]
+                raw_legal3 = parcel_data[4]
+                raw_legal4 = parcel_data[5]
+        except Exception:
+            pass
+
+        # Build search terms using permutation logic
+        search_terms = build_ori_search_terms(
+            folio=folio,
+            legal1=raw_legal1,
+            legal2=raw_legal2,
+            legal3=raw_legal3,
+            legal4=raw_legal4,
+            judgment_legal=judgment_legal or legal_desc,
+        )
+
+        if not search_terms:
+            logger.warning(f"No legal description available for {folio}, skipping ORI")
+            continue
+
         logger.info(f"Ingesting ORI for {folio} (case {case_number})...")
+        logger.debug(f"  Search terms: {search_terms[:3]}...")
+
         try:
             prop = Property(
                 case_number=case_number,
                 parcel_id=folio,
                 address=row.get("property_address"),
                 auction_date=row.get("auction_date"),
+                legal_description=judgment_legal or legal_desc,
             )
+            # Pass search terms to ingestion service for permutation search
+            prop.legal_search_terms = search_terms
             ingestion_service.ingest_property(prop)
             ingested_count += 1
         except Exception as e:
@@ -437,11 +558,11 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
     logger.success(f"Ingested ORI data for {ingested_count} properties")
 
     # =========================================================================
-    # STEP 5: Analyze Lien Survival
+    # STEP 6: Analyze Lien Survival
     # Skip if: folio has survival_status AND last_analyzed_case_number = current case
     # =========================================================================
     logger.info("\n" + "=" * 60)
-    logger.info("STEP 5: LIEN SURVIVAL ANALYSIS")
+    logger.info("STEP 6: LIEN SURVIVAL ANALYSIS")
     logger.info("=" * 60)
 
     survival_analyzer = LienSurvivalAnalyzer()
@@ -551,11 +672,11 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
     logger.success(f"Analyzed {analyzed_count} properties")
 
     # =========================================================================
-    # STEP 6: Sunbiz - Business Entity Lookup
+    # STEP 7: Sunbiz - Business Entity Lookup
     # Only if: party name is LLC/Corp/Trust
     # =========================================================================
     logger.info("\n" + "=" * 60)
-    logger.info("STEP 6: SUNBIZ ENTITY LOOKUP")
+    logger.info("STEP 7: SUNBIZ ENTITY LOOKUP")
     logger.info("=" * 60)
 
     sunbiz_scraper = SunbizScraper(headless=True)
@@ -600,11 +721,11 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
     logger.success(f"Sunbiz lookups for {sunbiz_count} properties")
 
     # =========================================================================
-    # STEP 7: Scrape Building Permits
+    # STEP 8: Scrape Building Permits
     # Skip if: folio has permit data
     # =========================================================================
     logger.info("\n" + "=" * 60)
-    logger.info("STEP 7: BUILDING PERMITS")
+    logger.info("STEP 8: BUILDING PERMITS")
     logger.info("=" * 60)
 
     permit_scraper = PermitScraper()
@@ -661,12 +782,12 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
     logger.success(f"Scraped permits for {permit_count} properties")
 
     # =========================================================================
-    # STEP 8: FEMA Flood Zone Lookup
+    # STEP 9: FEMA Flood Zone Lookup
     # Skip if: folio has flood data
     # Requires: lat/lon coordinates
     # =========================================================================
     logger.info("\n" + "=" * 60)
-    logger.info("STEP 8: FEMA FLOOD ZONE")
+    logger.info("STEP 9: FEMA FLOOD ZONE")
     logger.info("=" * 60)
 
     flood_checker = FEMAFloodChecker()
@@ -707,10 +828,10 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
     logger.success(f"Flood zone lookups for {flood_count} properties")
 
     # =========================================================================
-    # STEP 9: Market Data - Zillow (ALWAYS REFRESH)
+    # STEP 10: Market Data - Zillow (ALWAYS REFRESH)
     # =========================================================================
     logger.info("\n" + "=" * 60)
-    logger.info("STEP 9: MARKET DATA - ZILLOW")
+    logger.info("STEP 10: MARKET DATA - ZILLOW")
     logger.info("=" * 60)
 
     market_scraper = MarketScraper(headless=False)
@@ -770,11 +891,11 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
     logger.success(f"Zillow data for {market_count} properties")
 
     # =========================================================================
-    # STEP 10: Market Data - Realtor.com
+    # STEP 11: Market Data - Realtor.com
     # Skip if: folio has realtor data (7-day cache)
     # =========================================================================
     logger.info("\n" + "=" * 60)
-    logger.info("STEP 10: MARKET DATA - REALTOR.COM")
+    logger.info("STEP 11: MARKET DATA - REALTOR.COM")
     logger.info("=" * 60)
 
     realtor_scraper = RealtorScraper(headless=False)
@@ -829,11 +950,11 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
     logger.success(f"Realtor data for {realtor_count} properties")
 
     # =========================================================================
-    # STEP 11: Property Enrichment - HCPA
-    # Skip if: folio has owner_name
+    # STEP 12: Property Enrichment - HCPA (Fallback for missing data)
+    # Skip if: folio has owner_name (bulk enrichment already ran in Step 3)
     # =========================================================================
     logger.info("\n" + "=" * 60)
-    logger.info("STEP 11: PROPERTY ENRICHMENT (HCPA)")
+    logger.info("STEP 12: PROPERTY ENRICHMENT (HCPA FALLBACK)")
     logger.info("=" * 60)
 
     hcpa_scraper = HCPAScraper()
@@ -873,11 +994,11 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
     logger.success(f"Enriched {enriched_count} properties")
 
     # =========================================================================
-    # STEP 12: Tax Payment Status
+    # STEP 13: Tax Payment Status
     # Skip if: folio has tax data
     # =========================================================================
     logger.info("\n" + "=" * 60)
-    logger.info("STEP 12: TAX PAYMENT STATUS")
+    logger.info("STEP 13: TAX PAYMENT STATUS")
     logger.info("=" * 60)
 
     tax_scraper = TaxScraper()

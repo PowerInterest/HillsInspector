@@ -19,10 +19,11 @@ Usage:
 import json
 import re
 import argparse
+import asyncio
 from pathlib import Path
 from urllib.parse import quote
 import requests
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright
 from loguru import logger
 
 from src.services.scraper_storage import ScraperStorage
@@ -52,9 +53,9 @@ def convert_bulk_parcel_to_url_format(bulk_parcel: str) -> str:
     return bulk_parcel
 
 
-def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: ScraperStorage = None) -> dict:
+async def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: ScraperStorage = None) -> dict:
     """
-    Scrape property data from HCPA GIS portal.
+    Scrape property data from HCPA GIS portal (async version).
 
     Args:
         parcel_id: The parcel ID in URL format (e.g., 1829134XZ000012000090A)
@@ -80,48 +81,52 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
         "permits": [],
     }
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
+    playwright = await async_playwright().start()
+    try:
+        browser = await playwright.chromium.launch(headless=True)
+        context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         )
-        page = context.new_page()
+        page = await context.new_page()
 
         if parcel_id:
             url = f"https://gis.hcpafl.org/propertysearch/#/parcel/basic/{parcel_id}"
         elif folio:
             # Go to search page and search by folio
             url = "https://gis.hcpafl.org/propertysearch/#/search/basic"
-            page.goto(url)
-            page.wait_for_load_state("networkidle")
+            await page.goto(url)
+            await page.wait_for_load_state("domcontentloaded")
+            await asyncio.sleep(2)
 
             # Find and fill folio search
             folio_input = page.locator('input[placeholder*="Folio"]').first
             if folio_input:
-                folio_input.fill(folio)
-                page.keyboard.press("Enter")
-                page.wait_for_load_state("networkidle")
-                page.wait_for_timeout(2000)
+                await folio_input.fill(folio)
+                await page.keyboard.press("Enter")
+                await page.wait_for_load_state("domcontentloaded")
+                await asyncio.sleep(2)
 
             # Get current URL which should have parcel ID
             url = page.url
             result["navigated_url"] = url
         else:
+            await browser.close()
+            await playwright.stop()
             raise ValueError("Must provide either parcel_id or folio")
 
         logger.info(f"Navigating to: {url}")
-        page.goto(url)
-        page.wait_for_load_state("networkidle")
+        await page.goto(url)
+        await page.wait_for_load_state("domcontentloaded")
 
         # Wait for page to fully load - needs more time for all sections
-        page.wait_for_timeout(5000)
+        await asyncio.sleep(5)
 
         # Take screenshot
-        screenshot_bytes = page.screenshot(full_page=True)
-        
+        screenshot_bytes = await page.screenshot(full_page=True)
+
         # Use folio if available, else parcel_id as property_id
         prop_id = folio if folio else parcel_id
-        
+
         screenshot_path = storage.save_screenshot(
             property_id=prop_id,
             scraper="hcpa_gis",
@@ -135,7 +140,7 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
             owner_elem = page.locator("text=Mailing Address").first
             if owner_elem:
                 # The owner is above Mailing Address
-                card_text = page.locator(".parcel-result, #parcel-result").first.inner_text()
+                card_text = await page.locator(".parcel-result, #parcel-result").first.inner_text()
                 result["property_info"]["card_text"] = card_text[:2000]
 
             # Get specific fields using the page structure
@@ -143,7 +148,7 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
             folio_elem = page.locator("text=Folio:").first
             if folio_elem:
                 parent = folio_elem.locator("xpath=..").first
-                folio_text = parent.inner_text()
+                folio_text = await parent.inner_text()
                 match = re.search(r'Folio:\s*([\d-]+)', folio_text)
                 if match:
                     result["folio"] = match.group(1)
@@ -153,7 +158,7 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
             if addr_elem:
                 parent = addr_elem.locator("xpath=..").first
                 if parent:
-                    addr_text = parent.inner_text()
+                    addr_text = await parent.inner_text()
                     lines = addr_text.strip().split('\n')
                     if len(lines) > 1:
                         result["property_info"]["site_address"] = lines[1].strip()
@@ -173,27 +178,27 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
                 sales_table = page.locator("table").filter(has_text="Official Record").first
 
                 if sales_table:
-                    rows = sales_table.locator("tr").all()
+                    rows = await sales_table.locator("tr").all()
                     print(f"Found {len(rows)} rows in sales table")
 
                     for row in rows[1:]:  # Skip header row
-                        cells = row.locator("td").all()
+                        cells = await row.locator("td").all()
                         if len(cells) >= 7:
-                            book_page = cells[0].inner_text().strip()
-                            instrument = cells[1].inner_text().strip()
-                            month = cells[2].inner_text().strip()
-                            year = cells[3].inner_text().strip()
-                            doc_type = cells[4].inner_text().strip()
-                            qualified = cells[5].inner_text().strip()
-                            vacant_improved = cells[6].inner_text().strip()
-                            sale_price = cells[7].inner_text().strip() if len(cells) > 7 else ""
+                            book_page = (await cells[0].inner_text()).strip()
+                            instrument = (await cells[1].inner_text()).strip()
+                            month = (await cells[2].inner_text()).strip()
+                            year = (await cells[3].inner_text()).strip()
+                            doc_type = (await cells[4].inner_text()).strip()
+                            qualified = (await cells[5].inner_text()).strip()
+                            vacant_improved = (await cells[6].inner_text()).strip()
+                            sale_price = (await cells[7].inner_text()).strip() if len(cells) > 7 else ""
 
                             # Get the href from the Book/Page link
                             book_page_link = cells[0].locator("a").first
                             link_href = None
                             if book_page_link:
                                 try:
-                                    link_href = book_page_link.get_attribute("href")
+                                    link_href = await book_page_link.get_attribute("href")
                                 except Exception:
                                     pass
 
@@ -202,7 +207,7 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
                             instrument_href = None
                             if instrument_link:
                                 try:
-                                    instrument_href = instrument_link.get_attribute("href")
+                                    instrument_href = await instrument_link.get_attribute("href")
                                 except Exception:
                                     pass
 
@@ -235,9 +240,9 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
                 # Find the table after Legal Lines
                 legal_table = page.locator("table").filter(has_text="Legal Description").first
                 if legal_table:
-                    legal_cells = legal_table.locator("td").all()
+                    legal_cells = await legal_table.locator("td").all()
                     if len(legal_cells) >= 2:
-                        result["legal_description"] = legal_cells[1].inner_text().strip()
+                        result["legal_description"] = (await legal_cells[1].inner_text()).strip()
                         print(f"Legal Description: {result['legal_description']}")
         except Exception as e:
             print(f"Error extracting legal description: {e}")
@@ -250,7 +255,7 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
                 year_built = page.locator("text=Year Built").first
                 if year_built:
                     parent = year_built.locator("xpath=..").first
-                    text = parent.inner_text()
+                    text = await parent.inner_text()
                     match = re.search(r'Year Built\s+(\d+)', text)
                     if match:
                         result["building_info"]["year_built"] = match.group(1)
@@ -259,7 +264,7 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
                 type_elem = page.locator("text=Type:").first
                 if type_elem:
                     parent = type_elem.locator("xpath=..").first
-                    text = parent.inner_text()
+                    text = await parent.inner_text()
                     match = re.search(r'Type:\s+(.+)', text)
                     if match:
                         result["building_info"]["type"] = match.group(1).strip()
@@ -270,14 +275,15 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
         try:
             tax_link = page.locator("a[href*='county-taxes.com']").first
             if tax_link:
-                href = tax_link.get_attribute("href")
+                href = await tax_link.get_attribute("href")
                 result["tax_collector_link"] = href
                 # Extract the tax collector ID from URL
                 # Format: http://hillsborough.county-taxes.com/public/real_estate/parcels/A1992944418
-                tax_id_match = re.search(r'/parcels/([A-Za-z0-9]+)', href)
-                if tax_id_match:
-                    result["tax_collector_id"] = tax_id_match.group(1)
-                print(f"Tax Collector Link: {href}")
+                if href:
+                    tax_id_match = re.search(r'/parcels/([A-Za-z0-9]+)', href)
+                    if tax_id_match:
+                        result["tax_collector_id"] = tax_id_match.group(1)
+                    print(f"Tax Collector Link: {href}")
         except Exception as e:
             print(f"Error extracting tax collector link: {e}")
 
@@ -286,7 +292,7 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
             # Look for property image in various possible locations
             img_elem = page.locator("img[src*='hcpafl.org'], img[alt*='property'], img[class*='property-image']").first
             if img_elem:
-                img_src = img_elem.get_attribute("src")
+                img_src = await img_elem.get_attribute("src")
                 result["image_url"] = img_src
                 print(f"Property Image URL: {img_src}")
             else:
@@ -295,18 +301,18 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
                 if img_container:
                     nested_img = img_container.locator("img").first
                     if nested_img:
-                        result["image_url"] = nested_img.get_attribute("src")
+                        result["image_url"] = await nested_img.get_attribute("src")
         except Exception as e:
             print(f"Error extracting image URL: {e}")
 
         # Extract Permits
         try:
             # Look for permit section or permit links
-            permit_links = page.locator("a[href*='permit'], a[href*='accela']").all()
+            permit_links = await page.locator("a[href*='permit'], a[href*='accela']").all()
             for permit_link in permit_links[:10]:  # Limit to 10 permits
                 try:
-                    permit_href = permit_link.get_attribute("href")
-                    permit_text = permit_link.inner_text().strip()
+                    permit_href = await permit_link.get_attribute("href")
+                    permit_text = (await permit_link.inner_text()).strip()
                     result["permits"].append({
                         "permit_number": permit_text,
                         "link": permit_href,
@@ -317,14 +323,14 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
             # Also look for permits in a table
             permit_table = page.locator("table").filter(has_text="Permit").first
             if permit_table and len(result["permits"]) == 0:
-                permit_rows = permit_table.locator("tr").all()
+                permit_rows = await permit_table.locator("tr").all()
                 for row in permit_rows[1:]:  # Skip header
-                    cells = row.locator("td").all()
+                    cells = await row.locator("td").all()
                     if len(cells) >= 2:
-                        permit_number = cells[0].inner_text().strip()
+                        permit_number = (await cells[0].inner_text()).strip()
                         permit_link_elem = cells[0].locator("a").first
-                        permit_link = permit_link_elem.get_attribute("href") if permit_link_elem else None
-                        permit_type = cells[1].inner_text().strip() if len(cells) > 1 else ""
+                        permit_link = await permit_link_elem.get_attribute("href") if permit_link_elem else None
+                        permit_type = (await cells[1].inner_text()).strip() if len(cells) > 1 else ""
 
                         result["permits"].append({
                             "permit_number": permit_number,
@@ -337,8 +343,10 @@ def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: Scra
         except Exception as e:
             logger.error(f"Error extracting permits: {e}")
 
-        browser.close()
-    
+        await browser.close()
+    finally:
+        await playwright.stop()
+
     # Save raw data
     prop_id = folio if folio else parcel_id
     raw_path = storage.save_raw_data(
@@ -451,20 +459,21 @@ def download_ori_document(doc_id: str, output_path: Path) -> bool:
     return False
 
 
-def fetch_sales_documents(hcpa_result: dict, storage: ScraperStorage) -> dict:
+async def fetch_sales_documents(hcpa_result: dict, storage: ScraperStorage) -> dict:
     """
-    Fetch all documents from HCPA sales history by following the links.
+    Fetch all documents from HCPA sales history by following the links (async version).
     """
     results = []
     prop_id = hcpa_result.get("folio") or hcpa_result.get("parcel_id")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
+    playwright = await async_playwright().start()
+    try:
+        browser = await playwright.chromium.launch(headless=True)
+        context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             accept_downloads=True,
         )
-        page = context.new_page()
+        page = await context.new_page()
 
         # Initialize session
         session = requests.Session()
@@ -492,20 +501,20 @@ def fetch_sales_documents(hcpa_result: dict, storage: ScraperStorage) -> dict:
 
                 try:
                     # Navigate to the PAV search page
-                    page.goto(link_href)
-                    page.wait_for_load_state("networkidle")
-                    page.wait_for_timeout(3000)
+                    await page.goto(link_href)
+                    await page.wait_for_load_state("domcontentloaded")
+                    await asyncio.sleep(3)
 
                     # Double-click the first data row to open the document viewer
                     first_row = page.locator("table tr").nth(1)
                     if first_row:
-                        first_row.dblclick()
-                        page.wait_for_timeout(3000)
+                        await first_row.dblclick()
+                        await asyncio.sleep(3)
 
                         # Find the iframe with the document
                         iframe = page.locator("iframe").first
                         if iframe:
-                            iframe_src = iframe.get_attribute("src")
+                            iframe_src = await iframe.get_attribute("src")
                             if iframe_src and "api/Document" in iframe_src:
                                 print(f"  Found document URL")
 
@@ -522,11 +531,11 @@ def fetch_sales_documents(hcpa_result: dict, storage: ScraperStorage) -> dict:
                                     saved_path = storage.save_document(
                                         property_id=prop_id,
                                         file_data=response.content,
-                                        doc_type="deed", # Assuming deeds from sales history
+                                        doc_type="deed",
                                         doc_id=doc_id,
                                         extension="pdf"
                                     )
-                                    
+
                                     sale_result["downloaded_file"] = saved_path
                                     sale_result["download_success"] = True
                                     logger.info(f"  Downloaded {len(response.content)} bytes to {saved_path}")
@@ -534,7 +543,7 @@ def fetch_sales_documents(hcpa_result: dict, storage: ScraperStorage) -> dict:
                                     # Also capture the legal description from the page
                                     legal_cell = page.locator("td:has-text('L ')").first
                                     if legal_cell:
-                                        legal_text = legal_cell.inner_text().strip()
+                                        legal_text = (await legal_cell.inner_text()).strip()
                                         sale_result["legal_from_doc"] = legal_text
                                         print(f"  Legal: {legal_text}")
 
@@ -545,7 +554,9 @@ def fetch_sales_documents(hcpa_result: dict, storage: ScraperStorage) -> dict:
 
             results.append(sale_result)
 
-        browser.close()
+        await browser.close()
+    finally:
+        await playwright.stop()
 
     return {
         "parcel_id": hcpa_result.get("parcel_id"),
@@ -555,7 +566,7 @@ def fetch_sales_documents(hcpa_result: dict, storage: ScraperStorage) -> dict:
     }
 
 
-def main():
+async def async_main():
     parser = argparse.ArgumentParser(description="Scrape HCPA GIS property data")
     parser.add_argument("--parcel", help="Parcel ID in URL format")
     parser.add_argument("--folio", help="Folio number")
@@ -565,11 +576,32 @@ def main():
 
     args = parser.parse_args()
 
+    if not args.parcel and not args.folio:
+        parser.error("Must provide either --parcel or --folio")
+
+    storage = ScraperStorage()
+
+    # Run the scraper
+    result = await scrape_hcpa_property(
+        parcel_id=args.parcel,
+        folio=args.folio,
+        storage=storage
+    )
+
+    # Save result
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, 'w') as f:
+        json.dump(result, f, indent=2)
+    print(f"Saved result to {output_path}")
+
+    # Display summary
+    print(f"\nFolio: {result.get('folio')}")
     print(f"Tax Collector ID: {result.get('tax_collector_id')}")
     print(f"Image URL: {result.get('image_url')}")
     print(f"Permits found: {len(result.get('permits', []))}")
 
-    if result["sales_history"]:
+    if result.get("sales_history"):
         print("\nSales History:")
         for sale in result["sales_history"]:
             print(f"  Book {sale.get('book')}, Page {sale.get('page')} - {sale.get('date')} - {sale.get('sale_price')}")
@@ -582,8 +614,12 @@ def main():
     # Optionally download documents
     if args.download_docs:
         print("\n--- Downloading ORI Documents ---")
-        docs_result = fetch_sales_documents(result, storage)
-        print(f"\nDocuments downloaded")
+        docs_result = await fetch_sales_documents(result, storage)
+        print(f"\nDocuments downloaded: {len(docs_result.get('sales_documents', []))}")
+
+
+def main():
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":
