@@ -149,22 +149,164 @@ class FinalJudgmentProcessor:
     def extract_key_amounts(self, extracted_data: Dict[str, Any]) -> Dict[str, Optional[float]]:
         """
         Extract and clean key dollar amounts from the extracted data.
-        
+
         Args:
             extracted_data: Raw data dict from vision service
-            
+
         Returns:
             Dict with cleaned float amounts
         """
+        # Handle nested foreclosed_mortgage structure
+        mortgage_data = extracted_data.get('foreclosed_mortgage', {}) or {}
+
         return {
             'total_judgment_amount': self._clean_amount(extracted_data.get('total_judgment_amount')),
             'principal_amount': self._clean_amount(extracted_data.get('principal_amount')),
             'interest_amount': self._clean_amount(extracted_data.get('interest_amount')),
             'attorney_fees': self._clean_amount(extracted_data.get('attorney_fees')),
             'court_costs': self._clean_amount(extracted_data.get('court_costs')),
-            'original_mortgage_amount': self._clean_amount(extracted_data.get('original_mortgage_amount')),
-            'monthly_payment': self._clean_amount(extracted_data.get('monthly_payment'))
+            'original_mortgage_amount': self._clean_amount(mortgage_data.get('original_amount')),
+            'monthly_payment': self._clean_amount(extracted_data.get('monthly_payment')),
+            'escrow_advances': self._clean_amount(extracted_data.get('escrow_advances')),
+            'late_charges': self._clean_amount(extracted_data.get('late_charges')),
+            'per_diem_rate': self._clean_amount(extracted_data.get('per_diem_rate')),
         }
+
+    def extract_dates(self, extracted_data: Dict[str, Any]) -> Dict[str, Optional[str]]:
+        """
+        Extract key dates from the extracted data.
+
+        Args:
+            extracted_data: Raw data dict from vision service
+
+        Returns:
+            Dict with date strings in YYYY-MM-DD format
+        """
+        mortgage_data = extracted_data.get('foreclosed_mortgage', {}) or {}
+        lis_pendens_data = extracted_data.get('lis_pendens', {}) or {}
+
+        return {
+            'judgment_date': extracted_data.get('judgment_date'),
+            'foreclosure_sale_date': extracted_data.get('foreclosure_sale_date'),
+            'default_date': extracted_data.get('default_date'),
+            'original_mortgage_date': mortgage_data.get('original_date'),
+            'lis_pendens_date': lis_pendens_data.get('recording_date'),
+            'interest_through_date': extracted_data.get('interest_through_date'),
+        }
+
+    def extract_parties(self, extracted_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract party information from the extracted data.
+
+        Args:
+            extracted_data: Raw data dict from vision service
+
+        Returns:
+            Dict with plaintiff, defendant(s), and party analysis
+        """
+        defendants = extracted_data.get('defendants', []) or []
+
+        # Flatten defendants list to string for storage
+        defendant_names = [d.get('name', '') for d in defendants if d.get('name')]
+
+        # Check for federal entities
+        has_federal = any(d.get('is_federal_entity', False) for d in defendants)
+        federal_defendants = [d.get('name') for d in defendants if d.get('is_federal_entity')]
+
+        # Check for deceased borrowers
+        has_deceased = any(d.get('is_deceased', False) for d in defendants)
+
+        return {
+            'plaintiff': extracted_data.get('plaintiff'),
+            'plaintiff_type': extracted_data.get('plaintiff_type'),
+            'defendant': ', '.join(defendant_names),
+            'defendants_list': defendants,
+            'has_federal_defendant': has_federal,
+            'federal_defendants': federal_defendants,
+            'has_deceased_borrower': has_deceased,
+        }
+
+    def extract_property_info(self, extracted_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract property information from the extracted data.
+
+        Args:
+            extracted_data: Raw data dict from vision service
+
+        Returns:
+            Dict with property details including legal description
+        """
+        return {
+            'property_address': extracted_data.get('property_address'),
+            'legal_description': extracted_data.get('legal_description'),
+            'parcel_id': extracted_data.get('parcel_id'),
+            'subdivision': extracted_data.get('subdivision'),
+            'lot': extracted_data.get('lot'),
+            'block': extracted_data.get('block'),
+            'unit': extracted_data.get('unit'),
+            'plat_book': extracted_data.get('plat_book'),
+            'plat_page': extracted_data.get('plat_page'),
+            'is_condo': extracted_data.get('is_condo', False),
+        }
+
+    def extract_recording_refs(self, extracted_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract recording references from the extracted data.
+
+        Args:
+            extracted_data: Raw data dict from vision service
+
+        Returns:
+            Dict with book/page and instrument references
+        """
+        mortgage_data = extracted_data.get('foreclosed_mortgage', {}) or {}
+        lis_pendens_data = extracted_data.get('lis_pendens', {}) or {}
+
+        return {
+            'mortgage_book': mortgage_data.get('recording_book'),
+            'mortgage_page': mortgage_data.get('recording_page'),
+            'mortgage_instrument': mortgage_data.get('instrument_number'),
+            'lis_pendens_book': lis_pendens_data.get('recording_book'),
+            'lis_pendens_page': lis_pendens_data.get('recording_page'),
+            'lis_pendens_instrument': lis_pendens_data.get('instrument_number'),
+        }
+
+    def extract_red_flags(self, extracted_data: Dict[str, Any]) -> list:
+        """
+        Extract red flags from the extracted data.
+
+        Args:
+            extracted_data: Raw data dict from vision service
+
+        Returns:
+            List of red flag dictionaries
+        """
+        return extracted_data.get('red_flags', []) or []
+
+    def get_foreclosure_type(self, extracted_data: Dict[str, Any]) -> Optional[str]:
+        """
+        Get the foreclosure type from the extracted data.
+
+        Args:
+            extracted_data: Raw data dict from vision service
+
+        Returns:
+            Foreclosure type string
+        """
+        fc_type = extracted_data.get('foreclosure_type')
+        if fc_type:
+            # Normalize to our expected values
+            fc_type = fc_type.upper().strip()
+            if 'FIRST' in fc_type or 'PRIMARY' in fc_type:
+                return 'FIRST MORTGAGE'
+            if 'SECOND' in fc_type or 'JUNIOR' in fc_type or 'HELOC' in fc_type:
+                return 'SECOND MORTGAGE'
+            if 'HOA' in fc_type or 'CONDO' in fc_type or 'ASSOCIATION' in fc_type:
+                return 'HOA'
+            if 'TAX' in fc_type:
+                return 'TAX'
+            return fc_type
+        return None
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@ import base64
 import json
 import requests
 from typing import Dict, Optional, Any
-from pathlib import Path
 
 # Document extraction prompts
 DEED_PROMPT = """
@@ -47,29 +46,125 @@ Analyze this lien document. Extract and return JSON:
 """
 
 FINAL_JUDGMENT_PROMPT = """
-Analyze this Final Judgment of Foreclosure document. Extract and return JSON:
+You are a professional title examiner analyzing a Florida Final Judgment of Foreclosure document. Extract ALL information into the structured JSON format below. Be extremely precise—title work requires exact transcription of legal descriptions, recording references, and dollar amounts.
+
+## DOCUMENT CONTEXT
+This is a court order from a Florida Circuit Court (likely 13th Judicial Circuit / Hillsborough County) that:
+1. Establishes the amount owed on a defaulted mortgage
+2. Orders the property sold at public auction
+3. Determines which liens are extinguished vs. survive
+4. Sets the timeline for redemption termination
+
+## EXTRACTION INSTRUCTIONS
+
+### PARTIES
+- **Plaintiffs**: Usually the bank, loan servicer, or trust foreclosing the mortgage
+- **Defendants**: CAPTURE EVERY SINGLE ONE - this list determines which liens are wiped out
+  - Look for: borrowers, spouses, second mortgage holders, HOAs, condo associations, judgment creditors, "Unknown Tenant", IRS, USA, state agencies
+  - Federal defendants (IRS, USA, FHA, VA, HUD) trigger extended redemption rights - FLAG THESE
+
+### FINANCIAL AMOUNTS
+Extract the itemized breakdown exactly as shown. Include cents. "$123,456.78" not "$123,456".
+
+### LEGAL DESCRIPTION
+Transcribe the ENTIRE legal description verbatim - every word, number, abbreviation. This includes subdivision name, Lot, Block, Unit, Plat Book/Page references, Section-Township-Range.
+
+### RECORDING REFERENCES
+Capture all Book/Page or Instrument Number references for the mortgage being foreclosed, assignments, and lis pendens.
+
+## OUTPUT FORMAT
+Return ONLY a valid JSON object with this structure:
+
 {
-  "case_number": "Full court case number",
-  "recording_date": "MM/DD/YYYY (date judgment was entered/recorded)",
-  "judgment_date": "MM/DD/YYYY (date of the judgment)",
-  "plaintiff": "Name of foreclosing party (bank, HOA, etc.)",
-  "defendant": "Name(s) of property owner(s)",
-  "property_address": "Street address of foreclosed property",
-  "legal_description": "Full legal description of property",
-  "parcel_id": "Parcel/Folio number if shown",
-  "total_judgment_amount": "$total amount awarded (principal + interest + fees)",
-  "principal_amount": "$original loan/debt amount",
-  "interest_amount": "$accrued interest if separately stated",
-  "attorney_fees": "$attorney fees if separately stated",
-  "court_costs": "$court costs if separately stated",
-  "original_mortgage_date": "MM/DD/YYYY (date of original mortgage if mentioned)",
-  "original_mortgage_amount": "$original mortgage principal if mentioned",
-  "foreclosure_sale_date": "MM/DD/YYYY (scheduled auction date if mentioned)",
-  "foreclosure_type": "FIRST MORTGAGE" | "SECOND MORTGAGE" | "HOA" | "TAX" | "OTHER",
-  "lis_pendens_date": "MM/DD/YYYY (date Lis Pendens was filed if mentioned)",
-  "monthly_payment": "$monthly payment amount if mentioned",
-  "default_date": "MM/DD/YYYY (date of default if mentioned)"
+  "case_number": "string",
+  "court_circuit": "string (e.g., '13th')",
+  "county": "string",
+  "judge_name": "string or null",
+  "judgment_date": "YYYY-MM-DD",
+
+  "plaintiff": "string - full name of foreclosing party",
+  "plaintiff_type": "bank|servicer|trust|gse|hoa|private_lender",
+
+  "defendants": [
+    {
+      "name": "string",
+      "party_type": "borrower|co_borrower|spouse|second_mortgage_holder|judgment_creditor|hoa|condo_association|irs|federal_agency|municipality|tenant|unknown",
+      "is_federal_entity": false,
+      "is_deceased": false,
+      "lien_recording_reference": "string or null (Book/Page or Instrument #)"
+    }
+  ],
+
+  "property_address": "string or null",
+  "legal_description": "string - VERBATIM TRANSCRIPTION of full legal description",
+  "parcel_id": "string or null",
+  "subdivision": "string or null",
+  "lot": "string or null",
+  "block": "string or null",
+  "unit": "string or null (for condos)",
+  "plat_book": "string or null",
+  "plat_page": "string or null",
+  "is_condo": false,
+
+  "foreclosed_mortgage": {
+    "original_date": "YYYY-MM-DD or null",
+    "original_amount": 0.00,
+    "recording_date": "YYYY-MM-DD or null",
+    "recording_book": "string or null",
+    "recording_page": "string or null",
+    "instrument_number": "string or null"
+  },
+
+  "lis_pendens": {
+    "recording_date": "YYYY-MM-DD or null",
+    "recording_book": "string or null",
+    "recording_page": "string or null",
+    "instrument_number": "string or null"
+  },
+
+  "principal_amount": 0.00,
+  "interest_amount": 0.00,
+  "interest_through_date": "YYYY-MM-DD or null",
+  "per_diem_rate": 0.00,
+  "late_charges": 0.00,
+  "escrow_advances": 0.00,
+  "title_search_costs": 0.00,
+  "court_costs": 0.00,
+  "attorney_fees": 0.00,
+  "other_costs": 0.00,
+  "total_judgment_amount": 0.00,
+
+  "foreclosure_sale_date": "YYYY-MM-DD or null",
+  "sale_location": "string (URL or address) or null",
+  "is_online_sale": false,
+
+  "foreclosure_type": "FIRST MORTGAGE|SECOND MORTGAGE|HOA|CONDO|TAX|OTHER",
+  "hoa_safe_harbor_mentioned": false,
+  "superiority_language": "string - quote exact language about lien priority or null",
+
+  "red_flags": [
+    {
+      "flag_type": "federal_defendant|lost_note|deceased_borrower|service_issue|missing_hoa_defendant",
+      "severity": "critical|high|medium",
+      "description": "string explaining the concern"
+    }
+  ],
+
+  "monthly_payment": 0.00,
+  "default_date": "YYYY-MM-DD or null",
+  "service_by_publication": false,
+
+  "confidence_score": 0.95,
+  "unclear_sections": ["list any sections that were difficult to read"]
 }
+
+## CRITICAL REMINDERS
+
+1. **NEVER GUESS** on legal descriptions, recording references, or dollar amounts. If unclear, set to null.
+2. **CAPTURE ALL DEFENDANTS** - A missing defendant means their lien survives. This is critical.
+3. **FEDERAL ENTITIES** - If you see "United States of America", "IRS", "FHA", "VA", "HUD" - flag as federal entity with redemption rights.
+4. **DATES** - Use ISO format YYYY-MM-DD. If only month/year given, use first of month.
+5. **DOLLAR AMOUNTS** - Include cents as decimals.
 """
 
 CAPTCHA_PROMPT = """
@@ -375,7 +470,7 @@ class VisionService:
 
         if result and result.get('confidence', 0) >= confidence_threshold:
             return result
-        elif result:
+        if result:
             print(f"CAPTCHA confidence {result.get('confidence', 0)} below threshold {confidence_threshold}")
             return result  # Return anyway so caller can decide
         return None
@@ -397,16 +492,16 @@ class VisionService:
         if doc_type in ['WD', 'QC', 'D', 'DEED', 'CD', 'TD', 'SD']:
             return self.extract_deed(image_path)
         # Mortgage types
-        elif doc_type in ['MTG', 'MORTGAGE', 'DOT']:
+        if doc_type in ['MTG', 'MORTGAGE', 'DOT']:
             return self.extract_mortgage(image_path)
         # Lien types
-        elif doc_type in ['LN', 'LIEN', 'LP', 'LIS PENDENS']:
+        if doc_type in ['LN', 'LIEN', 'LP', 'LIS PENDENS']:
             return self.extract_lien(image_path)
         # Final Judgment
-        elif doc_type in ['FJ', 'FINAL JUDGMENT', 'JUDGMENT', 'JUD']:
+        if doc_type in ['FJ', 'FINAL JUDGMENT', 'JUDGMENT', 'JUD']:
             return self.extract_final_judgment(image_path)
         # Satisfaction/Release - use lien prompt (similar structure)
-        elif doc_type in ['SAT', 'REL', 'SATISFACTION', 'RELEASE']:
+        if doc_type in ['SAT', 'REL', 'SATISFACTION', 'RELEASE']:
             return self.extract_json(image_path, """
 Analyze this satisfaction/release document. Extract and return JSON:
 {
@@ -419,6 +514,5 @@ Analyze this satisfaction/release document. Extract and return JSON:
   "legal_description": "Full legal description if present"
 }
 """)
-        else:
-            # Generic extraction
-            return self.extract_text(image_path)
+        # Generic extraction
+        return self.extract_text(image_path)

@@ -36,7 +36,8 @@ class Property(BaseModel):
     address: str
     city: str = "Tampa"
     zip_code: Optional[str] = None
-    
+    legal_description: Optional[str] = None  # Legal description for ORI search
+
     # Auction Data
     auction_date: Optional[date] = None
     auction_type: Optional[str] = None  # Foreclosure, Tax Deed
@@ -47,7 +48,7 @@ class Property(BaseModel):
     certificate_number: Optional[str] = None # Tax Deed specific
     instrument_number: Optional[str] = None  # Instrument number from auction Case# link
     final_judgment_pdf_path: Optional[str] = None # Path to downloaded PDF
-    
+
     # Enriched Data
     owner_name: Optional[str] = None
     beds: Optional[float] = None
@@ -65,3 +66,6 @@ class Property(BaseModel):
     estimated_equity: Optional[float] = None
     risk_score: Optional[float] = None
     market_analysis_content: Optional[str] = None # Stored OCR text
+
+    # ORI search terms (built from legal description permutations)
+    legal_search_terms: List[str] = Field(default_factory=list)

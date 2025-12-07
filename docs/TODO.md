@@ -5,8 +5,7 @@
 ### Get the pipeline working
 - Primary blocker: title analysis is not running—fix legal_description propagation, ORI ingestion crashes, and avoid dropping chain/encumbrance tables on pipeline start.
 
-### OnBase API Discovery
-The backend is **Hyland OnBase**. Leverage [OnBase Documentation](https://support.hyland.com/r/OnBase/Public-Sector-Constituency-Web-Access/English/Foundation-22.1/Public-Sector-Constituency-Web-Access/Configuration/Front-End-Client-Configuration/Search-Panel-Settings/Configuring-Custom-Queries/Predefine-Keyword-Values-to-Search/Dynamic-Keyword-Values) to discover more advanced search capabilities and potential API endpoints.
+
 
 ### Court Case Search
 Implement scraping for CQIDs 324-348 to find foreclosure and probate cases.
@@ -25,13 +24,18 @@ If data (judgments, liens, geocodes) already exists, skip reprocessing. Only fil
 - Skip PDFs already extracted
 - Don't re-download existing documents
 
-## Low Priority
+### Architecture
+- Consider using Pydantic and SQLAlchemy instead of DuckDB for better data modeling and ORM support.
+
+## Very Important Priority
 
 ### Bot Detection Mitigation
 Some sources (HOVER, Realtor.com) have aggressive bot detection. Current mitigations:
 - Stealth User-Agent
 - Headed mode option (`headless=False`)
 - IP rotation (manual)
+- Browser must have a logged in google account, if we can use chrome we should.
 
-### HOVER Scraper
-Investigate `hover_scraper.py` - determine if it's still useful or should be removed. Currently not integrated into pipeline.
+# LOW
+### OnBase API Discovery
+The backend is **Hyland OnBase**. Leverage [OnBase Documentation](https://support.hyland.com/r/OnBase/Public-Sector-Constituency-Web-Access/English/Foundation-22.1/Public-Sector-Constituency-Web-Access/Configuration/Front-End-Client-Configuration/Search-Panel-Settings/Configuring-Custom-Queries/Predefine-Keyword-Values-to-Search/Dynamic-Keyword-Values) to discover more advanced search capabilities and potential API endpoints.

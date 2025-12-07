@@ -83,6 +83,8 @@ COLUMN_MAPPING = {
     "MUNI": "raw_muni",
     "LEGAL1": "raw_legal1",
     "LEGAL2": "raw_legal2",
+    "LEGAL3": "raw_legal3",
+    "LEGAL4": "raw_legal4",
 }
 
 
@@ -295,6 +297,8 @@ def ingest_to_duckdb(df: pl.DataFrame, db_path: str = str(DB_PATH)) -> dict:
             raw_muni VARCHAR,
             raw_legal1 VARCHAR,
             raw_legal2 VARCHAR,
+            raw_legal3 VARCHAR,
+            raw_legal4 VARCHAR,
             ingest_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -326,7 +330,7 @@ def ingest_to_duckdb(df: pl.DataFrame, db_path: str = str(DB_PATH)) -> dict:
             heated_area, lot_size, assessed_value, market_value, just_value,
             land_value, building_value, extra_features_value, taxable_value,
             last_sale_date, last_sale_price,
-            raw_type, raw_sub, raw_taxdist, raw_muni, raw_legal1, raw_legal2
+            raw_type, raw_sub, raw_taxdist, raw_muni, raw_legal1, raw_legal2, raw_legal3, raw_legal4
         )
         SELECT
             folio, pin, strap, owner_name, property_address, city, zip_code,
@@ -334,7 +338,7 @@ def ingest_to_duckdb(df: pl.DataFrame, db_path: str = str(DB_PATH)) -> dict:
             heated_area, lot_size, assessed_value, market_value, just_value,
             land_value, building_value, extra_features_value, taxable_value,
             last_sale_date, last_sale_price,
-            raw_type, raw_sub, raw_taxdist, raw_muni, raw_legal1, raw_legal2
+            raw_type, raw_sub, raw_taxdist, raw_muni, raw_legal1, raw_legal2, raw_legal3, raw_legal4
         FROM df_temp
     """)
 
@@ -412,11 +416,25 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
     Enrich the parcels table using bulk_parcels data.
 
     This fills in missing property details for auction properties
-    using the comprehensive HCPA bulk data.
+    using the comprehensive HCPA bulk data, including legal descriptions.
+
+    NOTE: The auctions table uses STRAP (parcel_id column) while bulk_parcels
+    uses FOLIO as the primary key. We join on STRAP to match records.
     """
     conn = duckdb.connect(db_path)
 
+    # Ensure parcels table has legal description columns
+    conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS legal_description VARCHAR")
+    conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS judgment_legal_description VARCHAR")
+    conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS raw_legal1 VARCHAR")
+    conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS raw_legal2 VARCHAR")
+    conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS raw_legal3 VARCHAR")
+    conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS raw_legal4 VARCHAR")
+    conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS strap VARCHAR")
+    conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS bulk_folio VARCHAR")
+
     # Count auctions without parcel data
+    # NOTE: auctions.folio is actually STRAP format, bulk_parcels.strap matches it
     before = conn.execute("""
         SELECT COUNT(*) FROM auctions a
         LEFT JOIN parcels p ON a.folio = p.folio
@@ -424,25 +442,32 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
     """).fetchone()[0]
 
     # Insert parcels for all auctions that don't have them yet
+    # Join auctions.folio (which is STRAP) to bulk_parcels.strap
     conn.execute("""
         INSERT INTO parcels (
-            folio, parcel_id, owner_name, property_address, city, zip_code,
+            folio, parcel_id, bulk_folio, owner_name, property_address, city, zip_code,
             land_use, year_built, beds, baths, heated_area, lot_size,
-            assessed_value, market_value, last_sale_date, last_sale_price
+            assessed_value, market_value, last_sale_date, last_sale_price,
+            strap, raw_legal1, raw_legal2, raw_legal3, raw_legal4,
+            legal_description
         )
         SELECT
-            b.folio, b.folio, b.owner_name, b.property_address, b.city, b.zip_code,
+            a.folio, a.folio, b.folio, b.owner_name, b.property_address, b.city, b.zip_code,
             b.land_use, b.year_built, b.beds, b.baths, b.heated_area, b.lot_size,
-            b.assessed_value, b.market_value, b.last_sale_date, b.last_sale_price
+            b.assessed_value, b.market_value, b.last_sale_date, b.last_sale_price,
+            b.strap, b.raw_legal1, b.raw_legal2, b.raw_legal3, b.raw_legal4,
+            CONCAT_WS(' ', b.raw_legal1, b.raw_legal2, b.raw_legal3, b.raw_legal4)
         FROM auctions a
-        INNER JOIN bulk_parcels b ON a.folio = b.folio
+        INNER JOIN bulk_parcels b ON a.folio = b.strap
         LEFT JOIN parcels p ON a.folio = p.folio
         WHERE p.folio IS NULL
     """)
 
-    # Update existing parcels missing data
+    # Update existing parcels missing data (including legal descriptions)
+    # Join on STRAP (parcels.folio = bulk_parcels.strap)
     conn.execute("""
         UPDATE parcels SET
+            bulk_folio = b.folio,
             owner_name = COALESCE(parcels.owner_name, b.owner_name),
             property_address = COALESCE(parcels.property_address, b.property_address),
             city = COALESCE(parcels.city, b.city),
@@ -454,10 +479,20 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
             lot_size = COALESCE(parcels.lot_size, b.lot_size),
             assessed_value = COALESCE(parcels.assessed_value, b.assessed_value),
             market_value = COALESCE(parcels.market_value, b.market_value),
+            strap = COALESCE(parcels.strap, b.strap),
+            raw_legal1 = COALESCE(parcels.raw_legal1, b.raw_legal1),
+            raw_legal2 = COALESCE(parcels.raw_legal2, b.raw_legal2),
+            raw_legal3 = COALESCE(parcels.raw_legal3, b.raw_legal3),
+            raw_legal4 = COALESCE(parcels.raw_legal4, b.raw_legal4),
+            legal_description = COALESCE(
+                parcels.legal_description,
+                CONCAT_WS(' ', b.raw_legal1, b.raw_legal2, b.raw_legal3, b.raw_legal4)
+            ),
             updated_at = CURRENT_TIMESTAMP
         FROM bulk_parcels b
-        WHERE parcels.folio = b.folio
-          AND (parcels.owner_name IS NULL OR parcels.year_built IS NULL OR parcels.beds IS NULL)
+        WHERE parcels.folio = b.strap
+          AND (parcels.owner_name IS NULL OR parcels.year_built IS NULL
+               OR parcels.beds IS NULL OR parcels.legal_description IS NULL)
     """)
 
     # Count after
@@ -467,14 +502,22 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
         WHERE p.folio IS NULL
     """).fetchone()[0]
 
+    # Count parcels with legal descriptions now
+    with_legal = conn.execute("""
+        SELECT COUNT(*) FROM parcels
+        WHERE legal_description IS NOT NULL AND legal_description != ''
+    """).fetchone()[0]
+
     enriched = before - after
     conn.close()
 
     logger.info(f"Enriched {enriched} auction parcels from bulk data")
+    logger.info(f"Parcels with legal descriptions: {with_legal}")
     return {
         "auctions_without_parcels_before": before,
         "auctions_without_parcels_after": after,
-        "parcels_enriched": enriched
+        "parcels_enriched": enriched,
+        "parcels_with_legal_description": with_legal,
     }
 
 

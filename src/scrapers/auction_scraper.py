@@ -38,7 +38,7 @@ class AuctionScraper:
                 return props
         return []
 
-    async def scrape_all(self, start_date: date, end_date: date) -> List[Property]:
+    async def scrape_all(self, start_date: date, end_date: date, max_properties: Optional[int] = None) -> List[Property]:
         """Scrape all auctions within a date range."""
         all_properties = []
         current = start_date
@@ -50,14 +50,19 @@ class AuctionScraper:
                 continue
 
             try:
-                props = await self.scrape_date(current, fast_fail=True)
+                remaining = None
+                if max_properties is not None:
+                    remaining = max(max_properties - len(all_properties), 0)
+                    if remaining <= 0:
+                        break
+                props = await self.scrape_date(current, fast_fail=True, max_properties=remaining)
                 all_properties.extend(props)
             except Exception as e:
                 logger.error(f"Failed to scrape {current}: {e}")
             current += timedelta(days=1)
         return all_properties
     
-    async def scrape_date(self, target_date: date, fast_fail: bool = False) -> List[Property]:
+    async def scrape_date(self, target_date: date, fast_fail: bool = False, max_properties: Optional[int] = None) -> List[Property]:
         """
         Scrapes auction data for a specific date, handling pagination.
         """
@@ -113,8 +118,16 @@ class AuctionScraper:
                             break
                     
                     # Scrape current page
-                    page_props = await self._scrape_current_page(page, target_date)
+                    remaining = None
+                    if max_properties is not None:
+                        remaining = max_properties - len(properties)
+                        if remaining <= 0:
+                            break
+                    page_props = await self._scrape_current_page(page, target_date, max_properties=remaining)
                     properties.extend(page_props)
+                    if max_properties is not None and len(properties) >= max_properties:
+                        logger.info("Reached property limit for {date}", date=date_str)
+                        break
                     logger.info("Found {count} auction entries on page {page_num}", count=len(page_props), page_num=page_num)
                     # Process Final Judgment PDFs if already downloaded
                     for prop in page_props:
@@ -129,6 +142,9 @@ class AuctionScraper:
                     # .PageRight_D = Disabled
                     next_btn = page.locator(".PageRight_W").first
                     
+                    if max_properties is not None and len(properties) >= max_properties:
+                        break
+
                     if await next_btn.count() > 0 and await next_btn.is_visible():
                         try:
                             logger.info("Advancing to next auction page for {date}", date=date_str)
@@ -154,12 +170,14 @@ class AuctionScraper:
                 
         return properties
 
-    async def _scrape_current_page(self, page: Page, target_date: date) -> List[Property]:
+    async def _scrape_current_page(self, page: Page, target_date: date, max_properties: Optional[int] = None) -> List[Property]:
         properties = []
         items = page.locator("div.AUCTION_ITEM")
         count = await items.count()
 
         for i in range(count):
+            if max_properties is not None and len(properties) >= max_properties:
+                break
             item = items.nth(i)
             try:
                 start_text = await item.locator(".ASTAT_MSGB").inner_text()

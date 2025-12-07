@@ -325,16 +325,23 @@ class PropertyDB:
                     continue
         return None
 
-    def save_liens(self, case_number: str, liens: List[AnyType]):
-        """Save identified liens to the database."""
+    def save_liens(self, folio: str, liens: List[AnyType], case_number: str | None = None):
+        """Save identified liens to the database.
+
+        Args:
+            folio: Property folio (primary key for grouping liens)
+            liens: List of Lien objects or dicts
+            case_number: Optional case number for reference
+        """
         conn = self.connect()
-        
+
         try:
-            # Create sequence and table
+            # Create sequence and table with folio as primary grouping
             conn.execute("CREATE SEQUENCE IF NOT EXISTS liens_id_seq")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS liens (
                     id INTEGER PRIMARY KEY DEFAULT nextval('liens_id_seq'),
+                    folio VARCHAR,
                     case_number VARCHAR,
                     document_type VARCHAR,
                     recording_date DATE,
@@ -343,16 +350,20 @@ class PropertyDB:
                     grantee VARCHAR,
                     book VARCHAR,
                     page VARCHAR,
+                    description VARCHAR,
                     instrument_number VARCHAR,
+                    survives_foreclosure BOOLEAN,
                     is_surviving BOOLEAN,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
-            # Delete existing liens for this case (replace strategy)
-            conn.execute("DELETE FROM liens WHERE case_number = ?", [case_number])
-            
-            # Insert new liens
+
+            # Add folio column if it doesn't exist (migration)
+            import contextlib
+            with contextlib.suppress(Exception):
+                conn.execute("ALTER TABLE liens ADD COLUMN IF NOT EXISTS folio VARCHAR")
+
+            # Insert new liens (don't delete - allow accumulation from multiple sources)
             for lien in liens:
                 # Support dicts or Lien models
                 if isinstance(lien, dict):
@@ -363,6 +374,7 @@ class PropertyDB:
                     grantee = lien.get("grantee")
                     book = lien.get("book")
                     page = lien.get("page")
+                    description = lien.get("description")
                     instrument_number = lien.get("instrument_number")
                     is_surviving = lien.get("is_surviving")
                 else:
@@ -373,30 +385,52 @@ class PropertyDB:
                     grantee = lien.grantee
                     book = lien.book
                     page = lien.page
+                    description = getattr(lien, "description", None)
                     instrument_number = getattr(lien, "instrument_number", None)
                     is_surviving = getattr(lien, "is_surviving", None)
-                
-                conn.execute("""
-                    INSERT INTO liens (
-                        case_number, document_type, recording_date, 
-                        amount, grantor, grantee, book, page, instrument_number, is_surviving
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, [
-                    case_number,
-                    document_type,
-                    rec_date,
-                    amount,
-                    grantor,
-                    grantee,
-                    book,
-                    page,
-                    instrument_number,
-                    is_surviving
-                ])
-            
+
+                # Check for duplicate before inserting
+                existing = conn.execute("""
+                    SELECT id FROM liens
+                    WHERE folio = ? AND document_type = ? AND
+                          (book = ? AND page = ?) OR instrument_number = ?
+                """, [folio, document_type, book, page, instrument_number]).fetchone()
+
+                if existing:
+                    # Update existing record
+                    conn.execute("""
+                        UPDATE liens SET
+                            amount = COALESCE(?, amount),
+                            grantor = COALESCE(?, grantor),
+                            grantee = COALESCE(?, grantee),
+                            is_surviving = COALESCE(?, is_surviving)
+                        WHERE id = ?
+                    """, [amount, grantor, grantee, is_surviving, existing[0]])
+                else:
+                    conn.execute("""
+                        INSERT INTO liens (
+                            folio, case_number, document_type, recording_date,
+                            amount, grantor, grantee, book, page, description,
+                            instrument_number, is_surviving
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, [
+                        folio,
+                        case_number,
+                        document_type,
+                        rec_date,
+                        amount,
+                        grantor,
+                        grantee,
+                        book,
+                        page,
+                        description,
+                        instrument_number,
+                        is_surviving
+                    ])
+
         except Exception as e:
             print(f"Error in save_liens: {e}")
-            raise e
+            raise
 
     def get_liens_by_case(self, case_number: str) -> List[Dict[str, Any]]:
         """Fetch liens by case number."""
@@ -471,11 +505,6 @@ class PropertyDB:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
-        # Drop existing tables to ensure schema update
-        conn.execute("DROP TABLE IF EXISTS chain_of_title")
-        conn.execute("DROP TABLE IF EXISTS encumbrances")
-        conn.execute("DROP TABLE IF EXISTS market_data")
         
         # Create sequences
         conn.execute("CREATE SEQUENCE IF NOT EXISTS chain_id_seq")
@@ -577,7 +606,7 @@ class PropertyDB:
             """, [folio, inst]).fetchone()
         
         if existing:
-            # Update file_path or ocr_text if provided
+            # Update file_path, ocr_text, and Party 2 resolution data if provided
             updates = []
             params = []
             if doc_data.get("file_path"):
@@ -586,7 +615,20 @@ class PropertyDB:
             if doc_data.get("ocr_text"):
                 updates.append("ocr_text = ?")
                 params.append(doc_data.get("ocr_text"))
-                
+            # Update Party 2 resolution data if provided
+            if doc_data.get("party2") and not existing:  # Only update party2 if not already set
+                updates.append("party2 = ?")
+                params.append(doc_data.get("party2"))
+            if doc_data.get("party2_resolution_method"):
+                updates.append("party2_resolution_method = ?")
+                params.append(doc_data.get("party2_resolution_method"))
+            if doc_data.get("is_self_transfer") is not None:
+                updates.append("is_self_transfer = ?")
+                params.append(doc_data.get("is_self_transfer"))
+            if doc_data.get("self_transfer_type"):
+                updates.append("self_transfer_type = ?")
+                params.append(doc_data.get("self_transfer_type"))
+
             if updates:
                 params.append(existing[0])
                 conn.execute(f"UPDATE documents SET {', '.join(updates)} WHERE id = ?", params)
@@ -596,8 +638,9 @@ class PropertyDB:
             INSERT INTO documents (
                 folio, case_number, document_type, file_path, ocr_text,
                 extracted_data, recording_date, book, page,
-                instrument_number, party1, party2, legal_description
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                instrument_number, party1, party2, legal_description,
+                party2_resolution_method, is_self_transfer, self_transfer_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [
             folio,
             doc_data.get("case_number"),
@@ -611,7 +654,10 @@ class PropertyDB:
             doc_data.get("instrument_number"),
             doc_data.get("party1"),
             doc_data.get("party2"),
-            doc_data.get("legal_description")
+            doc_data.get("legal_description"),
+            doc_data.get("party2_resolution_method"),
+            doc_data.get("is_self_transfer", False),
+            doc_data.get("self_transfer_type")
         ])
 
         # Get the inserted ID (DuckDB compatible)
@@ -928,7 +974,7 @@ class PropertyDB:
 
         print(f"Saved {len(sales)} sales history records for {folio}")
 
-    def get_sales_history(self, folio: str = None, strap: str = None) -> List[Dict]:
+    def get_sales_history(self, folio: str | None = None, strap: str | None = None) -> List[Dict]:
         """Get sales history for a property by folio or strap."""
         conn = self.connect()
 
@@ -947,6 +993,108 @@ class PropertyDB:
 
         columns = [desc[0] for desc in conn.description]
         return [dict(zip(columns, row)) for row in results]
+
+    # ------------------------------------------------------------------
+    # Restriction / Easement helpers
+    # ------------------------------------------------------------------
+    def get_restriction_documents(self, folio: str | None = None) -> List[Dict[str, Any]]:
+        """
+        Find documents that look like restrictions or easements.
+
+        Searches document_type, OCR text, and legal_description for the keywords
+        "easement" or "restriction".
+        """
+        conn = self.connect()
+
+        conditions = [
+            "LOWER(COALESCE(document_type, '')) LIKE '%easement%'",
+            "LOWER(COALESCE(document_type, '')) LIKE '%restriction%'",
+            "LOWER(COALESCE(ocr_text, '')) LIKE '%easement%'",
+            "LOWER(COALESCE(ocr_text, '')) LIKE '%restriction%'",
+            "LOWER(COALESCE(legal_description, '')) LIKE '%easement%'",
+            "LOWER(COALESCE(legal_description, '')) LIKE '%restriction%'",
+        ]
+
+        where_clauses = ["(" + " OR ".join(conditions) + ")"]
+        params: list[Any] = []
+        if folio:
+            where_clauses.append("folio = ?")
+            params.append(folio)
+
+        where_sql = " AND ".join(where_clauses)
+        rows = conn.execute(
+            f"""
+            SELECT folio, instrument_number, document_type, recording_date,
+                   book, page, file_path, legal_description, ocr_text
+            FROM documents
+            WHERE {where_sql}
+            ORDER BY recording_date NULLS LAST, created_at DESC
+            """,
+            params,
+        ).fetchall()
+
+        if not rows:
+            return []
+        columns = [desc[0] for desc in conn.description]
+        return [dict(zip(columns, row)) for row in rows]
+
+    def folio_has_restrictions(self, folio: str) -> bool:
+        """Quick existence check for restriction/easement docs for a folio."""
+        conn = self.connect()
+        result = conn.execute(
+            """
+            SELECT COUNT(*) FROM documents
+            WHERE folio = ? AND (
+                LOWER(COALESCE(document_type, '')) LIKE '%easement%' OR
+                LOWER(COALESCE(document_type, '')) LIKE '%restriction%' OR
+                LOWER(COALESCE(ocr_text, '')) LIKE '%easement%' OR
+                LOWER(COALESCE(ocr_text, '')) LIKE '%restriction%' OR
+                LOWER(COALESCE(legal_description, '')) LIKE '%easement%' OR
+                LOWER(COALESCE(legal_description, '')) LIKE '%restriction%'
+            )
+            """,
+            [folio],
+        ).fetchone()
+        return bool(result and result[0] > 0)
+
+    # ------------------------------------------------------------------
+    # Tax helpers
+    # ------------------------------------------------------------------
+    def get_tax_liens(self, folio: str) -> List[Dict[str, Any]]:
+        """Return tax-related liens for a folio (document_type starts with 'TAX')."""
+        conn = self.connect()
+        rows = conn.execute(
+            """
+            SELECT * FROM liens
+            WHERE folio = ? AND UPPER(COALESCE(document_type, '')) LIKE 'TAX%'
+            ORDER BY recording_date
+            """,
+            [folio],
+        ).fetchall()
+        if not rows:
+            return []
+        columns = [desc[0] for desc in conn.description]
+        return [dict(zip(columns, row)) for row in rows]
+
+    def get_tax_status(self, folio: str) -> Dict[str, Any]:
+        """
+        Summarize tax liens for a folio.
+
+        Returns:
+            {
+                "has_tax_liens": bool,
+                "total_amount_due": float | None,
+                "liens": [ ... ]
+            }
+        """
+        liens = self.get_tax_liens(folio)
+        amounts = [l.get("amount") for l in liens if l.get("amount") is not None]
+        total_amount = sum(amounts) if amounts else None
+        return {
+            "has_tax_liens": len(liens) > 0,
+            "total_amount_due": total_amount,
+            "liens": liens,
+        }
 
 
 if __name__ == "__main__":

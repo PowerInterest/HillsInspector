@@ -74,12 +74,12 @@
     <!-- Google tag (gtag.js) -->
     <script async="" src="https://www.googletagmanager.com/gtag/js?id=G-85R6TGKCJ4"></script>
     <script> window.dataLayer = window.dataLayer || []; function gtag() { dataLayer.push(arguments); } gtag('js', new Date()); gtag('config', 'G-85R6TGKCJ4'); </script>
-<script src="https://cdn.jsdelivr.net/npm/alasql" type="text/javascript"></script><script src="https://hcpa.whoson.com/newchat/js/whoson.inline.min.js"></script><script src="https://hcpa.whoson.com/w.js?domain=hcpafl.org&amp;callback=whoson_global.checkStatus&amp;u=589-1764714003539&amp;p=https%3A%2F%2Fgis.hcpafl.org%2Fpropertysearch%2F%23%2Fsearch%2Fbasic%2Fpin%3DP-ro-pe-rt-y%2520Appraiser&amp;r="></script><script src="https://hcpa.whoson.com/w.js?domain=hcpafl.org&amp;callback=whoson_global.checkStatus&amp;u=589-1764714003539&amp;p=https%3A%2F%2Fgis.hcpafl.org%2Fpropertysearch%2F%23%2Fsearch%2Fbasic%2Fpin%3DP-ro-pe-rt-y%2520Appraiser&amp;r=&amp;x=1" id="whoson_poll"></script><link rel="stylesheet" type="text/css" href="https://hcpa.whoson.com/newchat//css-inline/whoson.inline.min.css"><link type="text/css" rel="stylesheet" href="https://hcpa.whoson.com/newchat//themes/colors/office/office_inline.min.css"></head>
+<script src="https://cdn.jsdelivr.net/npm/alasql" type="text/javascript"></script><script src="https://hcpa.whoson.com/newchat/js/whoson.inline.min.js"></script><script src="https://hcpa.whoson.com/w.js?domain=hcpafl.org&amp;callback=whoson_global.checkStatus&amp;u=358-1764822796762&amp;p=https%3A%2F%2Fgis.hcpafl.org%2Fpropertysearch%2F%23%2Fsearch%2Fbasic%2Fpin%3DA-X0-00-00-400-0710U&amp;r="></script><script src="https://hcpa.whoson.com/w.js?domain=hcpafl.org&amp;callback=whoson_global.checkStatus&amp;u=358-1764822796762&amp;p=https%3A%2F%2Fgis.hcpafl.org%2Fpropertysearch%2F%23%2Fsearch%2Fbasic%2Fpin%3DA-X0-00-00-400-0710U&amp;r=&amp;x=1" id="whoson_poll"></script><link rel="stylesheet" type="text/css" href="https://hcpa.whoson.com/newchat//css-inline/whoson.inline.min.css"><link type="text/css" rel="stylesheet" href="https://hcpa.whoson.com/newchat//themes/colors/office/office_inline.min.css"></head>
 <body style="zoom: 0.8;">
     <a id="top"></a>
     <form method="post" action="/" id="form1" enctype="multipart/form-data">
 <div class="aspNetHidden">
-<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="9ZP+fdid5R3HGKLjIiTPih7wruJCFKf3IGl0aXDhRHKd0bXBAmDvi6Kh9byZlAttBKxLW+lZtJEQnCfsH7Ny9QrYUx5bogfg1CL+WpN/DWo=" style="">
+<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="3TyX3Tn/Yxt+fD04BwBAQ5Q3y8yCpa9VErEuDUxjDdDOyLdeP17upJx5DLEsj1vcSHkMZX3on6pgXBBSx0vXgF0rgxZfgaBxnY3ESBHBKcs=" style="">
 </div>
 
 <div class="aspNetHidden">
@@ -346,13 +346,13 @@
 
 	<div id="navBar" class="ps-tabs donotprint">
 		<ul data-bind="foreach: tabs">
-			<li class="tab cool-gradient active" data-bind="text: $data, css: { active: $data == $root.activeTab() }, click: $root.goToTab">Basic Search</li>
+			<li class="tab cool-gradient" data-bind="text: $data, css: { active: $data == $root.activeTab() }, click: $root.goToTab">Basic Search</li>
 		
 			<li class="tab cool-gradient" data-bind="text: $data, css: { active: $data == $root.activeTab() }, click: $root.goToTab">Advanced Search</li>
 		
 			<li class="tab cool-gradient" data-bind="text: $data, css: { active: $data == $root.activeTab() }, click: $root.goToTab">Sales Search</li>
 		
-			<li class="tab cool-gradient" data-bind="text: $data, css: { active: $data == $root.activeTab() }, click: $root.goToTab">Search Results</li>
+			<li class="tab cool-gradient active" data-bind="text: $data, css: { active: $data == $root.activeTab() }, click: $root.goToTab">Search Results</li>
 		
 			<li class="tab cool-gradient" data-bind="text: $data, css: { active: $data == $root.activeTab() }, click: $root.goToTab">Parcel Result</li>
 		
@@ -362,7 +362,7 @@
 
 	<div id="content">
 		<img class="loading-img donotprint" src="images/loading-large-hills.gif" data-bind="visible: busy" style="display: none;">
-		<div id="basic" class="tabcontent" data-bind="with: basic, visible: $root.activeTab() === 'Basic Search'" style="">
+		<div id="basic" class="tabcontent" data-bind="with: basic, visible: $root.activeTab() === 'Basic Search'" style="display: none;">
 			<h2>Basic Property Search</h2>
 			<p class="lead">Please use ONLY ONE field below for your search</p>
             <!--<div class="row">
@@ -876,7 +876,7 @@
 			<p data-bind="text: query">stype=q</p>
 			
 		</div>
-		<div id="results" class="tabcontent" data-bind="with: results, visible: $root.activeTab() === 'Search Results'" style="display: none;">
+		<div id="results" class="tabcontent" data-bind="with: results, visible: $root.activeTab() === 'Search Results'" style="">
 			<h2>
                 <span data-bind="visible: $root.searchType() === 'basic'">Basic </span>
                 <span data-bind="visible: $root.searchType() === 'advanced'" style="display: none;">Advanced </span>
