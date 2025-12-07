@@ -27,7 +27,7 @@ async def get_properties_to_process(force: bool = False) -> list:
     if force:
         # Get all unique folios from auctions
         query = """
-            SELECT DISTINCT a.folio, a.case_number, p.legal_description, p.address
+            SELECT DISTINCT a.folio, a.case_number, p.legal_description, p.property_address
             FROM auctions a
             LEFT JOIN parcels p ON a.folio = p.folio
             WHERE a.folio IS NOT NULL
@@ -36,7 +36,7 @@ async def get_properties_to_process(force: bool = False) -> list:
     else:
         # Get folios that don't have chain of title yet
         query = """
-            SELECT DISTINCT a.folio, a.case_number, p.legal_description, p.address
+            SELECT DISTINCT a.folio, a.case_number, p.legal_description, p.property_address
             FROM auctions a
             LEFT JOIN parcels p ON a.folio = p.folio
             LEFT JOIN chain_of_title c ON a.folio = c.folio
@@ -75,7 +75,10 @@ async def process_property(prop_data: dict, ori_scraper: ORIApiScraper,
 
     try:
         # Build search terms from legal description
-        search_terms = build_ori_search_terms(prop_data['legal_description'])
+        search_terms = build_ori_search_terms(
+            folio=folio,
+            legal1=prop_data['legal_description']
+        )
 
         if not search_terms:
             result['error'] = 'No search terms generated from legal description'
@@ -88,7 +91,8 @@ async def process_property(prop_data: dict, ori_scraper: ORIApiScraper,
         for term in search_terms:
             logger.debug(f"Trying search term: {term}")
             try:
-                docs = ori_scraper.search_by_legal_sync(term, headless=True)
+                # Use async method directly to keep browser in same event loop
+                docs = await ori_scraper.search_by_legal_browser(term, headless=True)
                 if docs:
                     successful_term = term
                     break
@@ -112,18 +116,20 @@ async def process_property(prop_data: dict, ori_scraper: ORIApiScraper,
         )
         prop.legal_search_terms = [successful_term]
 
-        # Ingest with pre-fetched documents
-        ingestion_service.ingest_property(prop, raw_docs=docs)
+        # Ingest with pre-fetched documents (async to avoid event loop conflicts)
+        await ingestion_service.ingest_property_async(prop, raw_docs=docs)
 
         result['success'] = True
 
-        # Get chain period count
-        conn = duckdb.connect('data/property_master.db', read_only=True)
-        count = conn.execute(
-            "SELECT COUNT(*) FROM chain_of_title WHERE folio = ?", [folio]
-        ).fetchone()[0]
-        conn.close()
-        result['chain_periods'] = count
+        # Get chain period count (use PropertyDB to share connection)
+        try:
+            db = PropertyDB()
+            count = db.conn.execute(
+                "SELECT COUNT(*) FROM chain_of_title WHERE folio = ?", [folio]
+            ).fetchone()[0]
+            result['chain_periods'] = count
+        except Exception:
+            result['chain_periods'] = 0  # Don't fail on count check
 
     except Exception as e:
         result['error'] = str(e)
@@ -153,7 +159,8 @@ async def run_batch(force: bool = False, limit: int = None):
 
     # Initialize services (reuse browser across properties)
     ori_scraper = ORIApiScraper()
-    ingestion_service = IngestionService()
+    # Share ORI scraper to avoid multiple browser sessions during Party 2 resolution
+    ingestion_service = IngestionService(ori_scraper=ori_scraper)
 
     results = {
         'success': [],
@@ -162,27 +169,31 @@ async def run_batch(force: bool = False, limit: int = None):
         'no_search_terms': []
     }
 
-    for i, prop_data in enumerate(properties, 1):
-        folio = prop_data['folio']
-        logger.info(f"\n[{i}/{len(properties)}] Processing {folio}")
-        logger.info(f"  Address: {prop_data.get('address', 'N/A')}")
-        logger.info(f"  Legal: {prop_data['legal_description'][:60]}...")
+    try:
+        for i, prop_data in enumerate(properties, 1):
+            folio = prop_data['folio']
+            logger.info(f"\n[{i}/{len(properties)}] Processing {folio}")
+            logger.info(f"  Address: {prop_data.get('address', 'N/A')}")
+            logger.info(f"  Legal: {prop_data['legal_description'][:60]}...")
 
-        result = await process_property(prop_data, ori_scraper, ingestion_service)
+            result = await process_property(prop_data, ori_scraper, ingestion_service)
 
-        if result['success']:
-            results['success'].append(result)
-            logger.success(f"  SUCCESS: {result['docs_found']} docs -> {result['chain_periods']} chain periods")
-            logger.info(f"  Search: {result['search_term']}")
-        elif result['error'] and 'No search terms' in result['error']:
-            results['no_search_terms'].append(result)
-            logger.warning(f"  SKIP: {result['error']}")
-        elif result['error'] and 'No documents found' in result['error']:
-            results['no_docs'].append(result)
-            logger.warning(f"  SKIP: No ORI documents found")
-        else:
-            results['failed'].append(result)
-            logger.error(f"  FAILED: {result['error']}")
+            if result['success']:
+                results['success'].append(result)
+                logger.success(f"  SUCCESS: {result['docs_found']} docs -> {result['chain_periods']} chain periods")
+                logger.info(f"  Search: {result['search_term']}")
+            elif result['error'] and 'No search terms' in result['error']:
+                results['no_search_terms'].append(result)
+                logger.warning(f"  SKIP: {result['error']}")
+            elif result['error'] and 'No documents found' in result['error']:
+                results['no_docs'].append(result)
+                logger.warning(f"  SKIP: No ORI documents found")
+            else:
+                results['failed'].append(result)
+                logger.error(f"  FAILED: {result['error']}")
+    finally:
+        # Clean up browser
+        await ori_scraper.close_browser()
 
     # Summary
     elapsed = datetime.now() - start_time

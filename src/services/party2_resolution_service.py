@@ -11,6 +11,7 @@ Also handles self-transfer detection when grantor and grantee are the same perso
 
 See /docs/2ndparty.md for detailed documentation.
 """
+import asyncio
 import re
 import tempfile
 from pathlib import Path
@@ -85,7 +86,7 @@ class Party2ResolutionService:
 
     def resolve_party2(self, doc: Dict[str, Any], output_dir: Optional[Path] = None) -> Party2Resolution:
         """
-        Attempt to resolve missing Party 2 for a document.
+        Attempt to resolve missing Party 2 for a document (sync version).
 
         Args:
             doc: Document dictionary with instrument, party1, doc_type fields
@@ -120,9 +121,48 @@ class Party2ResolutionService:
 
         return Party2Resolution(party2=None, method="unresolved")
 
+    async def resolve_party2_async(self, doc: Dict[str, Any], output_dir: Optional[Path] = None) -> Party2Resolution:
+        """
+        Attempt to resolve missing Party 2 for a document (async version).
+
+        Use this when calling from an async context to avoid event loop conflicts.
+
+        Args:
+            doc: Document dictionary with instrument, party1, doc_type fields
+            output_dir: Directory for PDF downloads (uses temp dir if not provided)
+
+        Returns:
+            Party2Resolution with results and method used
+        """
+        instrument = doc.get("instrument") or doc.get("instrument_number")
+        party1 = doc.get("party1") or doc.get("grantor")
+
+        if not instrument or not party1:
+            return Party2Resolution(party2=None, method="unresolved")
+
+        logger.info(f"Resolving Party 2 for instrument {instrument} (Party 1: {party1})")
+
+        # Strategy 1: Try CQID 326 party name search (async)
+        party2 = await self._try_cqid_326_search_async(party1, instrument)
+        if party2:
+            is_self_transfer, transfer_type = self._detect_self_transfer(party1, party2)
+            return Party2Resolution(
+                party2=party2,
+                method="cqid_326",
+                is_self_transfer=is_self_transfer,
+                self_transfer_type=transfer_type
+            )
+
+        # Strategy 2: Download PDF and OCR (sync - vision service is HTTP-based, not browser)
+        result = self._try_ocr_extraction(doc, output_dir)
+        if result:
+            return result
+
+        return Party2Resolution(party2=None, method="unresolved")
+
     def _try_cqid_326_search(self, party1: str, instrument: str) -> Optional[str]:
         """
-        Try to find Party 2 using CQID 326 party name search.
+        Try to find Party 2 using CQID 326 party name search (sync version).
 
         Args:
             party1: Party 1 (grantor) name
@@ -133,6 +173,29 @@ class Party2ResolutionService:
         """
         try:
             party2 = self.ori_scraper.find_party2_for_instrument(party1, instrument)
+            if party2:
+                logger.info(f"Found Party 2 via CQID 326: {party2}")
+            return party2
+        except Exception as e:
+            logger.warning(f"CQID 326 search failed: {e}")
+            return None
+
+    async def _try_cqid_326_search_async(self, party1: str, instrument: str) -> Optional[str]:
+        """
+        Try to find Party 2 using CQID 326 party name search (async version).
+
+        Uses the async browser methods directly to avoid event loop conflicts.
+
+        Args:
+            party1: Party 1 (grantor) name
+            instrument: Target instrument number
+
+        Returns:
+            Party 2 name if found, None otherwise
+        """
+        try:
+            # Use async method directly
+            party2 = await self.ori_scraper.find_party2_for_instrument_async(party1, instrument)
             if party2:
                 logger.info(f"Found Party 2 via CQID 326: {party2}")
             return party2
@@ -203,20 +266,31 @@ class Party2ResolutionService:
                 logger.warning(f"Failed to download PDF for document {ori_doc.get('ID') or doc.get('instrument')}")
                 return None
 
-            # Convert PDF to image
-            image_path = self._convert_pdf_to_image(pdf_path)
-            if not image_path:
-                logger.warning(f"Failed to convert PDF to image: {pdf_path}")
+            # Convert PDF to images (multi-page support)
+            image_paths = self._convert_pdf_to_images(pdf_path)
+            if not image_paths:
+                logger.warning(f"Failed to convert PDF to images: {pdf_path}")
                 return None
 
-            # Extract with vision service
-            ocr_result = self.vision_service.extract_deed(str(image_path))
+            # Extract with vision service (multi-image)
+            doc_type = (doc.get("doc_type") or doc.get("document_type") or "DEED")
+            ocr_result = self.vision_service.extract_document_by_type_multi(
+                [str(p) for p in image_paths],
+                doc_type
+            )
             if not ocr_result:
                 logger.warning(f"OCR extraction returned no results")
                 return None
 
-            party2 = ocr_result.get("grantee")
-            party1 = doc.get("party1") or doc.get("grantor")
+            # Cleanup temp images
+            for p in image_paths:
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+
+            party2 = ocr_result.get("grantee") or ocr_result.get("party2")
+            party1 = doc.get("party1") or doc.get("grantor") or ocr_result.get("grantor")
 
             if party2:
                 logger.info(f"Extracted Party 2 via OCR: {party2}")
@@ -236,15 +310,15 @@ class Party2ResolutionService:
             logger.error(f"OCR extraction failed: {e}")
             return None
 
-    def _convert_pdf_to_image(self, pdf_path: Path) -> Optional[Path]:
+    def _convert_pdf_to_images(self, pdf_path: Path, max_pages: int = 5) -> Optional[list[Path]]:
         """
-        Convert first page of PDF to PNG image.
+        Convert PDF pages to PNG images.
 
         Args:
             pdf_path: Path to PDF file
 
         Returns:
-            Path to PNG image or None if failed
+            List of PNG image paths or None if failed
         """
         try:
             import pypdfium2 as pdfium
@@ -253,16 +327,17 @@ class Party2ResolutionService:
             if len(pdf) == 0:
                 return None
 
-            # Render first page at 200 DPI
-            page = pdf[0]
-            bitmap = page.render(scale=200/72)
-            pil_image = bitmap.to_pil()
+            image_paths: list[Path] = []
+            pages_to_render = min(len(pdf), max_pages)
+            for idx in range(pages_to_render):
+                page = pdf[idx]
+                bitmap = page.render(scale=200/72)
+                pil_image = bitmap.to_pil()
+                image_path = pdf_path.with_suffix(f".page{idx+1}.png")
+                pil_image.save(str(image_path))
+                image_paths.append(image_path)
 
-            # Save as PNG
-            image_path = pdf_path.with_suffix(".png")
-            pil_image.save(str(image_path))
-
-            return image_path
+            return image_paths
 
         except ImportError:
             logger.error("pypdfium2 not installed. Run: uv add pypdfium2")

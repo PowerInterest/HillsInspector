@@ -1,6 +1,7 @@
 from typing import Optional, Any
 from pathlib import Path
 from datetime import datetime
+import asyncio
 from loguru import logger
 
 from src.models.property import Property
@@ -9,14 +10,17 @@ from src.scrapers.ori_api_scraper import ORIApiScraper
 from src.services.title_chain_service import TitleChainService
 from src.services.party2_resolution_service import Party2ResolutionService
 
+from src.services.scraper_storage import ScraperStorage
+
 class IngestionService:
-    def __init__(self):
+    def __init__(self, ori_scraper: ORIApiScraper = None):
         self.db = PropertyDB()
-        self.ori_scraper = ORIApiScraper()
+        # Share ORI scraper across services to avoid multiple browser sessions
+        self.ori_scraper = ori_scraper or ORIApiScraper()
         self.chain_service = TitleChainService()
-        self.party2_service = Party2ResolutionService()
-        self.pdf_dir = Path("data/documents/ori_docs")
-        self.pdf_dir.mkdir(parents=True, exist_ok=True)
+        # Pass shared ORI scraper to Party2ResolutionService
+        self.party2_service = Party2ResolutionService(ori_scraper=self.ori_scraper)
+        self.storage = ScraperStorage()
 
     def ingest_property(self, prop: Property, raw_docs: list = None):
         """
@@ -81,7 +85,7 @@ class IngestionService:
         logger.info(f"Grouped {len(docs)} raw records into {len(grouped_docs)} unique documents")
 
         # Resolve missing Party 2 for deeds
-        grouped_docs = self._resolve_missing_party2(grouped_docs)
+        grouped_docs = self._resolve_missing_party2(grouped_docs, prop)
 
         processed_docs = []
 
@@ -104,6 +108,90 @@ class IngestionService:
         # Transform for DB
         db_data = self._transform_analysis_for_db(analysis)
         
+        # 3. Save Analysis
+        self.db.save_chain_of_title(prop.parcel_id, db_data)
+        logger.success(f"Ingestion complete for {prop.case_number}")
+
+    async def ingest_property_async(self, prop: Property, raw_docs: list = None):
+        """
+        Async version of ingest_property for use in async batch processing.
+
+        Avoids event loop conflicts by using async Party 2 resolution.
+
+        Args:
+            prop: Property object with case_number, parcel_id, legal_description
+            raw_docs: Optional pre-fetched ORI documents. If provided, skips ORI search.
+        """
+        logger.info(f"Ingesting property {prop.case_number} (Folio: {prop.parcel_id})")
+
+        # 1. Use pre-fetched docs if provided, otherwise search ORI
+        docs = raw_docs or []
+
+        if not docs:
+            # Get search terms from Property (set by pipeline) or fall back to legal description
+            search_terms = getattr(prop, 'legal_search_terms', None) or []
+
+            # If no pre-built search terms, try to build from legal_description
+            if not search_terms:
+                search_term = self._clean_legal_description(prop.legal_description)
+                if search_term:
+                    search_terms = [search_term]
+
+            if not search_terms:
+                logger.warning(f"No valid legal description for {prop.case_number}")
+                return
+
+            # Try each search term until we get results
+            successful_term = None
+            for search_term in search_terms:
+                logger.info(f"Searching ORI for: {search_term}")
+                try:
+                    # Use browser-based search (async) to avoid API blocking
+                    docs = await self.ori_scraper.search_by_legal_browser(search_term, headless=True)
+                    if docs:
+                        successful_term = search_term
+                        logger.info(f"Found {len(docs)} documents with term: {search_term}")
+                        break
+                    logger.debug(f"No results for: {search_term}")
+                except Exception as e:
+                    logger.warning(f"Search failed for '{search_term}': {e}")
+                    continue
+
+            if not docs:
+                logger.warning(f"No documents found after trying {len(search_terms)} search terms.")
+                return
+
+            # Log successful search term for future reference
+            if successful_term:
+                logger.info(f"Successful search term: {successful_term}")
+        else:
+            logger.info(f"Using {len(docs)} pre-fetched ORI records")
+
+        # Group raw ORI records by instrument number (ORI returns one row per party)
+        grouped_docs = self._group_ori_records_by_instrument(docs)
+        logger.info(f"Grouped {len(docs)} raw records into {len(grouped_docs)} unique documents")
+
+        # Resolve missing Party 2 for deeds (async version)
+        grouped_docs = await self._resolve_missing_party2_async(grouped_docs, prop)
+
+        processed_docs = []
+
+        for doc in grouped_docs:
+            # Map grouped ORI doc to our schema
+            mapped_doc = self._map_grouped_ori_doc(doc, prop)
+
+            # Save to DB
+            doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
+            mapped_doc['id'] = doc_id
+            processed_docs.append(mapped_doc)
+
+        # 2. Build Chain
+        logger.info("Building Chain of Title...")
+        analysis = self.chain_service.build_chain_and_analyze(processed_docs)
+
+        # Transform for DB
+        db_data = self._transform_analysis_for_db(analysis)
+
         # 3. Save Analysis
         self.db.save_chain_of_title(prop.parcel_id, db_data)
         logger.success(f"Ingestion complete for {prop.case_number}")
@@ -241,7 +329,7 @@ class IngestionService:
 
         return list(by_instrument.values())
 
-    def _resolve_missing_party2(self, grouped_docs: list) -> list:
+    def _resolve_missing_party2(self, grouped_docs: list, prop: Property) -> list:
         """
         Resolve missing Party 2 (grantee) for deed documents.
 
@@ -295,7 +383,93 @@ class IngestionService:
             logger.info(f"Resolving Party 2 for deed {instrument}...")
 
             try:
-                result = self.party2_service.resolve_party2(resolution_doc, self.pdf_dir)
+                # Use property-specific documents folder
+                doc_dir = self.storage.get_full_path(prop.parcel_id, "documents")
+                doc_dir.mkdir(parents=True, exist_ok=True)
+                
+                result = self.party2_service.resolve_party2(resolution_doc, doc_dir)
+
+                if result.party2:
+                    doc["party2_names"] = [result.party2]
+                    doc["party2_resolution_method"] = result.method
+                    doc["is_self_transfer"] = result.is_self_transfer
+                    doc["self_transfer_type"] = result.self_transfer_type
+                    resolved_count += 1
+
+                    if result.is_self_transfer:
+                        self_transfer_count += 1
+                        logger.info(f"  Self-transfer detected: {party1_names[0]} -> {result.party2}")
+                    else:
+                        logger.info(f"  Resolved: {result.party2} ({result.method})")
+                else:
+                    logger.warning(f"  Could not resolve Party 2 for {instrument}")
+
+            except Exception as e:
+                logger.error(f"  Party 2 resolution failed for {instrument}: {e}")
+
+        if resolved_count > 0:
+            logger.success(f"Resolved Party 2 for {resolved_count} deeds ({self_transfer_count} self-transfers)")
+
+        return grouped_docs
+
+    async def _resolve_missing_party2_async(self, grouped_docs: list, prop: Property) -> list:
+        """
+        Async version of _resolve_missing_party2 for batch processing.
+
+        Uses async Party 2 resolution to avoid event loop conflicts when called
+        from an async context (e.g., batch processing with browser automation).
+
+        Args:
+            grouped_docs: List of grouped documents with party1_names/party2_names
+            prop: Property object for storage paths
+
+        Returns:
+            Updated list with resolved Party 2 data
+        """
+        # Deed types that need both parties
+        DEED_TYPES = {"(D) DEED", "(WD) WARRANTY DEED", "(QC) QUIT CLAIM",
+                      "(CD) CORRECTIVE DEED", "(TD) TRUSTEE DEED", "(TAXDEED) TAX DEED"}
+
+        resolved_count = 0
+        self_transfer_count = 0
+
+        for doc in grouped_docs:
+            doc_type = (doc.get("doc_type") or "").upper()
+
+            # Only process deeds
+            if not any(dt in doc_type for dt in DEED_TYPES):
+                continue
+
+            # Skip if already has Party 2
+            if doc.get("party2_names"):
+                continue
+
+            # Need Party 1 to search
+            party1_names = doc.get("party1_names", [])
+            if not party1_names:
+                continue
+
+            instrument = doc.get("instrument")
+            legal = doc.get("legal")
+
+            # Build doc dict for resolution service
+            resolution_doc = {
+                "instrument": instrument,
+                "party1": party1_names[0],  # Use first party1
+                "party2": None,
+                "doc_type": doc_type,
+                "legal": legal,
+            }
+
+            logger.info(f"Resolving Party 2 for deed {instrument}...")
+
+            try:
+                # Use property-specific documents folder
+                doc_dir = self.storage.get_full_path(prop.parcel_id, "documents")
+                doc_dir.mkdir(parents=True, exist_ok=True)
+
+                # Use async version to avoid event loop conflicts
+                result = await self.party2_service.resolve_party2_async(resolution_doc, doc_dir)
 
                 if result.party2:
                     doc["party2_names"] = [result.party2]
