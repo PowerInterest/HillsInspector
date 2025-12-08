@@ -1,20 +1,61 @@
 # TODO
 
+## Completed
+
+### ✅ Full Document Analysis Pipeline (Dec 2024)
+- Added comprehensive vLLM prompts for ALL document types:
+  - Deeds (WD, QC, SWD, TD, etc.) - extracts grantor, grantee, consideration, legal description, red flags
+  - Mortgages - extracts principal, lender, interest rate, MERS info, terms
+  - Liens - extracts amount, creditor, lien type, survival analysis
+  - Satisfactions - extracts releasing party, original instrument reference
+  - Assignments - extracts assignor, assignee, chain tracking
+  - Lis Pendens - extracts case number, plaintiff, defendants
+  - NOC - extracts owner, contractor, dates, bond info
+  - Affidavits - extracts affiant, subject matter, heirs
+- Wired document analyzer into ingestion pipeline (`IngestionService`)
+- PDFs automatically downloaded and analyzed during property ingestion
+- `robust_json_parse()` handles LLM JSON formatting issues (missing commas, etc.)
+- Control flag `analyze_pdfs=True/False` for faster testing
+- Updated `docs/INGESTION_GUIDE.md` with full documentation
+
+### ✅ Async Party 2 Resolution (Dec 2024)
+- Implemented async-compatible Party 2 resolution to avoid event loop conflicts during batch processing
+- `IngestionService.ingest_property_async()` and `_resolve_missing_party2_async()` methods added
+- Shared ORI scraper between services to avoid multiple browser sessions
+- Batch processing script `run_all_properties.py` now handles 180+ document properties without timeouts
+
+### ✅ Multi-Image PDF Processing (Dec 2024)
+- Vision service now sends all PDF pages to vLLM in a single batch request instead of page-by-page
+- `VisionService.analyze_images()` and `*_multi()` variants for deed, mortgage, lien, final judgment extraction
+- Increased `max_tokens` from 1024 to 10000 for complex Final Judgments
+
 ## High Priority
 
 ### Get the pipeline working
-- Primary blocker: title analysis is not running—fix legal_description propagation, ORI ingestion crashes, and avoid dropping chain/encumbrance tables on pipeline start.
+- ~~Primary blocker: title analysis is not running—fix legal_description propagation, ORI ingestion crashes~~ MOSTLY FIXED
+- Avoid dropping chain/encumbrance tables on pipeline start
+- Continue batch processing remaining properties (29 remaining as of last run)
 
+### Restriction/Tax Validation
+- Pull restriction/easement docs via `PropertyDB.get_restriction_documents` and manually review the sample instruments found (folio `1827349TP000000000370U` instrument `2013149721`; folio `202935ZZZ000002717700U` instruments `2023303440` and `2023239553`).
+- Run the updated tax scraper on a parcel with known outstanding taxes and confirm a `document_type='TAX'` lien is saved with a parsed balance.
 
 
 ### Court Case Search
 Implement scraping for CQIDs 324-348 to find foreclosure and probate cases.
 
+### ORI Browser Search Reliability
+- ~~Browser-based ORI searches slow/unreliable in batches~~ IMPROVED with async refactor
+- ~~Playwright `EPIPE`/context corruption after first search~~ FIXED by sharing browser session
+- Still need to investigate narrowing search terms for properties with no ORI docs found
+- Document stable batch size and retry strategy
+
 ### Permit Analysis
 Integrate `HillsGovHubScraper` to verify NOCs (Notice of Commencement) against actual permits.
 
 ### Async Pipeline Refactor
-Implement bounded async orchestration and checkpointed stages (see `docs/async.md`) so reruns skip completed work and IO-heavy scrapes run concurrently with rate limits.
+- ✅ Basic async ingestion implemented (`ingest_property_async`)
+- Still needed: bounded async orchestration and checkpointed stages (see `docs/async.md`) so reruns skip completed work and IO-heavy scrapes run concurrently with rate limits.
 
 ## Medium Priority
 

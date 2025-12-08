@@ -2,6 +2,7 @@ from typing import Optional, Any
 from pathlib import Path
 from datetime import datetime
 import asyncio
+import json
 from loguru import logger
 
 from src.models.property import Property
@@ -9,11 +10,25 @@ from src.db.operations import PropertyDB
 from src.scrapers.ori_api_scraper import ORIApiScraper
 from src.services.title_chain_service import TitleChainService
 from src.services.party2_resolution_service import Party2ResolutionService
+from src.services.document_analyzer import DocumentAnalyzer
 
 from src.services.scraper_storage import ScraperStorage
 
+# Document types worth analyzing (download PDF and extract data)
+ANALYZABLE_DOC_TYPES = {
+    'D', 'WD', 'QC', 'SWD', 'TD', 'CD', 'PRD', 'CT',  # Deeds
+    'MTG', 'MTGNT', 'MTGNIT', 'DOT', 'HELOC',  # Mortgages
+    'LN', 'LIEN', 'JUD', 'TL', 'ML', 'HOA', 'COD', 'MECH',  # Liens
+    'SAT', 'REL', 'SATMTG', 'RELMTG',  # Satisfactions
+    'ASG', 'ASGN', 'ASGNMTG', 'ASSIGN', 'ASINT',  # Assignments
+    'LP', 'LISPEN',  # Lis Pendens
+    'NOC',  # Notice of Commencement
+    'AFF', 'AFFD',  # Affidavits
+}
+
+
 class IngestionService:
-    def __init__(self, ori_scraper: ORIApiScraper = None):
+    def __init__(self, ori_scraper: ORIApiScraper = None, analyze_pdfs: bool = True):
         self.db = PropertyDB()
         # Share ORI scraper across services to avoid multiple browser sessions
         self.ori_scraper = ori_scraper or ORIApiScraper()
@@ -21,6 +36,9 @@ class IngestionService:
         # Pass shared ORI scraper to Party2ResolutionService
         self.party2_service = Party2ResolutionService(ori_scraper=self.ori_scraper)
         self.storage = ScraperStorage()
+        # Document analyzer for PDF extraction
+        self.analyze_pdfs = analyze_pdfs
+        self.doc_analyzer = DocumentAnalyzer() if analyze_pdfs else None
 
     def ingest_property(self, prop: Property, raw_docs: list = None):
         """
@@ -55,20 +73,36 @@ class IngestionService:
                 return
 
             # Try each search term until we get results
+            # Use API search first (returns document IDs needed for PDF download)
+            # Fall back to browser search if API fails
             successful_term = None
             for search_term in search_terms:
-                logger.info(f"Searching ORI for: {search_term}")
+                logger.info(f"Searching ORI API for: {search_term}")
                 try:
-                    # Use browser-based search to avoid API blocking
-                    docs = self.ori_scraper.search_by_legal_sync(search_term, headless=True)
+                    # Use API search - returns docs with IDs and party names
+                    docs = self.ori_scraper.search_by_legal(search_term)
                     if docs:
                         successful_term = search_term
-                        logger.info(f"Found {len(docs)} documents with term: {search_term}")
+                        logger.info(f"Found {len(docs)} documents via API with term: {search_term}")
                         break
-                    logger.debug(f"No results for: {search_term}")
+                    logger.debug(f"No API results for: {search_term}")
                 except Exception as e:
-                    logger.warning(f"Search failed for '{search_term}': {e}")
+                    logger.warning(f"API search failed for '{search_term}': {e}")
                     continue
+
+            # Fall back to browser search if API returned nothing
+            if not docs:
+                logger.info("API returned no results, trying browser search...")
+                for search_term in search_terms:
+                    try:
+                        docs = self.ori_scraper.search_by_legal_sync(search_term, headless=True)
+                        if docs:
+                            successful_term = search_term
+                            logger.info(f"Found {len(docs)} documents via browser with term: {search_term}")
+                            break
+                    except Exception as e:
+                        logger.warning(f"Browser search failed for '{search_term}': {e}")
+                        continue
 
             if not docs:
                 logger.warning(f"No documents found after trying {len(search_terms)} search terms.")
@@ -84,8 +118,8 @@ class IngestionService:
         grouped_docs = self._group_ori_records_by_instrument(docs)
         logger.info(f"Grouped {len(docs)} raw records into {len(grouped_docs)} unique documents")
 
-        # Resolve missing Party 2 for deeds
-        grouped_docs = self._resolve_missing_party2(grouped_docs, prop)
+        # NOTE: We no longer call _resolve_missing_party2 here - instead we extract
+        # parties from the PDF using vLLM which is more reliable
 
         processed_docs = []
 
@@ -93,13 +127,28 @@ class IngestionService:
             # Map grouped ORI doc to our schema
             mapped_doc = self._map_grouped_ori_doc(doc, prop)
 
-            # Save to DB
+            # Download and analyze PDF for ALL document types (not just "analyzable")
+            # This extracts party data from the PDF which is more reliable than ORI indexing
+            if self.analyze_pdfs:
+                download_result = self._download_and_analyze_document(doc, prop.parcel_id)
+                if download_result:
+                    # Always set file_path if download succeeded
+                    mapped_doc['file_path'] = download_result.get('file_path')
+                    # Set extracted data if vision analysis succeeded
+                    if download_result.get('extracted_data'):
+                        mapped_doc['vision_extracted_data'] = download_result['extracted_data']
+                        # Update party1/party2 from vLLM extraction if missing
+                        mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
+
+            # Save to DB (after party updates)
             doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
             mapped_doc['id'] = doc_id
+
+            # Update extracted data in DB if we have it
+            if mapped_doc.get('vision_extracted_data'):
+                self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+
             processed_docs.append(mapped_doc)
-            
-            # TODO: Download PDF if needed (e.g. for OCR of specific docs)
-            # For now, we rely on metadata for chain building
             
         # 2. Build Chain
         logger.info("Building Chain of Title...")
@@ -171,8 +220,8 @@ class IngestionService:
         grouped_docs = self._group_ori_records_by_instrument(docs)
         logger.info(f"Grouped {len(docs)} raw records into {len(grouped_docs)} unique documents")
 
-        # Resolve missing Party 2 for deeds (async version)
-        grouped_docs = await self._resolve_missing_party2_async(grouped_docs, prop)
+        # NOTE: We no longer call _resolve_missing_party2_async here - instead we extract
+        # parties from the PDF using vLLM which is more reliable
 
         processed_docs = []
 
@@ -180,9 +229,27 @@ class IngestionService:
             # Map grouped ORI doc to our schema
             mapped_doc = self._map_grouped_ori_doc(doc, prop)
 
-            # Save to DB
+            # Download and analyze PDF for ALL document types
+            # This extracts party data from the PDF which is more reliable than ORI indexing
+            if self.analyze_pdfs:
+                download_result = self._download_and_analyze_document(doc, prop.parcel_id)
+                if download_result:
+                    # Always set file_path if download succeeded
+                    mapped_doc['file_path'] = download_result.get('file_path')
+                    # Set extracted data if vision analysis succeeded
+                    if download_result.get('extracted_data'):
+                        mapped_doc['vision_extracted_data'] = download_result['extracted_data']
+                        # Update party1/party2 from vLLM extraction if missing
+                        mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
+
+            # Save to DB (after party updates)
             doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
             mapped_doc['id'] = doc_id
+
+            # Update extracted data in DB if we have it
+            if mapped_doc.get('vision_extracted_data'):
+                self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+
             processed_docs.append(mapped_doc)
 
         # 2. Build Chain
@@ -195,6 +262,122 @@ class IngestionService:
         # 3. Save Analysis
         self.db.save_chain_of_title(prop.parcel_id, db_data)
         logger.success(f"Ingestion complete for {prop.case_number}")
+
+    def _should_analyze_document(self, doc: dict) -> bool:
+        """Check if document type is worth downloading and analyzing."""
+        doc_type = doc.get('DocType', '')
+        # Extract just the code: "(MTG) MORTGAGE" -> "MTG"
+        code = doc_type.replace('(', '').replace(')', '').split()[0].upper() if doc_type else ''
+        return code in ANALYZABLE_DOC_TYPES
+
+    def _download_and_analyze_document(self, doc: dict, folio: str) -> Optional[dict]:
+        """Download PDF and extract structured data using vision analysis.
+
+        Returns:
+            Dict with 'file_path' and optionally 'extracted_data' if vision analysis succeeded.
+            Returns None if PDF download failed.
+        """
+        # Support both grouped doc format (lowercase) and raw ORI format (uppercase)
+        instrument = doc.get('instrument') or doc.get('Instrument', '')
+        doc_type = doc.get('doc_type') or doc.get('DocType', 'UNKNOWN')
+
+        if not instrument:
+            return None
+
+        try:
+            # Create output directory
+            output_dir = Path(f"data/properties/{folio}/documents")
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Build ORI doc format for download_pdf (needs ID or instrument)
+            ori_doc = {
+                'Instrument': instrument,
+                'DocType': doc_type,
+                'ID': doc.get('ID') or doc.get('id'),  # May not have ID yet
+            }
+
+            # Download PDF
+            pdf_path = self.ori_scraper.download_pdf(ori_doc, output_dir)
+            if not pdf_path or not pdf_path.exists():
+                logger.debug(f"Could not download PDF for {instrument}")
+                return None
+
+            logger.info(f"Analyzing PDF: {pdf_path.name}")
+
+            # Start result with file path (always set if download succeeded)
+            result = {'file_path': str(pdf_path)}
+
+            # Analyze with vision service
+            extracted_data = self.doc_analyzer.analyze_document(str(pdf_path), doc_type, instrument)
+            if extracted_data:
+                logger.success(f"Extracted data from {doc_type}: {instrument}")
+                result['extracted_data'] = extracted_data
+
+            return result
+
+        except Exception as e:
+            logger.warning(f"Error analyzing {instrument}: {e}")
+            return None
+
+    def _update_parties_from_extraction(self, mapped_doc: dict, extracted_data: dict) -> dict:
+        """
+        Update party1/party2 fields from vLLM extraction if they are missing.
+
+        For deeds: grantor -> party1, grantee -> party2
+        For mortgages: borrower -> party1, lender -> party2
+        For liens: debtor -> party1, creditor -> party2
+        """
+        doc_type = (mapped_doc.get('document_type') or '').upper()
+
+        # Determine which extraction fields to use based on document type
+        if 'DEED' in doc_type or doc_type in ['D', 'WD', 'QC', 'TD', 'CD']:
+            party1_field = 'grantor'
+            party2_field = 'grantee'
+        elif 'MORTGAGE' in doc_type or 'MTG' in doc_type:
+            party1_field = 'borrower'
+            party2_field = 'lender'
+        elif 'LIEN' in doc_type or 'JUDGMENT' in doc_type:
+            party1_field = 'debtor'
+            party2_field = 'creditor'
+        elif 'SATISFACTION' in doc_type or 'SAT' in doc_type:
+            party1_field = 'releasing_party'
+            party2_field = 'released_party'
+        elif 'ASSIGNMENT' in doc_type or 'ASG' in doc_type:
+            party1_field = 'assignor'
+            party2_field = 'assignee'
+        else:
+            # Generic fallback
+            party1_field = 'grantor'
+            party2_field = 'grantee'
+
+        # Update party1 if missing
+        if not mapped_doc.get('party1') or mapped_doc['party1'].strip() == '':
+            extracted_party1 = extracted_data.get(party1_field) or extracted_data.get('party1')
+            if extracted_party1:
+                mapped_doc['party1'] = extracted_party1
+                logger.info(f"  Updated party1 from vLLM: {extracted_party1[:50]}")
+
+        # Update party2 if missing
+        if not mapped_doc.get('party2') or mapped_doc['party2'].strip() == '':
+            extracted_party2 = extracted_data.get(party2_field) or extracted_data.get('party2')
+            if extracted_party2:
+                mapped_doc['party2'] = extracted_party2
+                logger.info(f"  Updated party2 from vLLM: {extracted_party2[:50]}")
+
+        return mapped_doc
+
+    def _update_document_with_extracted_data(self, doc_id: int, extracted_data: dict):
+        """Update document record with vision-extracted data."""
+        try:
+            # Store as JSON in extracted_data field
+            self.db.conn.execute("""
+                UPDATE documents
+                SET extracted_data = ?
+                WHERE id = ?
+            """, [json.dumps(extracted_data), doc_id])
+            self.db.conn.commit()
+        except Exception as e:
+            logger.warning(f"Failed to update document {doc_id} with extracted data: {e}")
 
     def _transform_analysis_for_db(self, analysis: dict) -> dict:
         chain = analysis.get('chain', [])
@@ -286,46 +469,71 @@ class IngestionService:
     def _group_ori_records_by_instrument(self, docs: list) -> list:
         """
         Group ORI records by instrument number.
-        ORI returns one row per party per document, so we need to combine them.
+
+        Handles two formats:
+        1. Browser format: one row per party with person_type, name, instrument, etc.
+        2. API format: one row per document with PartiesOne/PartiesTwo lists, ID, etc.
 
         Args:
-            docs: Raw ORI records with person_type, name, instrument, etc.
+            docs: Raw ORI records from browser or API search
 
         Returns:
-            List of grouped documents with party1_names and party2_names lists
+            List of grouped documents with party1_names, party2_names, and ID
         """
         by_instrument = {}
 
         for doc in docs:
             # Get instrument number (key for grouping)
-            instrument = doc.get("instrument") or doc.get("Instrument", "")
+            instrument = str(doc.get("instrument") or doc.get("Instrument", ""))
             if not instrument:
                 continue
 
-            # Initialize group if new
+            # Check if this is API format (has PartiesOne/PartiesTwo) or browser format
+            is_api_format = "PartiesOne" in doc or "PartiesTwo" in doc
+
+            # Initialize or update group
             if instrument not in by_instrument:
                 by_instrument[instrument] = {
                     "instrument": instrument,
                     "doc_type": doc.get("doc_type") or doc.get("DocType", ""),
                     "record_date": doc.get("record_date") or doc.get("RecordDate", ""),
-                    "book_num": doc.get("book_num") or doc.get("Book", ""),
-                    "page_num": doc.get("page_num") or doc.get("Page", ""),
+                    "book_num": doc.get("book_num") or doc.get("BookNum", ""),
+                    "page_num": doc.get("page_num") or doc.get("PageNum", ""),
                     "legal": doc.get("legal") or doc.get("Legal", ""),
                     "party1_names": [],  # PARTY 1 = Grantor/Mortgagor/Debtor
                     "party2_names": [],  # PARTY 2 = Grantee/Mortgagee/Creditor
+                    "ID": doc.get("ID"),  # API returns document ID
                 }
 
-            # Add party to appropriate list
-            person_type = doc.get("person_type", "").upper()
-            name = doc.get("name", "").strip()
+            if is_api_format:
+                # API format: PartiesOne and PartiesTwo are lists
+                parties_one = doc.get("PartiesOne", []) or []
+                parties_two = doc.get("PartiesTwo", []) or []
 
-            if name:
-                if "PARTY 1" in person_type or "GRANTOR" in person_type:
-                    if name not in by_instrument[instrument]["party1_names"]:
+                for name in parties_one:
+                    if name and name not in by_instrument[instrument]["party1_names"]:
                         by_instrument[instrument]["party1_names"].append(name)
-                elif "PARTY 2" in person_type or "GRANTEE" in person_type:
-                    if name not in by_instrument[instrument]["party2_names"]:
+
+                for name in parties_two:
+                    if name and name not in by_instrument[instrument]["party2_names"]:
                         by_instrument[instrument]["party2_names"].append(name)
+
+                # Preserve the ID from API
+                if doc.get("ID") and not by_instrument[instrument].get("ID"):
+                    by_instrument[instrument]["ID"] = doc.get("ID")
+
+            else:
+                # Browser format: one row per party
+                person_type = doc.get("person_type", "").upper()
+                name = doc.get("name", "").strip()
+
+                if name:
+                    if "PARTY 1" in person_type or "GRANTOR" in person_type:
+                        if name not in by_instrument[instrument]["party1_names"]:
+                            by_instrument[instrument]["party1_names"].append(name)
+                    elif "PARTY 2" in person_type or "GRANTEE" in person_type:
+                        if name not in by_instrument[instrument]["party2_names"]:
+                            by_instrument[instrument]["party2_names"].append(name)
 
         return list(by_instrument.values())
 
@@ -505,18 +713,27 @@ class IngestionService:
         Returns:
             Mapped document dict
         """
-        # Parse recording date
+        # Parse recording date - handle both timestamp (API) and string (browser) formats
         rec_date = None
-        date_str = grouped_doc.get("record_date", "")
-        if date_str:
-            for fmt in ["%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y"]:
+        date_val = grouped_doc.get("record_date", "")
+        if date_val:
+            from datetime import datetime as dt
+            # Check if it's a Unix timestamp (int or float)
+            if isinstance(date_val, (int, float)):
                 try:
-                    from datetime import datetime as dt
-                    parsed = dt.strptime(date_str, fmt)
+                    parsed = dt.fromtimestamp(date_val)
                     rec_date = parsed.strftime("%Y-%m-%d")
-                    break
-                except ValueError:
-                    continue
+                except (ValueError, OSError):
+                    pass
+            elif isinstance(date_val, str):
+                # Try string date formats
+                for fmt in ["%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y"]:
+                    try:
+                        parsed = dt.strptime(date_val, fmt)
+                        rec_date = parsed.strftime("%Y-%m-%d")
+                        break
+                    except ValueError:
+                        continue
 
         # Combine party names
         party1 = ", ".join(grouped_doc.get("party1_names", []))

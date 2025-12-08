@@ -15,8 +15,9 @@ USER_AGENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like
 class HCPAScraper:
     BASE_URL = "https://gis.hcpafl.org/propertysearch/"
     
-    def __init__(self, storage: Optional[ScraperStorage] = None):
+    def __init__(self, headless: bool = True, storage: Optional[ScraperStorage] = None):
         from src.services.scraper_storage import ScraperStorage
+        self.headless = headless
         self.storage = storage or ScraperStorage()
     
     async def enrich_property(self, prop: Property) -> Property:
@@ -29,7 +30,7 @@ class HCPAScraper:
             return prop
             
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=False)
+            browser = await p.chromium.launch(headless=self.headless)
             context = await browser.new_context(
                 user_agent=USER_AGENT
             )
@@ -82,34 +83,33 @@ class HCPAScraper:
                     await results_table.locator("tbody tr:first-child td").first.click()
                     
                     # Wait for details tab to be active and visible
-                    # The details tab content is #details
-                    await page.locator("#details").wait_for(state="visible", timeout=10000)
+                    details_container = page.locator("#details")
+                    await details_container.wait_for(state="visible", timeout=15000)
                     
-                    # Wait for content to load inside #details
-                    # We expect "Owner" or "Folio" to be present
+                    # Wait for specific content to ensure full load
+                    # "PROPERTY RECORD CARD" is in a h4.section-header
                     try:
-                        await page.locator("#details").filter(has_text="Owner").wait_for(state="visible", timeout=10000)
+                        await details_container.locator("h4", has_text="PROPERTY RECORD CARD").wait_for(state="visible", timeout=10000)
+                        logger.info("HCPA details page loaded (found 'PROPERTY RECORD CARD') for {parcel}", parcel=prop.parcel_id)
                     except Exception:
-                        logger.warning("Timed out waiting for 'Owner' text in HCPA details for {parcel}", parcel=prop.parcel_id)
+                        logger.warning("Timed out waiting for 'PROPERTY RECORD CARD' header for {parcel}", parcel=prop.parcel_id)
 
-                    logger.info("HCPA details page loaded for {parcel}", parcel=prop.parcel_id)
-                    await page.screenshot(path="debug_hcpa_details.png")
-                
-                # Now we should be on the details page
-                
-                # Now we should be on the details page
-                # Dump HTML of details page to inspect structure
-                logger.info("Dumping HCPA details page HTML for {parcel}", parcel=prop.parcel_id)
-                content = await page.content()
-                with open("debug_hcpa_details.html", "w", encoding="utf-8") as f:
-                    f.write(content)
+                    # Give a brief pause for any dynamic content/images to render
+                    await asyncio.sleep(2.0)
 
-                # Take screenshot of the details page
-                # Ensure we capture the full height of the details
-                await page.evaluate("document.body.style.zoom = '0.8'") # Zoom out slightly to fit more
-                await asyncio.sleep(0.5)
-                
-                screenshot_bytes = await page.screenshot(full_page=True)
+                    # Dump HTML for debugging
+                    logger.info("Dumping HCPA details page HTML for {parcel}", parcel=prop.parcel_id)
+                    content = await page.content()
+                    with open("debug_hcpa_details.html", "w", encoding="utf-8") as f:
+                        f.write(content)
+
+                    # Take screenshot of the details container exclusively to avoid layout issues
+                    # If full page is needed, we can do that too, but element screenshot is safer for Vision
+                    try:
+                        screenshot_bytes = await details_container.screenshot()
+                    except Exception as e:
+                        logger.warning(f"Element screenshot failed: {e}. Fallback to full page.")
+                        screenshot_bytes = await page.screenshot(full_page=True)
                 
                 # Save using ScraperStorage
                 screenshot_path = self.storage.save_screenshot(

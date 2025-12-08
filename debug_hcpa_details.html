@@ -74,12 +74,12 @@
     <!-- Google tag (gtag.js) -->
     <script async="" src="https://www.googletagmanager.com/gtag/js?id=G-85R6TGKCJ4"></script>
     <script> window.dataLayer = window.dataLayer || []; function gtag() { dataLayer.push(arguments); } gtag('js', new Date()); gtag('config', 'G-85R6TGKCJ4'); </script>
-<script src="https://cdn.jsdelivr.net/npm/alasql" type="text/javascript"></script><script src="https://hcpa.whoson.com/newchat/js/whoson.inline.min.js"></script><script src="https://hcpa.whoson.com/w.js?domain=hcpafl.org&amp;callback=whoson_global.checkStatus&amp;u=358-1764822796762&amp;p=https%3A%2F%2Fgis.hcpafl.org%2Fpropertysearch%2F%23%2Fsearch%2Fbasic%2Fpin%3DA-X0-00-00-400-0710U&amp;r="></script><script src="https://hcpa.whoson.com/w.js?domain=hcpafl.org&amp;callback=whoson_global.checkStatus&amp;u=358-1764822796762&amp;p=https%3A%2F%2Fgis.hcpafl.org%2Fpropertysearch%2F%23%2Fsearch%2Fbasic%2Fpin%3DA-X0-00-00-400-0710U&amp;r=&amp;x=1" id="whoson_poll"></script><link rel="stylesheet" type="text/css" href="https://hcpa.whoson.com/newchat//css-inline/whoson.inline.min.css"><link type="text/css" rel="stylesheet" href="https://hcpa.whoson.com/newchat//themes/colors/office/office_inline.min.css"></head>
+<script src="https://cdn.jsdelivr.net/npm/alasql" type="text/javascript"></script><script src="https://hcpa.whoson.com/newchat/js/whoson.inline.min.js"></script><script src="https://hcpa.whoson.com/w.js?domain=hcpafl.org&amp;callback=whoson_global.checkStatus&amp;u=604-1765146989036&amp;p=https%3A%2F%2Fgis.hcpafl.org%2Fpropertysearch%2F%23%2Fnav%2FBasic%2520Search&amp;r="></script><script src="https://hcpa.whoson.com/w.js?domain=hcpafl.org&amp;callback=whoson_global.checkStatus&amp;u=604-1765146989036&amp;p=https%3A%2F%2Fgis.hcpafl.org%2Fpropertysearch%2F%23%2Fnav%2FBasic%2520Search&amp;r=&amp;x=1" id="whoson_poll"></script><link rel="stylesheet" type="text/css" href="https://hcpa.whoson.com/newchat//css-inline/whoson.inline.min.css"><link type="text/css" rel="stylesheet" href="https://hcpa.whoson.com/newchat//themes/colors/office/office_inline.min.css"></head>
 <body>
     <a id="top"></a>
     <form method="post" action="/" id="form1" enctype="multipart/form-data">
 <div class="aspNetHidden">
-<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="3TyX3Tn/Yxt+fD04BwBAQ5Q3y8yCpa9VErEuDUxjDdDOyLdeP17upJx5DLEsj1vcSHkMZX3on6pgXBBSx0vXgF0rgxZfgaBxnY3ESBHBKcs=">
+<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="ikrjQd5Sl/UneR09ffLOW8gflcTZBRTaXhtn3h9EiZZfIIyNZoi+KpBETWCV7awSjg1gxU299KVI6gxgU6nFYFFl4/c0jlOOZNEg9ZhxRu4=">
 </div>
 
 <div class="aspNetHidden">
@@ -352,9 +352,9 @@
 		
 			<li class="tab cool-gradient" data-bind="text: $data, css: { active: $data == $root.activeTab() }, click: $root.goToTab">Sales Search</li>
 		
-			<li class="tab cool-gradient active" data-bind="text: $data, css: { active: $data == $root.activeTab() }, click: $root.goToTab">Search Results</li>
+			<li class="tab cool-gradient" data-bind="text: $data, css: { active: $data == $root.activeTab() }, click: $root.goToTab">Search Results</li>
 		
-			<li class="tab cool-gradient" data-bind="text: $data, css: { active: $data == $root.activeTab() }, click: $root.goToTab">Parcel Result</li>
+			<li class="tab cool-gradient active" data-bind="text: $data, css: { active: $data == $root.activeTab() }, click: $root.goToTab">Parcel Result</li>
 		
 			<li class="tab cool-gradient" data-bind="text: $data, css: { active: $data == $root.activeTab() }, click: $root.goToTab">Help</li>
 		</ul>
@@ -876,9 +876,9 @@
 			<p data-bind="text: query">stype=q</p>
 			
 		</div>
-		<div id="results" class="tabcontent" data-bind="with: results, visible: $root.activeTab() === 'Search Results'" style="">
+		<div id="results" class="tabcontent" data-bind="with: results, visible: $root.activeTab() === 'Search Results'" style="display: none;">
 			<h2>
-                <span data-bind="visible: $root.searchType() === 'basic'">Basic </span>
+                <span data-bind="visible: $root.searchType() === 'basic'" style="">Basic </span>
                 <span data-bind="visible: $root.searchType() === 'advanced'" style="display: none;">Advanced </span>
                 <span data-bind="visible: $root.searchType() === 'sales'" style="display: none;">Sales </span>
                 Search Results
@@ -889,34 +889,34 @@
 			<div data-bind="visible: !busy()" style="position: relative;">
 				<!-- NOTE: if the data binding happens on results.length, this element will be always visible when the sales results are displayed.
 				If the data binding happens on salesResult.length - vice versa. Need a function to switch between the two result variables. -->
-				<h4 id="h-no-results" data-bind="visible: totalResults() === 0">No search results available.</h4>
+				<h4 id="h-no-results" data-bind="visible: totalResults() === 0" style="display: none;">No search results available.</h4>
 				<!-- <h4 id="z_h-no-results" data-bind="visible: results().length === 0">No search results available.</h4> -->
 
-                <div class="export-section" data-bind="visible: totalResults() &gt; 0" style="display: none;">
+                <div class="export-section" data-bind="visible: totalResults() &gt; 0" style="">
                     <div class="btn-toolbar donotprint">
-                        <div class="btn-group"><div class="alert alert-small alert-minimal">Total Records: <b data-bind="text: totalResultsFormatted">0</b></div></div>
+                        <div class="btn-group"><div class="alert alert-small alert-minimal">Total Records: <b data-bind="text: totalResultsFormatted">3</b></div></div>
                         <div class="btn-group">
-                            <button type="button" class="btn" data-bind="click: toTXT, enable: (salesResults().length &gt; 0) || (results().length &gt; 0 )" disabled="">
+                            <button type="button" class="btn" data-bind="click: toTXT, enable: (salesResults().length &gt; 0) || (results().length &gt; 0 )">
 						        <img src="images/download-icon_small.png" alt="Text File" class="icon hidden-phone"><span>Text</span>
                             </button>
                         </div>
                         <div class="btn-group">
-                            <button type="button" class="btn remove-on-tablet" data-bind="click: toCSV, enable: (salesResults().length &gt; 0) || (results().length &gt; 0 )" disabled="">
+                            <button type="button" class="btn remove-on-tablet" data-bind="click: toCSV, enable: (salesResults().length &gt; 0) || (results().length &gt; 0 )">
 						        <img src="images/download-icon_small.png" alt="CSV file" class="icon hidden-phone"><span>CSV</span>
         				    </button>
                         </div>
                         <div class="btn-group">
-                            <button type="button" class="btn remove-on-tablet" data-bind="click: toXLS, enable: (salesResults().length &gt; 0) || (results().length &gt; 0 )" disabled="">
+                            <button type="button" class="btn remove-on-tablet" data-bind="click: toXLS, enable: (salesResults().length &gt; 0) || (results().length &gt; 0 )">
 						        <img src="images/download-icon_small.png" alt="Excel file" class="icon hidden-phone"><span>XLS</span>
                             </button>
                         </div>
                         <div class="btn-group">
-                            <button type="button" class="btn remove-on-tablet" data-bind="click: toXLSX, enable: (salesResults().length &gt; 0) || (results().length &gt; 0 )" disabled="">
+                            <button type="button" class="btn remove-on-tablet" data-bind="click: toXLSX, enable: (salesResults().length &gt; 0) || (results().length &gt; 0 )">
                                 <img src="images/download-icon_small.png" alt="Excel file" class="icon hidden-phone"><span>XLSX</span>
                             </button>
                         </div>
                         <div class="btn-group">
-                            <button id="btnExportLabels" type="button" class="btn remove-on-tablet" data-bind="click: toLabel, enable: (salesResults().length &gt; 0) || (results().length &gt; 0 )" disabled="">
+                            <button id="btnExportLabels" type="button" class="btn remove-on-tablet" data-bind="click: toLabel, enable: (salesResults().length &gt; 0) || (results().length &gt; 0 )" style="display: block;">
 						        <img src="images/download-icon_small.png" alt="Mailing Labels" class="icon hidden-phone"><span>Labels</span>
                             </button>
                         </div>
@@ -936,7 +936,7 @@
 
                 <div class="row">
                     <div class="span3">
-                        <div class="control-group control-group-inline" data-bind="visible: totalResults() &gt; 0" style="display: none;">
+                        <div class="control-group control-group-inline" data-bind="visible: totalResults() &gt; 0" style="">
                             <label class="control-label visible-phone">Results per page:</label>
                             <label class="control-label visible-tablet">Per page:</label>
                             <label class="control-label visible-desktop">Results per page:</label>
@@ -948,7 +948,7 @@
                     <div class="span6">
                             <div class="pagination donotprint" data-bind="visible: maxPage() &gt; 1" style="display: none;">
                                 <ul>
-					                <li><a data-bind="visible: maxPage() &gt; 0, click: goToPage.bind($data, 1), css: { active: page() === 1, last: maxPage() === 1 }" class="active" style="display: none;">1</a></li>
+					                <li><a data-bind="visible: maxPage() &gt; 0, click: goToPage.bind($data, 1), css: { active: page() === 1, last: maxPage() === 1 }" class="active last" style="">1</a></li>
                                     <li><a data-bind="visible: maxPage() &gt; 1, click: goToPage.bind($data, 2), css: { active: page() === 2, last: maxPage() === 2 }" class="" style="display: none;">2</a></li>
 					                <li><a data-bind="visible: maxPage() &gt; 2, click: goToPage.bind($data, 3), css: { active: page() === 3, last: maxPage() === 3 }" class="" style="display: none;">3</a></li>
 					                <li><span data-bind="visible: page() &gt; 6" style="display: none;">...</span></li>
@@ -958,15 +958,15 @@
 					                <li><a data-bind="visible: (maxPage() &gt; page()) &amp;&amp; (page() &gt; 2), click: goToPage.bind($data, page() + 1), text: (page() + 1)" style="display: none;">2</a></li>
 					                <li><a data-bind="visible: (maxPage() &gt; page() + 1) &amp;&amp; (page() &gt; 1), click: goToPage.bind($data, page() + 2), text: (page() + 2)" style="display: none;">3</a></li>
 					                <li><span data-bind="visible: maxPage() &gt; page() + 5" style="display: none;">...</span>
-					                </li><li><a data-bind="visible: (maxPage() &gt; page() + 4) &amp;&amp; (maxPage() &gt; 5), click: goToPage.bind($data, maxPage() - 2), text: (maxPage() - 2)" style="display: none;">-2</a></li>
-					                <li><a data-bind="visible: (maxPage() &gt; page() + 3) &amp;&amp; (maxPage() &gt; 4), click: goToPage.bind($data, maxPage() - 1), text: (maxPage() - 1)" style="display: none;">-1</a></li>
-					                <li><a data-bind="visible: (maxPage() &gt; page() + 2) &amp;&amp; (maxPage() &gt; 3), click: goToPage.bind($data, maxPage()), text: maxPage" style="display: none;">0</a></li>
+					                </li><li><a data-bind="visible: (maxPage() &gt; page() + 4) &amp;&amp; (maxPage() &gt; 5), click: goToPage.bind($data, maxPage() - 2), text: (maxPage() - 2)" style="display: none;">-1</a></li>
+					                <li><a data-bind="visible: (maxPage() &gt; page() + 3) &amp;&amp; (maxPage() &gt; 4), click: goToPage.bind($data, maxPage() - 1), text: (maxPage() - 1)" style="display: none;">0</a></li>
+					                <li><a data-bind="visible: (maxPage() &gt; page() + 2) &amp;&amp; (maxPage() &gt; 3), click: goToPage.bind($data, maxPage()), text: maxPage" style="display: none;">1</a></li>
 					                <!-- <li><a class="x_print-only"> Page <span data-bind="text: page"></span> of <span data-bind="text: maxPage"></span></a></li>-->
                                 </ul>
                             </div>
                     </div>
                     <div class="span3">
-				        <div class="map-parcels donotprint" data-bind="visible: results().length &gt; 0 || salesResults().length &gt; 0" style="display: none;">
+				        <div class="map-parcels donotprint" data-bind="visible: results().length &gt; 0 || salesResults().length &gt; 0" style="">
 					        <button class="btn" type="button" data-bind="click: mapSelected, enable: mapSelectedEnable" title="Map the selected parcels from the current page" disabled="">
 						        Map Selected
 					        </button>         
@@ -974,8 +974,8 @@
                     </div>
                 </div>
 
-				<div id="div-basic-results" class="table-container">
-                    <table id="table-basic-results" class="results-table" data-bind="visible: results().length &gt; 0 " style="display: none;"> 
+				<div id="div-basic-results" class="table-container" style="display: block; visibility: visible;">
+                    <table id="table-basic-results" class="results-table" data-bind="visible: results().length &gt; 0 " style=""> 
 					<!--<table id="z_table-basic-results" class="results-table" > -->
 						<thead>
 							<tr>
@@ -1019,12 +1019,48 @@
 								<th class="donotprint">&nbsp;</th>
 							</tr>
 						</tfoot>
-						<tbody data-bind="foreach: results"></tbody>
+						<tbody data-bind="foreach: results">
+							<tr>
+								<td class="link force-one-line" data-bind="text: displayFolio, click: goToPin">127219-1000</td>
+								<td class="link multiline" data-bind="html: ownerFormatted, click: goToPin">SHERWIN MARK D</td>
+								<td class="link secondary-data" data-bind="text: address, click: goToPin">3006 W JULIA ST, UNIT A, TAMPA</td>
+								<td class="link tertiary-data" data-bind="text: dateFormatted, click: goToPin">6/1/1998</td>
+								<td class="link tertiary-data" data-bind="text: priceAsMoney, click: goToPin">$280,000</td>
+								<td class="link tertiary-data" data-bind="text: homestead, click: goToPin">YES</td>
+								<td class="donotprint">
+									<input type="checkbox" data-bind="checked: toMapChecked, click: $parent.toMapClick">
+								</td>
+							</tr>
+						
+							<tr>
+								<td class="link force-one-line" data-bind="text: displayFolio, click: goToPin">127219-2000</td>
+								<td class="link multiline" data-bind="html: ownerFormatted, click: goToPin">ZANNIS STEPHEN M<br>MUSTO ANNAMARIE</td>
+								<td class="link secondary-data" data-bind="text: address, click: goToPin">3006 W JULIA ST, UNIT B, TAMPA</td>
+								<td class="link tertiary-data" data-bind="text: dateFormatted, click: goToPin">1/29/2009</td>
+								<td class="link tertiary-data" data-bind="text: priceAsMoney, click: goToPin">$375,000</td>
+								<td class="link tertiary-data" data-bind="text: homestead, click: goToPin">YES</td>
+								<td class="donotprint">
+									<input type="checkbox" data-bind="checked: toMapChecked, click: $parent.toMapClick">
+								</td>
+							</tr>
+						
+							<tr>
+								<td class="link force-one-line" data-bind="text: displayFolio, click: goToPin">127220-0000</td>
+								<td class="link multiline" data-bind="html: ownerFormatted, click: goToPin">3006 W JULIA ST LLC</td>
+								<td class="link secondary-data" data-bind="text: address, click: goToPin">3006 W JULIA ST, UNIT C, TAMPA</td>
+								<td class="link tertiary-data" data-bind="text: dateFormatted, click: goToPin">2/7/2025</td>
+								<td class="link tertiary-data" data-bind="text: priceAsMoney, click: goToPin">$100</td>
+								<td class="link tertiary-data" data-bind="text: homestead, click: goToPin">NO</td>
+								<td class="donotprint">
+									<input type="checkbox" data-bind="checked: toMapChecked, click: $parent.toMapClick">
+								</td>
+							</tr>
+						</tbody>
 					</table>
 				</div>
 			
 
-				<div id="div-sales-results" class="table-container">
+				<div id="div-sales-results" class="table-container" style="display: none; visibility: collapse;">
 
                     <!-- The table headers must match the fields as defined in tbody 
                         <table id="zz_table-sales-results" class="results-table" data-bind="visible: results().length > 0">                        
@@ -1109,17 +1145,17 @@
 						</tfoot>
 						<tbody data-bind="foreach: salesResults"></tbody>
 					</table>
-                    <a data-bind="visible: totalResults() &gt; 0" class="donotprint" href="//www.hcpafl.org/Property-Info/Land-Zone-Codes" target="_blank" style="display: none;">(*) Show zoning table</a>
+                    <a data-bind="visible: totalResults() &gt; 0" class="donotprint" href="//www.hcpafl.org/Property-Info/Land-Zone-Codes" target="_blank" style="">(*) Show zoning table</a>
 				</div>
 			    
-				<div class="row donotprint" data-bind="visible: totalResults() &gt; 0" style="display: none;">
+				<div class="row donotprint" data-bind="visible: totalResults() &gt; 0" style="">
                     <div class="span6">
-                        <div class="alert alert-small alert-minimal" data-bind="visible: totalResults() &gt; 0" style="display: none;">
-                            Total Records: <b data-bind="text: totalResultsFormatted">0</b>
+                        <div class="alert alert-small alert-minimal" data-bind="visible: totalResults() &gt; 0" style="">
+                            Total Records: <b data-bind="text: totalResultsFormatted">3</b>
                         </div>
                     </div>
                     <div class="span6">
-                        <div class="map-parcels donotprint" data-bind="visible: results().length &gt; 0 || salesResults().length &gt; 0" style="display: none;">
+                        <div class="map-parcels donotprint" data-bind="visible: results().length &gt; 0 || salesResults().length &gt; 0" style="">
                             <button class="btn" type="button" data-bind="click: mapSelected, enable: mapSelectedEnable" title="Map the selected parcels from the current page" disabled="">
 						        Map Selected
 					        </button> 
@@ -1128,8 +1164,620 @@
 				</div>
 			</div>
 		</div>
-		<div id="errors" class="ztabcontent" data-bind="with: parcelError, visible: $root.activeTab() === 'Parcel Result'" style="display: none;"></div>
-		<div id="details" class="tabcontent" data-bind="with: parcelData, visible: $root.activeTab() === 'Parcel Result'" style="display: none;"></div>
+		<div id="errors" class="ztabcontent" data-bind="with: parcelError, visible: $root.activeTab() === 'Parcel Result'" style=""></div>
+		<div id="details" class="tabcontent" data-bind="with: parcelData, visible: $root.activeTab() === 'Parcel Result'" style="">
+			<h2>Parcel Result</h2>
+			<p class="lead">Folio: <span data-bind="text: propertyCard.displayFolio">127219-1000</span></p>
+			
+            <!-- This line enables the visibility of all export buttons
+            <div class="export-section donotprint" data-bind="foreach: links">   
+                <a data-bind="attr: { href: url, title: title, target: target }, css: { lightbox_me: useLightbox }"><img data-bind=" attr: { src: imageSrc, alt: imageAlt }, css: iconClass" /><span data-bind="text: text"></span></a>
+            </div>
+             -->
+
+            <div class="export-section donotprint">   
+            <a data-bind="attr: { href: printFriendlyPageURL }, visible: !(isConfidential())" title="View print friendly page" target="_blank" href="https://gis.hcpafl.org/CommonServices/property/parcelpdf/?pin=1829343V2000003000021A"><img src="images/pdf_small.png" alt="pdf"><span>Print Friendly Page</span></a>
+            <a data-bind="attr: { href: trimURL }, visible: !(isConfidential())" title="View TRIM" target="_blank" href="http://dmz.hcpafl.org/trim_re.cfm?folio=1272191000"><img src="images/pdf_small.png" alt="pdf"><span>TRIM</span></a>
+            <a data-bind="attr: { href: vabPrcURL }" title="VAB PRC" target="_blank" href="https://gis.hcpafl.org/flask/vabprc/127219-1000"><img src="images/pdf_small.png" alt="pdf"><span>VAB PRC</span></a>
+            <a data-bind="attr: { href: taxCollectorURL }, visible: !(isConfidential())" title="Tax Collector Information" target="_blank" href="http://hillsborough.county-taxes.com/public/real_estate/parcels/A1272191000"><img src="images/coins.png" alt="coins"><span>Tax Collector</span></a>
+            <a data-bind="attr: { href: mapImageURL }, visible: !(isConfidential())" title="Map Image" target="_blank" class="lightbox_me" href="https://gis.hcpafl.org/CommonServices/property/map-image/?width=480&amp;height=480&amp;folio=1272191000"><img src="images/map.png" alt="map"><span>Map Image</span></a>
+            <a data-bind="attr: { href: mapViewURL }" title="Map View" target="_blank" href="https://gis.hcpafl.org/GisSearch/?pin=1829343V2000003000021A"><img src="images/map.png" alt="map"><span>Map View</span></a>
+            <a data-bind="attr: { href: emailParcelURL }" title="Email parcel information somewhere" target="_blank" href="mailto: ?Subject=Hillsborough%20County%20Property%20Search&amp;Body=https://gis.hcpafl.org/propertysearch/#/parcel/basic/1829343V2000003000021A"><img src="images/email.png" alt="email"><span>Email Parcel</span></a>
+            <a data-bind="attr: { href: reportIssuesURL }" title="Report Issues with a parcel" target="_blank" href="mailto:webmaster@hcpafl.org?Subject=Issue%20With%20Property%201272191000"><img src="images/email.png" alt="email"><span>Report Issues with Parcel</span></a>
+            </div>
+
+			<h4 class="section-header">PROPERTY RECORD CARD</h4>
+			<div class="property-data">
+                <div class="streetview-section donotprint">
+                    <div class="alert alert-info centered" data-bind="visible: isConfidential" style="display: none;"><h4 class="lead">Aerial Oblique Imagery and Street View Not Available</h4></div>
+                    <div class="iframe-wrap" data-bind="visible: !(isConfidential())">
+                        <iframe style="width:100%;height:350px;overflow:hidden;border:none;" scrolling="no" data-bind="attr: { src: thumbnailPictometryUrl }" src="https://gis.hcpafl.org/PictometryViewer/viewer_no-dashboard.aspx?strap=1829343V2000003000021A"></iframe>
+                        <div class="aerial-link"><a href="https://gis.hcpafl.org/PictometryViewer/?strap=1829343V2000003000021A" data-bind="attr: { href: publicPictometryUrl }" target="_blank" onclick="alert('Notice: You are leaving the Hillsborough County Property Appraiser web site and will be viewing Pictometry image.')" class="pictomery-link">&nbsp;</a></div>
+                    </div>
+                    <div class="button-bar" data-bind="visible: !(isConfidential())">
+                        <div class="button-bar-lt">
+                            <a href="https://gis.hcpafl.org/PictometryViewer/?strap=1829343V2000003000021A" data-bind="attr: { href: publicPictometryUrl }" target="_blank" onclick="alert('Notice: You are leaving the Hillsborough County Property Appraiser web site and will be viewing Pictometry image.')" id="btn-pictomertry" class="b-btn b-btn-secondary b-btn-block"><img src="images/icon-red-pin.png" class="btn-icon"> NAVIGATE AERIAL IMAGERY</a>
+                        </div>
+                        <div class="button-bar-rt">
+                            <a href="https://www.google.com/maps/place/3006%20W%20JULIA%20ST,%20UNIT%20A,%20TAMPA%20FL" data-bind="attr: { href: googleStreetviewUrl }" target="_blank" onclick="return alert('Notice: You are leaving the Hillsborough County Property Appraiser web site and will be directed to Google Street View.');" id="btn-streetview" class="b-btn b-btn-secondary b-btn-block"><img src="images/icon-google-streetview.png" class="btn-icon"> GOOGLE STREET VIEW</a>
+                        </div>
+                    </div>
+				</div>
+				<div class="propcard-section">
+					<h4 data-bind="html: publicOwner()">SHERWIN MARK D</h4>
+					<h5>Mailing Address</h5>
+					<p class="multiline" data-bind="text: mailingAddress.publicAddress()">3006 W JULIA ST UNIT A
+TAMPA, FL  33629-8809</p>
+					<h5>Site Address</h5>
+					<p data-bind="text: siteAddress">3006 W JULIA ST, UNIT A, TAMPA</p>
+
+					
+
+					<table class="report-table">
+						<tbody data-bind="with: propertyCard">
+							<tr>
+								<td>PIN:</td>
+								<td data-bind="text: displayStrap">A-34-29-18-3V2-000003-00002.1</td>
+							</tr>
+							<tr>
+								<td>Folio:</td>
+								<td data-bind="text: displayFolio">127219-1000</td>
+							</tr>
+							<tr>
+								<td>Prior PIN:</td>
+								<td data-bind="text: publicPriorStrap"></td>
+							</tr>
+							<tr>
+								<td>Prior Folio:</td>
+								<td data-bind="text: publicPriorFolio">127220-0000</td>
+							</tr>
+							<tr>
+								<td>Tax District:</td>
+								<td data-bind="text: publicTaxDistrict">TA TAMPA</td>
+							</tr>
+							<tr>
+								<td>
+									<a href="TableReport.aspx?tableName=DOR" target="_blank" title="Click to view available types.">
+										Property Use:
+									</a>
+								</td>
+								<td data-bind="text: publicLandUse">0106 TOWNHOUSE/VILLA</td>
+							</tr>
+							<tr>
+								<td>Plat Book / Page:</td>
+								<td>
+									<a onclick="alertOnHrefClick(this);" data-bind="visible: !(isConfidential), attr: { href: publicPlatBookPageLink, target: '_blank' }, text: publicPlatBookPage" href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=319&amp;OBKey__1530_1=P&amp;OBKey__573_1=2&amp;OBKey__1049_1=1" target="_blank">2 / 1</a>
+									<span data-bind="visible: isConfidential" style="display: none;">Confidential</span>
+								</td>
+							</tr>
+							<tr>
+								<td>Neighborhood:</td>
+								<td data-bind="text: publicNeighborhood">203002.00 | NE MacDill North of Chapin</td>
+							</tr>
+							<tr>
+								<td>Subdivision:</td>
+								<td data-bind="text: publicSubdivision">3V2 | URBANREST</td>
+							</tr>
+						</tbody>
+					</table>
+                </div>
+			</div>
+			
+			<h4 class="section-header">Value Summary &amp; GIS Map</h4>
+			<div class="value-and-map-data">
+				<div class="left-table">
+					<div class="left-section-header">
+						Value Summary
+					</div>
+					<div class="table-container">
+						<table class="report-table" data-bind="visible: valueSummary().length &gt; 0">
+							<thead class="kinda-silver">
+								<tr>
+									<th>Taxing District</th>
+									<th>Market Value</th>
+									<th>Assessed Value</th>
+									<th>Exemptions</th>
+									<th>Taxable Value</th>
+								</tr>
+							</thead>
+							<tbody data-bind="foreach: valueSummary()">
+								<tr>
+									<td data-bind="text: taxDist">County</td>
+									<td class="centered" data-bind="text: formattedMarketVal">$732,214</td>
+									<td class="centered" data-bind="text: formattedAssessedVal ">$473,431</td>
+									<td class="centered" data-bind="text: formattedExemptions">$50,722</td>
+									<td class="centered" data-bind="text: formattedTaxableVal">$422,709</td>
+								</tr>
+							
+								<tr>
+									<td data-bind="text: taxDist">Public Schools</td>
+									<td class="centered" data-bind="text: formattedMarketVal">$732,214</td>
+									<td class="centered" data-bind="text: formattedAssessedVal ">$473,431</td>
+									<td class="centered" data-bind="text: formattedExemptions">$25,000</td>
+									<td class="centered" data-bind="text: formattedTaxableVal">$448,431</td>
+								</tr>
+							
+								<tr>
+									<td data-bind="text: taxDist">Municipal</td>
+									<td class="centered" data-bind="text: formattedMarketVal">$732,214</td>
+									<td class="centered" data-bind="text: formattedAssessedVal ">$473,431</td>
+									<td class="centered" data-bind="text: formattedExemptions">$50,722</td>
+									<td class="centered" data-bind="text: formattedTaxableVal">$422,709</td>
+								</tr>
+							
+								<tr>
+									<td data-bind="text: taxDist">Other Districts</td>
+									<td class="centered" data-bind="text: formattedMarketVal">$732,214</td>
+									<td class="centered" data-bind="text: formattedAssessedVal ">$473,431</td>
+									<td class="centered" data-bind="text: formattedExemptions">$50,722</td>
+									<td class="centered" data-bind="text: formattedTaxableVal">$422,709</td>
+								</tr>
+							</tbody>
+						</table>
+					</div>
+					<p class="note">
+                        Note: This section shows Market Value, Assessed Value, Exemptions, and Taxable Value for taxing districts. Because of
+                        changes in Florida Law, it is possible to have different assessed and taxable values on the same property. For example,
+                        the additional $25,000 Homestead Exemption and the non-homestead CAP do not apply to public schools, and the Low 
+                        Income Senior Exemption only applies to countywide and certain municipal millages.
+					</p>
+					<p class="donotprint save-our-homes">
+						For more information, go to our <a href="//www.hcpafl.org/Property-Info/Save-Our-Homes" target="_blank">SAVE OUR HOMES</a> section and our
+                        <a data-bind="attr: { href: taxEstimatorUrl, target: '_blank' }" href="./TaxEstimator.aspx#/parcel/1829343V2000003000021A" target="_blank">PROPERTY TAX ESTIMATOR</a>.
+					</p>
+                    <p class="donotprint homestead-exemption">
+                        File for <a href="https://hcpafl.org/E-Filing/Homestead-E-File" target="_blank">HOMESTEAD EXEMPTION</a> on this property.
+                    </p>
+				</div>
+                <div class="map-view">
+                    <div class="alert alert-info centered" data-bind="visible: isConfidential" style="display: none;"><h4 class="lead">Map not available</h4></div>
+                    <div class="wrap" data-bind="visible: !(isConfidential())">
+                        <a data-bind="attr: { href: mapLinkUrl }" target="_blank" href="https://gis.hcpafl.org/GisSearch/?pin=1829343V2000003000021A"><img data-bind="attr: { src: mapImageUrl }" alt="Map It!" src="https://gis.hcpafl.org/CommonServices/property/map-image/?width=480&amp;height=480&amp;folio=1272191000">View Map</a>
+                    </div>
+                </div>
+				<span class="clear"></span>
+			</div>
+			<div class="back-to-top"><a href="#top">[ Back To The Top ]</a></div>
+
+			<div data-bind="visible: salesHistory().length &gt; 0">
+				<h4 class="section-header">Sales History</h4>
+				<div class="table-container">
+					<table class="data-table">
+					<thead class="kinda-silver">
+						<tr>
+							<th title="Official Public Records information is provided by the Hillsborough County Clerk's Office. Clicking on these links will direct you to their Website displaying the document details for the specified transation.">
+								Official Record
+							</th>
+                            <th>Instrument</th>
+							<th colspan="2" title="The Sale Month and Year is the sate of the recorded sale.">
+								Date
+							</th>
+							<th rowspan="2">
+								<a href="TableReport.aspx?tableName=INSTR" target="_blank" title="Click to view available sales instrument types">
+									Type Inst
+								</a>
+							</th>
+							<th rowspan="2" title="Sales are determined to be qualified if the sale reflects an accurate dollar ammount relative to the actual Market Value of the property. Sales are Unqualified if the sale value is not reflective of the Market Value, involve multiple properties or those between family members.">
+								Qualified or Unqualified
+							</th>
+							<th rowspan="2" title="Indicates whether the site was vacant or contained improvements at the time of sale.">
+								Vacant or Improved
+							</th>
+							<th rowspan="2" title="The Sale Price is the dollar figure for which the property was sold.">
+								Sale Price
+							</th>
+						</tr>
+						<tr>
+							<th>Book / Page</th>
+							<th>Number</th>
+							<th>Month</th>
+							<th>Year</th>
+						</tr>
+					</thead>
+					<tbody data-bind="foreach: salesHistory()">
+						<tr>
+							<td>
+								<a onclick="alertOnHrefClick(this);" data-bind="visible: !(isConfidential),text: book+' / '+page, attr: { href: publicBookPageLink, target: '_blank' }" href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=319&amp;OBKey__1530_1=O&amp;OBKey__573_1=9129&amp;OBKey__1049_1=1375" target="_blank">9129 / 1375</a>
+								<span data-bind="visible: isConfidential" style="display: none;">Confidential</span>
+							</td>
+							<td>
+                                <a onclick="alertOnHrefClick(this);" data-bind="visible: !(isConfidential), text: docnum, attr: { href: instrumentNumberLink, target: '_blank' }" href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=320&amp;OBKey__1006_1=98196968" target="_blank">98196968</a>
+								<span data-bind="visible: isConfidential" style="display: none;">Confidential</span>
+							</td>
+							<td data-bind="text: publicMonth">06</td>
+							<td data-bind="text: publicYear">1998</td>
+							<td data-bind="text: deedType">WD  </td>
+							<td data-bind="text: qualified">Qualified</td>
+							<td data-bind="text: vacOrImp">Improved</td>
+							<td data-bind="text: publicPrice">$280,000</td>
+						</tr>
+					
+						<tr>
+							<td>
+								<a onclick="alertOnHrefClick(this);" data-bind="visible: !(isConfidential),text: book+' / '+page, attr: { href: publicBookPageLink, target: '_blank' }" href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=319&amp;OBKey__1530_1=O&amp;OBKey__573_1=7874&amp;OBKey__1049_1=869" target="_blank">7874 / 0869</a>
+								<span data-bind="visible: isConfidential" style="display: none;">Confidential</span>
+							</td>
+							<td>
+                                <a onclick="alertOnHrefClick(this);" data-bind="visible: !(isConfidential), text: docnum, attr: { href: instrumentNumberLink, target: '_blank' }" href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=320&amp;OBKey__1006_1=95201974" target="_blank">95201974</a>
+								<span data-bind="visible: isConfidential" style="display: none;">Confidential</span>
+							</td>
+							<td data-bind="text: publicMonth">08</td>
+							<td data-bind="text: publicYear">1995</td>
+							<td data-bind="text: deedType">WD  </td>
+							<td data-bind="text: qualified">Unqualified</td>
+							<td data-bind="text: vacOrImp">Vacant</td>
+							<td data-bind="text: publicPrice">$61,000</td>
+						</tr>
+					</tbody>
+				</table>
+				</div>
+				<div class="back-to-top"><a href="#top">[ Back To The Top ]</a></div>
+			</div>
+			
+			
+			<div data-bind="foreach: buildings()">
+				<h4 class="section-header" data-bind="text: publicBuildingName">Building 1</h4>
+				
+				<div class="no-data" data-bind="visible: noData" style="display: none;">
+					Sorry, no data could be found for this building.
+				</div>
+
+				<div data-bind="visible: !noData" class="sketch-view">
+					
+					
+					<a target="_blank" data-bind="attr: { href: publicSketchUrl }" title="View a larger sketch" style="display:block; margin-bottom:16px;" href="https://gis.hcpafl.org/CommonServices/property/sketch-image/?sketch=1829343V2000003000021A-1.jpg">
+						<img data-bind="attr: { src: publicSketchUrl }" alt="Property Photo" src="https://gis.hcpafl.org/CommonServices/property/sketch-image/?sketch=1829343V2000003000021A-1.jpg"><br>
+						View Building Sketch
+					</a>
+					<span style="-ms-word-wrap: break-word; word-wrap: break-word; display: inline-block; -ms-word-break: break-all; word-break: break-all;" data-bind="text: sketch">BAS(608 P150)FGR(594 P102)FOP(220 P64)FOP(8 P12)FUS(220 P64)TWO(990 P134).</span>
+				</div>
+
+				<div data-bind="visible: !noData" class="section-wrap">
+					<h5>Building Characteristics</h5>
+					<table class="report-table left-table">
+						<tbody>
+							<tr>
+								<td>
+									<a href="TableReport.aspx?tableName=IMPR" target="_blank" title="Click to view available types. The TYPE (also known as Building Use) denotes the primary use of a building on a particular property.">
+								        Type:
+									</a>
+								</td>
+								<td class="centered" data-bind="text: publicType">24   | TOWNHOUSE</td>
+							</tr>
+							<tr>
+								<td title="AYB - Actual Year Built of improvements">Year Built:</td>
+								<td class="centered" data-bind="text: yearBuilt">1998</td>
+							</tr>
+							
+						</tbody>
+					</table>
+					
+					<h5>Construction Details</h5>
+					<table class="report-table left-table">
+						<thead class="kinda-silver">
+							<tr>
+								<th>Element</th>
+								<th>Code</th>
+								<th>Construction Detail</th>
+							</tr>
+						</thead>
+						<tbody data-bind="foreach: constructionInfo()">
+							<tr>
+								<td data-bind="text: element.description">Class</td>
+								<td class="centered" data-bind="text: constructionDetail.code">C  </td>
+								<td class="centered" data-bind="text: constructionDetail.description">Concrete Block</td>
+							</tr>
+						
+							<tr>
+								<td data-bind="text: element.description">Exterior Wall</td>
+								<td class="centered" data-bind="text: constructionDetail.code">7</td>
+								<td class="centered" data-bind="text: constructionDetail.description">Masonry Frm: Stucco</td>
+							</tr>
+						
+							<tr>
+								<td data-bind="text: element.description">Exterior Wall</td>
+								<td class="centered" data-bind="text: constructionDetail.code">6</td>
+								<td class="centered" data-bind="text: constructionDetail.description">Wd/Mtl Frm: Stucco</td>
+							</tr>
+						
+							<tr>
+								<td data-bind="text: element.description">Roof Structure</td>
+								<td class="centered" data-bind="text: constructionDetail.code">3</td>
+								<td class="centered" data-bind="text: constructionDetail.description">Gable Or Hip</td>
+							</tr>
+						
+							<tr>
+								<td data-bind="text: element.description">Roof Cover</td>
+								<td class="centered" data-bind="text: constructionDetail.code">3</td>
+								<td class="centered" data-bind="text: constructionDetail.description">Asphalt/Comp. Shingle</td>
+							</tr>
+						
+							<tr>
+								<td data-bind="text: element.description">Interior Walls</td>
+								<td class="centered" data-bind="text: constructionDetail.code">5</td>
+								<td class="centered" data-bind="text: constructionDetail.description">Drywall</td>
+							</tr>
+						
+							<tr>
+								<td data-bind="text: element.description">Interior Flooring</td>
+								<td class="centered" data-bind="text: constructionDetail.code">8</td>
+								<td class="centered" data-bind="text: constructionDetail.description">Typical</td>
+							</tr>
+						
+							<tr>
+								<td data-bind="text: element.description">Heat/Ac</td>
+								<td class="centered" data-bind="text: constructionDetail.code">2</td>
+								<td class="centered" data-bind="text: constructionDetail.description">Central</td>
+							</tr>
+						
+							<tr>
+								<td data-bind="text: element.description">Condition</td>
+								<td class="centered" data-bind="text: constructionDetail.code">3</td>
+								<td class="centered" data-bind="text: constructionDetail.description">Average</td>
+							</tr>
+						
+							<tr>
+								<td data-bind="text: element.description">Bathrooms</td>
+								<td class="centered" data-bind="text: constructionDetail.code">2.5</td>
+								<td class="centered" data-bind="text: constructionDetail.description"></td>
+							</tr>
+						
+							<tr>
+								<td data-bind="text: element.description">Bedrooms</td>
+								<td class="centered" data-bind="text: constructionDetail.code">2.0</td>
+								<td class="centered" data-bind="text: constructionDetail.description"></td>
+							</tr>
+						
+							<tr>
+								<td data-bind="text: element.description">Stories</td>
+								<td class="centered" data-bind="text: constructionDetail.code">3.0</td>
+								<td class="centered" data-bind="text: constructionDetail.description"></td>
+							</tr>
+						
+							<tr>
+								<td data-bind="text: element.description">Units</td>
+								<td class="centered" data-bind="text: constructionDetail.code">1.0</td>
+								<td class="centered" data-bind="text: constructionDetail.description"></td>
+							</tr>
+						</tbody>
+					</table>
+					
+					<h5>Building Sub Areas</h5>
+					<div class="table-container">
+						<table class="data-table">
+							<thead class="kinda-silver">
+								<tr>
+									<th>
+										<a href="TableReport.aspx?tableName=SAR" target="_blank" title="Click to view available types. Area Type denotes the different types of building structure such as the base or main structure and any other sub structures, such as porches, garages, canopies, patios, etc.">
+											Area Type
+										</a>
+									</th>
+									<th title="Gross Area denotes the total square footage of all building areas.">
+										Gross Area
+									</th>
+									<th title="Heated Area denotes the areas within a building served by Heating or Air Conditioning.">
+										Heated Area
+									</th>
+									<th title="Depreciated Value denotes the contributory value of this item.">
+										Depreciated Value
+									</th>
+								</tr>
+							</thead>
+							<tfoot>
+								<tr>
+									<th>Totals</th>
+									<th data-bind="text: publicGrossArea">3,630</th>
+									<th data-bind="text: publicHeatedArea">2,808</th>
+									<th data-bind="text: publicDepreciation">$772,892</th>
+								</tr>
+							</tfoot>
+							<tbody data-bind="foreach: subAreaInfo()">
+								<tr>
+									<td data-bind="text: areaType">BAS</td>
+									<td data-bind="text: publicGrossArea">608</td>
+									<td data-bind="text: publicHeatedArea">608</td>
+									<td data-bind="text: publicDepreciatedValue">$154,528</td>
+								</tr>
+							
+								<tr>
+									<td data-bind="text: areaType">FGR</td>
+									<td data-bind="text: publicGrossArea">594</td>
+									<td data-bind="text: publicHeatedArea">0</td>
+									<td data-bind="text: publicDepreciatedValue">$75,485</td>
+								</tr>
+							
+								<tr>
+									<td data-bind="text: areaType">FOP</td>
+									<td data-bind="text: publicGrossArea">220</td>
+									<td data-bind="text: publicHeatedArea">0</td>
+									<td data-bind="text: publicDepreciatedValue">$13,979</td>
+								</tr>
+							
+								<tr>
+									<td data-bind="text: areaType">FOP</td>
+									<td data-bind="text: publicGrossArea">8</td>
+									<td data-bind="text: publicHeatedArea">0</td>
+									<td data-bind="text: publicDepreciatedValue">$508</td>
+								</tr>
+							
+								<tr>
+									<td data-bind="text: areaType">FUS</td>
+									<td data-bind="text: publicGrossArea">220</td>
+									<td data-bind="text: publicHeatedArea">220</td>
+									<td data-bind="text: publicDepreciatedValue">$50,323</td>
+								</tr>
+							
+								<tr>
+									<td data-bind="text: areaType">TWO</td>
+									<td data-bind="text: publicGrossArea">1,980</td>
+									<td data-bind="text: publicHeatedArea">1,980</td>
+									<td data-bind="text: publicDepreciatedValue">$478,070</td>
+								</tr>
+							</tbody>
+						</table>
+					</div>
+				</div>
+			</div>
+
+			<div data-bind="visible: buildings().length &gt; 0" class="back-to-top"><a href="#top">[ Back To The Top ]</a></div>
+
+			<div data-bind="visible: extraFeatures().length &gt; 0">
+				<h4 class="section-header">Extra Features</h4>
+				<div class="table-container">
+					<table class="data-table">
+						<thead class="kinda-silver">
+							<tr>
+								<th>LN</th>
+								<th>
+									<a href="TableReport.aspx?tableName=XFOB" target="_blank" title="Click to view Available Codes. Extra Features are miscellaneous improvements on the property such as patios, pools, and fences.">
+										OB/XF Code
+									</a>
+								</th>
+								<th>Description</th>
+								<th>Bld</th>
+								<th>Year on Roll</th>
+								<th>Length</th>
+								<th>Width</th>
+								<th>Units</th>
+								<th>Value</th>
+							</tr>
+						</thead>
+						<tbody data-bind="foreach: extraFeatures()">
+							<tr>
+								<td data-bind="text: sequence">1</td>
+								<td data-bind="text: code">0050  </td>
+								<td data-bind="text: description">CONCRETE PATIO</td>
+								<td data-bind="text: building">1</td>
+								<td data-bind="text: year">2017</td>
+								<td data-bind="text: length">0</td>
+								<td data-bind="text: width">0</td>
+								<td data-bind="text: publicUnits">145.00</td>
+								<td data-bind="text: publicValue">$916</td>
+							</tr>
+						
+							<tr>
+								<td data-bind="text: sequence">2</td>
+								<td data-bind="text: code">0595  </td>
+								<td data-bind="text: description">FIREPLACE</td>
+								<td data-bind="text: building">1</td>
+								<td data-bind="text: year">2008</td>
+								<td data-bind="text: length">0</td>
+								<td data-bind="text: width">0</td>
+								<td data-bind="text: publicUnits">1.00</td>
+								<td data-bind="text: publicValue">$3,960</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+				
+				<div class="back-to-top"><a href="#top">[ Back To The Top ]</a></div>
+			</div>
+			
+			<!-- ==== PERMIT ============== -->
+			<div data-bind="visible: permitInfo().length &gt; 0" style="display: none;">
+				<h4 class="section-header">Permits</h4>
+				<p><strong>Permit information is received from the County and Cities. The permit data shown here may be incomplete or pre-date the jurisdiction’s online permit listing system. Permits shown may exclude those permits that do not result in field reviews (for example, for water heater replacement permits). We are required to list all improvements, which may include unpermitted construction. Any questions regarding permits, or the status of non-permitted improvements, should be directed to the permitting jurisdiction in which the structure is located. The permit values displayed are contractor estimated values.</strong></p>
+				
+				<div class="input-prepend input-append mb-3">
+					<span class="add-on">Show</span>
+						<select id="permitShow" value="10"><option value="10">10</option><option value="20">20</option><option value="40">40</option><option value="-1">ALL</option></select>
+					<span class="add-on">entries</span>
+				</div>
+
+				<table id="permitTable" class="permitinfo data-table" style="width:100%">
+					<thead class="kinda-silver">
+						<tr>
+							<th>&nbsp;</th>
+							<th>Permit Number</th>
+							<th>Description</th>
+							<th>Issue Date</th>
+							<th>Estimated Value</th>
+						</tr>
+					</thead>
+					
+					<tbody>
+						<!-- ko foreach: permitInfo() --><!-- /ko -->
+					</tbody>
+				</table>
+				<p class="loadBtn" style="display: none;"><a href="#" id="loadMorePermit" class="btn mr-3">Show more</a><a href="#" id="loadAllPermit" class="btn">Show all</a></p>
+
+				<div class="back-to-top"><a href="#top">[ Back To The Top ]</a></div>
+			</div>
+			
+			<div data-bind="visible: landLines().length &gt; 0">
+				<h4 class="section-header">Land Lines</h4>
+				<div class="table-container">
+					<table class="data-table">
+						<thead class="kinda-silver">
+							<tr>
+								<th>LN</th>
+								<th>
+									<a href="TableReport.aspx?tableName=LNDUSE" target="_blank" title="Click to view available types. The Land Use denotes the primary use of all or part of the land for a particular property.">
+										Use Code
+									</a>
+								</th>
+								<th>Description</th>
+								<th>
+									<a href="TableReport.aspx?tableName=LNDZONE" target="_blank" title="Click to view available types.">
+										Zone
+									</a>
+								</th>
+								<th>Front</th>
+								<th>Depth</th>
+								<th>Unit Type</th>
+								<th>Total Land Units</th>
+								<th>Land Value</th>
+							</tr>
+						</thead>
+						<tbody data-bind="foreach: landLines()">
+							<tr>
+								<td data-bind="text: item">1</td>
+								<td data-bind="text: landUse.code">0040</td>
+								<td data-bind="text: landUse.description">CONDO/TOWNHOUSE</td>
+								<td data-bind="text: zone">RM-24</td>
+								<td data-bind="text: frontage">0</td>
+								<td data-bind="text: depth">0</td>
+								<td data-bind="text: publicLandType">UT | UNITS</td>
+								<td data-bind="text: publicUnits">1.00</td>
+								<td data-bind="text: publicValue">$100.00</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+				
+				<div class="back-to-top"><a href="#top">[ Back To The Top ]</a></div>
+			</div>
+			
+			<div data-bind="visible: fullLegal().length &gt; 0">
+				<h4 class="section-header">Legal Lines</h4>
+				<div class="table-container">
+					<table class="data-table">
+						<thead class="kinda-silver">
+							<tr>
+								<th>LN</th>
+								<th>Legal Description</th>
+							</tr>
+						</thead>
+						<tbody data-bind="foreach: fullLegal()">
+							<tr>
+								<td data-bind="text: ($index() + 1)">1</td>
+								<td data-bind="text: $data">URBANREST W 75 FT OF LOT 2 BLOCK 3 LESS W 45.67 FT</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+				
+				<div class="back-to-top"><a href="#top">[ Back To The Top ]</a></div>
+			</div>
+			
+			<br>
+			<p>
+				Please note that property values on this site are continually being updated and 
+				are a work in progress throughout the year. The final values are certified in 
+				October of each year.
+			</p>
+			<span>Last Updated: <span data-bind="text: propertyCard.current.publicDate">12/6/2025</span></span>
+		</div>
     </div>
 	<p class="version">version: v20250422A</p>
 	<script type="text/javascript" src="viewmodel/viewModels.js?v20250422A"></script>

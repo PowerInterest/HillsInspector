@@ -97,6 +97,8 @@ def normalize_doc_type(doc_type: str) -> str:
         "LIEN": "LIEN",
         "LP": "LIS_PENDENS",
         "LIS PENDENS": "LIS_PENDENS",
+        "TAX": "TAX",
+        "TAX LIEN": "TAX",
         "JUD": "JUDGMENT",
         "JUDGMENT": "JUDGMENT",
         "SAT": "SATISFACTION",
@@ -124,7 +126,7 @@ def is_encumbrance_type(doc_type: str) -> bool:
     """Check if document type is an encumbrance."""
     normalized = normalize_doc_type(doc_type)
     encumbrance_types = [
-        "MORTGAGE", "DEED_OF_TRUST", "LIEN", "LIS_PENDENS", "JUDGMENT"
+        "MORTGAGE", "DEED_OF_TRUST", "LIEN", "LIS_PENDENS", "JUDGMENT", "TAX"
     ]
     return normalized in encumbrance_types
 

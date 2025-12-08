@@ -20,6 +20,8 @@ class Permit(BaseModel):
     status: str
     description: Optional[str] = None
     type: str
+    url: Optional[str] = None
+    noc_instrument: Optional[str] = None
 
 class ListingDetails(BaseModel):
     price: Optional[float] = None

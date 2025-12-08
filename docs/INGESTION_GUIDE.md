@@ -1,6 +1,86 @@
 # Data Ingestion Guide
 
+## Overview
 
+The ingestion pipeline collects property data from multiple sources, downloads and analyzes documents using vLLM vision, and builds chain of title analysis for foreclosure auction properties.
+
+## Document Analysis Pipeline
+
+During property ingestion, PDFs are automatically downloaded and analyzed using the Qwen-VL vision model. This extracts structured data from recorded documents.
+
+### Analyzed Document Types
+
+| Type Code | Description | Key Extracted Data |
+|-----------|-------------|-------------------|
+| D, WD, QC, SWD | Deeds | Grantor, grantee, consideration, legal description, red flags |
+| MTG, MTGNT, DOT | Mortgages | Principal amount, lender, interest rate, MERS info, terms |
+| LN, LIEN, JUD, HOA | Liens | Amount, creditor, lien type, survival notes |
+| SAT, REL | Satisfactions | Releasing party, original instrument reference |
+| ASG, ASGN | Assignments | Assignor, assignee, original mortgage reference |
+| LP | Lis Pendens | Case number, plaintiff, defendants, mortgage reference |
+| NOC | Notice of Commencement | Property owner, contractor, dates, bond info |
+| AFF | Affidavits | Affiant, subject matter, heirs if applicable |
+| FJ | Final Judgment | Judgment amount, plaintiff, defendants, sale date |
+
+### How It Works
+
+1. **Document Discovery** - ORI search finds all documents for a property
+2. **PDF Download** - Important document types are downloaded to `data/properties/{folio}/documents/`
+3. **Vision Analysis** - PDF pages converted to images, analyzed with type-specific prompts
+4. **Data Storage** - Extracted JSON saved to `documents.extracted_data` column
+
+### Controlling PDF Analysis
+
+```python
+from src.services.ingestion_service import IngestionService
+
+# Enable PDF analysis (default)
+svc = IngestionService(analyze_pdfs=True)
+
+# Disable for faster testing
+svc = IngestionService(analyze_pdfs=False)
+```
+
+### Vision Service Usage
+
+```python
+from src.services.vision_service import VisionService
+
+vs = VisionService()
+
+# Analyze a single image
+result = vs.extract_deed("path/to/deed_page1.png")
+
+# Analyze multi-page document
+result = vs.extract_mortgage_multi(["page1.png", "page2.png", "page3.png"])
+
+# Auto-route by document type
+result = vs.extract_document_by_type_multi(image_paths, "MTG")
+```
+
+### Document Analyzer (High-Level API)
+
+```python
+from src.services.document_analyzer import DocumentAnalyzer
+
+analyzer = DocumentAnalyzer()
+
+# Download and analyze a document by instrument number
+result = analyzer.download_and_analyze(
+    instrument="2021173566",
+    folio="172817060000007000090U",
+    doc_type="D"
+)
+
+# Analyze an existing PDF
+result = analyzer.analyze_document(
+    pdf_path="data/properties/.../deed.pdf",
+    doc_type="WD",
+    instrument="2021173566"
+)
+```
+
+## Database Setup
 
 This creates `data/property_master.db` with all necessary tables and indices.
 
@@ -132,7 +212,7 @@ with PropertyDB() as db:
    - `document_type` - 'FINAL_JUDGMENT', 'LIS_PENDENS', etc.
    - `file_path` - Path to PDF
    - `ocr_text` - Extracted text
-   - `extracted_data` - JSON of parsed data
+   - `extracted_data` - JSON of vision-extracted structured data (see below)
 
 9. **analysis_results** - Final equity analysis
    - `folio` (FK), `case_number` (FK)
@@ -192,3 +272,125 @@ If properties aren't being enriched:
 1. Check that `parcel_id` is present
 2. Verify HCPA site is accessible
 3. Check error logs for specific failures
+
+## Extracted Data Structures
+
+The `documents.extracted_data` column contains JSON with type-specific fields:
+
+### Deed Extraction
+```json
+{
+  "document_type": "WARRANTY_DEED",
+  "grantor": "SMITH, JOHN AND JANE",
+  "grantee": "DOE, RICHARD",
+  "consideration": 250000.00,
+  "legal_description": "LOT 5, BLOCK 2, SUNSET HILLS...",
+  "subdivision": "SUNSET HILLS",
+  "lot": "5",
+  "block": "2",
+  "plat_book": "45",
+  "plat_page": "12",
+  "execution_date": "2024-01-15",
+  "recording_date": "2024-01-20",
+  "instrument_number": "2024012345",
+  "red_flags": [
+    {"flag": "Low consideration suggests non-arm's length", "severity": "high"}
+  ],
+  "confidence": "high"
+}
+```
+
+### Mortgage Extraction
+```json
+{
+  "document_type": "MORTGAGE",
+  "principal_amount": 350000.00,
+  "borrower": "DOE, RICHARD",
+  "lender": "WELLS FARGO BANK NA",
+  "interest_rate": 6.5,
+  "loan_term_years": 30,
+  "is_mers_registered": true,
+  "mers_min": "1000123456789012345",
+  "maturity_date": "2054-01-01",
+  "recording_date": "2024-01-20",
+  "instrument_number": "2024012346",
+  "confidence": "high"
+}
+```
+
+### Lien Extraction
+```json
+{
+  "document_type": "HOA_LIEN",
+  "amount": 5200.00,
+  "creditor": "SUNSET HILLS HOA INC",
+  "debtor": "DOE, RICHARD",
+  "lien_type": "hoa",
+  "recording_date": "2024-06-15",
+  "instrument_number": "2024067890",
+  "survives_foreclosure": true,
+  "survival_notes": "HOA lien within safe harbor period",
+  "confidence": "high"
+}
+```
+
+### Final Judgment Extraction
+```json
+{
+  "case_number": "24-CA-007587",
+  "plaintiff": "CITIBANK NA AS TRUSTEE",
+  "defendants": [
+    {"name": "DOE, RICHARD", "party_type": "borrower"},
+    {"name": "SUNSET HILLS HOA", "party_type": "hoa"}
+  ],
+  "property_address": "123 Sunset Dr, Tampa FL 33626",
+  "principal_amount": 594900.00,
+  "total_judgment_amount": 736329.86,
+  "foreclosure_sale_date": "2025-12-09",
+  "foreclosure_type": "FIRST MORTGAGE",
+  "confidence_score": 0.95
+}
+```
+
+### Testing Document Extraction
+
+```powershell
+# Test extraction on a specific PDF
+uv run python -m src.services.document_analyzer path/to/document.pdf D
+
+# Batch process encumbrances missing amounts
+uv run python -m src.services.document_analyzer --batch 10
+
+# Run document extraction test suite
+uv run python test_document_extraction.py
+```
+
+## Architecture
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `src/services/vision_service.py` | vLLM API client, document-specific prompts |
+| `src/services/document_analyzer.py` | PDF download, image conversion, analysis orchestration |
+| `src/services/ingestion_service.py` | Full property ingestion pipeline |
+| `src/scrapers/ori_api_scraper.py` | Official Records Index search and PDF download |
+
+### Flow Diagram
+
+```
+Auction Scraper → Property Discovery
+                        ↓
+              ORI Document Search
+                        ↓
+              For each document:
+                ├── Save metadata to DB
+                ├── Download PDF (if analyzable type)
+                ├── Convert PDF → Images
+                ├── Vision analysis → JSON
+                └── Update extracted_data column
+                        ↓
+              Build Chain of Title
+                        ↓
+              Lien Survival Analysis
+```

@@ -1,9 +1,25 @@
 <script>
   document.addEventListener('DOMContentLoaded', () => {
+    const mapEl = document.getElementById('auction-map');
+    if (!mapEl) {
+      console.error('Map element not found');
+      return;
+    }
     const map = L.map('auction-map', { zoomControl: true }).setView([27.95, -82.46], 10);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
+
+    // Ensure map resizes correctly (details/hidden containers)
+    const resizeMap = () => {
+      setTimeout(() => map.invalidateSize(), 100);
+    };
+    resizeMap();
+
+    const details = mapEl.closest('details');
+    if (details) {
+      details.addEventListener('toggle', resizeMap);
+    }
 
     fetch('/api/map-auctions')
       .then((res) => res.json())
@@ -33,6 +49,7 @@
         if (bounds.isValid()) {
           map.fitBounds(bounds.pad(0.15));
         }
+        resizeMap();
       })
       .catch((err) => console.error('Map load error:', err));
   });

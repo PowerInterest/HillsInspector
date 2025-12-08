@@ -47,6 +47,7 @@ from src.services.ingestion_service import IngestionService
 from src.services.scraper_storage import ScraperStorage
 from src.ingest.bulk_parcel_ingest import enrich_auctions_from_bulk
 from src.utils.legal_description import build_ori_search_terms
+from src.services.data_linker import link_permits_to_nocs
 from src.db.operations import PropertyDB
 from src.models.property import Lien, Property
 
@@ -756,14 +757,30 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
             parts = address.split(",")
             city = parts[1].strip() if len(parts) > 1 else "Tampa"
             permits = await permit_scraper.get_permits(address, city)
+            
             if permits:
+                # Fetch ORI docs for NOC linking
+                try:
+                    ori_docs = db.execute_query(
+                        "SELECT document_type as doc_type, recording_date as record_date, instrument_number as instrument FROM documents WHERE folio = ?", 
+                        [folio]
+                    )
+                    # Helper to format date for linker if needed
+                    for d in ori_docs:
+                        if isinstance(d['record_date'], (date, datetime)):
+                             d['record_date'] = d['record_date'].strftime("%m/%d/%Y")
+                    
+                    permits = link_permits_to_nocs(permits, ori_docs)
+                except Exception as ex:
+                    logger.warning(f"Failed to link NOCs for {folio}: {ex}")
+
                 conn = db.connect()
                 for p in permits:
                     conn.execute(
                         """INSERT OR IGNORE INTO permits
                            (folio, permit_number, issue_date, status, permit_type,
-                            description, contractor, estimated_cost)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                            description, contractor, estimated_cost, url, noc_instrument)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         [
                             folio,
                             p.permit_number,
@@ -773,6 +790,8 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
                             p.description,
                             p.contractor,
                             p.estimated_cost,
+                            p.url,
+                            p.noc_instrument
                         ],
                     )
                 permit_count += 1

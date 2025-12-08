@@ -41,56 +41,48 @@ class FinalJudgmentProcessor:
             
             logger.info(f"PDF has {total_pages} pages, processing all pages")
             
-            # Process each page and merge results
-            all_data = []
-            all_text = []  # Store raw OCR text for debugging
-            
+            # Render all pages to images
+            page_images = []
             for page_num in range(num_pages):
                 page = doc[page_num]
                 temp_image_path = self.temp_dir / f"{case_number}_page_{page_num + 1}.png"
-                
-                # Render page to image (200 DPI)
                 pix = page.get_pixmap(dpi=200)
                 pix.save(str(temp_image_path))
-                
-                logger.info(f"Processing page {page_num + 1}...")
-                
-                # Extract structured data from this page
-                page_data = self.vision_service.extract_final_judgment(str(temp_image_path))
-                
-                # Also extract raw text for debugging
-                page_text = self.vision_service.extract_text(str(temp_image_path))
-                
-                if page_data:
-                    all_data.append(page_data)
-                    logger.info(f"Extracted structured data from page {page_num + 1}")
-                
-                if page_text:
-                    all_text.append(f"=== PAGE {page_num + 1} ===\n{page_text}")
-                    logger.info(f"Extracted raw text from page {page_num + 1} ({len(page_text)} chars)")
-                
-                # Clean up temp image
-                temp_image_path.unlink()
-            
+                page_images.append(str(temp_image_path))
+
             doc.close()
-            
-            if not all_data:
+
+            # Single multi-image call for structured extraction
+            logger.info(f"Sending {len(page_images)} pages to vision service in one batch...")
+            merged_json = self.vision_service.extract_final_judgment_multi(page_images)
+
+            # Also collect raw text per page (separate calls to keep transcript)
+            all_text = []
+            for idx, img_path in enumerate(page_images, start=1):
+                page_text = self.vision_service.extract_text(img_path)
+                if page_text:
+                    all_text.append(f"=== PAGE {idx} ===\n{page_text}")
+
+            # Clean up temp images
+            for img_path in page_images:
+                try:
+                    Path(img_path).unlink()
+                except Exception:
+                    pass
+
+            if not merged_json:
                 logger.warning(f"No data extracted from PDF for case {case_number}")
                 return None
-            
-            # Merge data from all pages (first page usually has most complete info)
-            merged_data = self._merge_page_data(all_data)
-            
-            # Add raw text for debugging
-            merged_data['raw_text'] = "\n\n".join(all_text)
-            merged_data['_metadata'] = {
+
+            merged_json['raw_text'] = "\n\n".join(all_text)
+            merged_json['_metadata'] = {
                 'case_number': case_number,
                 'pages_processed': num_pages,
                 'total_pages': total_pages
             }
-            
+
             logger.info(f"Successfully processed Final Judgment for case {case_number}")
-            return merged_data
+            return merged_json
             
         except Exception as e:
             logger.error(f"Error processing PDF for case {case_number}: {e}")

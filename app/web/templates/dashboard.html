@@ -4,6 +4,15 @@
 
 {% block content %}
 <div class="dashboard">
+    <!-- Map Toggle (collapsible) -->
+    <details class="map-section" open>
+        <summary class="map-toggle">📍 Show Map View</summary>
+        <div class="map-container">
+            <div id="auction-map"></div>
+        </div>
+        {% include "partials/map_script.html" %}
+    </details>
+
     <!-- Hero Stats Bar -->
     <div class="stats-bar">
         <div class="stat-item">
@@ -90,13 +99,4 @@
         {% endif %}
     </div>
 </div>
-
-<!-- Map Toggle (collapsible) -->
-<details class="map-section">
-    <summary class="map-toggle">📍 Show Map View</summary>
-    <div class="map-container">
-        <div id="auction-map"></div>
-    </div>
-    {% include "partials/map_script.html" %}
-</details>
 {% endblock %}

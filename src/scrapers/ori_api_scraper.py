@@ -100,22 +100,25 @@ class ORIApiScraper:
         }
         return self._execute_search(payload)
 
-    def search_by_instrument(self, instrument: str) -> List[Dict[str, Any]]:
+    def search_by_instrument(self, instrument: str, include_doc_types: bool = False) -> List[Dict[str, Any]]:
         """
         Search for documents by instrument number.
 
         Args:
             instrument: Instrument number (e.g., "2024478600")
+            include_doc_types: If True, filter by TITLE_DOC_TYPES. If False, search all doc types.
 
         Returns:
             List of document dictionaries (usually 0 or 1)
         """
         payload = {
-            "DocType": self.TITLE_DOC_TYPES,
             "RecordDateBegin": "01/01/1900",
             "RecordDateEnd": datetime.now().strftime("%m/%d/%Y"),
             "Instrument": instrument,
         }
+        # Only add doc type filter if requested (can cause 400 errors on some searches)
+        if include_doc_types:
+            payload["DocType"] = self.TITLE_DOC_TYPES
         return self._execute_search(payload)
 
     def _execute_search(self, payload: Dict) -> List[Dict[str, Any]]:
@@ -138,21 +141,52 @@ class ORIApiScraper:
         Download PDF for a document.
 
         Args:
-            doc: Document dictionary with ID field from API search results
+            doc: Document dictionary. Can have ID field from API or just Instrument from browser.
             output_dir: Directory to save PDF
 
         Returns:
             Path to downloaded PDF or None if failed
         """
         doc_id = doc.get("ID")
+        instrument = doc.get("Instrument") or doc.get("instrument", "unknown")
+
+        # If no ID, try to look it up via API using instrument number
+        if not doc_id and instrument and instrument != "unknown":
+            logger.debug(f"Looking up document ID for instrument {instrument}")
+            api_results = self.search_by_instrument(instrument)
+            if api_results:
+                doc_id = api_results[0].get("ID")
+                # Also get the record date from API result for filename
+                if not doc.get("RecordDate") and api_results[0].get("RecordDate"):
+                    doc["RecordDate"] = api_results[0]["RecordDate"]
+                logger.debug(f"Found document ID {doc_id} for instrument {instrument}")
+
         if not doc_id:
+            # Try to get ID by fetching document viewer page directly
+            doc_id = self._fetch_document_id_via_viewer(instrument)
+
+        if not doc_id:
+            logger.debug(f"Could not find document ID for instrument {instrument}")
             return None
 
-        instrument = doc.get("Instrument", "unknown")
-        doc_type = doc.get("DocType", "UNKNOWN").replace("(", "").replace(")", "").replace(" ", "_")
+        # Support both uppercase (API) and lowercase (browser) field names
+        doc_type = (doc.get("DocType") or doc.get("doc_type") or "UNKNOWN")
+        doc_type = doc_type.replace("(", "").replace(")", "").replace(" ", "_")
 
         try:
-            record_date = datetime.fromtimestamp(doc.get("RecordDate", 0)).strftime("%Y%m%d")
+            # Handle both API format (timestamp) and browser format (string)
+            raw_date = doc.get("RecordDate") or doc.get("record_date")
+            if isinstance(raw_date, (int, float)):
+                record_date = datetime.fromtimestamp(raw_date).strftime("%Y%m%d")
+            elif isinstance(raw_date, str) and raw_date:
+                # Browser format is like "11/25/2024 12:03 PM"
+                try:
+                    parsed = datetime.strptime(raw_date.split()[0], "%m/%d/%Y")
+                    record_date = parsed.strftime("%Y%m%d")
+                except:
+                    record_date = raw_date.replace("/", "").replace(" ", "")[:8]
+            else:
+                record_date = "unknown"
         except:
             record_date = "unknown"
 
@@ -176,6 +210,54 @@ class ORIApiScraper:
             logger.error(f"Error downloading PDF {doc_id}: {e}")
 
         return None
+
+    def _fetch_document_id_via_viewer(self, instrument: str) -> Optional[str]:
+        """
+        Fetch document ID by searching via API with a legal description that matches.
+
+        Since the PAVDirectSearch page requires JavaScript execution, we instead
+        use the API's legal description search to find documents with IDs.
+
+        Args:
+            instrument: The instrument number
+
+        Returns:
+            Document ID string if found, None otherwise
+        """
+        # First try a broader API approach: search using instrument number pattern
+        # The API doesn't support direct instrument search, but we can search
+        # with minimal criteria and filter by instrument
+
+        try:
+            # Try to find via book/page if we have it (from prior DB lookup)
+            # For now, just try a generic legal search that might catch it
+            # This is a fallback - ideally we'd have the legal description
+
+            # Parse year from instrument (first 4 digits are typically year)
+            year = instrument[:4] if len(instrument) >= 4 else "2024"
+
+            # Try searching with a very broad date range for that year
+            payload = {
+                "RecordDateBegin": f"01/01/{year}",
+                "RecordDateEnd": f"12/31/{year}",
+                # No Legal filter - just search by date range
+                # This will hit the 25 result limit but might find our doc
+            }
+
+            results = self._execute_search(payload)
+
+            # Filter by instrument number
+            for result in results:
+                if str(result.get("Instrument")) == str(instrument):
+                    doc_id = result.get("ID")
+                    if doc_id:
+                        logger.debug(f"Found document ID via broad search: {doc_id}")
+                        return doc_id
+
+            return None
+        except Exception as e:
+            logger.debug(f"Error fetching document ID for {instrument}: {e}")
+            return None
 
     async def _ensure_browser(self, headless: bool = True):
         """Ensure browser is initialized and running."""

@@ -219,6 +219,7 @@
                         <th>Creditor</th>
                         <th>Amount</th>
                         <th>Status</th>
+                        <th>Support</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -236,6 +237,11 @@
                                 {{ enc.survival_status or ("SATISFIED" if enc.is_satisfied else "OPEN") }}
                             </span>
                         </td>
+                        <td>
+                            {% if enc.instrument %}
+                            <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=320&OBKey__1006_1={{ enc.instrument }}" target="_blank">Instrument</a>
+                            {% else %}-{% endif %}
+                        </td>
                     </tr>
                     {% endfor %}
                     
@@ -250,12 +256,57 @@
                                 {{ "SURVIVING" if lien.is_surviving else "WIPED" }}
                             </span>
                         </td>
+                        <td>
+                            {% if lien.instrument_number %}
+                            <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=320&OBKey__1006_1={{ lien.instrument_number }}" target="_blank">Instrument</a>
+                            {% else %}-{% endif %}
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
             {% else %}
             <p>No recorded encumbrances found in analysis.</p>
+            {% endif %}
+        </div>
+
+        <div class="section">
+            <div class="section-title">Notices of Commencement (NOCs)</div>
+            {% if property.nocs %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Instrument</th>
+                        <th>Party 1</th>
+                        <th>Party 2</th>
+                        <th>Description</th>
+                        <th>Support</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for noc in property.nocs %}
+                    <tr>
+                        <td>{{ noc.recording_date or 'N/A' }}</td>
+                        <td>{{ noc.instrument_number or 'N/A' }}</td>
+                        <td>{{ noc.party1 or '-' }}</td>
+                        <td>{{ noc.party2 or '-' }}</td>
+                        <td>
+                            {{ (noc.legal_description or noc.ocr_text or '')[:120] ~ ('...' if (noc.legal_description or noc.ocr_text)|length > 120 else '') }}
+                        </td>
+                        <td>
+                            {% if noc.id %}
+                            <a href="/property/{{ property.folio }}/doc/{{ noc.id }}" target="_blank">PDF</a>
+                            {% elif noc.instrument_number %}
+                            <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=320&OBKey__1006_1={{ noc.instrument_number }}" target="_blank">Instrument</a>
+                            {% else %}-{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p>No Notices of Commencement found.</p>
             {% endif %}
         </div>
 
@@ -270,6 +321,7 @@
                         <th>Grantee (Buyer)</th>
                         <th>Document</th>
                         <th>Price</th>
+                        <th>Support</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -280,12 +332,53 @@
                         <td>{{ transfer.owner_name }}</td>
                         <td>{{ transfer.acquisition_doc_type }}</td>
                         <td>${{ "{:,.2f}".format(transfer.acquisition_price or 0) }}</td>
+                        <td>
+                            {% if transfer.acquisition_instrument %}
+                            <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=320&OBKey__1006_1={{ transfer.acquisition_instrument }}" target="_blank">Instrument</a>
+                            {% else %}-{% endif %}
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
             {% else %}
             <p>Chain of title data not available.</p>
+            {% endif %}
+        </div>
+
+        <div class="section">
+            <div class="section-title">Sales History</div>
+            {% if property.sales %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Price</th>
+                        <th>Book/Page</th>
+                        <th>Doc Type</th>
+                        <th>Instrument</th>
+                        <th>Support</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sale in property.sales %}
+                    <tr>
+                        <td>{{ sale.sale_date or 'N/A' }}</td>
+                        <td>${{ "{:,.2f}".format(sale.sale_price or 0) }}</td>
+                        <td>{{ sale.book }}/{{ sale.page }}</td>
+                        <td>{{ sale.doc_type or '-' }}</td>
+                        <td>{{ sale.instrument or '-' }}</td>
+                        <td>
+                            {% if sale.instrument %}
+                            <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=320&OBKey__1006_1={{ sale.instrument }}" target="_blank">Instrument</a>
+                            {% else %}-{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p>No sales history available.</p>
             {% endif %}
         </div>
 

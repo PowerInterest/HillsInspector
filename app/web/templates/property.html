@@ -31,7 +31,7 @@
         </div>
         {% endif %}
         <div class="property-actions" style="margin-left: 20px;">
-            <a href="/property/{{ property.folio }}/title-report" target="_blank" class="btn btn-primary" style="background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+            <a href="/property/{{ auction.case_number or property.folio }}/title-report" target="_blank" class="btn btn-primary" style="background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">
                 Generate Title Report
             </a>
         </div>

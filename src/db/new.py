@@ -156,7 +156,14 @@ def create_database(db_path: str = "data/property_master.db"):
             party1 VARCHAR,
             party2 VARCHAR,
             legal_description VARCHAR,
-            
+
+            -- Party 2 Resolution Fields
+            party2_resolution_method VARCHAR,  -- 'cqid_326', 'ocr_extraction', NULL if original
+            is_self_transfer BOOLEAN DEFAULT FALSE,
+            self_transfer_type VARCHAR,  -- 'exact_match', 'trust_transfer', 'name_variation'
+            party2_confidence FLOAT DEFAULT 1.0,  -- Confidence in party2 data (lower for OCR)
+            party2_resolved_at TIMESTAMP,
+
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -251,6 +258,7 @@ def create_database(db_path: str = "data/property_master.db"):
             chain_period_id INTEGER,
             encumbrance_type VARCHAR,
             creditor VARCHAR,
+            debtor VARCHAR,  -- Party 1 / grantor
             amount FLOAT,
             amount_confidence VARCHAR,
             amount_flags VARCHAR,
@@ -262,6 +270,12 @@ def create_database(db_path: str = "data/property_master.db"):
             satisfaction_instrument VARCHAR,
             satisfaction_date DATE,
             survival_status VARCHAR,
+
+            -- Party 2 Resolution Fields
+            party2_resolution_method VARCHAR,  -- 'cqid_326', 'ocr_extraction', NULL if original
+            is_self_transfer BOOLEAN DEFAULT FALSE,
+            self_transfer_type VARCHAR,  -- 'exact_match', 'trust_transfer', 'name_variation'
+
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)

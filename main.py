@@ -65,16 +65,18 @@ async def handle_debug():
     logger.success("Debug run complete.")
 
 def handle_web():
-    """Start the web server."""
-    logger.info("Starting Web Server...")
-    from nicegui import ui
-    import app.ui as ui_module
-    
-    # Initialize UI
-    ui_module.init_ui()
-    
-    # Run UI
-    ui.run(title='HillsInspector', storage_secret='secret', port=8089, reload=False)
+    """Start the FastAPI web server (app/web)."""
+    logger.info("Starting FastAPI Web Server (app/web)...")
+    import uvicorn
+
+    uvicorn.run(
+        "app.web.main:app",
+        host="0.0.0.0",
+        port=8080,
+        reload=True,
+        log_level="debug",
+        reload_dirs=["app/web", "src"],
+    )
 
 def main():
     parser = argparse.ArgumentParser(description="HillsInspector Main Controller")

@@ -13,10 +13,11 @@ async def map_auctions():
     for r in rows:
         lat = r.get("latitude")
         lon = r.get("longitude")
+        address = r.get("property_address") or r.get("folio") or "Unknown address"
         features.append({
             "lat": lat,
             "lon": lon,
-            "address": r.get("property_address"),
+            "address": address,
             "case_number": r.get("case_number"),
             "auction_date": r.get("auction_date").isoformat() if r.get("auction_date") else None,
             "final_judgment_amount": r.get("final_judgment_amount"),

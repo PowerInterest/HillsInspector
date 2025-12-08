@@ -1,9 +1,9 @@
 
 import asyncio
+import re
 from typing import List, Optional
 from loguru import logger
 from playwright.async_api import async_playwright
-from src.models.property import Lien
 from src.services.scraper_storage import ScraperStorage
 
 class TaxScraper:
@@ -12,10 +12,10 @@ class TaxScraper:
     def __init__(self, storage: Optional[ScraperStorage] = None):
         self.storage = storage or ScraperStorage()
     
-    async def get_tax_liens(self, parcel_id: str) -> List[Lien]:
+    async def get_tax_liens(self, parcel_id: str) -> List[dict]:
         """
         Searches for unpaid property taxes.
-        Returns a list of Liens (type='TAX').
+        Returns a list of lien-like dicts (document_type='TAX').
         """
         logger.info(f"Searching Tax Collector for Parcel ID: {parcel_id}")
         liens = []
@@ -57,19 +57,28 @@ class TaxScraper:
                         logger.info("No tax records found.")
                         return []
                         
-                    # Check for "Amount Due" or similar
-                    # This is highly dependent on the site structure
-                    # We'll look for text containing "$" and "Due"
-                    
-                    # Dump text to debug if needed
-                    # text = await page.inner_text("body")
-                    
-                    # Placeholder logic:
-                    # If we see "Amount Due: $X.XX", we assume it's a lien
-                    # This needs refinement based on actual HTML
-                    
-                    # For now, if we can't verify, we return empty list but log warning
-                    logger.info("Tax search completed (structure verification needed).")
+                    # Scrape visible text and look for balances
+                    text = await page.inner_text("body")
+                    amount_due = self._parse_amount_due(text)
+
+                    if amount_due is not None and amount_due > 0:
+                        liens.append({
+                            "document_type": "TAX",
+                            "recording_date": None,
+                            "amount": amount_due,
+                            "grantor": parcel_id,
+                            "grantee": "Hillsborough County Tax Collector",
+                            "description": f"Amount due detected on tax site: ${amount_due:,.2f}",
+                        })
+                        logger.success(f"Detected potential tax lien for {parcel_id}: ${amount_due:,.2f}")
+                    elif amount_due == 0:
+                        logger.info("Taxes appear paid (amount due parsed as $0.00).")
+                    else:
+                        lower_text = text.lower()
+                        if "paid in full" in lower_text or "no taxes due" in lower_text:
+                            logger.info("Taxes appear paid per page text.")
+                        else:
+                            logger.info("No tax balance detected; manual review may be needed.")
                     
                     # Save screenshot for debugging
                     screenshot_bytes = await page.screenshot()
@@ -86,11 +95,47 @@ class TaxScraper:
                     
             except Exception as e:
                 logger.error(f"Error scraping Tax site: {e}")
-            # finally:
-            #     await browser.close()
-            logger.info("Browser left open for user inspection.")
-                
+            finally:
+                await browser.close()
+            
         return liens
+
+    @staticmethod
+    def _parse_amount_due(text: str) -> Optional[float]:
+        """
+        Try to extract an "Amount Due" dollar value from page text.
+        Returns None if nothing obvious is found.
+        """
+        if not text:
+            return None
+
+        patterns = [
+            r"Amount\s+Due[^$]*\$([\d,]+\.\d{2})",
+            r"Total\s+Due[^$]*\$([\d,]+\.\d{2})",
+            r"Balance\s+Due[^$]*\$([\d,]+\.\d{2})",
+        ]
+
+        for pat in patterns:
+            match = re.search(pat, text, flags=re.IGNORECASE)
+            if match:
+                try:
+                    return float(match.group(1).replace(",", ""))
+                except ValueError:
+                    continue
+
+        # Fallback: grab first currency amount that appears after the word "due"
+        lower = text.lower()
+        idx = lower.find("due")
+        if idx != -1:
+            snippet = text[idx:]
+            match = re.search(r"\$([\d,]+\.\d{2})", snippet)
+            if match:
+                try:
+                    return float(match.group(1).replace(",", ""))
+                except ValueError:
+                    return None
+
+        return None
 
 if __name__ == "__main__":
     scraper = TaxScraper()

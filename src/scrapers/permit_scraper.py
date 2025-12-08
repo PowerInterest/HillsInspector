@@ -62,6 +62,9 @@ class PermitDetail:
     address: Optional[str] = None
     parcel_id: Optional[str] = None
     module: Optional[str] = None
+    
+    url: Optional[str] = None
+    noc_instrument: Optional[str] = None
 
 
 class AddressParser:
@@ -341,6 +344,13 @@ class PermitScraper:
                 await page.screenshot(path=str(screenshot_path), full_page=True)
                 logger.info(f"Screenshot saved: {screenshot_path}")
 
+                # Debug: Dump HTML
+                html_content = await page.content()
+                debug_html_path = self.output_dir / f"debug_{source.replace(' ', '_')}_{safe_addr}_{timestamp}.html"
+                with open(debug_html_path, "w", encoding="utf-8") as f:
+                    f.write(html_content)
+                logger.info(f"HTML dumped to: {debug_html_path}")
+
                 # Parse results
                 if self.use_vision and self.vision:
                     permits = await self._extract_with_vision(str(screenshot_path), page)
@@ -452,33 +462,45 @@ class PermitScraper:
                 logger.info("No permits found in results table")
                 return permits
 
-            # Get headers to map columns
-            header_row = rows.nth(0)
-            headers = await header_row.locator("th, td").all_inner_texts()
-            headers = [h.strip().upper() for h in headers]
-            logger.info(f"Found headers: {headers}")
+            # Find header row
+            header_idx = 0
+            found_headers = False
+            
+            # Scan first few rows for headers
+            for i in range(min(5, count)):
+                row = rows.nth(i)
+                texts = await row.locator("th, td").all_inner_texts()
+                texts = [t.strip().upper() for t in texts]
+                
+                # Check for characteristic column names
+                if any("RECORD NUMBER" in t or "PERMIT NUMBER" in t or "DATE" in t for t in texts):
+                    header_idx = i
+                    headers = texts
+                    found_headers = True
+                    logger.info(f"Found headers at row {i}: {headers}")
+                    break
             
             # Map column indices
             col_map = {}
-            for idx, h in enumerate(headers):
-                if "RECORD NUMBER" in h or "PERMIT NUMBER" in h:
-                    col_map['number'] = idx
-                elif "RECORD TYPE" in h or "PERMIT TYPE" in h:
-                    col_map['type'] = idx
-                elif "STATUS" in h:
-                    col_map['status'] = idx
-                elif "DATE" in h:
-                    col_map['date'] = idx
-                elif "MODULE" in h:
-                    col_map['module'] = idx
-                elif "DESCRIPTION" in h or "NOTES" in h:
-                    col_map['desc'] = idx
-                elif "PROJECT NAME" in h:
-                    col_map['project'] = idx
-            
-            logger.info(f"Column map: {col_map}")
+            if found_headers:
+                for idx, h in enumerate(headers):
+                    if "RECORD NUMBER" in h or "PERMIT NUMBER" in h:
+                        col_map['number'] = idx
+                    elif "RECORD TYPE" in h or "PERMIT TYPE" in h:
+                        col_map['type'] = idx
+                    elif "STATUS" in h:
+                        col_map['status'] = idx
+                    elif "DATE" in h:
+                        col_map['date'] = idx
+                    elif "MODULE" in h:
+                        col_map['module'] = idx
+                    elif "DESCRIPTION" in h or "NOTES" in h:
+                        col_map['desc'] = idx
+                    elif "PROJECT NAME" in h:
+                        col_map['project'] = idx
+                logger.info(f"Column map: {col_map}")
 
-            # Fallback for Global Search if headers didn't match
+            # Fallback if headers not found or incomplete
             if 'number' not in col_map:
                 logger.info("Using default global search column mapping")
                 col_map = {
@@ -491,21 +513,30 @@ class PermitScraper:
                     'address': 6,
                     'status': 7
                 }
+                # If we didn't find headers, assume row 0 is special (pagination) if it has colspan
+                # But safer to just look for data pattern or assume header is row 1 if row 0 didn't match
+                if not found_headers and count > 1:
+                     # Heuristic: verify if row 1 looks like header? No, we already scanned.
+                     # Just assume data starts after the row we checked? 
+                     # If we failed to find headers, maybe the table doesn't have them or they are weird.
+                     # Let's assume start index is 1 (legacy behavior) but check if row 0 was pagination.
+                     pass
 
-            # Skip header row
-            for i in range(1, count):
+            # Iterate data rows
+            start_row = header_idx + 1 if found_headers else 1
+            for i in range(start_row, count):
                 try:
                     row = rows.nth(i)
                     
                     # Check if it's a pagination row or empty
                     row_text = await row.inner_text()
-                    if not row_text.strip() or "Prev" in row_text or "Next" in row_text:
+                    if not row_text.strip() or "Prev" in row_text or "Next" in row_text or "Showing" in row_text:
                         continue
 
                     cells = row.locator("td")
                     cell_count = await cells.count()
 
-                    if cell_count < len(col_map) or cell_count < 3:
+                    if cell_count < len(col_map) and cell_count < 3:
                         continue
                         
                     # Extract data using map
@@ -540,7 +571,8 @@ class PermitScraper:
                         permit_type=permit_type,
                         status=status,
                         module=module,
-                        description=desc
+                        description=desc,
+                        url=f"https://aca-prod.accela.com/TAMPA/Cap/GlobalSearchResults.aspx?QueryText={permit_num}"
                     )
                     
                     if date_str:

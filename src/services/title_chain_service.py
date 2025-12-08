@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from datetime import datetime
 import re
 
@@ -21,33 +21,47 @@ class TitleChainService:
         """
         # 1. Sort documents by date (oldest to newest)
         sorted_docs = sorted(documents, key=lambda x: self._parse_date(x.get('recording_date', '')))
-        
+
         # 2. Separate into categories
-        deeds = [d for d in sorted_docs if 'DEED' in d.get('doc_type', '').upper()]
-        
+        # Support both 'doc_type' (raw ORI) and 'document_type' (mapped schema)
+        def get_doc_type(d):
+            return (d.get('doc_type') or d.get('document_type', '')).upper()
+
+        deeds = [d for d in sorted_docs if 'DEED' in get_doc_type(d) or 'CERTIFICATE OF TITLE' in get_doc_type(d)]
+
         # Encumbrances: Mortgages, Liens, Judgments, Lis Pendens
         # Exclude Satisfactions from this list initially
-        encumbrance_keywords = ['MORTGAGE', 'LIEN', 'JUDGMENT', 'LIS PENDENS']
+        encumbrance_keywords = ['MORTGAGE', 'LIEN', 'JUDGMENT', 'LIS PENDENS', 'TAX']
         satisfaction_keywords = ['SATISFACTION', 'RELEASE', 'RECONVEYANCE', 'DISCHARGE']
+        # Partial releases should NOT count as full satisfaction
+        partial_keywords = ['PARTIAL']
         modification_keywords = ['MODIFICATION', 'ASSIGNMENT', 'AMENDMENT']
         restriction_keywords = ['EASEMENT', 'RESTRICTION', 'COVENANT', 'DECLARATION', 'PLAT']
-        
+
         potential_encumbrances = []
         satisfactions = []
         nocs = []
         modifications = []
         restrictions = []
-        
+
         for d in sorted_docs:
-            doc_type = d.get('doc_type', '').upper()
+            doc_type = get_doc_type(d)
+            text_blob = " ".join([
+                str(d.get('legal_description', '')),
+                str(d.get('ocr_text', '')),
+                str(d.get('notes', ''))
+            ]).upper()
             
             if 'NOTICE OF COMMENCEMENT' in doc_type or 'NOC' in doc_type:
                 nocs.append(d)
+            elif any(k in doc_type for k in partial_keywords):
+                # Treat partials as modifications/notes, NOT full satisfactions
+                modifications.append(d)
             elif any(k in doc_type for k in satisfaction_keywords):
                 satisfactions.append(d)
             elif any(k in doc_type for k in modification_keywords):
                 modifications.append(d)
-            elif any(k in doc_type for k in restriction_keywords):
+            elif any(k in doc_type for k in restriction_keywords) or any(k in text_blob for k in restriction_keywords):
                 restrictions.append(d)
             elif any(k in doc_type for k in encumbrance_keywords):
                 potential_encumbrances.append(d)
@@ -64,10 +78,12 @@ class TitleChainService:
             'nocs': nocs,
             'modifications': modifications,
             'restrictions': restrictions,
+            'tax_liens': [e for e in encumbrances if 'TAX' in str(e.get('type', '')).upper()],
             'summary': {
                 'total_deeds': len(deeds),
                 'active_liens': len([e for e in encumbrances if e['status'] == 'OPEN']),
                 'total_nocs': len(nocs),
+                'restrictions_count': len(restrictions),
                 'current_owner': chain[-1]['grantee'] if chain else "Unknown"
             }
         }
@@ -78,11 +94,13 @@ class TitleChainService:
         """
         chain = []
         for i, deed in enumerate(deeds):
+            # Support both field naming conventions
+            doc_type = deed.get('doc_type') or deed.get('document_type', '')
             entry = {
                 'date': deed.get('recording_date'),
                 'grantor': deed.get('party1', '').strip(), # Usually Grantor
                 'grantee': deed.get('party2', '').strip(), # Usually Grantee
-                'doc_type': deed.get('doc_type'),
+                'doc_type': doc_type,
                 'book_page': f"{deed.get('book')}/{deed.get('page')}",
                 'notes': []
             }
@@ -122,9 +140,20 @@ class TitleChainService:
             enc_book = str(enc.get('book', '')).strip()
             enc_page = str(enc.get('page', '')).strip()
             enc_inst = str(enc.get('instrument_number', '')).strip()
+            enc_type = enc.get('doc_type') or enc.get('document_type', '')
             
-            enc_lender = enc.get('party2', '').strip() # Party 2 is usually the Lender/Lienor
+            # Determine Creditor/Debtor based on Document Type
+            # Mortgages: Party 1 = Borrower (Debtor), Party 2 = Lender (Creditor)
+            # Liens/LP/Judgments: Party 1 = Claimant (Creditor), Party 2 = Debtor (Owner)
+            is_mortgage = 'MORTGAGE' in str(enc_type).upper() or 'MTG' in str(enc_type).upper()
             
+            if is_mortgage:
+                enc_lender = enc.get('party2', '').strip() 
+                enc_debtor = enc.get('party1', '').strip()
+            else:
+                enc_lender = enc.get('party1', '').strip()
+                enc_debtor = enc.get('party2', '').strip()
+
             for sat in satisfactions:
                 sat_date = self._parse_date(sat.get('recording_date'))
                 if sat_date <= enc_date:
@@ -165,12 +194,13 @@ class TitleChainService:
                     match_method = 'NAME_MATCH'
                     break
             
+            # Support both field naming conventions
             results.append({
-                'type': enc.get('doc_type'),
+                'type': enc_type,
                 'date': enc.get('recording_date'),
                 'amount': enc.get('amount', 'Unknown'),
                 'creditor': enc_lender,
-                'debtor': enc.get('party1', '').strip(),
+                'debtor': enc_debtor,
                 'book_page': f"{enc.get('book')}/{enc.get('page')}",
                 'status': status,
                 'satisfaction_ref': f"{matched_satisfaction.get('book')}/{matched_satisfaction.get('page')}" if matched_satisfaction else None,
@@ -197,7 +227,13 @@ class TitleChainService:
         common = t1.intersection(t2)
         
         # If they share significant words (ignoring common stopwords like LLC, INC, BANK)
-        stopwords = {'LLC', 'INC', 'CORP', 'COMPANY', 'BANK', 'NA', 'ASSOCIATION', 'THE', 'OF', 'AND'}
+        # If they share significant words (ignoring common stopwords like LLC, INC, BANK)
+        stopwords = {
+            'LLC', 'INC', 'CORP', 'COMPANY', 'BANK', 'NA', 'ASSOCIATION', 'THE', 'OF', 'AND',
+            'SECRETARY', 'DEPARTMENT', 'HOUSING', 'URBAN', 'DEVELOPMENT', 'USA', 'UNITED', 'STATES',
+            'TRUST', 'FSB', 'NATIONAL', 'SYSTEMS', 'ELECTRONIC', 'REGISTRATION', 'FINANCIAL',
+            'GROUP', 'HOLDINGS', 'LTD', 'LP', 'PA', 'PARTNERS'
+        }
         significant_common = common - stopwords
         
         if len(significant_common) >= 1:
@@ -207,8 +243,19 @@ class TitleChainService:
             
         return False
 
-    def _parse_date(self, date_str: str) -> datetime:
-        try:
-            return datetime.strptime(date_str, "%m/%d/%Y")
-        except:
+    def _parse_date(self, date_val: Any) -> datetime:
+        if not date_val:
             return datetime.min
+        if isinstance(date_val, datetime):
+            return date_val
+        if hasattr(date_val, 'timetuple'): # duck typing for date
+             return datetime.combine(date_val, datetime.min.time())
+            
+        try:
+            return datetime.strptime(str(date_val), "%Y-%m-%d")
+        except:
+            try:
+                # Fallback for old format or user entered
+                return datetime.strptime(str(date_val), "%m/%d/%Y")
+            except:
+                return datetime.min
