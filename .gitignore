@@ -133,3 +133,8 @@ data/
 *.png
 *.jpg
 *.jpeg
+
+# Temporary/debug files
+.venv_broken_2/
+Download_log.txt
+debug_*.txt
