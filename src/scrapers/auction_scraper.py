@@ -4,7 +4,6 @@ import random
 from datetime import date, timedelta
 from pathlib import Path
 from typing import List, Optional
-import os
 import urllib.parse
 from loguru import logger
 from playwright.async_api import async_playwright, Page, TimeoutError as PlaywrightTimeoutError
@@ -204,7 +203,14 @@ class AuctionScraper:
 
                 # Parcel
                 parcel_row = details.locator("tr:has-text('Parcel ID:')")
-                parcel_id_text = (await parcel_row.locator("a").inner_text()).strip() if await parcel_row.count() else ""
+                parcel_id_text = ""
+                if await parcel_row.count():
+                    parcel_link = parcel_row.locator("a")
+                    if await parcel_link.count():
+                        raw_parcel = (await parcel_link.inner_text()).strip()
+                        # Filter out non-parcel values like "Property Appraiser" links
+                        if raw_parcel and raw_parcel.lower() not in ("property appraiser", "n/a", "none"):
+                            parcel_id_text = raw_parcel
 
                 # Address (two rows)
                 addr_row = details.locator("tr:has-text('Property Address:')")
@@ -298,7 +304,7 @@ class AuctionScraper:
             # Wait for the Document ID
             try:
                 onbase_doc_id = await asyncio.wait_for(doc_id_future, timeout=15.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(f"Could not find Document ID for {case_number}")
                 return None
                 

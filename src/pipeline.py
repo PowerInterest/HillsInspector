@@ -21,6 +21,7 @@ Steps:
 import asyncio
 import contextlib
 import json
+import urllib.parse
 from datetime import date, timedelta, datetime, UTC
 from pathlib import Path
 from typing import Optional
@@ -50,6 +51,7 @@ from src.utils.legal_description import build_ori_search_terms
 from src.services.data_linker import link_permits_to_nocs
 from src.db.operations import PropertyDB
 from src.models.property import Lien, Property
+from playwright.async_api import async_playwright
 
 
 class PipelineDB(PropertyDB):
@@ -221,6 +223,183 @@ def is_entity_name(name: str) -> bool:
     return any(kw in name_upper for kw in entity_keywords)
 
 
+async def _download_missing_judgment_pdfs(
+    auctions: list[dict],
+    storage: ScraperStorage,
+    db: "PipelineDB"
+) -> list[tuple[dict, Path]]:
+    """Download Final Judgment PDFs for auctions that are missing them.
+
+    Args:
+        auctions: List of auction dicts needing PDF download
+        storage: ScraperStorage instance for saving files
+        db: Database connection for updating auction dates
+
+    Returns:
+        List of (auction, pdf_path) tuples for successfully downloaded PDFs
+    """
+    if not auctions:
+        return []
+
+    USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+    downloaded = []
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(user_agent=USER_AGENT)
+        page = await context.new_page()
+
+        # Group auctions by date to minimize page loads
+        auctions_by_date: dict[date, list[dict]] = {}
+        for auction in auctions:
+            auction_date = auction.get("auction_date")
+            if auction_date:
+                if isinstance(auction_date, str):
+                    auction_date = datetime.strptime(auction_date[:10], "%Y-%m-%d").date()
+                elif hasattr(auction_date, "date"):
+                    auction_date = auction_date.date()
+                auctions_by_date.setdefault(auction_date, []).append(auction)
+
+        for auction_date, date_auctions in auctions_by_date.items():
+            date_str = auction_date.strftime("%m/%d/%Y")
+            url = f"https://hillsborough.realforeclose.com/index.cfm?zaction=AUCTION&Zmethod=PREVIEW&AUCTIONDATE={date_str}"
+
+            try:
+                logger.debug(f"Loading auction page for {date_str}...")
+                await page.goto(url, timeout=60000)
+                await page.wait_for_load_state("networkidle")
+
+                items = page.locator("div.AUCTION_ITEM")
+                item_count = await items.count()
+
+                # Build a map of case_number -> href from the page
+                case_hrefs = {}
+                for i in range(item_count):
+                    item = items.nth(i)
+                    details = item.locator("table.ad_tab")
+                    case_row = details.locator("tr:has-text('Case #:')")
+                    case_link = case_row.locator("a")
+                    if await case_link.count():
+                        case_text = (await case_link.inner_text()).strip()
+                        case_href = await case_link.get_attribute("href")
+                        if case_href and "CQID=320" in case_href:
+                            case_hrefs[case_text] = case_href
+
+                # Download PDFs for each auction
+                for auction in date_auctions:
+                    case_number = auction["case_number"]
+                    parcel_id = auction.get("parcel_id") or auction.get("folio")
+
+                    if case_number not in case_hrefs:
+                        logger.warning(f"Case {case_number} not found on page for {date_str}")
+                        continue
+
+                    case_href = case_hrefs[case_number]
+                    instrument_number = None
+                    if "OBKey__1006_1=" in case_href:
+                        instrument_number = case_href.split("OBKey__1006_1=")[-1]
+
+                    try:
+                        pdf_path = await _download_single_judgment_pdf(
+                            page, case_href, case_number, parcel_id, instrument_number, storage
+                        )
+                        if pdf_path:
+                            downloaded.append((auction, pdf_path))
+                            await asyncio.sleep(0.5)  # Rate limiting
+                    except Exception as e:
+                        logger.error(f"Failed to download PDF for {case_number}: {e}")
+
+            except Exception as e:
+                logger.error(f"Error loading auction page for {date_str}: {e}")
+
+        await browser.close()
+
+    return downloaded
+
+
+async def _download_single_judgment_pdf(
+    page,
+    onbase_url: str,
+    case_number: str,
+    parcel_id: str,
+    instrument_number: str | None,
+    storage: ScraperStorage
+) -> Path | None:
+    """Download a single Final Judgment PDF from OnBase."""
+    new_context = None
+    new_page = None
+
+    try:
+        new_context = await page.context.browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            accept_downloads=True
+        )
+        new_page = await new_context.new_page()
+
+        # Capture Document ID from API response
+        doc_id_future = asyncio.get_event_loop().create_future()
+
+        async def handle_response(response):
+            if "KeywordSearch" in response.url and not doc_id_future.done():
+                try:
+                    json_data = await response.json()
+                    if "Data" in json_data and len(json_data["Data"]) > 0:
+                        doc_id = json_data["Data"][0].get("ID")
+                        if doc_id:
+                            doc_id_future.set_result(doc_id)
+                except Exception:
+                    pass
+
+        new_page.on("response", handle_response)
+
+        logger.debug(f"Navigating to OnBase for {case_number}...")
+        await new_page.goto(onbase_url, timeout=30000)
+
+        try:
+            onbase_doc_id = await asyncio.wait_for(doc_id_future, timeout=15.0)
+        except TimeoutError:
+            logger.warning(f"Could not find Document ID for {case_number}")
+            return None
+
+        # Construct download URL
+        encoded_id = urllib.parse.quote(onbase_doc_id)
+        download_url = f"https://publicaccess.hillsclerk.com/PAVDirectSearch/api/Document/{encoded_id}/?OverlayMode=View"
+
+        logger.debug(f"Downloading PDF for {case_number}...")
+
+        async with new_page.expect_download(timeout=60000) as download_info:
+            await new_page.evaluate(f"window.location.href = '{download_url}'")
+
+        download = await download_info.value
+        pdf_path = await download.path()
+
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+
+        # Save using storage
+        doc_id = instrument_number if instrument_number else case_number
+        saved_path = storage.save_document(
+            property_id=parcel_id,
+            file_data=pdf_bytes,
+            doc_type="final_judgment",
+            doc_id=doc_id,
+            extension="pdf"
+        )
+
+        full_path = storage.get_full_path(parcel_id, saved_path)
+        logger.info(f"Downloaded PDF for {case_number}: {full_path.name}")
+        return full_path
+
+    except Exception as e:
+        logger.error(f"Error downloading PDF for {case_number}: {e}")
+        return None
+    finally:
+        if new_page:
+            await new_page.close()
+        if new_context:
+            await new_context.close()
+
+
 async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int] = None):
     """Run the complete property analysis pipeline with smart skip logic.
 
@@ -292,14 +471,19 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
             logger.error(f"Tax deed scrape failed: {e}")
 
     # =========================================================================
-    # STEP 2: Extract Final Judgment Data
+    # STEP 2: Download & Extract Final Judgment Data
     # Skip if: case_number already has extracted_judgment_data
+    # Now downloads missing PDFs before extraction
     # =========================================================================
     logger.info("\n" + "=" * 60)
-    logger.info("STEP 2: EXTRACTING FINAL JUDGMENT DATA")
+    logger.info("STEP 2: DOWNLOADING & EXTRACTING FINAL JUDGMENT DATA")
     logger.info("=" * 60)
 
     judgment_processor = FinalJudgmentProcessor()
+    storage = ScraperStorage()
+
+    # Invalid parcel_id values that should be treated as missing
+    INVALID_PARCEL_IDS = {"property appraiser", "n/a", "none", ""}
 
     try:
         auctions = db.execute_query(
@@ -310,30 +494,52 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
         logger.warning(f"Could not query auctions: {e}")
         auctions = []
 
-    extracted_count = 0
+    # Separate auctions into those with PDFs and those needing download
+    auctions_with_pdf = []
+    auctions_needing_download = []
+
     for auction in auctions:
         case_number = auction["case_number"]
-        parcel_id = auction.get("parcel_id")
+        parcel_id = auction.get("parcel_id") or ""
 
-        # Find PDF
-        pdf_path = None
-        potential_paths = []
+        # Skip invalid parcel IDs
+        if parcel_id.lower() in INVALID_PARCEL_IDS:
+            logger.debug(f"Skipping {case_number}: invalid parcel_id '{parcel_id}'")
+            continue
 
-        if parcel_id:
-            # Sanitize folio for filesystem (remove slashes, etc.)
-            sanitized_folio = parcel_id.replace("/", "_").replace("\\", "_").replace(":", "_")
-            base_dir = Path("data/properties") / sanitized_folio / "documents"
-            if base_dir.exists():
-                potential_paths.extend(list(base_dir.glob("final_judgment*.pdf")))
+        # Check if PDF exists
+        sanitized_folio = parcel_id.replace("/", "_").replace("\\", "_").replace(":", "_")
+        base_dir = Path("data/properties") / sanitized_folio / "documents"
+        potential_paths = list(base_dir.glob("final_judgment*.pdf")) if base_dir.exists() else []
 
         legacy_path = Path(f"data/pdfs/final_judgments/{case_number}_final_judgment.pdf")
         if legacy_path.exists():
             potential_paths.append(legacy_path)
 
-        if not potential_paths:
-            continue
+        if potential_paths:
+            auctions_with_pdf.append((auction, potential_paths[0]))
+        else:
+            auctions_needing_download.append(auction)
 
-        pdf_path = potential_paths[0]
+    logger.info(f"  - {len(auctions_with_pdf)} have PDFs ready for extraction")
+    logger.info(f"  - {len(auctions_needing_download)} need PDF download")
+
+    # Download missing PDFs
+    downloaded_count = 0
+    if auctions_needing_download:
+        logger.info("Downloading missing Final Judgment PDFs...")
+        downloaded_pdfs = await _download_missing_judgment_pdfs(
+            auctions_needing_download, storage, db
+        )
+        downloaded_count = len(downloaded_pdfs)
+        # Add downloaded PDFs to extraction queue
+        auctions_with_pdf.extend(downloaded_pdfs)
+        logger.success(f"Downloaded {downloaded_count} PDFs")
+
+    # Extract data from all PDFs
+    extracted_count = 0
+    for auction, pdf_path in auctions_with_pdf:
+        case_number = auction["case_number"]
         logger.info(f"Processing judgment for {case_number} from {pdf_path}...")
 
         try:
@@ -351,7 +557,7 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
         except Exception as e:
             logger.error(f"Failed to process judgment for {case_number}: {e}")
 
-    logger.success(f"Extracted data from {extracted_count} Final Judgments")
+    logger.success(f"Downloaded {downloaded_count} PDFs, extracted data from {extracted_count} Final Judgments")
 
     # =========================================================================
     # STEP 3: BULK DATA ENRICHMENT

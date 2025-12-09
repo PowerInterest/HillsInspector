@@ -2,6 +2,22 @@
 
 ## Completed
 
+### ✅ Final Judgment PDF Download Fix (Dec 8, 2024)
+**Problem**: 72 of 160 auctions had no Final Judgment PDFs downloaded, causing missing `extracted_judgment_data`.
+
+**Root Causes**:
+1. **64 auctions with `parcel_id = "Property Appraiser"`**: The auction scraper captured the link text "Property Appraiser" instead of recognizing there was no valid parcel ID. Since PDF downloads require a valid `parcel_id` for the storage path, these were skipped.
+2. **8 auctions with valid parcel_ids but no PDFs**: These far-future auctions (Jan 2026) simply didn't trigger PDF downloads during the original scrape.
+
+**Fixes Applied**:
+- `src/scrapers/auction_scraper.py` (lines 205-214): Enhanced parcel_id parsing to filter out invalid values like "Property Appraiser", "N/A", and "none"
+- `src/pipeline.py` Step 2: Now downloads missing PDFs before extraction instead of just skipping auctions without PDFs
+  - Added `_download_missing_judgment_pdfs()` helper function
+  - Added `_download_single_judgment_pdf()` helper function
+  - Groups downloads by auction date to minimize page loads
+  - Filters out invalid parcel_ids from processing
+- `scripts/redownload_missing_judgments.py`: New standalone script to retroactively download missing PDFs
+
 ### ✅ Full Document Analysis Pipeline (Dec 2024)
 - Added comprehensive vLLM prompts for ALL document types:
   - Deeds (WD, QC, SWD, TD, etc.) - extracts grantor, grantee, consideration, legal description, red flags

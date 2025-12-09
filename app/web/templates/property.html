@@ -164,75 +164,49 @@
                 {% endif %}
             </section>
 
-            <!-- Liens Table (HTMX loaded) -->
-            <section class="card">
-                <h2>Liens & Encumbrances</h2>
-                <div hx-get="/property/{{ property.folio }}/liens"
-                     hx-trigger="load"
-                     hx-swap="innerHTML"
-                     class="htmx-loading">
-                    Loading liens...
+            <!-- Tabs for Liens, Documents, etc. -->
+            <div class="tabs-container">
+                <div class="tabs">
+                    <button class="tab-link active" onclick="openTab(event, 'liens')">Liens & Encumbrances</button>
+                    <button class="tab-link" onclick="openTab(event, 'documents')">Documents</button>
+                    <button class="tab-link" onclick="openTab(event, 'chain')">Chain of Title</button>
+                    <button class="tab-link" onclick="openTab(event, 'sales')">Sales History</button>
                 </div>
-            </section>
 
-            <!-- Documents (HTMX loaded) -->
-            <section class="card">
-                <h2>Documents</h2>
-                <div hx-get="/property/{{ property.folio }}/documents"
+                <!-- Tab Content -->
+                <div id="liens" class="tab-content active"
+                     hx-get="/property/{{ property.folio }}/liens"
+                     hx-trigger="load"
+                     hx-swap="innerHTML">
+                    <div class="htmx-loading">Loading liens...</div>
+                </div>
+
+                <div id="documents" class="tab-content"
+                     hx-get="/property/{{ property.folio }}/documents"
                      hx-trigger="load"
                      hx-swap="innerHTML"
-                     class="htmx-loading">
-                    Loading documents...
+                     style="display:none;">
+                    <div class="htmx-loading">Loading documents...</div>
                 </div>
-            </section>
+
+                <div id="chain" class="tab-content"
+                     hx-get="/property/{{ property.folio }}/chain"
+                     hx-trigger="load"
+                     hx-swap="innerHTML"
+                     style="display:none;">
+                    <div class="htmx-loading">Loading chain of title...</div>
+                </div>
+
+                <div id="sales" class="tab-content"
+                     hx-get="/property/{{ property.folio }}/sales"
+                     hx-trigger="load"
+                     hx-swap="innerHTML"
+                     style="display:none;">
+                    <div class="htmx-loading">Loading sales history...</div>
+                </div>
+            </div>
         </div>
     </div>
-
-    <!-- Chain of Title -->
-    <section class="card" id="chain-title-section" style="margin-bottom: 1.5rem;">
-        <h2>Chain of Title (Ownership History)</h2>
-        {% if property.chain %}
-        <div class="table-container">
-            <table class="auction-table">
-                <thead>
-                    <tr>
-                        <th>Date</th>
-                        <th>Grantor (Seller)</th>
-                        <th>Grantee (Buyer)</th>
-                        <th>Document</th>
-                        <th>Price</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for transfer in property.chain %}
-                    <tr class="auction-row">
-                        <td>{{ transfer.acquisition_date }}</td>
-                        <td>{{ transfer.acquired_from or '-' }}</td>
-                        <td>{{ transfer.owner_name }}</td>
-                        <td>{{ transfer.acquisition_doc_type }}</td>
-                        <td class="money-cell">{{ "${:,.0f}".format(transfer.acquisition_price) if transfer.acquisition_price else '-' }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% else %}
-        <div class="no-data">
-            <p>Chain of title analysis not available.</p>
-        </div>
-        {% endif %}
-    </section>
-
-    <!-- Sales History (Full Width) -->
-    <section class="card" id="sales-history-section">
-        <h2>Sales History</h2>
-        <div hx-get="/property/{{ property.folio }}/sales"
-             hx-trigger="load"
-             hx-swap="innerHTML"
-             class="htmx-loading">
-            Loading sales history...
-        </div>
-    </section>
 
     <!-- OCR Content (if available) -->
     {% if auction.final_judgment_content %}

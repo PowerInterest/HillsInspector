@@ -12,7 +12,8 @@ from app.web.database import (
     get_property_by_case,
     get_liens_for_property,
     get_documents_for_property,
-    get_sales_history
+    get_sales_history,
+    get_document_by_instrument
 )
 
 router = APIRouter()
@@ -133,6 +134,37 @@ async def property_sales_history(request: Request, folio: str):
         {
             "request": request,
             "sales": sales,
+            "folio": folio
+        }
+    )
+
+
+@router.get("/{folio}/chain", response_class=HTMLResponse)
+async def property_chain_of_title(request: Request, folio: str):
+    """
+    HTMX partial - chain of title for a property.
+    """
+    prop = get_property_detail(folio)
+    if not prop:
+        prop = get_property_by_case(folio)
+
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+
+    chain_of_title = prop.get("chain", [])
+
+    # Enhance chain with document links
+    for item in chain_of_title:
+        doc = None
+        if item.get("acquisition_instrument"):
+            doc = get_document_by_instrument(folio, item["acquisition_instrument"])
+        item["document_id"] = doc["id"] if doc else None
+
+    return templates.TemplateResponse(
+        "partials/chain_of_title.html",
+        {
+            "request": request,
+            "chain_of_title": chain_of_title,
             "folio": folio
         }
     )

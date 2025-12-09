@@ -565,6 +565,27 @@ def get_sales_history(folio: str) -> List[Dict[str, Any]]:
         conn.close()
 
 
+def get_document_by_instrument(folio: str, instrument_number: str) -> Optional[Dict[str, Any]]:
+    """Get a document by its instrument number for a specific folio."""
+    conn = get_connection()
+    try:
+        query = """
+            SELECT * FROM documents
+            WHERE folio = ? AND instrument_number = ?
+            LIMIT 1
+        """
+        result = conn.execute(query, [folio, instrument_number]).fetchone()
+        if result:
+            columns = [desc[0] for desc in conn.description]
+            return dict(zip(columns, result))
+        return None
+    except Exception as e:
+        logger.warning(f"Error fetching document by instrument {instrument_number}: {e}")
+        return None
+    finally:
+        conn.close()
+
+
 def get_dashboard_stats() -> Dict[str, Any]:
     """Get summary statistics for the dashboard."""
     conn = get_connection()

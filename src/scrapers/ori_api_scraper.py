@@ -1,11 +1,72 @@
 import requests
 import asyncio
+import random
+import time
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 from urllib.parse import quote
 from loguru import logger
 from playwright.async_api import async_playwright
+
+
+# Anti-detection: User agent rotation pool
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
+]
+
+# Anti-detection: Viewport sizes (common desktop resolutions)
+VIEWPORT_SIZES = [
+    {"width": 1920, "height": 1080},
+    {"width": 1536, "height": 864},
+    {"width": 1440, "height": 900},
+    {"width": 1366, "height": 768},
+    {"width": 2560, "height": 1440},
+    {"width": 1680, "height": 1050},
+]
+
+# Anti-detection: Timezones (US-based for Florida site)
+TIMEZONES = [
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+]
+
+# Anti-detection: Locales
+LOCALES = ["en-US", "en-GB", "en-CA"]
+
+
+def get_random_browser_config() -> dict:
+    """Get randomized browser configuration for anti-detection."""
+    return {
+        "user_agent": random.choice(USER_AGENTS),
+        "viewport": random.choice(VIEWPORT_SIZES),
+        "timezone_id": random.choice(TIMEZONES),
+        "locale": random.choice(LOCALES),
+    }
+
+
+def random_delay(min_seconds: float = 2.0, max_seconds: float = 6.0):
+    """Add a random delay to avoid detection."""
+    delay = random.uniform(min_seconds, max_seconds)
+    logger.debug(f"Waiting {delay:.1f}s...")
+    time.sleep(delay)
+
+
+async def random_delay_async(min_seconds: float = 2.0, max_seconds: float = 6.0):
+    """Async version of random delay."""
+    delay = random.uniform(min_seconds, max_seconds)
+    logger.debug(f"Waiting {delay:.1f}s...")
+    await asyncio.sleep(delay)
+
 
 class ORIApiScraper:
     """
@@ -21,7 +82,7 @@ class ORIApiScraper:
         "Origin": "https://publicaccess.hillsclerk.com",
         "Referer": "https://publicaccess.hillsclerk.com/oripublicaccess/",
         "X-Requested-With": "XMLHttpRequest",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": random.choice(USER_AGENTS),  # Randomize on init
     }
 
     TITLE_DOC_TYPES = [
@@ -259,8 +320,13 @@ class ORIApiScraper:
             logger.debug(f"Error fetching document ID for {instrument}: {e}")
             return None
 
-    async def _ensure_browser(self, headless: bool = True):
-        """Ensure browser is initialized and running."""
+    async def _ensure_browser(self, headless: bool = True, force_new_context: bool = False):
+        """Ensure browser is initialized and running.
+
+        Args:
+            headless: Run in headless mode
+            force_new_context: If True, create a new context with fresh fingerprint
+        """
         if self.browser is None:
             self.playwright = await async_playwright().start()
             self.browser = await self.playwright.chromium.launch(
@@ -274,13 +340,23 @@ class ORIApiScraper:
                     '--disable-features=IsolateOrigins,site-per-process'
                 ]
             )
+
+        if self.context is None or force_new_context:
+            # Close existing context if forcing new one
+            if self.context is not None:
+                await self.context.close()
+
+            # Get randomized browser fingerprint
+            config = get_random_browser_config()
+            logger.debug(f"Browser config: UA={config['user_agent'][:50]}..., viewport={config['viewport']}, tz={config['timezone_id']}")
+
             self.context = await self.browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                viewport={'width': 1920, 'height': 1080},
-                locale='en-US',
-                timezone_id='America/New_York'
+                user_agent=config['user_agent'],
+                viewport=config['viewport'],
+                locale=config['locale'],
+                timezone_id=config['timezone_id']
             )
-            logger.info("Browser initialized and ready")
+            logger.info("Browser context initialized with randomized fingerprint")
 
     async def close_browser(self):
         """Close the persistent browser."""
@@ -650,3 +726,141 @@ class ORIApiScraper:
                 })
 
         return list(by_instrument.values())
+
+    async def download_pdf_browser(self, instrument: str, output_dir: Path, doc_type: str = "UNKNOWN", headless: bool = True, fresh_context: bool = False) -> Optional[Path]:
+        """
+        Download PDF for a document using browser-based approach.
+
+        Uses CQID=320 instrument search to find the document, then downloads via the Document API.
+
+        Args:
+            instrument: Instrument number to download
+            output_dir: Directory to save PDF
+            doc_type: Document type for filename
+            headless: Run browser in headless mode
+            fresh_context: If True, create new browser context with fresh fingerprint
+
+        Returns:
+            Path to downloaded PDF or None if failed
+        """
+        import urllib.parse
+
+        # Clean up doc type for filename
+        doc_type_clean = doc_type.replace("(", "").replace(")", "").replace(" ", "_")
+        filename = f"unknown_{doc_type_clean}_{instrument}.pdf"
+        filepath = output_dir / filename
+
+        # Check if already exists
+        if filepath.exists():
+            logger.debug(f"PDF already exists: {filepath}")
+            return filepath
+
+        # Ensure output directory exists
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Anti-detection: Random delay before request
+        await random_delay_async(2.0, 5.0)
+
+        # Ensure browser is running (with optional fresh fingerprint)
+        await self._ensure_browser(headless, force_new_context=fresh_context)
+
+        # Use CQID=320 for instrument search (OBKey__1006_1 is the instrument number parameter)
+        url = f"https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=320&OBKey__1006_1={instrument}"
+        logger.info(f"Downloading PDF for instrument {instrument}...")
+
+        page = await self.context.new_page()
+
+        try:
+            # Set up response listener to capture document ID
+            doc_id_future = asyncio.get_event_loop().create_future()
+
+            async def handle_response(response):
+                if "KeywordSearch" in response.url and not doc_id_future.done():
+                    try:
+                        json_data = await response.json()
+                        if "Data" in json_data and len(json_data["Data"]) > 0:
+                            doc_id = json_data["Data"][0].get("ID")
+                            if doc_id:
+                                doc_id_future.set_result(doc_id)
+                    except:
+                        pass
+
+            page.on("response", handle_response)
+
+            # Navigate to instrument search
+            await page.goto(url, timeout=60000)
+            await page.wait_for_load_state("domcontentloaded", timeout=30000)
+
+            # Wait for document ID from API response
+            try:
+                doc_id = await asyncio.wait_for(doc_id_future, timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning(f"Could not find Document ID for instrument {instrument}")
+                await page.close()
+                return None
+
+            logger.debug(f"Found document ID: {doc_id}")
+
+            # Download the PDF
+            encoded_id = urllib.parse.quote(str(doc_id))
+            download_url = f"https://publicaccess.hillsclerk.com/PAVDirectSearch/api/Document/{encoded_id}/?OverlayMode=View"
+
+            async with page.expect_download(timeout=60000) as download_info:
+                await page.evaluate(f"window.location.href = '{download_url}'")
+
+            download = await download_info.value
+
+            # Save the PDF
+            temp_path = await download.path()
+            with open(temp_path, "rb") as f:
+                pdf_bytes = f.read()
+
+            # Verify it's a valid PDF
+            if pdf_bytes[:4] != b"%PDF":
+                logger.warning(f"Downloaded file is not a valid PDF for {instrument}")
+                await page.close()
+                return None
+
+            with open(filepath, "wb") as f:
+                f.write(pdf_bytes)
+
+            logger.success(f"Downloaded PDF: {filepath.name} ({len(pdf_bytes)} bytes)")
+            await page.close()
+
+            # Anti-detection: Random delay after successful download
+            await random_delay_async(1.0, 3.0)
+
+            return filepath
+
+        except Exception as e:
+            logger.error(f"Error downloading PDF for {instrument}: {e}")
+            try:
+                await page.close()
+            except:
+                pass
+            return None
+
+    def download_pdf_browser_sync(self, instrument: str, output_dir: Path, doc_type: str = "UNKNOWN", headless: bool = True, fresh_context: bool = False) -> Optional[Path]:
+        """Synchronous wrapper for download_pdf_browser.
+
+        Args:
+            instrument: Instrument number to download
+            output_dir: Directory to save PDF
+            doc_type: Document type for filename
+            headless: Run browser in headless mode
+            fresh_context: If True, create new browser context with fresh fingerprint
+        """
+        try:
+            asyncio.get_running_loop()
+            # Already in async context - use thread
+            import concurrent.futures
+
+            def run_in_new_loop():
+                return asyncio.run(self.download_pdf_browser(instrument, output_dir, doc_type, headless, fresh_context))
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_in_new_loop)
+                return future.result()
+        except RuntimeError:
+            # No event loop running
+            return asyncio.run(self.download_pdf_browser(instrument, output_dir, doc_type, headless, fresh_context))
