@@ -11,17 +11,62 @@ import asyncio
 import sys
 import os
 import shutil
+import logging
 from datetime import datetime
 from pathlib import Path
 from loguru import logger
+
+
+class InterceptHandler(logging.Handler):
+    """Intercept standard logging and redirect to loguru."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # Get corresponding Loguru level if it exists
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        # Find caller from where originated the logged message
+        frame, depth = logging.currentframe(), 2
+        while frame and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+
+        logger.opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
 
 # Import modules
 from src.db.new import create_database
 from src.pipeline import run_full_pipeline
 
-# Configure logging
+# Configure logging - both console and file
 logger.remove()
-logger.add(sys.stderr, level="INFO", format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}")
+logger.add(
+    sys.stderr,
+    level="INFO",
+    format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
+    backtrace=True,
+    diagnose=True,
+    enqueue=True,
+)
+logger.add(
+    "logs/hills_inspector.log",
+    rotation="00:00",  # Rotate at midnight daily
+    retention="30 days",
+    level="INFO",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {elapsed} | {level: <8} | {process}:{thread} | {module}:{function}:{line} | {extra} - {message}\n{exception}",
+    backtrace=True,
+    diagnose=True,
+    enqueue=True,
+)
+
+# Intercept standard logging (Playwright, httpx, etc.) and route to loguru
+logging.basicConfig(handlers=[InterceptHandler()], level=logging.INFO, force=True)
+for logger_name in ["playwright", "httpx", "httpcore", "asyncio", "urllib3"]:
+    logging.getLogger(logger_name).handlers = [InterceptHandler()]
+    logging.getLogger(logger_name).propagate = False
 
 DB_PATH = Path("data/property_master.db")
 DEBUG_DB_PATH = Path("data/debug.db")

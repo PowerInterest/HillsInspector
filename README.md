@@ -115,8 +115,7 @@ After modifying any file:
 
 2.  **Environment**:
     - Python 3.12+
-    - **Windows machine with PowerShell 7** (NOT bash, NOT cmd)
-    - All shell commands must be PowerShell-compatible
+    - Windows WSL Ubuntu 24.04.5
 
 ## Final Judgment Retrieval (current approach)
 - Auction pages provide a “Case #” link that redirects to OnBase Instrument Search (`CQID=320` with `OBKey__1006_1=<instrument>`).

@@ -408,12 +408,27 @@ class IngestionService:
                 "acquired_from": deed.get('grantor'),
                 "acquisition_date": deed.get('date'),
                 "disposition_date": chain[i+1].get('date') if i < len(chain) - 1 else None,
-                "acquisition_instrument": None, 
+                "acquisition_instrument": None,
                 "acquisition_doc_type": deed.get('doc_type'),
                 "acquisition_price": None,
                 "encumbrances": period_encs
             })
-            
+
+        # Handle case where there are encumbrances but no chain (no deeds found)
+        # Create a catch-all period so encumbrances aren't lost
+        if not chain and encumbrances:
+            logger.warning(f"No chain but {len(encumbrances)} encumbrances found - creating catch-all period")
+            timeline.append({
+                "owner": "Unknown (No Deed Found)",
+                "acquired_from": None,
+                "acquisition_date": None,
+                "disposition_date": None,
+                "acquisition_instrument": None,
+                "acquisition_doc_type": "UNKNOWN",
+                "acquisition_price": None,
+                "encumbrances": [self._map_encumbrance(e) for e in encumbrances]
+            })
+
         return {"ownership_timeline": timeline}
 
     def _map_encumbrance(self, enc: dict) -> dict:

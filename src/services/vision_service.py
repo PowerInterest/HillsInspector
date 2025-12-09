@@ -914,9 +914,10 @@ class VisionService:
     """
 
     # API Configuration - Remote vLLM servers (with failover)
+    # 10.10.1.5 has 262k context, 10.10.2.27 only has 11k - prioritize the larger one
     API_URLS = [
-        "http://10.10.2.27:6969/v1/chat/completions",
         "http://10.10.1.5:6969/v1/chat/completions",
+        "http://10.10.2.27:6969/v1/chat/completions",
     ]
     MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 
@@ -1021,7 +1022,7 @@ class VisionService:
             print(f"Vision API Error: {e}")
             return None
 
-    def analyze_images(self, image_paths: list[str], prompt: str, max_tokens: int = 10000) -> Optional[str]:
+    def analyze_images(self, image_paths: list[str], prompt: str, max_tokens: int = 4000) -> Optional[str]:
         """
         Analyze multiple images with a single text prompt in one request.
 

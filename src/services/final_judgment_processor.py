@@ -37,8 +37,8 @@ class FinalJudgmentProcessor:
             # Open PDF with PyMuPDF
             doc = fitz.open(pdf_path)
             total_pages = len(doc)
-            num_pages = total_pages  # Process all pages to capture full judgment details
-            
+            num_pages = total_pages  # Process all pages - server has 262k context
+
             logger.info(f"PDF has {total_pages} pages, processing all pages")
             
             # Render all pages to images

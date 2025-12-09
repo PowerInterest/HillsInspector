@@ -326,6 +326,13 @@ async def _download_single_judgment_pdf(
     storage: ScraperStorage
 ) -> Path | None:
     """Download a single Final Judgment PDF from OnBase."""
+    # Check if PDF already exists
+    doc_id = instrument_number if instrument_number else case_number
+    existing_path = storage.get_full_path(parcel_id, f"documents/final_judgment_{doc_id}.pdf")
+    if existing_path.exists():
+        logger.debug(f"PDF already exists for {case_number}: {existing_path}")
+        return existing_path
+
     new_context = None
     new_page = None
 
@@ -540,22 +547,24 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
     extracted_count = 0
     for auction, pdf_path in auctions_with_pdf:
         case_number = auction["case_number"]
-        logger.info(f"Processing judgment for {case_number} from {pdf_path}...")
+        folio = auction.get("parcel_id", "")
+        with logger.contextualize(folio=folio, case_number=case_number, step="judgment_extraction"):
+            logger.info(f"Processing judgment from {pdf_path}...")
 
-        try:
-            result = judgment_processor.process_pdf(str(pdf_path), case_number)
-            if result:
-                amounts = judgment_processor.extract_key_amounts(result)
-                payload = {
-                    **result,
-                    **amounts,
-                    "extracted_judgment_data": json.dumps(result),
-                    "raw_judgment_text": result.get("raw_text", ""),
-                }
-                db.update_judgment_data(case_number, payload)
-                extracted_count += 1
-        except Exception as e:
-            logger.error(f"Failed to process judgment for {case_number}: {e}")
+            try:
+                result = judgment_processor.process_pdf(str(pdf_path), case_number)
+                if result:
+                    amounts = judgment_processor.extract_key_amounts(result)
+                    payload = {
+                        **result,
+                        **amounts,
+                        "extracted_judgment_data": json.dumps(result),
+                        "raw_judgment_text": result.get("raw_text", ""),
+                    }
+                    db.update_judgment_data(case_number, payload)
+                    extracted_count += 1
+            except Exception as e:
+                logger.exception(f"Failed to process judgment: {e}")
 
     logger.success(f"Downloaded {downloaded_count} PDFs, extracted data from {extracted_count} Final Judgments")
 
@@ -795,86 +804,87 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
             logger.debug(f"Skipping survival for {folio} - already analyzed for {case_number}")
             continue
 
-        logger.info(f"Analyzing lien survival for {folio} ({case_number})...")
+        with logger.contextualize(folio=folio, case_number=case_number, step="lien_survival"):
+            logger.info("Analyzing lien survival...")
 
-        try:
-            encs_rows = db.execute_query(
-                f"""SELECT id, encumbrance_type, recording_date, book, page, amount
-                    FROM encumbrances
-                    WHERE folio = '{folio}' AND is_satisfied = FALSE"""
-            )
-        except Exception as e:
-            logger.error(f"Failed to fetch encumbrances for {folio}: {e}")
-            continue
+            try:
+                encs_rows = db.execute_query(
+                    f"""SELECT id, encumbrance_type, recording_date, book, page, amount
+                        FROM encumbrances
+                        WHERE folio = '{folio}' AND is_satisfied = FALSE"""
+                )
+            except Exception as e:
+                logger.exception(f"Failed to fetch encumbrances: {e}")
+                continue
 
-        liens_for_analysis = []
-        lien_id_map = {}
+            liens_for_analysis = []
+            lien_id_map = {}
 
-        for row in encs_rows:
-            rec_date = None
-            if row["recording_date"]:
+            for row in encs_rows:
+                rec_date = None
+                if row["recording_date"]:
+                    with contextlib.suppress(ValueError):
+                        rec_date = datetime.strptime(
+                            str(row["recording_date"]), "%Y-%m-%d"
+                        ).date()
+
+                lien_obj = Lien(
+                    document_type=row["encumbrance_type"],
+                    recording_date=rec_date or date.min,
+                    amount=row["amount"],
+                    book=row["book"],
+                    page=row["page"],
+                )
+                liens_for_analysis.append(lien_obj)
+                lien_id_map[id(lien_obj)] = row["id"]
+
+            # Get judgment data for lis pendens date
+            judgment_data = {}
+            if auction.get("extracted_judgment_data"):
+                with contextlib.suppress(json.JSONDecodeError):
+                    judgment_data = json.loads(auction["extracted_judgment_data"])
+
+            lis_pendens_date = None
+            lp_str = judgment_data.get("lis_pendens_date")
+            if lp_str:
                 with contextlib.suppress(ValueError):
-                    rec_date = datetime.strptime(
-                        str(row["recording_date"]), "%Y-%m-%d"
-                    ).date()
+                    lis_pendens_date = datetime.strptime(lp_str, "%Y-%m-%d").date()
 
-            lien_obj = Lien(
-                document_type=row["encumbrance_type"],
-                recording_date=rec_date or date.min,
-                amount=row["amount"],
-                book=row["book"],
-                page=row["page"],
+            survival_result = survival_analyzer.analyze(
+                liens=liens_for_analysis,
+                foreclosure_type=auction.get("foreclosure_type")
+                or judgment_data.get("foreclosure_type"),
+                lis_pendens_date=lis_pendens_date,
+                original_mortgage_amount=auction.get("original_mortgage_amount"),
             )
-            liens_for_analysis.append(lien_obj)
-            lien_id_map[id(lien_obj)] = row["id"]
 
-        # Get judgment data for lis pendens date
-        judgment_data = {}
-        if auction.get("extracted_judgment_data"):
-            with contextlib.suppress(json.JSONDecodeError):
-                judgment_data = json.loads(auction["extracted_judgment_data"])
+            # Update survival status
+            surviving_ids = []
+            expired_ids = []
 
-        lis_pendens_date = None
-        lp_str = judgment_data.get("lis_pendens_date")
-        if lp_str:
-            with contextlib.suppress(ValueError):
-                lis_pendens_date = datetime.strptime(lp_str, "%Y-%m-%d").date()
+            for surviving_lien in survival_result["surviving_liens"]:
+                lid = lien_id_map.get(id(surviving_lien))
+                if lid:
+                    db.update_encumbrance_survival(lid, "SURVIVED")
+                    surviving_ids.append(lid)
 
-        survival_result = survival_analyzer.analyze(
-            liens=liens_for_analysis,
-            foreclosure_type=auction.get("foreclosure_type")
-            or judgment_data.get("foreclosure_type"),
-            lis_pendens_date=lis_pendens_date,
-            original_mortgage_amount=auction.get("original_mortgage_amount"),
-        )
+            for expired_lien in survival_result.get("expired_liens", []):
+                lid = lien_id_map.get(id(expired_lien))
+                if lid:
+                    db.update_encumbrance_survival(lid, "EXPIRED")
+                    expired_ids.append(lid)
 
-        # Update survival status
-        surviving_ids = []
-        expired_ids = []
+            for row in encs_rows:
+                lid = row["id"]
+                if lid not in surviving_ids and lid not in expired_ids:
+                    db.update_encumbrance_survival(lid, "WIPED_OUT")
 
-        for surviving_lien in survival_result["surviving_liens"]:
-            lid = lien_id_map.get(id(surviving_lien))
-            if lid:
-                db.update_encumbrance_survival(lid, "SURVIVED")
-                surviving_ids.append(lid)
+            # Mark as analyzed and record case number
+            db.mark_as_analyzed(case_number)
+            db.set_last_analyzed_case(folio, case_number)
+            analyzed_count += 1
 
-        for expired_lien in survival_result.get("expired_liens", []):
-            lid = lien_id_map.get(id(expired_lien))
-            if lid:
-                db.update_encumbrance_survival(lid, "EXPIRED")
-                expired_ids.append(lid)
-
-        for row in encs_rows:
-            lid = row["id"]
-            if lid not in surviving_ids and lid not in expired_ids:
-                db.update_encumbrance_survival(lid, "WIPED_OUT")
-
-        # Mark as analyzed and record case number
-        db.mark_as_analyzed(case_number)
-        db.set_last_analyzed_case(folio, case_number)
-        analyzed_count += 1
-
-        logger.info(f"  Surviving: {len(survival_result['surviving_liens'])}")
+            logger.info(f"  Surviving: {len(survival_result['surviving_liens'])}")
 
     logger.success(f"Analyzed {analyzed_count} properties")
 
