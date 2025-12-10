@@ -24,9 +24,15 @@ from pathlib import Path
 from urllib.parse import quote
 import requests
 from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
 from loguru import logger
 
 from src.services.scraper_storage import ScraperStorage
+
+
+async def apply_stealth(page):
+    """Apply stealth settings to a page to avoid bot detection."""
+    await Stealth().apply_stealth_async(page)
 
 
 def convert_bulk_parcel_to_url_format(bulk_parcel: str) -> str:
@@ -53,7 +59,7 @@ def convert_bulk_parcel_to_url_format(bulk_parcel: str) -> str:
     return bulk_parcel
 
 
-async def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: ScraperStorage = None) -> dict:
+async def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: ScraperStorage = None, timeout: int = 120) -> dict:
     """
     Scrape property data from HCPA GIS portal (async version).
 
@@ -61,10 +67,37 @@ async def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage
         parcel_id: The parcel ID in URL format (e.g., 1829134XZ000012000090A)
         folio: The folio number (e.g., 1918870000) - will search for parcel
         storage: Optional ScraperStorage instance
+        timeout: Overall timeout in seconds for the scrape operation
 
     Returns:
         Dictionary with property data including sales history
     """
+    try:
+        return await asyncio.wait_for(
+            _scrape_hcpa_property_impl(parcel_id, folio, storage),
+            timeout=timeout
+        )
+    except TimeoutError:
+        prop_id = folio if folio else parcel_id
+        logger.error(f"HCPA GIS scrape timed out after {timeout}s for {prop_id}")
+        # Return empty result instead of crashing
+        return {
+            "parcel_id": parcel_id,
+            "folio": folio,
+            "sales_history": [],
+            "property_info": {},
+            "legal_description": None,
+            "building_info": {},
+            "tax_collector_link": None,
+            "tax_collector_id": None,
+            "image_url": None,
+            "permits": [],
+            "error": f"Timeout after {timeout}s"
+        }
+
+
+async def _scrape_hcpa_property_impl(parcel_id: str = None, folio: str = None, storage: ScraperStorage = None) -> dict:
+    """Internal implementation of HCPA property scraping."""
     if not storage:
         storage = ScraperStorage()
 
@@ -81,19 +114,26 @@ async def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage
         "permits": [],
     }
 
-    playwright = await async_playwright().start()
+    playwright = None
+    browser = None
     try:
+        playwright = await async_playwright().start()
         browser = await playwright.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={'width': 1920, 'height': 1080},
+            locale='en-US',
+            timezone_id='America/New_York',
         )
         page = await context.new_page()
+        await apply_stealth(page)
 
         if parcel_id:
             url = f"https://gis.hcpafl.org/propertysearch/#/parcel/basic/{parcel_id}"
         elif folio:
             # Go to search page and search by folio
             url = "https://gis.hcpafl.org/propertysearch/#/search/basic"
+            logger.info(f"HCPA GIS GET: {url}")
             await page.goto(url)
             await page.wait_for_load_state("domcontentloaded")
             await asyncio.sleep(2)
@@ -114,7 +154,7 @@ async def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage
             await playwright.stop()
             raise ValueError("Must provide either parcel_id or folio")
 
-        logger.info(f"Navigating to: {url}")
+        logger.info(f"HCPA GIS GET: {url}")
         await page.goto(url)
         await page.wait_for_load_state("domcontentloaded")
 
@@ -343,9 +383,18 @@ async def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage
         except Exception as e:
             logger.error(f"Error extracting permits: {e}")
 
-        await browser.close()
     finally:
-        await playwright.stop()
+        # Ensure cleanup happens even on timeout/cancellation
+        try:
+            if browser:
+                await browser.close()
+        except Exception as e:
+            logger.debug(f"Error closing browser: {e}")
+        try:
+            if playwright:
+                await playwright.stop()
+        except Exception as e:
+            logger.debug(f"Error stopping playwright: {e}")
 
     # Save raw data
     prop_id = folio if folio else parcel_id
@@ -355,7 +404,7 @@ async def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage
         data=result,
         context="property_details"
     )
-    
+
     # Record scrape
     storage.record_scrape(
         property_id=prop_id,
@@ -501,6 +550,7 @@ async def fetch_sales_documents(hcpa_result: dict, storage: ScraperStorage) -> d
 
                 try:
                     # Navigate to the PAV search page
+                    logger.info(f"HCPA GIS GET: {link_href}")
                     await page.goto(link_href)
                     await page.wait_for_load_state("domcontentloaded")
                     await asyncio.sleep(3)

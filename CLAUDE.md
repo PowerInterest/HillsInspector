@@ -49,6 +49,19 @@ uv run playwright install chromium
 
 **Shell**: PowerShell 7 on Windows - never bash/cmd
 
+**Browser Automation**: All Playwright scrapers must use `playwright-stealth` to avoid bot detection. Apply stealth to every page immediately after creation:
+```python
+from playwright_stealth import Stealth
+
+async def apply_stealth(page):
+    """Apply stealth settings to a page to avoid bot detection."""
+    await Stealth().apply_stealth_async(page)
+
+# After creating a page:
+page = await context.new_page()
+await apply_stealth(page)
+```
+
 ## DuckDB Critical Pattern
 
 DuckDB is columnar OLAP. Row-by-row operations are catastrophically slow.

@@ -487,6 +487,7 @@ class RealtorScraper:
             browser, context, page = await self._setup_stealth_browser(p)
 
             try:
+                logger.info(f"Realtor.com GET: {search_url}")
                 await page.goto(search_url, timeout=60000)
                 await self._human_delay(2.0, 4.0)
                 await self._simulate_human_behavior(page)

@@ -100,16 +100,19 @@ class ScraperStorage:
     BASE_DIR = Path("data/properties")
     DB_PATH = "data/property_master.db"
 
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str = None, skip_db_init: bool = False):
         """
         Initialize storage service.
 
         Args:
             db_path: Optional custom database path
+            skip_db_init: Skip database initialization (for read-only or no-DB mode)
         """
         self.db_path = db_path or os.environ.get("HILLS_DB_PATH", self.DB_PATH)
         self.BASE_DIR.mkdir(parents=True, exist_ok=True)
-        self._init_database()
+        self._skip_db = skip_db_init or os.environ.get("HILLS_SCRAPER_STORAGE_SKIP_INIT") == "1"
+        if not self._skip_db:
+            self._init_database()
 
     def _init_database(self):
         """Create the scraper_outputs table if it doesn't exist."""
@@ -438,8 +441,12 @@ class ScraperStorage:
         Record a scraper run in the database.
 
         Returns:
-            Record ID
+            Record ID (or 0 if DB skipped)
         """
+        if self._skip_db:
+            logger.debug(f"Skipping DB record for {scraper} on {property_id} (skip_db=True)")
+            return 0
+
         conn = duckdb.connect(self.db_path)
 
         summary = None

@@ -66,6 +66,8 @@ class PropertyDB:
                     assessed_value = ?,
                     final_judgment_amount = ?,
                     opening_bid = ?,
+                    plaintiff = COALESCE(?, plaintiff),
+                    defendant = COALESCE(?, defendant),
                     updated_at = CURRENT_TIMESTAMP
                 WHERE case_number = ?
             """, [
@@ -78,6 +80,8 @@ class PropertyDB:
                 prop.assessed_value,
                 prop.final_judgment_amount,
                 prop.opening_bid,
+                getattr(prop, 'plaintiff', None),
+                getattr(prop, 'defendant', None),
                 prop.case_number
             ])
             return existing[0]
@@ -87,8 +91,9 @@ class PropertyDB:
                     case_number, folio, parcel_id, certificate_number,
                     auction_type, auction_date, property_address,
                     assessed_value, final_judgment_amount, opening_bid,
+                    plaintiff, defendant,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             """, [
             prop.case_number,
             prop.parcel_id,
@@ -99,7 +104,9 @@ class PropertyDB:
             prop.address,
             prop.assessed_value,
             prop.final_judgment_amount,
-            prop.opening_bid
+            prop.opening_bid,
+            getattr(prop, 'plaintiff', None),
+            getattr(prop, 'defendant', None),
         ])
 
         # Fetch the new ID
@@ -113,19 +120,20 @@ class PropertyDB:
     def upsert_parcel(self, prop: Property) -> str:
         """
         Insert or update parcel data from enriched property.
-        
+
         Args:
             prop: Property object with enriched data
-        
+
         Returns:
             Folio (parcel_id)
         """
         conn = self.connect()
-        
+
         folio = prop.parcel_id
-        
-        # Ensure column exists (DuckDB supports IF NOT EXISTS natively)
+
+        # Ensure columns exist (DuckDB supports IF NOT EXISTS natively)
         conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS market_analysis_content VARCHAR")
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS legal_description VARCHAR")
 
         # Use ON CONFLICT for atomic upsert
         # 1. Try to insert (ignore if exists)
@@ -133,8 +141,9 @@ class PropertyDB:
             INSERT OR IGNORE INTO parcels (
                 folio, parcel_id, owner_name, property_address,
                 city, zip_code, year_built, beds, baths,
-                heated_area, assessed_value, image_url, market_analysis_content, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                heated_area, assessed_value, image_url, market_analysis_content,
+                legal_description, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [
             folio,
             prop.parcel_id,
@@ -149,9 +158,10 @@ class PropertyDB:
             prop.assessed_value,
             prop.image_url,
             prop.market_analysis_content,
+            prop.legal_description,
             datetime.now()
         ])
-        
+
         # 2. Update (in case it already existed and we have new data)
         conn.execute("""
             UPDATE parcels SET
@@ -166,6 +176,7 @@ class PropertyDB:
                 assessed_value = COALESCE(?, assessed_value),
                 image_url = COALESCE(?, image_url),
                 market_analysis_content = COALESCE(?, market_analysis_content),
+                legal_description = COALESCE(?, legal_description),
                 updated_at = ?
             WHERE folio = ?
         """, [
@@ -180,10 +191,11 @@ class PropertyDB:
             prop.assessed_value,
             prop.image_url,
             prop.market_analysis_content,
+            prop.legal_description,
             datetime.now(),
             folio
         ])
-        
+
         return folio
     
     def get_auctions_by_date(self, auction_date: date) -> List[Dict[str, Any]]:

@@ -109,15 +109,15 @@ async def handle_debug():
     await run_full_pipeline(max_auctions=1, property_limit=1)
     logger.success("Debug run complete.")
 
-def handle_web():
+def handle_web(port: int):
     """Start the FastAPI web server (app/web)."""
-    logger.info("Starting FastAPI Web Server (app/web)...")
+    logger.info(f"Starting FastAPI Web Server (app/web) on port {port}...")
     import uvicorn
 
     uvicorn.run(
         "app.web.main:app",
         host="0.0.0.0",
-        port=8080,
+        port=port,
         reload=True,
         log_level="debug",
         reload_dirs=["app/web", "src"],
@@ -131,6 +131,8 @@ def main():
     group.add_argument("--new", action="store_true", help="Create new database (renaming old one)")
     group.add_argument("--update", action="store_true", help="Run full update for next 60 days")
     group.add_argument("--web", action="store_true", help="Start web server")
+    parser.add_argument("--port", type=int, default=int(os.getenv("WEB_PORT", 8080)),
+                        help="Port for web server (default 8080 or WEB_PORT env var)")
     
     args = parser.parse_args()
     
@@ -143,7 +145,7 @@ def main():
     elif args.update:
         asyncio.run(handle_update())
     elif args.web:
-        handle_web()
+        handle_web(args.port)
 
 if __name__ == "__main__":
     main()

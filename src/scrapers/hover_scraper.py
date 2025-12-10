@@ -2,9 +2,8 @@ import asyncio
 import random
 import re
 from typing import Optional, List, Dict
-from pathlib import Path
 from loguru import logger
-from playwright.async_api import async_playwright, Page, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from src.services.scraper_storage import ScraperStorage
@@ -48,7 +47,7 @@ class HoverScraper:
             try:
                 # Navigate directly to case search page
                 search_url = f"{self.BASE_URL}/html/case/caseSearch.html"
-                logger.info(f"Navigating to {search_url}...")
+                logger.info(f"HOVER GET: {search_url}")
                 await page.goto(search_url, timeout=60000)
                 await page.wait_for_load_state("networkidle")
                 

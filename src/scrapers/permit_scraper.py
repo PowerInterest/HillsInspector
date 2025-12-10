@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
 from loguru import logger
 
 from playwright.async_api import async_playwright, Page
@@ -34,7 +34,6 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from src.services.vision_service import VisionService
 from src.services.scraper_storage import ScraperStorage
-from src.models.property import Permit
 
 
 @dataclass
@@ -291,6 +290,7 @@ class PermitScraper:
 
             try:
                 # Navigate to portal
+                logger.info(f"Permit Portal GET: {base_url}")
                 await page.goto(base_url, timeout=60000)
                 await page.wait_for_load_state("networkidle")
                 await asyncio.sleep(2)

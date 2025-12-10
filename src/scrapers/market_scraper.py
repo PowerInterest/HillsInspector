@@ -7,9 +7,7 @@ bot detection on real estate sites. Uses playwright-stealth for better success r
 import asyncio
 import json
 import random
-from pathlib import Path
 from typing import Optional
-from datetime import datetime
 from loguru import logger
 
 from src.services.scraper_storage import ScraperStorage
@@ -106,7 +104,7 @@ class MarketScraper:
             browser, context, page = await self._setup_stealth_context(p)
 
             try:
-                logger.info("Navigating to Zillow...")
+                logger.info(f"Zillow GET: {zillow_url}")
                 await self._human_like_delay(1.0, 2.0)
 
                 # Navigate with extended timeout
@@ -242,6 +240,7 @@ class MarketScraper:
             browser, context, page = await self._setup_stealth_context(p)
 
             try:
+                logger.info(f"Zillow GET: {zillow_url}")
                 await page.goto(zillow_url, timeout=90000)
                 await self._human_like_delay(2.0, 4.0)
 

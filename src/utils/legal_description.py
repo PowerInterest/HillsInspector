@@ -412,8 +412,44 @@ def build_ori_search_terms(folio: str, legal1: str | None, legal2: str | None = 
     generic_terms = {'BLOCK*', 'LOT*', 'UNIT*', 'PHASE*', 'THE*', 'PLAT*', 'BOOK*', 'PAGE*',
                      'NORTH*', 'SOUTH*', 'EAST*', 'WEST*', 'SECTION*', 'TOWNSHIP*', 'RANGE*',
                      'LESS*', 'THAT*', 'PART*', 'BEING*', 'ALSO*', 'A*', 'AN*', 'AND*',
-                     'A SUBDIVISION*', 'A SUB*', 'ACCORDING*', 'CORNER*'}
+                     'A SUBDIVISION*', 'A SUB*', 'ACCORDING*', 'CORNER*', 'COMMENCE*',
+                     'THENCE*', 'RUN*', 'POINT*', 'TRACT*'}
     filtered_terms = [t for t in search_terms if t.upper() not in generic_terms]
+
+    # Filter out year-only terms (e.g., "1997*", "2005*") - these are not subdivision names
+    def is_year_term(term: str) -> bool:
+        """Check if term is just a year (4 digits) with wildcard."""
+        base = term.rstrip('*').strip()
+        return base.isdigit() and len(base) == 4 and 1900 <= int(base) <= 2100
+
+    # Filter out measurement terms (decimals like "251.29*", "72.15*")
+    def is_measurement_term(term: str) -> bool:
+        """Check if term looks like a measurement (decimal number)."""
+        base = term.rstrip('*').strip()
+        # Remove L/LOT prefix if present
+        for prefix in ['L ', 'LOT ']:
+            if base.startswith(prefix):
+                base = base[len(prefix):]
+        # Check if it's a decimal number or numeric with decimal
+        try:
+            float(base)
+            return True
+        except ValueError:
+            pass
+        # Also catch patterns like "W 251.29" (direction + number)
+        parts = base.split()
+        if len(parts) >= 1:
+            last_part = parts[-1]
+            try:
+                float(last_part)
+                # If the last word is a number, it's likely a measurement
+                return True
+            except ValueError:
+                pass
+        return False
+
+    filtered_terms = [t for t in filtered_terms if not is_year_term(t)]
+    filtered_terms = [t for t in filtered_terms if not is_measurement_term(t)]
 
     # Ensure search terms are specific enough (at least one word with 4+ characters before wildcard)
     specific_terms = []
@@ -422,8 +458,9 @@ def build_ori_search_terms(folio: str, legal1: str | None, legal2: str | None = 
         base = term.rstrip('*')
         words = base.split()
         # Check if any word has 4+ characters (excluding L, B, LOT, BLOCK, etc.)
+        # and is alphabetic (not a number)
         has_specific = any(
-            len(w) >= 4 and w not in {'BLOCK', 'UNIT', 'PHASE'}
+            len(w) >= 4 and w not in {'BLOCK', 'UNIT', 'PHASE'} and not w.replace('.', '').isdigit()
             for w in words
         )
         if has_specific:

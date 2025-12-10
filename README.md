@@ -247,3 +247,7 @@ uv run ty check
 * **Web Framework:** `FastAPI` + `Jinja2` (SSR) + `HTMX` (Interactivity). **No React/SPA.**
 * **Scraping:** `Playwright` (Browser Automation) + `playwright-stealth`.
 * **AI/Vision:** `Qwen-VL` via VisionService (Visual extraction & OCR). No EasyOCR.
+
+
+
+claude --dangerously-skip-permissions

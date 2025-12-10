@@ -1,4 +1,14 @@
 <!-- Property Card - Auction.com Style with Enrichments -->
+{% set enrich = auction.enrichments or {} %}
+{% set flood_zone = enrich.flood_zone | default('') %}
+{% set flood_risk = enrich.flood_risk | default('') %}
+{% set insurance_required = enrich.insurance_required | default(false) %}
+{% set permits_open = enrich.permits_open | default(0) %}
+{% set permits_total = enrich.permits_total | default(0) %}
+{% set liens_surviving = enrich.liens_surviving | default(0) %}
+{% set liens_total_amount = enrich.liens_total_amount | default(0) %}
+{% set has_enrichments = enrich.has_enrichments | default(false) %}
+
 <div class="property-card {% if auction.is_toxic_title %}toxic{% endif %}" data-folio="{{ auction.folio }}">
     <!-- Photo / Placeholder -->
     <div class="card-image">
@@ -22,33 +32,33 @@
                 <span>☆</span>
             </button>
         </div>
-    </div>
+        </div>
 
     <!-- Enrichment Badges Row -->
     <div class="enrichment-badges">
         <!-- Flood Zone -->
-        {% if auction.enrichments.flood_zone %}
-        <span class="badge-enrichment badge-flood-{{ 'high' if auction.enrichments.insurance_required else 'low' }}"
-              title="{{ auction.enrichments.flood_risk or 'Flood Zone' }}">
-            🌊 {{ auction.enrichments.flood_zone }}
+        {% if flood_zone %}
+        <span class="badge-enrichment badge-flood-{{ 'high' if insurance_required else 'low' }}"
+              title="{{ flood_risk or 'Flood Zone' }}">
+            🌊 {{ flood_zone }}
         </span>
         {% endif %}
 
         <!-- Open Permits -->
-        {% if auction.enrichments.permits_open > 0 %}
-        <span class="badge-enrichment badge-permits-open" title="{{ auction.enrichments.permits_open }} open permits">
-            🔨 {{ auction.enrichments.permits_open }} Open
+        {% if permits_open > 0 %}
+        <span class="badge-enrichment badge-permits-open" title="{{ permits_open }} open permits">
+            🔨 {{ permits_open }} Open
         </span>
-        {% elif auction.enrichments.permits_total > 0 %}
-        <span class="badge-enrichment badge-permits-clear" title="All {{ auction.enrichments.permits_total }} permits closed">
+        {% elif permits_total > 0 %}
+        <span class="badge-enrichment badge-permits-clear" title="All {{ permits_total }} permits closed">
             ✓ Permits
         </span>
         {% endif %}
 
         <!-- Surviving Liens -->
-        {% if auction.enrichments.liens_surviving > 0 %}
-        <span class="badge-enrichment badge-liens" title="${:,.0f} in surviving liens".format(auction.enrichments.liens_total_amount)>
-            ⚠️ {{ auction.enrichments.liens_surviving }} Liens
+        {% if liens_surviving > 0 %}
+        <span class="badge-enrichment badge-liens" title="${:,.0f} in surviving liens".format(liens_total_amount)>
+            ⚠️ {{ liens_surviving }} Liens
         </span>
         {% elif auction.est_surviving_debt and auction.est_surviving_debt > 0 %}
         <span class="badge-enrichment badge-liens" title="Estimated surviving debt">
@@ -64,7 +74,7 @@
         {% endif %}
 
         <!-- Clear Title (if analyzed and no issues) -->
-        {% if auction.enrichments.has_enrichments and not auction.is_toxic_title and auction.enrichments.liens_surviving == 0 %}
+        {% if has_enrichments and not auction.is_toxic_title and liens_surviving == 0 %}
         <span class="badge-enrichment badge-clear" title="No title issues found">
             ✓ Clear
         </span>

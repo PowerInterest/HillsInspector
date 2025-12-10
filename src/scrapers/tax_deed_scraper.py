@@ -1,18 +1,44 @@
 import asyncio
-import random
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Optional
 from loguru import logger
-from playwright.async_api import async_playwright, Page, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright, Page
+from playwright_stealth import Stealth
 
 from src.models.property import Property
+
+
+async def apply_stealth(page):
+    """Apply stealth settings to a page to avoid bot detection."""
+    await Stealth().apply_stealth_async(page)
 
 USER_AGENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36,gzip(gfe)"
 
 
 class TaxDeedScraper:
     BASE_URL = "https://hillsborough.realtaxdeed.com"
-    
+
+    async def scrape_all(self, start_date: date, end_date: date) -> List[Property]:
+        """Scrape all tax deed auctions within a date range."""
+        all_properties = []
+        current = start_date
+        while current <= end_date:
+            # Skip weekends (5=Saturday, 6=Sunday)
+            if current.weekday() >= 5:
+                logger.debug(f"Skipping weekend: {current}")
+                current += timedelta(days=1)
+                continue
+
+            try:
+                props = await self.scrape_date(current)
+                all_properties.extend(props)
+            except Exception as e:
+                logger.error(f"Failed to scrape tax deeds for {current}: {e}")
+
+            current += timedelta(days=1)
+
+        return all_properties
+
     async def scrape_date(self, target_date: date) -> List[Property]:
         """
         Scrapes tax deed auction data for a specific date, handling pagination.
@@ -28,7 +54,8 @@ class TaxDeedScraper:
                 user_agent=USER_AGENT
             )
             page = await context.new_page()
-            
+            await apply_stealth(page)
+
             try:
                 logger.info("Visiting {url} to collect tax deed data for {date}", url=url, date=date_str)
                 await page.goto(url, timeout=60000)

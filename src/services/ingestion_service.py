@@ -1,8 +1,8 @@
-from typing import Optional, Any
+from typing import Optional, Any, List
 from pathlib import Path
 from datetime import datetime
-import asyncio
 import json
+import time
 from loguru import logger
 
 from src.models.property import Property
@@ -57,6 +57,8 @@ class IngestionService:
 
         # 1. Use pre-fetched docs if provided, otherwise search ORI
         docs = raw_docs or []
+        # Track whether docs came from browser (affects PDF download strategy)
+        docs_from_browser = False
 
         if not docs:
             # Get search terms from Property (set by pipeline) or fall back to legal description
@@ -72,37 +74,36 @@ class IngestionService:
                 logger.warning(f"No valid legal description for {prop.case_number}")
                 return
 
-            # Try each search term until we get results
-            # Use API search first (returns document IDs needed for PDF download)
-            # Fall back to browser search if API fails
+            # Try broadest search term first via API
+            # If API returns nothing for broad term, skip to browser (more specific won't help)
+            # Only try more specific terms if we get too many results
             successful_term = None
-            for search_term in search_terms:
-                logger.info(f"Searching ORI API for: {search_term}")
+            first_term = search_terms[0] if search_terms else None
+
+            if first_term:
+                logger.info(f"Searching ORI API for: {first_term}")
                 try:
-                    # Use API search - returns docs with IDs and party names
-                    docs = self.ori_scraper.search_by_legal(search_term)
+                    docs = self.ori_scraper.search_by_legal(first_term)
                     if docs:
-                        successful_term = search_term
-                        logger.info(f"Found {len(docs)} documents via API with term: {search_term}")
-                        break
-                    logger.debug(f"No API results for: {search_term}")
+                        successful_term = first_term
+                        docs_from_browser = False
+                        logger.info(f"Found {len(docs)} documents via API with term: {first_term}")
                 except Exception as e:
-                    logger.warning(f"API search failed for '{search_term}': {e}")
-                    continue
+                    logger.warning(f"API search failed for '{first_term}': {e}")
 
             # Fall back to browser search if API returned nothing
+            # Only try the first (broadest) term - if it fails, more specific won't help
             if not docs:
                 logger.info("API returned no results, trying browser search...")
-                for search_term in search_terms:
+                if first_term:
                     try:
-                        docs = self.ori_scraper.search_by_legal_sync(search_term, headless=True)
+                        docs = self.ori_scraper.search_by_legal_sync(first_term, headless=True)
                         if docs:
-                            successful_term = search_term
-                            logger.info(f"Found {len(docs)} documents via browser with term: {search_term}")
-                            break
+                            successful_term = first_term
+                            docs_from_browser = True
+                            logger.info(f"Found {len(docs)} documents via browser with term: {first_term}")
                     except Exception as e:
-                        logger.warning(f"Browser search failed for '{search_term}': {e}")
-                        continue
+                        logger.warning(f"Browser search failed for '{first_term}': {e}")
 
             if not docs:
                 logger.warning(f"No documents found after trying {len(search_terms)} search terms.")
@@ -113,6 +114,8 @@ class IngestionService:
                 logger.info(f"Successful search term: {successful_term}")
         else:
             logger.info(f"Using {len(docs)} pre-fetched ORI records")
+            # Pre-fetched docs typically come from browser in pipeline
+            docs_from_browser = True
 
         # Group raw ORI records by instrument number (ORI returns one row per party)
         grouped_docs = self._group_ori_records_by_instrument(docs)
@@ -130,7 +133,7 @@ class IngestionService:
             # Download and analyze PDF for ALL document types (not just "analyzable")
             # This extracts party data from the PDF which is more reliable than ORI indexing
             if self.analyze_pdfs:
-                download_result = self._download_and_analyze_document(doc, prop.parcel_id)
+                download_result = self._download_and_analyze_document(doc, prop.parcel_id, prefer_browser=docs_from_browser)
                 if download_result:
                     # Always set file_path if download succeeded
                     mapped_doc['file_path'] = download_result.get('file_path')
@@ -161,6 +164,164 @@ class IngestionService:
         self.db.save_chain_of_title(prop.parcel_id, db_data)
         logger.success(f"Ingestion complete for {prop.case_number}")
 
+    def ingest_property_by_party(
+        self,
+        prop: Property,
+        plaintiff: Optional[str] = None,
+        defendant: Optional[str] = None
+    ):
+        """
+        Ingest ORI documents for a property by searching by party name.
+
+        This is used as a fallback when the folio/parcel_id is invalid (e.g., mobile home
+        foreclosures where the borrower doesn't own the land).
+
+        Searches ORI for documents where the plaintiff or defendant appears as a party,
+        then filters to relevant document types.
+
+        Args:
+            prop: Property object (parcel_id may be invalid, use case_number as identifier)
+            plaintiff: Plaintiff name (Party 1 / foreclosing party)
+            defendant: Defendant name (Party 2 / borrower)
+        """
+        if not plaintiff and not defendant:
+            logger.warning(f"No party names provided for {prop.case_number}, cannot search ORI")
+            return
+
+        logger.info(f"Ingesting ORI by party for case {prop.case_number}")
+        if plaintiff:
+            logger.info(f"  Plaintiff: {plaintiff}")
+        if defendant:
+            logger.info(f"  Defendant: {defendant}")
+
+        all_docs: List[dict] = []
+
+        # Search by defendant first (borrower - more likely to have title documents)
+        if defendant:
+            search_name = self._normalize_party_name_for_search(defendant)
+            if search_name:
+                logger.info(f"Searching ORI by defendant: {search_name}")
+                try:
+                    docs = self.ori_scraper.search_by_party(search_name)
+                    if docs:
+                        logger.info(f"Found {len(docs)} documents for defendant")
+                        all_docs.extend(docs)
+                except Exception as e:
+                    logger.warning(f"Party search failed for defendant '{search_name}': {e}")
+
+        # Also search by plaintiff (may find lis pendens, mortgages)
+        if plaintiff:
+            search_name = self._normalize_party_name_for_search(plaintiff)
+            if search_name:
+                logger.info(f"Searching ORI by plaintiff: {search_name}")
+                try:
+                    docs = self.ori_scraper.search_by_party(search_name)
+                    if docs:
+                        logger.info(f"Found {len(docs)} documents for plaintiff")
+                        all_docs.extend(docs)
+                except Exception as e:
+                    logger.warning(f"Party search failed for plaintiff '{search_name}': {e}")
+
+        if not all_docs:
+            logger.warning(f"No ORI documents found by party search for {prop.case_number}")
+            return
+
+        # Group by instrument to dedupe
+        grouped_docs = self._group_ori_records_by_instrument(all_docs)
+        logger.info(f"Grouped {len(all_docs)} records into {len(grouped_docs)} unique documents")
+
+        # Process documents (same as standard ingestion)
+        processed_docs = []
+
+        for doc in grouped_docs:
+            mapped_doc = self._map_grouped_ori_doc(doc, prop)
+
+            if self.analyze_pdfs:
+                download_result = self._download_and_analyze_document(doc, prop.parcel_id or prop.case_number)
+                if download_result:
+                    mapped_doc['file_path'] = download_result.get('file_path')
+                    if download_result.get('extracted_data'):
+                        mapped_doc['vision_extracted_data'] = download_result['extracted_data']
+                        mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
+
+            doc_id = self.db.save_document(prop.parcel_id or prop.case_number, mapped_doc)
+            mapped_doc['id'] = doc_id
+
+            if mapped_doc.get('vision_extracted_data'):
+                self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+
+            processed_docs.append(mapped_doc)
+
+        # Build Chain of Title
+        logger.info("Building Chain of Title from party search results...")
+        analysis = self.chain_service.build_chain_and_analyze(processed_docs)
+        db_data = self._transform_analysis_for_db(analysis)
+        self.db.save_chain_of_title(prop.parcel_id or prop.case_number, db_data)
+
+        logger.success(f"Party-based ingestion complete for {prop.case_number} ({len(processed_docs)} docs)")
+
+    def _normalize_party_name_for_search(self, name: str) -> Optional[str]:
+        """
+        Normalize a party name for ORI search.
+
+        Handles:
+        - Converting "LASTNAME, FIRSTNAME" to "LASTNAME FIRSTNAME"
+        - Removing common suffixes like "et al", "a/k/a", etc.
+        - Truncating at A/K/A, F/K/A patterns (take only first name)
+        - Adding wildcard for partial matches
+
+        Args:
+            name: Raw party name from auction data
+
+        Returns:
+            Normalized search string or None if name is unusable
+        """
+        if not name or len(name.strip()) < 3:
+            return None
+
+        import re
+
+        # Clean up the name
+        search = name.strip().upper()
+
+        # Truncate at A/K/A, F/K/A, D/B/A patterns (keep only the primary name)
+        # These indicate aliases - we want the primary name before the alias
+        for pattern in [' A/K/A ', ' AKA ', ' F/K/A ', ' FKA ', ' D/B/A ', ' DBA ']:
+            if pattern in search:
+                search = search.split(pattern)[0].strip()
+                break
+
+        # Remove common legal suffixes at the end
+        suffixes_to_remove = [
+            " ET AL", " ET AL.", " ET UX", " ET VIR",
+            " A/K/A", " AKA", " F/K/A", " FKA",
+            " D/B/A", " DBA", " AS TRUSTEE",
+            " INDIVIDUALLY", " AND ALL", " AND",
+        ]
+        for suffix in suffixes_to_remove:
+            if search.endswith(suffix):
+                search = search[:-len(suffix)].strip()
+
+        # Remove any content in parentheses
+        search = re.sub(r'\([^)]*\)', '', search).strip()
+
+        # If name has comma (LAST, FIRST format), convert to LAST FIRST
+        if ',' in search:
+            parts = search.split(',', 1)
+            search = f"{parts[0].strip()} {parts[1].strip()}"
+
+        # Clean up multiple spaces
+        search = ' '.join(search.split())
+
+        if len(search) < 3:
+            return None
+
+        # Add wildcard for partial matching
+        if not search.endswith('*'):
+            search += '*'
+
+        return search
+
     async def ingest_property_async(self, prop: Property, raw_docs: list = None):
         """
         Async version of ingest_property for use in async batch processing.
@@ -175,6 +336,8 @@ class IngestionService:
 
         # 1. Use pre-fetched docs if provided, otherwise search ORI
         docs = raw_docs or []
+        # Async version always uses browser search, so prefer_browser is always True
+        docs_from_browser = True
 
         if not docs:
             # Get search terms from Property (set by pipeline) or fall back to legal description
@@ -232,7 +395,7 @@ class IngestionService:
             # Download and analyze PDF for ALL document types
             # This extracts party data from the PDF which is more reliable than ORI indexing
             if self.analyze_pdfs:
-                download_result = self._download_and_analyze_document(doc, prop.parcel_id)
+                download_result = self._download_and_analyze_document(doc, prop.parcel_id, prefer_browser=docs_from_browser)
                 if download_result:
                     # Always set file_path if download succeeded
                     mapped_doc['file_path'] = download_result.get('file_path')
@@ -270,8 +433,14 @@ class IngestionService:
         code = doc_type.replace('(', '').replace(')', '').split()[0].upper() if doc_type else ''
         return code in ANALYZABLE_DOC_TYPES
 
-    def _download_and_analyze_document(self, doc: dict, folio: str) -> Optional[dict]:
+    def _download_and_analyze_document(self, doc: dict, folio: str, prefer_browser: bool = False) -> Optional[dict]:
         """Download PDF and extract structured data using vision analysis.
+
+        Args:
+            doc: Document dict with instrument number and optional ID
+            folio: Property folio for storage path
+            prefer_browser: If True, use browser-based PDF download instead of API.
+                           Set when docs came from browser search to avoid API rate limits.
 
         Returns:
             Dict with 'file_path' and optionally 'extracted_data' if vision analysis succeeded.
@@ -296,8 +465,8 @@ class IngestionService:
                 'ID': doc.get('ID') or doc.get('id'),  # May not have ID yet
             }
 
-            # Download PDF
-            pdf_path = self.ori_scraper.download_pdf(ori_doc, output_dir)
+            # Download PDF - use browser if docs came from browser search
+            pdf_path = self.ori_scraper.download_pdf(ori_doc, output_dir, prefer_browser=prefer_browser)
             if not pdf_path or not pdf_path.exists():
                 logger.debug(f"Could not download PDF for {instrument}")
                 return None

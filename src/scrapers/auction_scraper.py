@@ -1,16 +1,26 @@
 import asyncio
 import json
 import random
+import re
 from datetime import date, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import urllib.parse
 from loguru import logger
 from playwright.async_api import async_playwright, Page, TimeoutError as PlaywrightTimeoutError
+from playwright_stealth import Stealth
 
 from src.models.property import Property
 from src.db.operations import PropertyDB
+
+
 from src.services.final_judgment_processor import FinalJudgmentProcessor
+from src.scrapers.hcpa_gis_scraper import scrape_hcpa_property
+
+
+async def apply_stealth(page):
+    """Apply stealth settings to a page to avoid bot detection."""
+    await Stealth().apply_stealth_async(page)
 
 USER_AGENT_MOBILE = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36,gzip(gfe)"
 USER_AGENT_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
@@ -73,10 +83,14 @@ class AuctionScraper:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
-                user_agent=USER_AGENT_DESKTOP
+                user_agent=USER_AGENT_DESKTOP,
+                viewport={'width': 1920, 'height': 1080},
+                locale='en-US',
+                timezone_id='America/New_York',
             )
             page = await context.new_page()
-            
+            await apply_stealth(page)
+
             try:
                 logger.info("Visiting {url} to collect auction data for {date}", url=url, date=date_str)
                 await page.goto(url, timeout=60000)
@@ -201,9 +215,10 @@ class AuctionScraper:
                 if case_href and "OBKey__1006_1=" in case_href:
                     instrument_number = case_href.split("OBKey__1006_1=")[-1]
 
-                # Parcel
+                # Parcel ID and HCPA link
                 parcel_row = details.locator("tr:has-text('Parcel ID:')")
                 parcel_id_text = ""
+                hcpa_url = None
                 if await parcel_row.count():
                     parcel_link = parcel_row.locator("a")
                     if await parcel_link.count():
@@ -211,6 +226,8 @@ class AuctionScraper:
                         # Filter out non-parcel values like "Property Appraiser" links
                         if raw_parcel and raw_parcel.lower() not in ("property appraiser", "n/a", "none"):
                             parcel_id_text = raw_parcel
+                            # Capture the HCPA link href for immediate enrichment
+                            hcpa_url = await parcel_link.get_attribute("href")
 
                 # Address (two rows)
                 addr_row = details.locator("tr:has-text('Property Address:')")
@@ -224,9 +241,14 @@ class AuctionScraper:
                 auction_type = await cell_after("Auction Type:")
 
                 pdf_path = None
+                plaintiff = None
+                defendant = None
                 if case_href and "CQID=320" in case_href:
                     # Pass parcel_id (folio) to download method
-                    pdf_path = await self._download_final_judgment(page, case_href, case_number, parcel_id_text, instrument_number)
+                    judgment_result = await self._download_final_judgment(page, case_href, case_number, parcel_id_text, instrument_number)
+                    pdf_path = judgment_result.get("pdf_path")
+                    plaintiff = judgment_result.get("plaintiff")
+                    defendant = judgment_result.get("defendant")
 
                 prop = Property(
                     case_number=case_number,
@@ -237,8 +259,46 @@ class AuctionScraper:
                     auction_date=target_date,
                     auction_type=auction_type,
                     final_judgment_pdf_path=pdf_path,
-                    instrument_number=instrument_number
+                    instrument_number=instrument_number,
+                    plaintiff=plaintiff,
+                    defendant=defendant,
+                    hcpa_url=hcpa_url,
                 )
+
+                # Immediately enrich with HCPA data if we have the URL
+                hcpa_failed = False
+                hcpa_error = None
+                if hcpa_url:
+                    hcpa_result = await self._enrich_with_hcpa(prop)
+                    if hcpa_result.get("success"):
+                        # Store the comparison data for later analysis
+                        hcpa_data = hcpa_result.get("hcpa_data", {})
+                        # Log comparison between parcel_id from auction and folio from HCPA
+                        hcpa_folio = hcpa_result.get("hcpa_folio")
+                        if hcpa_folio and hcpa_folio != parcel_id_text:
+                            logger.warning(
+                                f"Folio mismatch for {case_number}: "
+                                f"auction={parcel_id_text}, HCPA={hcpa_folio}"
+                            )
+                    else:
+                        # HCPA scrape failed - mark for manual review
+                        hcpa_failed = True
+                        hcpa_error = hcpa_result.get("error", "Unknown HCPA scrape error")
+                        logger.warning(f"HCPA scrape failed for {case_number}: {hcpa_error}")
+                else:
+                    # No HCPA URL available - also mark as failed
+                    hcpa_failed = True
+                    hcpa_error = "No HCPA URL available on auction page"
+
+                # Store HCPA failure status in database for manual review
+                if hcpa_failed:
+                    try:
+                        conn = self.db.connect()
+                        conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS hcpa_scrape_failed BOOLEAN DEFAULT FALSE")
+                        conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS hcpa_scrape_error VARCHAR")
+                    except Exception:
+                        pass  # Column may already exist
+
                 properties.append(prop)
 
             except Exception as e:
@@ -248,25 +308,31 @@ class AuctionScraper:
         return properties
 
     async def _download_final_judgment(
-        self, 
-        page: Page, 
-        onbase_url: str, 
+        self,
+        page: Page,
+        onbase_url: str,
         case_number: str,
         parcel_id: str,
         instrument_number: Optional[str] = None
-    ) -> Optional[str]:
+    ) -> Dict[str, Any]:
         """
         Downloads the Final Judgment PDF from OnBase via the provided Instrument Search URL.
         Uses ScraperStorage to save to property folder.
+        Also extracts Party 1 (plaintiff) and Party 2 (defendant) from the PAV page.
+
+        Returns:
+            Dict with keys: pdf_path, plaintiff, defendant (any may be None)
         """
+        result = {"pdf_path": None, "plaintiff": None, "defendant": None}
+
         if not parcel_id:
             logger.warning(f"Cannot save Final Judgment for {case_number}: No Parcel ID")
-            return None
+            return result
 
         # Check if already exists in storage
         # We use instrument number as doc_id if available, else case number
         doc_id = instrument_number if instrument_number else case_number
-        
+
         # Check if file exists (logic handled by storage usually, but we can check existence)
         # For now, we'll just proceed to download and let storage overwrite or we can check
         # But ScraperStorage doesn't expose "exists" easily without path construction.
@@ -281,32 +347,58 @@ class AuctionScraper:
                 accept_downloads=True
             )
             new_page = await new_context.new_page()
-            
-            # Future to capture the Document ID from the API response
+            await apply_stealth(new_page)
+
+            # Future to capture the Document ID and Party info from the API response
             doc_id_future = asyncio.Future()
-            
+            party_info = {"plaintiff": None, "defendant": None}
+
             async def handle_response(response):
                 if "KeywordSearch" in response.url and not doc_id_future.done():
                     try:
                         json_data = await response.json()
                         if "Data" in json_data and len(json_data["Data"]) > 0:
-                            doc_id = json_data["Data"][0].get("ID")
+                            first_record = json_data["Data"][0]
+                            doc_id = first_record.get("ID")
                             if doc_id:
                                 doc_id_future.set_result(doc_id)
+                            # Extract Party 1 (plaintiff) and Party 2 (defendant)
+                            # API field names may be "Party1", "Party 1", or similar
+                            party_info["plaintiff"] = (
+                                first_record.get("Party1") or
+                                first_record.get("Party 1") or
+                                first_record.get("party1") or
+                                first_record.get("PARTY1")
+                            )
+                            party_info["defendant"] = (
+                                first_record.get("Party2") or
+                                first_record.get("Party 2") or
+                                first_record.get("party2") or
+                                first_record.get("PARTY2")
+                            )
                     except:
                         pass
 
             new_page.on("response", handle_response)
-            
-            logger.info(f"Navigating to OnBase for {case_number}...")
+
+            logger.info(f"OnBase GET: {onbase_url}")
             await new_page.goto(onbase_url, timeout=30000)
-            
+
             # Wait for the Document ID
             try:
                 onbase_doc_id = await asyncio.wait_for(doc_id_future, timeout=15.0)
             except TimeoutError:
                 logger.warning(f"Could not find Document ID for {case_number}")
-                return None
+                # Still try to return party info if we got it
+                result["plaintiff"] = party_info.get("plaintiff")
+                result["defendant"] = party_info.get("defendant")
+                return result
+
+            # Store party info in result
+            result["plaintiff"] = party_info.get("plaintiff")
+            result["defendant"] = party_info.get("defendant")
+            if result["plaintiff"] or result["defendant"]:
+                logger.info(f"Extracted parties for {case_number}: P1={result['plaintiff']}, P2={result['defendant']}")
                 
             # Construct the download URL
             encoded_id = urllib.parse.quote(onbase_doc_id)
@@ -337,12 +429,13 @@ class AuctionScraper:
             # Get full path for return
             full_path = self.storage.get_full_path(parcel_id, saved_path)
             logger.info(f"Saved PDF to {full_path}")
-            
-            return str(full_path)
-            
+
+            result["pdf_path"] = str(full_path)
+            return result
+
         except Exception as e:
             logger.error(f"Error downloading PDF for {case_number}: {e}")
-            return None
+            return result
         finally:
             if new_page:
                 await new_page.close()
@@ -439,6 +532,85 @@ class AuctionScraper:
             return float(clean_text)
         except ValueError:
             return None
+
+    async def _enrich_with_hcpa(self, prop: Property) -> Dict[str, Any]:
+        """
+        Scrape HCPA GIS immediately after auction scrape to get enrichment data.
+
+        Returns dict with HCPA data that can be compared to bulk data.
+        """
+        result = {"success": False, "hcpa_data": None, "error": None}
+
+        if not prop.hcpa_url:
+            result["error"] = "No HCPA URL available"
+            return result
+
+        # Extract parcel ID from HCPA URL
+        # Format 1: https://gis.hcpafl.org/propertysearch/#/parcel/basic/{parcel_id}
+        # Format 2: http://www.hcpafl.org/CamaDisplay.aspx?...ParcelID={parcel_id}
+        hcpa_parcel_id = None
+
+        match = re.search(r'/parcel/basic/([A-Za-z0-9]+)', prop.hcpa_url)
+        if match:
+            hcpa_parcel_id = match.group(1)
+        else:
+            match = re.search(r'ParcelID=([A-Za-z0-9]+)', prop.hcpa_url)
+            if match:
+                hcpa_parcel_id = match.group(1)
+
+        if not hcpa_parcel_id:
+            result["error"] = f"Could not extract parcel ID from URL: {prop.hcpa_url}"
+            return result
+        logger.info(f"Enriching {prop.case_number} with HCPA data (parcel: {hcpa_parcel_id})")
+
+        try:
+            hcpa_data = await scrape_hcpa_property(parcel_id=hcpa_parcel_id, storage=self.storage)
+
+            if hcpa_data:
+                result["success"] = True
+                result["hcpa_data"] = hcpa_data
+
+                # Enrich property with HCPA data
+                if hcpa_data.get("folio"):
+                    # Store the folio from HCPA for comparison
+                    result["hcpa_folio"] = hcpa_data["folio"]
+
+                if hcpa_data.get("legal_description"):
+                    prop.legal_description = hcpa_data["legal_description"]
+
+                if hcpa_data.get("property_info", {}).get("site_address"):
+                    # Only update if we don't have an address or HCPA is more complete
+                    hcpa_addr = hcpa_data["property_info"]["site_address"]
+                    if not prop.address or len(hcpa_addr) > len(prop.address):
+                        prop.address = hcpa_addr
+
+                if hcpa_data.get("building_info", {}).get("year_built"):
+                    try:
+                        prop.year_built = int(hcpa_data["building_info"]["year_built"])
+                    except (ValueError, TypeError):
+                        pass
+
+                if hcpa_data.get("image_url"):
+                    prop.image_url = hcpa_data["image_url"]
+
+                if hcpa_data.get("sales_history"):
+                    prop.sales_history = hcpa_data["sales_history"]
+
+                # Save the enriched parcel data to database immediately
+                # This ensures legal_description is available for ORI search in Step 5
+                try:
+                    self.db.upsert_parcel(prop)
+                    logger.debug(f"Saved parcel data for {prop.parcel_id}")
+                except Exception as db_err:
+                    logger.warning(f"Failed to save parcel data for {prop.parcel_id}: {db_err}")
+
+                logger.success(f"HCPA enrichment successful for {prop.case_number}: legal='{prop.legal_description[:50] if prop.legal_description else 'N/A'}...'")
+
+        except Exception as e:
+            result["error"] = str(e)
+            logger.error(f"HCPA enrichment failed for {prop.case_number}: {e}")
+
+        return result
 
 if __name__ == "__main__":
     # Test run

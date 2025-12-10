@@ -3,6 +3,7 @@ import json
 import re
 import requests
 from typing import Dict, Optional, Any
+from loguru import logger
 
 
 def robust_json_parse(text: str, context: str = "") -> Optional[Dict[str, Any]]:
@@ -1019,7 +1020,7 @@ class VisionService:
             return content.strip()
             
         except Exception as e:
-            print(f"Vision API Error: {e}")
+            logger.exception("Vision API error while analyzing {}", image_path)
             return None
 
     def analyze_images(self, image_paths: list[str], prompt: str, max_tokens: int = 4000) -> Optional[str]:

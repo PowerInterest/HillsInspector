@@ -10,7 +10,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from loguru import logger
 
-from app.web.routers import dashboard, properties, api
+from app.web.routers import dashboard, properties, api, review
 
 
 from src.utils.logging_config import setup_default_logging
@@ -50,6 +50,7 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 app.include_router(dashboard.router)
 app.include_router(properties.router, prefix="/property")
 app.include_router(api.router, prefix="/api")
+app.include_router(review.router, prefix="/review")
 
 
 @app.get("/health")

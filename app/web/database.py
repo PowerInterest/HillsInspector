@@ -646,18 +646,9 @@ def get_dashboard_stats() -> Dict[str, Any]:
 # Enrichment Data Functions
 # -------------------------------------------------------------------------
 
-def get_property_enrichments(folio: str) -> Dict[str, Any]:
-    """
-    Get all enrichment data for a property from scraper outputs.
-
-    Returns dict with:
-        - flood_zone: FEMA zone info
-        - permits: Open/closed permit counts
-        - liens: Surviving lien count and total
-        - sunbiz: Owner business entity status
-        - market: Zestimate/listing price if available
-    """
-    enrichments = {
+def _default_enrichments() -> Dict[str, Any]:
+    """Default enrichment values used when data is missing."""
+    return {
         "flood_zone": None,
         "flood_risk": None,
         "insurance_required": False,
@@ -672,68 +663,20 @@ def get_property_enrichments(folio: str) -> Dict[str, Any]:
         "has_enrichments": False
     }
 
-    # Try to get from scraper_outputs database
-    try:
-        if SCRAPER_DB_PATH.exists():
-            conn = duckdb.connect(str(SCRAPER_DB_PATH), read_only=True)
 
-            # Get latest for each scraper type
-            for scraper in ["fema", "permits", "sunbiz", "realtor"]:
-                try:
-                    result = conn.execute("""
-                        SELECT extracted_summary FROM scraper_outputs
-                        WHERE property_id = ? AND scraper = ? AND extraction_success = TRUE
-                        ORDER BY scraped_at DESC LIMIT 1
-                    """, [folio, scraper]).fetchone()
+def get_property_enrichments(folio: str) -> Dict[str, Any]:
+    """
+    Get all enrichment data for a property from scraper outputs.
 
-                    if result and result[0]:
-                        summary = json.loads(result[0]) if isinstance(result[0], str) else result[0]
-                        enrichments["has_enrichments"] = True
-
-                        if scraper == "fema":
-                            enrichments["flood_zone"] = summary.get("flood_zone")
-                            enrichments["flood_risk"] = summary.get("risk_level")
-                            enrichments["insurance_required"] = summary.get("insurance_required", False)
-                        elif scraper == "permits":
-                            enrichments["permits_total"] = summary.get("total", 0)
-                            enrichments["permits_open"] = summary.get("open", 0)
-                        elif scraper == "sunbiz":
-                            enrichments["sunbiz_entities"] = summary.get("found", 0)
-                            enrichments["sunbiz_active"] = summary.get("active", 0)
-                        elif scraper == "realtor":
-                            enrichments["market_value"] = summary.get("price")
-                            enrichments["zestimate"] = summary.get("zestimate")
-
-                except Exception as e:
-                    logger.debug(f"Error getting {scraper} enrichment for {folio}: {e}")
-
-            conn.close()
-    except Exception as e:
-        logger.debug(f"Scraper DB not available: {e}")
-
-    # Also get lien data from main DB
-    try:
-        conn = get_connection()
-        result = conn.execute("""
-            SELECT
-                COUNT(*) as total,
-                SUM(CASE WHEN survival_status = 'SURVIVED' THEN 1 ELSE 0 END) as surviving,
-                SUM(CASE WHEN survival_status = 'SURVIVED' THEN COALESCE(amount, 0) ELSE 0 END) as amount
-            FROM encumbrances
-            WHERE folio = ?
-        """, [folio]).fetchone()
-
-        if result:
-            enrichments["liens_surviving"] = result[1] or 0
-            enrichments["liens_total_amount"] = result[2] or 0
-            if result[0] and result[0] > 0:
-                enrichments["has_enrichments"] = True
-
-        conn.close()
-    except Exception as e:
-        logger.debug(f"Error getting liens for {folio}: {e}")
-
-    return enrichments
+    Returns dict with:
+        - flood_zone: FEMA zone info
+        - permits: Open/closed permit counts
+        - liens: Surviving lien count and total
+        - sunbiz: Owner business entity status
+        - market: Zestimate/listing price if available
+    """
+    bulk = get_bulk_enrichments([folio])
+    return bulk.get(folio, _default_enrichments())
 
 
 def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
@@ -742,9 +685,93 @@ def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
 
     Returns dict keyed by folio with enrichment data for each.
     """
-    result = {}
-    for folio in folios:
-        result[folio] = get_property_enrichments(folio)
+    result = {folio: _default_enrichments() for folio in folios}
+    if not folios:
+        return result
+
+    folios_unique = list({f for f in folios if f})
+
+    # Batch read scraper_outputs for latest records per scraper/folio
+    if SCRAPER_DB_PATH.exists() and folios_unique:
+        try:
+            conn = duckdb.connect(str(SCRAPER_DB_PATH), read_only=True)
+            placeholders = ",".join(["?"] * len(folios_unique))
+
+            for scraper in ["fema", "permits", "sunbiz", "realtor"]:
+                try:
+                    rows = conn.execute(f"""
+                        WITH latest AS (
+                            SELECT
+                                property_id,
+                                extracted_summary,
+                                ROW_NUMBER() OVER (PARTITION BY property_id ORDER BY scraped_at DESC) AS rn
+                            FROM scraper_outputs
+                            WHERE property_id IN ({placeholders})
+                              AND scraper = ?
+                              AND extraction_success = TRUE
+                        )
+                        SELECT property_id, extracted_summary
+                        FROM latest
+                        WHERE rn = 1
+                    """, [*folios_unique, scraper]).fetchall()
+
+                    for property_id, summary in rows:
+                        if property_id not in result:
+                            continue
+                        data = result[property_id]
+                        data["has_enrichments"] = True
+                        try:
+                            summary = json.loads(summary) if isinstance(summary, str) else summary
+                        except Exception:
+                            pass
+
+                        if scraper == "fema":
+                            data["flood_zone"] = (summary or {}).get("flood_zone")
+                            data["flood_risk"] = (summary or {}).get("risk_level")
+                            data["insurance_required"] = (summary or {}).get("insurance_required", False)
+                        elif scraper == "permits":
+                            data["permits_total"] = (summary or {}).get("total", 0)
+                            data["permits_open"] = (summary or {}).get("open", 0)
+                        elif scraper == "sunbiz":
+                            data["sunbiz_entities"] = (summary or {}).get("found", 0)
+                            data["sunbiz_active"] = (summary or {}).get("active", 0)
+                        elif scraper == "realtor":
+                            data["market_value"] = (summary or {}).get("price")
+                            data["zestimate"] = (summary or {}).get("zestimate")
+                except Exception as e:
+                    logger.debug(f"Error getting {scraper} enrichment batch: {e}")
+            conn.close()
+        except Exception as e:
+            logger.debug(f"Scraper DB not available: {e}")
+
+    # Also get lien data from main DB in one query
+    try:
+        if folios_unique:
+            conn = get_connection()
+            placeholders = ",".join(["?"] * len(folios_unique))
+            rows = conn.execute(f"""
+                SELECT
+                    folio,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN survival_status = 'SURVIVED' THEN 1 ELSE 0 END) as surviving,
+                    SUM(CASE WHEN survival_status = 'SURVIVED' THEN COALESCE(amount, 0) ELSE 0 END) as amount
+                FROM encumbrances
+                WHERE folio IN ({placeholders})
+                GROUP BY folio
+            """, folios_unique).fetchall()
+
+            for folio, total, surviving, amount in rows:
+                if folio not in result:
+                    continue
+                result[folio]["liens_surviving"] = surviving or 0
+                result[folio]["liens_total_amount"] = amount or 0
+                if total and total > 0:
+                    result[folio]["has_enrichments"] = True
+
+            conn.close()
+    except Exception as e:
+        logger.debug(f"Error getting liens batch: {e}")
+
     return result
 
 
@@ -788,3 +815,113 @@ def get_upcoming_auctions_with_enrichments(
             }
 
     return auctions
+
+
+# -------------------------------------------------------------------------
+# Failed HCPA Scrapes (Manual Review Queue)
+# -------------------------------------------------------------------------
+
+def get_failed_hcpa_scrapes(
+    limit: int = 50,
+    offset: int = 0
+) -> List[Dict[str, Any]]:
+    """
+    Get auctions where HCPA scrape failed and need manual review.
+
+    Returns auctions with:
+        - case_number
+        - parcel_id (folio)
+        - property_address
+        - auction_date
+        - hcpa_scrape_error
+    """
+    conn = get_connection()
+
+    try:
+        # Check if column exists first
+        try:
+            conn.execute("SELECT hcpa_scrape_failed FROM auctions LIMIT 1")
+        except Exception:
+            # Column doesn't exist yet
+            return []
+
+        query = """
+            SELECT
+                a.case_number,
+                a.folio,
+                a.parcel_id,
+                a.property_address,
+                a.auction_date,
+                a.auction_type,
+                a.hcpa_scrape_error,
+                p.legal_description,
+                p.raw_legal1,
+                p.raw_legal2
+            FROM auctions a
+            LEFT JOIN parcels p ON a.parcel_id = p.folio
+            WHERE a.hcpa_scrape_failed = TRUE
+            ORDER BY a.auction_date ASC
+            LIMIT ? OFFSET ?
+        """
+        results = conn.execute(query, [limit, offset]).fetchall()
+
+        if results:
+            columns = [desc[0] for desc in conn.description]
+            return [dict(zip(columns, row)) for row in results]
+        return []
+
+    except Exception as e:
+        logger.error(f"Error fetching failed HCPA scrapes: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_failed_hcpa_count() -> int:
+    """Get count of auctions with failed HCPA scrapes."""
+    conn = get_connection()
+
+    try:
+        # Check if column exists
+        try:
+            conn.execute("SELECT hcpa_scrape_failed FROM auctions LIMIT 1")
+        except Exception:
+            return 0
+
+        result = conn.execute("""
+            SELECT COUNT(*) FROM auctions WHERE hcpa_scrape_failed = TRUE
+        """).fetchone()
+        return result[0] if result else 0
+
+    except Exception as e:
+        logger.error(f"Error counting failed HCPA scrapes: {e}")
+        return 0
+    finally:
+        conn.close()
+
+
+def mark_hcpa_reviewed(case_number: str, notes: str = None) -> bool:
+    """
+    Mark an auction as manually reviewed (clears the failed flag).
+
+    Args:
+        case_number: The auction case number
+        notes: Optional notes about the review
+
+    Returns:
+        True if successful
+    """
+    # Need write connection for this
+    try:
+        conn = duckdb.connect(str(DB_PATH))  # Not read-only
+        conn.execute("""
+            UPDATE auctions SET
+                hcpa_scrape_failed = FALSE,
+                hcpa_scrape_error = ?
+            WHERE case_number = ?
+        """, [f"Reviewed: {notes}" if notes else "Reviewed", case_number])
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Error marking {case_number} as reviewed: {e}")
+        return False

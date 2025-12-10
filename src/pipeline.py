@@ -54,6 +54,46 @@ from src.models.property import Lien, Property
 from playwright.async_api import async_playwright
 
 
+# Invalid folio values to skip - these are often scraped incorrectly from the auction site
+INVALID_FOLIO_VALUES = {
+    'property appraiser', 'n/a', 'none', '', 'unknown', 'pending',
+    'see document', 'multiple', 'various', 'tbd', 'na'
+}
+
+
+def is_valid_folio(folio: str) -> bool:
+    """
+    Validate that a folio/parcel ID is a real parcel number, not garbage data.
+
+    Hillsborough County folios are typically 21+ character alphanumeric strings
+    like "182811104000055000300U" or similar patterns.
+
+    Returns False for:
+    - Empty/None values
+    - Known invalid values like "Property Appraiser"
+    - Values that are too short (< 6 chars)
+    - Values that are all letters (likely labels, not IDs)
+    """
+    if not folio:
+        return False
+
+    folio_clean = folio.strip().lower()
+
+    # Check against known invalid values
+    if folio_clean in INVALID_FOLIO_VALUES:
+        return False
+
+    # Folio should have at least some minimum length
+    if len(folio_clean) < 6:
+        return False
+
+    # Folio should contain at least some digits (not all letters)
+    if not any(c.isdigit() for c in folio_clean):
+        return False
+
+    return True
+
+
 class PipelineDB(PropertyDB):
     """Extended DB class for pipeline operations."""
 
@@ -407,16 +447,17 @@ async def _download_single_judgment_pdf(
             await new_context.close()
 
 
-async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int] = None):
+async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int] = None, start_step: int = 1):
     """Run the complete property analysis pipeline with smart skip logic.
 
     Args:
         max_auctions: Limit applied to later market data steps.
         property_limit: Optional cap on total auctions ingested (foreclosure + tax deed).
+        start_step: Step number to start from (1-13). Use to resume after failures.
     """
 
     logger.info("=" * 60)
-    logger.info("STARTING FULL PIPELINE")
+    logger.info(f"STARTING FULL PIPELINE (from step {start_step})")
     logger.info("=" * 60)
 
     db = PipelineDB()
@@ -653,8 +694,17 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
 
         logger.info(f"Fetching HCPA GIS for {folio}...")
         try:
-            # scrape_hcpa_property is an async function
-            result = await scrape_hcpa_property(folio=folio)
+            # scrape_hcpa_property is an async function with timeout protection
+            result = await scrape_hcpa_property(folio=folio, timeout=90)
+
+            # Check for timeout/error in result
+            if result and result.get("error"):
+                logger.warning(f"GIS scrape returned error for {folio}: {result['error']}")
+                gis_errors += 1
+                # Add a small delay after errors to let system stabilize
+                await asyncio.sleep(2)
+                continue
+
             if result and result.get("sales_history"):
                 db.save_sales_history(
                     folio, result.get("strap", ""), result["sales_history"]
@@ -676,22 +726,36 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
                     WHERE folio = ?
                 """, [result["legal_description"], folio])
                 logger.info(f"Saved legal description for {folio}")
+
+            # Small delay between successful scrapes to avoid overwhelming the server
+            await asyncio.sleep(1)
         except Exception as e:
             logger.error(f"GIS scrape failed for {folio}: {e}")
             gis_errors += 1
+            # Add a delay after errors to let system stabilize
+            await asyncio.sleep(3)
 
     logger.success(f"Scraped GIS data for {gis_count} properties")
 
     # =========================================================================
     # STEP 5: Ingest ORI Data & Build Chain of Title
     # Skip if: folio has chain data AND last_analyzed_case_number = current case
-    # Uses legal description permutations for robust ORI search
+    # PRIORITY: Use HCPA-scraped legal_description (clean subdivision format)
+    # FALLBACK: Skip property if no HCPA legal description (mark for manual review)
     # =========================================================================
     logger.info("\n" + "=" * 60)
     logger.info("STEP 5: ORI INGESTION & CHAIN OF TITLE")
     logger.info("=" * 60)
 
     ingestion_service = IngestionService()
+
+    # Ensure hcpa_scrape_failed column exists for tracking failures
+    try:
+        conn = db.connect()
+        conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS hcpa_scrape_failed BOOLEAN DEFAULT FALSE")
+        conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS hcpa_scrape_error VARCHAR")
+    except Exception as e:
+        logger.warning(f"Could not add hcpa tracking columns: {e}")
 
     try:
         pending_auctions = db.execute_query(
@@ -703,10 +767,40 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
         pending_auctions = []
 
     ingested_count = 0
+    invalid_folio_count = 0
+    party_search_count = 0
+    no_hcpa_legal_count = 0
+
     for row in pending_auctions:
         folio = row.get("parcel_id")
         case_number = row.get("case_number")
         if not folio or not case_number:
+            continue
+
+        # Validate folio is a real parcel ID (not "Property Appraiser" or similar garbage)
+        if not is_valid_folio(folio):
+            # Try party-based search as fallback for invalid folios
+            plaintiff = row.get("plaintiff")
+            defendant = row.get("defendant")
+
+            if plaintiff or defendant:
+                logger.info(f"Invalid folio '{folio}' for case {case_number}, trying party-based ORI search")
+                try:
+                    prop = Property(
+                        case_number=case_number,
+                        parcel_id=folio,  # Keep original for reference
+                        address=row.get("property_address"),
+                        auction_date=row.get("auction_date"),
+                        plaintiff=plaintiff,
+                        defendant=defendant,
+                    )
+                    ingestion_service.ingest_property_by_party(prop, plaintiff, defendant)
+                    party_search_count += 1
+                except Exception as e:
+                    logger.error(f"Party-based ingestion failed for {case_number}: {e}")
+            else:
+                logger.warning(f"Invalid folio '{folio}' for case {case_number}, no party data for fallback")
+                invalid_folio_count += 1
             continue
 
         # Skip logic: folio has chain AND same case number
@@ -715,46 +809,82 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
             logger.debug(f"Skipping ORI for {folio} - already analyzed for {case_number}")
             continue
 
-        # Get legal descriptions from multiple sources for permutation search
-        legal_desc = None
+        # Get legal description - PRIORITIZE HCPA-scraped legal_description
+        # This is the clean subdivision format like "LORENE TERRACE LOT 11 BLOCK B"
+        # NOT the raw_legal1..4 fields which contain metes and bounds measurements
+        hcpa_legal_desc = None
         judgment_legal = None
-        raw_legal1 = None
-        raw_legal2 = None
-        raw_legal3 = None
-        raw_legal4 = None
 
         try:
             parcel_data = db.connect().execute(
-                """SELECT legal_description, judgment_legal_description,
-                          raw_legal1, raw_legal2, raw_legal3, raw_legal4
+                """SELECT legal_description, judgment_legal_description
                    FROM parcels WHERE folio = ?""", [folio]
             ).fetchone()
             if parcel_data:
-                legal_desc = parcel_data[0]
-                judgment_legal = parcel_data[1]
-                raw_legal1 = parcel_data[2]
-                raw_legal2 = parcel_data[3]
-                raw_legal3 = parcel_data[4]
-                raw_legal4 = parcel_data[5]
+                hcpa_legal_desc = parcel_data[0]  # HCPA-scraped clean legal description
+                judgment_legal = parcel_data[1]   # From final judgment extraction
         except Exception:
             pass
 
-        # Build search terms using permutation logic
-        search_terms = build_ori_search_terms(
-            folio=folio,
-            legal1=raw_legal1,
-            legal2=raw_legal2,
-            legal3=raw_legal3,
-            legal4=raw_legal4,
-            judgment_legal=judgment_legal or legal_desc,
-        )
+        # Use HCPA legal description as primary source
+        # Fall back to judgment legal only if HCPA is not available
+        primary_legal = hcpa_legal_desc or judgment_legal
 
-        if not search_terms:
-            logger.warning(f"No legal description available for {folio}, skipping ORI")
+        if not primary_legal:
+            # No HCPA legal description - mark for manual review and skip
+            logger.warning(f"No HCPA legal description for {folio} (case {case_number}), marking for manual review")
+            try:
+                conn = db.connect()
+                conn.execute("""
+                    UPDATE auctions SET
+                        hcpa_scrape_failed = TRUE,
+                        hcpa_scrape_error = 'No legal description from HCPA scrape'
+                    WHERE case_number = ?
+                """, [case_number])
+            except Exception:
+                pass
+            no_hcpa_legal_count += 1
             continue
 
+        # Build search terms from HCPA legal description
+        # Extract subdivision name and lot/block pattern for ORI search
+        search_terms = []
+
+        # Parse the legal description for searchable terms
+        # Format: "SUBDIVISION_NAME LOT X BLOCK Y" or similar
+        legal_parts = primary_legal.upper().split()
+
+        # Find subdivision name (everything before LOT or BLOCK)
+        subdivision_parts = []
+        for i, part in enumerate(legal_parts):
+            if part in ("LOT", "BLOCK", "UNIT", "PH", "PHASE"):
+                break
+            subdivision_parts.append(part)
+
+        if subdivision_parts:
+            subdivision_name = " ".join(subdivision_parts)
+            # Add wildcard search for subdivision
+            search_terms.append(f"{subdivision_name}*")
+
+            # Also try with lot/block if present
+            if "LOT" in legal_parts:
+                try:
+                    lot_idx = legal_parts.index("LOT")
+                    if lot_idx + 1 < len(legal_parts):
+                        lot_num = legal_parts[lot_idx + 1]
+                        search_terms.append(f"{subdivision_name} LOT {lot_num}*")
+                except (ValueError, IndexError):
+                    pass
+
+        # Fallback: use the full legal description with wildcard
+        if not search_terms:
+            # Just use first few words with wildcard
+            first_words = " ".join(legal_parts[:3]) if len(legal_parts) >= 3 else primary_legal
+            search_terms.append(f"{first_words}*")
+
         logger.info(f"Ingesting ORI for {folio} (case {case_number})...")
-        logger.debug(f"  Search terms: {search_terms[:3]}...")
+        logger.info(f"  Legal: {primary_legal}")
+        logger.info(f"  Search terms: {search_terms}")
 
         try:
             prop = Property(
@@ -762,9 +892,9 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
                 parcel_id=folio,
                 address=row.get("property_address"),
                 auction_date=row.get("auction_date"),
-                legal_description=judgment_legal or legal_desc,
+                legal_description=primary_legal,
             )
-            # Pass search terms to ingestion service for permutation search
+            # Pass search terms to ingestion service
             prop.legal_search_terms = search_terms
             ingestion_service.ingest_property(prop)
             ingested_count += 1
@@ -772,6 +902,12 @@ async def run_full_pipeline(max_auctions: int = 10, property_limit: Optional[int
             logger.error(f"Ingestion failed for {case_number}: {e}")
 
     logger.success(f"Ingested ORI data for {ingested_count} properties")
+    if party_search_count > 0:
+        logger.info(f"  Party-based searches: {party_search_count}")
+    if invalid_folio_count > 0:
+        logger.info(f"  Skipped (invalid folio, no party data): {invalid_folio_count}")
+    if no_hcpa_legal_count > 0:
+        logger.warning(f"  Skipped (no HCPA legal desc, needs manual review): {no_hcpa_legal_count}")
 
     # =========================================================================
     # STEP 6: Analyze Lien Survival

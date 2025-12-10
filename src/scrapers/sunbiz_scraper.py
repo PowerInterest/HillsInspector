@@ -12,7 +12,7 @@ Usage:
 
 import asyncio
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import List, Optional, Dict, Any
 from loguru import logger
@@ -93,6 +93,7 @@ class SunbizScraper:
             try:
                 # Navigate to search page
                 search_url = f"{self.BASE_URL}/Inquiry/CorporationSearch/ByName"
+                logger.info(f"Sunbiz GET: {search_url}")
                 await page.goto(search_url, timeout=30000)
                 await page.wait_for_load_state("networkidle")
 
@@ -200,6 +201,7 @@ class SunbizScraper:
             try:
                 # Navigate to officer search
                 search_url = f"{self.BASE_URL}/Inquiry/CorporationSearch/ByOfficerOrRegisteredAgent"
+                logger.info(f"Sunbiz GET: {search_url}")
                 await page.goto(search_url, timeout=30000)
                 await page.wait_for_load_state("networkidle")
 
@@ -315,6 +317,7 @@ class SunbizScraper:
             return entity
 
         try:
+            logger.info(f"Sunbiz GET: {entity.sunbiz_url}")
             await page.goto(entity.sunbiz_url, timeout=30000)
             await page.wait_for_load_state("networkidle")
 
@@ -340,13 +343,13 @@ class SunbizScraper:
                 # Document Number
                 if "Document Number" in line:
                     next_line = lines[i+1].strip() if i+1 < len(lines) else ""
-                    if next_line and not ":" in next_line:
+                    if next_line and ":" not in next_line:
                         entity.document_number = next_line
 
                 # FEI/EIN Number
                 if "FEI/EIN Number" in line:
                     next_line = lines[i+1].strip() if i+1 < len(lines) else ""
-                    if next_line and not ":" in next_line:
+                    if next_line and ":" not in next_line:
                         entity.fei_ein = next_line
 
                 # Date Filed
@@ -358,13 +361,13 @@ class SunbizScraper:
                         pass
 
                 # Status
-                if "Status" in line and "Status" == line.strip():
+                if "Status" in line and line.strip() == "Status":
                     next_line = lines[i+1].strip() if i+1 < len(lines) else ""
                     if next_line:
                         entity.status = next_line
 
                 # State
-                if "State" in line and "State" == line.strip():
+                if "State" in line and line.strip() == "State":
                     next_line = lines[i+1].strip() if i+1 < len(lines) else ""
                     if next_line and len(next_line) == 2:
                         entity.state = next_line

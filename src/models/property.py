@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date
 from typing import List, Optional
 from pydantic import BaseModel, Field
 
@@ -50,6 +50,9 @@ class Property(BaseModel):
     certificate_number: Optional[str] = None # Tax Deed specific
     instrument_number: Optional[str] = None  # Instrument number from auction Case# link
     final_judgment_pdf_path: Optional[str] = None # Path to downloaded PDF
+    plaintiff: Optional[str] = None  # Party 1 from PAV page
+    defendant: Optional[str] = None  # Party 2 from PAV page
+    hcpa_url: Optional[str] = None  # Direct link to HCPA property page
 
     # Enriched Data
     owner_name: Optional[str] = None

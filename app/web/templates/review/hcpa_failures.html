@@ -1,0 +1,268 @@
+{% extends "base.html" %}
+
+{% block title %}HCPA Review Queue - HillsInspector{% endblock %}
+
+{% block content %}
+<div class="review-queue">
+    <div class="page-header">
+        <h1>HCPA Scrape Failures</h1>
+        <p class="subtitle">
+            These auctions failed to get legal description from HCPA and need manual review.
+            Without a legal description, ORI chain of title search cannot be performed.
+        </p>
+        <div class="stats-badge">
+            <span class="count">{{ total }}</span> auctions need review
+        </div>
+    </div>
+
+    {% if auctions %}
+    <table class="review-table">
+        <thead>
+            <tr>
+                <th>Auction Date</th>
+                <th>Case #</th>
+                <th>Address</th>
+                <th>Parcel ID</th>
+                <th>Error</th>
+                <th>Legal (if any)</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for auction in auctions %}
+            <tr>
+                <td>{{ auction.auction_date }}</td>
+                <td>
+                    <a href="/property/{{ auction.folio or auction.parcel_id }}" target="_blank">
+                        {{ auction.case_number }}
+                    </a>
+                </td>
+                <td>{{ auction.property_address or 'N/A' }}</td>
+                <td>
+                    <code>{{ auction.parcel_id or auction.folio or 'N/A' }}</code>
+                </td>
+                <td class="error-cell">
+                    <span class="error-text">{{ auction.hcpa_scrape_error or 'Unknown error' }}</span>
+                </td>
+                <td class="legal-cell">
+                    {% if auction.legal_description %}
+                        <span class="has-legal">{{ auction.legal_description[:50] }}...</span>
+                    {% elif auction.raw_legal1 %}
+                        <span class="raw-legal">Raw: {{ auction.raw_legal1[:30] }}...</span>
+                    {% else %}
+                        <span class="no-legal">None</span>
+                    {% endif %}
+                </td>
+                <td class="actions-cell">
+                    <div class="action-buttons">
+                        <!-- Manual HCPA lookup link -->
+                        {% if auction.parcel_id %}
+                        <a href="https://gis.hcpafl.org/propertysearch/#/parcel/basic/{{ auction.parcel_id }}"
+                           target="_blank"
+                           class="btn btn-small btn-primary"
+                           title="Open HCPA GIS">
+                            HCPA
+                        </a>
+                        {% endif %}
+
+                        <!-- Mark as reviewed form -->
+                        <form action="/review/hcpa-failures/{{ auction.case_number }}/mark-reviewed"
+                              method="POST"
+                              style="display: inline;">
+                            <button type="submit" class="btn btn-small btn-success" title="Mark as reviewed">
+                                Done
+                            </button>
+                        </form>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <!-- Pagination -->
+    {% if pagination.total_pages > 1 %}
+    <div class="pagination">
+        {% if pagination.page > 1 %}
+        <a href="?page={{ pagination.page - 1 }}" class="btn btn-small">Previous</a>
+        {% endif %}
+
+        <span class="page-info">
+            Page {{ pagination.page }} of {{ pagination.total_pages }}
+        </span>
+
+        {% if pagination.page < pagination.total_pages %}
+        <a href="?page={{ pagination.page + 1 }}" class="btn btn-small">Next</a>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% else %}
+    <div class="empty-state">
+        <h3>No HCPA failures to review</h3>
+        <p>All auctions have successfully retrieved legal descriptions from HCPA.</p>
+    </div>
+    {% endif %}
+</div>
+
+<style>
+.review-queue {
+    padding: 20px;
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+.page-header {
+    margin-bottom: 24px;
+}
+
+.page-header h1 {
+    margin-bottom: 8px;
+}
+
+.subtitle {
+    color: #666;
+    margin-bottom: 12px;
+}
+
+.stats-badge {
+    display: inline-block;
+    background: #dc3545;
+    color: white;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-weight: bold;
+}
+
+.stats-badge .count {
+    font-size: 1.2em;
+}
+
+.review-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.review-table th,
+.review-table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+
+.review-table th {
+    background: #f8f9fa;
+    font-weight: 600;
+    color: #333;
+}
+
+.review-table tr:hover {
+    background: #f8f9fa;
+}
+
+.error-cell {
+    max-width: 200px;
+}
+
+.error-text {
+    color: #dc3545;
+    font-size: 0.85em;
+}
+
+.legal-cell {
+    max-width: 200px;
+}
+
+.has-legal {
+    color: #28a745;
+    font-size: 0.85em;
+}
+
+.raw-legal {
+    color: #ffc107;
+    font-size: 0.85em;
+}
+
+.no-legal {
+    color: #dc3545;
+    font-style: italic;
+}
+
+.actions-cell {
+    white-space: nowrap;
+}
+
+.action-buttons {
+    display: flex;
+    gap: 8px;
+}
+
+.btn {
+    display: inline-block;
+    padding: 8px 16px;
+    border-radius: 4px;
+    text-decoration: none;
+    cursor: pointer;
+    border: none;
+    font-size: 14px;
+}
+
+.btn-small {
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+.btn-primary {
+    background: #007bff;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #0056b3;
+}
+
+.btn-success {
+    background: #28a745;
+    color: white;
+}
+
+.btn-success:hover {
+    background: #1e7e34;
+}
+
+.pagination {
+    margin-top: 20px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 16px;
+}
+
+.page-info {
+    color: #666;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    background: #f8f9fa;
+    border-radius: 8px;
+}
+
+.empty-state h3 {
+    color: #28a745;
+    margin-bottom: 8px;
+}
+
+code {
+    background: #e9ecef;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.85em;
+}
+</style>
+{% endblock %}
