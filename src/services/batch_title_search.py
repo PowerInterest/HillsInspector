@@ -18,6 +18,7 @@ Reference: archive/legalSearchdirect.md
 """
 import re
 import time
+from contextlib import suppress
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
@@ -114,26 +115,22 @@ class BatchTitleSearch:
             return None
 
         # Skip common prefixes like "THE"
-        if words[0] == 'THE' and len(words) > 1:
-            subdiv_name = words[1]
-        else:
-            subdiv_name = words[0]
+        subdiv_name = words[1] if words[0] == 'THE' and len(words) > 1 else words[0]
 
         # Build final search term with wildcard
-        search_term = f"{lot_part} {subdiv_name}*"
-        return search_term
+        return f"{lot_part} {subdiv_name}*"
 
     def build_search_url(self, search_term: str, cqid: int = 321) -> str:
         """Build the full ORI search URL for tracking."""
         if cqid == 321:  # Legal search
             return f"{self.BASE_SEARCH_URL}?CQID=321&OBKey__1011_1={quote(search_term)}"
-        elif cqid == 326:  # Name search
+        if cqid == 326:  # Name search
             return f"{self.BASE_SEARCH_URL}?CQID=326&OBKey__486_1={quote(search_term)}"
-        elif cqid == 319:  # Book/Page search
+        if cqid == 319:  # Book/Page search
             parts = search_term.split("/")
             if len(parts) == 2:
                 return f"{self.BASE_SEARCH_URL}?CQID=319&OBKey__1530_1=O&OBKey__573_1={parts[0]}&OBKey__1049_1={parts[1]}"
-        elif cqid == 320:  # Instrument search
+        if cqid == 320:  # Instrument search
             return f"{self.BASE_SEARCH_URL}?CQID=320&OBKey__1006_1={quote(search_term)}"
         return self.BASE_SEARCH_URL
 
@@ -151,7 +148,7 @@ class BatchTitleSearch:
             """, [strap]).fetchall()
 
             columns = ['book', 'page', 'instrument', 'sale_date', 'doc_type', 'sale_price']
-            return [dict(zip(columns, row)) for row in results]
+            return [dict(zip(columns, row, strict=True)) for row in results]
         except Exception as e:
             logger.debug(f"Error getting sales history: {e}")
             return []
@@ -205,10 +202,8 @@ class BatchTitleSearch:
         rec_date = None
         date_str = result.get("Recording Date Time", "")
         if date_str:
-            try:
+            with suppress(Exception):
                 rec_date = datetime.strptime(date_str.split()[0], "%m/%d/%Y").date()
-            except Exception:
-                pass
 
         doc_data = {
             "document_type": result.get("ORI - Doc Type", ""),
@@ -229,7 +224,7 @@ class BatchTitleSearch:
             logger.error(f"Error saving instrument {instrument_number}: {e}")
             return None
 
-    def get_document_by_instrument_api(self, instrument_number: str, legal_desc: str = None) -> Optional[Dict]:
+    def get_document_by_instrument_api(self, instrument_number: str, legal_desc: str | None = None) -> Optional[Dict]:
         """
         Search the ORI API for a document by instrument number.
         Returns the API result with ID field needed for PDF download.
@@ -258,8 +253,8 @@ class BatchTitleSearch:
                 # Search within same year
                 start_date = f"01/01/{rec_dt.year}"
                 end_date = f"12/31/{rec_dt.year}"
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Could not parse record_date %s: %s", record_date, exc)
 
         # Try searching API by legal description (returns ID field we need)
         if legal:
@@ -271,7 +266,7 @@ class BatchTitleSearch:
                     "RecordDateEnd": end_date,
                     "Legal": ["CONTAINS", legal],
                 }
-                results = self.ori_api._execute_search(payload)
+                results = self.ori_api._execute_search(payload)  # noqa: SLF001
 
                 # Find matching instrument (note: API returns instrument as int)
                 for r in results:
@@ -292,7 +287,7 @@ class BatchTitleSearch:
                     "BookNum": int(book) if book.isdigit() else book,
                     "PageNum": int(page) if page.isdigit() else page,
                 }
-                results = self.ori_api._execute_search(payload)
+                results = self.ori_api._execute_search(payload)  # noqa: SLF001
 
                 for r in results:
                     if str(r.get("Instrument")) == instrument_number:
@@ -328,7 +323,7 @@ class BatchTitleSearch:
             return None
 
         # Create output directory using ScraperStorage's internal method
-        output_dir = self.storage._get_property_dir(strap) / "documents"
+        output_dir = self.storage._get_property_dir(strap) / "documents"  # noqa: SLF001
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Download PDF
@@ -412,7 +407,7 @@ class BatchTitleSearch:
 
         results = self.db.conn.execute(query).fetchall()
         columns = ['strap', 'folio', 'address', 'owner_name', 'raw_legal1', 'raw_legal2']
-        all_properties = [dict(zip(columns, row)) for row in results]
+        all_properties = [dict(zip(columns, row, strict=True)) for row in results]
 
         # Filter by needs_refresh unless force=True
         if force:
@@ -494,12 +489,11 @@ class BatchTitleSearch:
                         if search_term:
                             # Extract the key parts from our search term
                             parts = search_term.replace("*", "").split()
-                            if len(parts) >= 2 and all(p in legal_in_result for p in parts):
-                                if inst and inst not in seen_instruments:
-                                    seen_instruments.add(inst)
-                                    r["_source"] = f"name:{name[:20]}"
-                                    r["_search_url"] = name_url
-                                    all_results.append(r)
+                            if len(parts) >= 2 and all(p in legal_in_result for p in parts) and inst and inst not in seen_instruments:
+                                seen_instruments.add(inst)
+                                r["_source"] = f"name:{name[:20]}"
+                                r["_search_url"] = name_url
+                                all_results.append(r)
                 except Exception as e:
                     logger.error(f"  Name search error: {e}")
 
@@ -582,10 +576,8 @@ class BatchTitleSearch:
             rec_date = None
             date_str = doc.get("record_date", "")
             if date_str:
-                try:
+                with suppress(Exception):
                     rec_date = datetime.strptime(date_str.split()[0], "%m/%d/%Y").date()
-                except Exception:
-                    pass
 
             # Get party1 and party2 from parties list
             parties = doc.get("parties", [])

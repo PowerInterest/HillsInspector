@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 
 from app.web.database import get_auction_map_points
 
-router = APIRouter(prefix="/api", tags=["api"])
+router = APIRouter(tags=["api"])
 
 
 @router.get("/map-auctions")

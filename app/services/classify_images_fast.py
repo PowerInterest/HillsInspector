@@ -195,7 +195,7 @@ def main():
             results_batch, dt = fut.result()
             print(f"Batch of {len(batch_files)} processed in {dt:.2f}s")
 
-            for f, result in zip(batch_files, results_batch):
+            for f, result in zip(batch_files, results_batch, strict=False):
                 print(
                     f"  -> {os.path.basename(f)} | is_valid={result['is_valid']} "
                     f"class={result['classification']} conf={result['confidence']:.2f}"

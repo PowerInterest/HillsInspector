@@ -11,12 +11,14 @@ Usage:
 """
 
 import json
-import requests
-from urllib.parse import quote
-from datetime import datetime
-from pathlib import Path
 import time
 import tempfile
+from contextlib import suppress
+from datetime import UTC, datetime
+from pathlib import Path
+from urllib.parse import quote
+
+import requests
 
 import fitz  # PyMuPDF
 
@@ -87,7 +89,7 @@ def download_pdf(doc: dict, output_dir: Path, session: requests.Session) -> Path
     instrument = doc.get("Instrument", "unknown")
     doc_type = doc.get("DocType", "UNKNOWN").replace("(", "").replace(")", "").replace(" ", "_")
     try:
-        record_date = datetime.fromtimestamp(doc.get("RecordDate", 0)).strftime("%Y%m%d")
+        record_date = datetime.fromtimestamp(doc.get("RecordDate", 0), tz=datetime.UTC).strftime("%Y%m%d")
     except (OSError, ValueError):
         record_date = "unknown"
 
@@ -161,10 +163,8 @@ Do not summarize - transcribe the complete text."""
     finally:
         # Clean up temp files
         for tmp_path in temp_files:
-            try:
+            with suppress(Exception):
                 tmp_path.unlink(missing_ok=True)
-            except Exception:
-                pass  # Ignore cleanup errors on Windows
 
     combined_text = "\n\n".join(full_text)
 
@@ -234,7 +234,7 @@ def main():
         parties_one = ", ".join(doc.get("PartiesOne", []))
         parties_two = ", ".join(doc.get("PartiesTwo", []))
         try:
-            record_date = datetime.fromtimestamp(doc.get("RecordDate", 0)).strftime("%Y-%m-%d")
+            record_date = datetime.fromtimestamp(doc.get("RecordDate", 0), tz=UTC).strftime("%Y-%m-%d")
         except (OSError, ValueError):
             record_date = "unknown"
 

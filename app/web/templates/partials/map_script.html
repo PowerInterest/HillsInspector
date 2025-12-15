@@ -1,14 +1,21 @@
 <script>
   document.addEventListener('DOMContentLoaded', () => {
     const mapEl = document.getElementById('auction-map');
+    const statusEl = document.getElementById('auction-map-status');
     if (!mapEl) {
       console.error('Map element not found');
       return;
     }
     const map = L.map('auction-map', { zoomControl: true }).setView([27.95, -82.46], 10);
+    const clearStatus = () => statusEl && (statusEl.textContent = '', statusEl.style.display = 'none');
+    const showStatus = (msg) => statusEl && (statusEl.textContent = msg, statusEl.style.display = 'block');
+
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
+    })
+      .on('tileerror', () => showStatus('Map tiles failed to load (check network to tile.openstreetmap.org).'))
+      .on('load', clearStatus)
+      .addTo(map);
 
     // Ensure map resizes correctly (details/hidden containers)
     const resizeMap = () => {
@@ -48,9 +55,16 @@
         const bounds = markers.getBounds();
         if (bounds.isValid()) {
           map.fitBounds(bounds.pad(0.15));
+        } else {
+          map.setView([27.95, -82.46], 10);
+          showStatus('No map points available yet.');
         }
         resizeMap();
+        clearStatus();
       })
-      .catch((err) => console.error('Map load error:', err));
+      .catch((err) => {
+        console.error('Map load error:', err);
+        showStatus('Map data failed to load.');
+      });
   });
 </script>

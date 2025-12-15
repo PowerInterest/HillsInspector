@@ -12,7 +12,7 @@ import sys
 import os
 import shutil
 import logging
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from loguru import logger
 
@@ -52,11 +52,11 @@ logger.add(
     enqueue=True,
 )
 logger.add(
-    "logs/hills_inspector.log",
+    "logs/hills_inspector_{time:YYYY-MM-DD}.log",
     rotation="00:00",  # Rotate at midnight daily
     retention="30 days",
     level="INFO",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {elapsed} | {level: <8} | {process}:{thread} | {module}:{function}:{line} | {extra} - {message}\n{exception}",
+    format="{time:HH:mm:ss} | {level: <8} | {module}:{function}:{line} | {extra} - {message}\n{exception}",
     backtrace=True,
     diagnose=True,
     enqueue=True,
@@ -89,12 +89,12 @@ async def handle_test():
     # Run full pipeline with limited auctions
     await run_full_pipeline(max_auctions=5)
 
-async def handle_update():
+async def handle_update(start_date: date | None = None, start_step: int = 1):
     """Run full update for next 60 days."""
-    logger.info("Running FULL UPDATE pipeline...")
+    logger.info(f"Running FULL UPDATE pipeline (from step {start_step})...")
 
     # 1. Run main pipeline (Scrape -> Extract -> Ingest -> Analyze -> Enrich)
-    await run_full_pipeline(max_auctions=1000)
+    await run_full_pipeline(max_auctions=10, start_date=start_date, start_step=start_step)
 
     logger.success("Full update complete.")
 
@@ -111,16 +111,34 @@ async def handle_debug():
 
 def handle_web(port: int):
     """Start the FastAPI web server (app/web)."""
-    logger.info(f"Starting FastAPI Web Server (app/web) on port {port}...")
     import uvicorn
+    import socket
+
+    def get_ip():
+        """Get local IP address."""
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # doesn't even have to be reachable
+            s.connect(('10.255.255.255', 1))
+            IP = s.getsockname()[0]
+        except Exception:
+            IP = '127.0.0.1'
+        finally:
+            s.close()
+        return IP
+
+    ip_addr = get_ip()
+    logger.info(f"Starting FastAPI Web Server (app/web) on port {port}...")
+    logger.info(f"Local Access: http://localhost:{port}")
+    if ip_addr != '127.0.0.1':
+        logger.info(f"Network Access (WSL): http://{ip_addr}:{port}")
 
     uvicorn.run(
         "app.web.main:app",
         host="0.0.0.0",
         port=port,
-        reload=True,
+        reload=False,
         log_level="debug",
-        reload_dirs=["app/web", "src"],
     )
 
 def main():
@@ -133,9 +151,22 @@ def main():
     group.add_argument("--web", action="store_true", help="Start web server")
     parser.add_argument("--port", type=int, default=int(os.getenv("WEB_PORT", 8080)),
                         help="Port for web server (default 8080 or WEB_PORT env var)")
-    
+    parser.add_argument("--start-date", type=str, default=None,
+                        help="Start date for --update (YYYY-MM-DD). Defaults to tomorrow.")
+    parser.add_argument("--start-step", type=int, default=1,
+                        help="Step number to start from (1-13). Use to resume after failures.")
+
     args = parser.parse_args()
-    
+
+    # Parse start date if provided
+    start_date = None
+    if args.start_date:
+        try:
+            start_date = date.fromisoformat(args.start_date)
+        except ValueError:
+            logger.error(f"Invalid date format: {args.start_date}. Use YYYY-MM-DD.")
+            sys.exit(1)
+
     if args.new:
         handle_new()
     elif args.test:
@@ -143,7 +174,7 @@ def main():
     elif args.debug:
         asyncio.run(handle_debug())
     elif args.update:
-        asyncio.run(handle_update())
+        asyncio.run(handle_update(start_date=start_date, start_step=args.start_step))
     elif args.web:
         handle_web(args.port)
 

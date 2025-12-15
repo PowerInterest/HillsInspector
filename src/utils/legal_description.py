@@ -219,8 +219,15 @@ def generate_search_permutations(legal: LegalDescription, max_permutations: int 
     """
     Generate search string permutations for ORI search.
 
-    ORI uses CONTAINS search and REQUIRES wildcard (*) suffix for most searches.
-    Without wildcards, exact matches fail to return results.
+    ORI uses CONTAINS search and wildcards (*) for partial matching.
+
+    CRITICAL: ORI indexes legal descriptions with LOT/BLOCK FIRST, like:
+        "L 44 B 2 SYMPHONY ISLES #2"
+        "L 9 B D BRUSSELS BOY"
+
+    So we must search with lot/block first for best results:
+        "L 44 B 2 SYMPHONY*" - finds the specific lot
+        "SYMPHONY*" alone returns random lots from the subdivision
 
     Args:
         legal: Parsed legal description
@@ -231,63 +238,70 @@ def generate_search_permutations(legal: LegalDescription, max_permutations: int 
     """
     permutations = []
 
-    # If we have subdivision, wildcard search on subdivision name is most reliable
+    # Get subdivision first word for searches
+    subdiv_first_word = None
     if legal.subdivision:
         subdiv_words = legal.subdivision.split()
-        subdiv_first_word = subdiv_words[0]
+        # Skip common words that aren't the actual subdivision name
+        for word in subdiv_words:
+            if word not in ('THE', 'A', 'AN', 'AT', 'OF', 'IN'):
+                subdiv_first_word = word
+                break
+        if not subdiv_first_word:
+            subdiv_first_word = subdiv_words[0]
 
-        # Priority 1: Subdivision name with wildcard (most reliable)
-        # e.g., "TUSCANY*" returns all TUSCANY SUBDIVISION records
+    # Priority 1: Most specific - Lot + Block + Subdivision first word
+    # This is the ORI-optimized format: "L {lot} B {block} {subdivision}*"
+    if legal.lot and legal.block and subdiv_first_word:
+        # Primary format - what ORI uses most
+        permutations.append(f"L {legal.lot} B {legal.block} {subdiv_first_word}*")
+        # Also try with BLK for alpha blocks (some records use BLK D instead of B D)
+        if not legal.block.isdigit():
+            permutations.append(f"L {legal.lot} BLK {legal.block} {subdiv_first_word}*")
+
+    # Priority 2: Lot + Subdivision (no block)
+    if legal.lot and subdiv_first_word:
+        permutations.append(f"L {legal.lot} {subdiv_first_word}*")
+
+    # Priority 3: Just subdivision name with wildcard (broader search)
+    # This returns all lots in subdivision - useful as fallback
+    if subdiv_first_word:
         permutations.append(f"{subdiv_first_word}*")
 
-        # Priority 2: Lot + subdivision first word with wildcard
-        if legal.lot:
-            permutations.append(f"L {legal.lot} {subdiv_first_word}*")
-            permutations.append(f"LOT {legal.lot} {subdiv_first_word}*")
-
-            # With block if present
-            if legal.block:
-                permutations.append(f"L {legal.lot} B {legal.block} {subdiv_first_word}*")
-                permutations.append(f"LOT {legal.lot} BLOCK {legal.block} {subdiv_first_word}*")
-
-        # Priority 3: Two-word subdivision with wildcard
-        if len(subdiv_words) >= 2:
-            subdiv_two = " ".join(subdiv_words[:2])
-            permutations.append(f"{subdiv_two}*")
-            if legal.lot:
-                permutations.append(f"L {legal.lot} {subdiv_two}*")
+        # Two-word subdivision for more specificity
+        if legal.subdivision:
+            subdiv_words = legal.subdivision.split()
+            if len(subdiv_words) >= 2:
+                subdiv_two = " ".join(subdiv_words[:2])
+                permutations.append(f"{subdiv_two}*")
 
     # For condos, try unit + building name with wildcard
-    if legal.unit and legal.subdivision:
-        subdiv_first = legal.subdivision.split()[0]
-        permutations.append(f"UNIT {legal.unit} {subdiv_first}*")
-        permutations.append(f"U {legal.unit} {subdiv_first}*")
+    if legal.unit and subdiv_first_word:
+        permutations.append(f"UNIT {legal.unit} {subdiv_first_word}*")
+        permutations.append(f"U {legal.unit} {subdiv_first_word}*")
 
     # If we have section-township-range, add that with wildcard
     if legal.section and legal.township and legal.range:
         str_search = f"{legal.section}-{legal.township}-{legal.range}"
-        if legal.subdivision:
-            subdiv_short = legal.subdivision.split()[0]
-            permutations.append(f"{str_search} {subdiv_short}*")
+        if subdiv_first_word:
+            permutations.append(f"{str_search} {subdiv_first_word}*")
         permutations.append(f"{str_search}*")
 
-    # Fallback: If we have lot/block but no subdivision, try lot with wildcard
+    # Fallback: If we have lot/block but no subdivision, try lot patterns
     if not permutations and legal.lot:
         if legal.block:
             permutations.append(f"L {legal.lot} B {legal.block}*")
-            permutations.append(f"LOT {legal.lot} BLOCK {legal.block}*")
         else:
-            permutations.append(f"LOT {legal.lot}*")
+            permutations.append(f"L {legal.lot}*")
 
     # Last resort: use first significant word from raw text with wildcard
     if not permutations and legal.raw_text:
         words = legal.raw_text.upper().strip().split()
         # Find first word that's not a common prefix
         for word in words:
-            if word not in ['LOT', 'L', 'LT', 'BLOCK', 'BLK', 'B', 'UNIT', 'U', 'THE', 'OF', 'IN', 'AT']:
-                if len(word) >= 4:  # Skip short words
-                    permutations.append(f"{word}*")
-                    break
+            if word not in ['LOT', 'L', 'LT', 'BLOCK', 'BLK', 'B', 'UNIT', 'U', 'THE', 'OF', 'IN', 'AT'] and len(word) >= 4:
+                permutations.append(f"{word}*")
+                break
 
     # Remove duplicates while preserving order
     seen = set()
@@ -390,11 +404,10 @@ def build_ori_search_terms(folio: str, legal1: str | None, legal2: str | None = 
             # Find first significant word (likely subdivision name)
             words = field.strip().upper().split()
             first_significant = None
-            for word in words:
-                if word not in ['LOT', 'L', 'LT', 'BLOCK', 'BLK', 'B', 'UNIT', 'U', 'THE', 'OF', 'IN', 'AT']:
-                    if len(word) >= 4:
-                        first_significant = word
-                        break
+        for word in words:
+            if word not in ['LOT', 'L', 'LT', 'BLOCK', 'BLK', 'B', 'UNIT', 'U', 'THE', 'OF', 'IN', 'AT'] and len(word) >= 4:
+                first_significant = word
+                break
 
             if first_significant:
                 # Always add subdivision wildcard search
@@ -429,7 +442,7 @@ def build_ori_search_terms(folio: str, legal1: str | None, legal2: str | None = 
         # Remove L/LOT prefix if present
         for prefix in ['L ', 'LOT ']:
             if base.startswith(prefix):
-                base = base[len(prefix):]
+                base = base.removeprefix(prefix)
         # Check if it's a decimal number or numeric with decimal
         try:
             float(base)

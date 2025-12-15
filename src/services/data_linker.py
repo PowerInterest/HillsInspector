@@ -1,8 +1,8 @@
 """
 Service for linking related data entities, e.g. Permits to NOCs.
 """
-from datetime import date, timedelta
-from typing import List, Dict, Optional
+from datetime import date
+from typing import List, Dict
 from loguru import logger
 from src.scrapers.permit_scraper import PermitDetail
 

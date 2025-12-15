@@ -1,7 +1,7 @@
 """Quick script to search ORI for a specific lot/block."""
-import requests
-import json
 from datetime import datetime
+
+import requests
 
 ORI_SEARCH_URL = 'https://publicaccess.hillsclerk.com/Public/ORIUtilities/DocumentSearch/api/Search'
 HEADERS = {
@@ -38,7 +38,7 @@ print(f'Found {len(results)} documents for L 9 B 12 MUNRO:')
 print()
 
 for doc in results:
-    dt = datetime.fromtimestamp(doc.get('RecordDate', 0)).strftime('%Y-%m-%d')
+    dt = datetime.fromtimestamp(doc.get('RecordDate', 0), tz=datetime.UTC).strftime('%Y-%m-%d')
     print(doc.get('DocType'))
     print(f"  Date: {dt} | Instrument: {doc.get('Instrument')}")
     print(f"  Legal: {doc.get('Legal')}")

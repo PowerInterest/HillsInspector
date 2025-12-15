@@ -1,13 +1,16 @@
-import requests
 import asyncio
 import random
 import time
-from datetime import datetime
-from typing import List, Dict, Optional, Any
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote
+
+import requests
 from loguru import logger
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 
 
@@ -53,23 +56,23 @@ LOCALES = ["en-US", "en-GB", "en-CA"]
 def get_random_browser_config() -> dict:
     """Get randomized browser configuration for anti-detection."""
     return {
-        "user_agent": random.choice(USER_AGENTS),
-        "viewport": random.choice(VIEWPORT_SIZES),
-        "timezone_id": random.choice(TIMEZONES),
-        "locale": random.choice(LOCALES),
+        "user_agent": random.choice(USER_AGENTS),  # noqa: S311
+        "viewport": random.choice(VIEWPORT_SIZES),  # noqa: S311
+        "timezone_id": random.choice(TIMEZONES),  # noqa: S311
+        "locale": random.choice(LOCALES),  # noqa: S311
     }
 
 
 def random_delay(min_seconds: float = 2.0, max_seconds: float = 6.0):
     """Add a random delay to avoid detection."""
-    delay = random.uniform(min_seconds, max_seconds)
+    delay = random.uniform(min_seconds, max_seconds)  # noqa: S311
     logger.debug(f"Waiting {delay:.1f}s...")
     time.sleep(delay)
 
 
 async def random_delay_async(min_seconds: float = 2.0, max_seconds: float = 6.0):
     """Async version of random delay."""
-    delay = random.uniform(min_seconds, max_seconds)
+    delay = random.uniform(min_seconds, max_seconds)  # noqa: S311
     logger.debug(f"Waiting {delay:.1f}s...")
     await asyncio.sleep(delay)
 
@@ -88,7 +91,7 @@ class ORIApiScraper:
         "Origin": "https://publicaccess.hillsclerk.com",
         "Referer": "https://publicaccess.hillsclerk.com/oripublicaccess/",
         "X-Requested-With": "XMLHttpRequest",
-        "User-Agent": random.choice(USER_AGENTS),  # Randomize on init
+        "User-Agent": random.choice(USER_AGENTS),  # Randomize on init  # noqa: S311
     }
 
     TITLE_DOC_TYPES = [
@@ -152,11 +155,14 @@ class ORIApiScraper:
         Returns:
             List of document dictionaries
         """
+        # Strip wildcards - API uses CONTAINS which doesn't support wildcards
+        clean_legal = legal_description.rstrip("*").strip()
+
         payload = {
             "DocType": self.TITLE_DOC_TYPES,
             "RecordDateBegin": start_date,
             "RecordDateEnd": datetime.now().strftime("%m/%d/%Y"),
-            "Legal": ["CONTAINS", legal_description],
+            "Legal": ["CONTAINS", clean_legal],
         }
         return self._execute_search(payload)
 
@@ -215,7 +221,7 @@ class ORIApiScraper:
                 # Exponential backoff: 2^errors seconds, capped at 30s
                 backoff = min(30, 2 ** self.consecutive_api_errors)
                 # Add jitter (±25%)
-                jitter = backoff * random.uniform(-0.25, 0.25)
+                jitter = backoff * random.uniform(-0.25, 0.25)  # noqa: S311
                 backoff = backoff + jitter
                 logger.warning(f"Exponential backoff {backoff:.1f}s due to ORI API errors ({self.consecutive_api_errors} consecutive)")
                 time.sleep(backoff)
@@ -248,7 +254,7 @@ class ORIApiScraper:
                 logger.warning(f"ORI API entering cool-down mode for {self.API_COOLDOWN_DURATION}s after {self.consecutive_api_errors} consecutive errors")
 
             # Rotate UA to reduce fingerprinting issues
-            self.HEADERS["User-Agent"] = random.choice(USER_AGENTS)
+            self.HEADERS["User-Agent"] = random.choice(USER_AGENTS)  # noqa: S311
             logger.error(f"Error searching ORI (status={status}, consecutive={self.consecutive_api_errors}): {e}")
             return []
         except Exception as e:
@@ -281,10 +287,29 @@ class ORIApiScraper:
         instrument = doc.get("Instrument") or doc.get("instrument", "unknown")
         doc_type = (doc.get("DocType") or doc.get("doc_type") or "UNKNOWN")
 
+        # Helper to format record_date for filename
+        def format_record_date(raw_date) -> str:
+            if not raw_date:
+                return ""
+            try:
+                if isinstance(raw_date, (int, float)):
+                    return datetime.fromtimestamp(raw_date, tz=UTC).strftime("%Y%m%d")
+                if isinstance(raw_date, str) and raw_date:
+                    try:
+                        parsed = datetime.strptime(raw_date.split()[0], "%m/%d/%Y")
+                        return parsed.strftime("%Y%m%d")
+                    except Exception:
+                        return raw_date.replace("/", "").replace(" ", "")[:8]
+            except Exception as exc:
+                logger.debug("Could not format record date %s: %s", raw_date, exc)
+            return ""
+
+        record_date = format_record_date(doc.get("RecordDate") or doc.get("record_date"))
+
         # If API is in cooldown or prefer_browser is set, go directly to browser download
         if (prefer_browser or self.api_cooled_down) and instrument and instrument != "unknown":
             logger.debug(f"Using browser download for {instrument} (prefer_browser={prefer_browser}, api_cooled_down={self.api_cooled_down})")
-            return self.download_pdf_browser_sync(instrument, output_dir, doc_type, headless=True)
+            return self.download_pdf_browser_sync(instrument, output_dir, doc_type, headless=True, record_date=record_date)
 
         # If no ID, try to look it up via API using instrument number
         if not doc_id and instrument and instrument != "unknown":
@@ -304,7 +329,9 @@ class ORIApiScraper:
         # If still no doc_id, fall back to browser download
         if not doc_id:
             logger.debug(f"Could not find document ID for {instrument} via API, trying browser download")
-            return self.download_pdf_browser_sync(instrument, output_dir, doc_type, headless=True)
+            # Re-format record_date in case it was updated from API lookup
+            record_date = format_record_date(doc.get("RecordDate") or doc.get("record_date"))
+            return self.download_pdf_browser_sync(instrument, output_dir, doc_type, headless=True, record_date=record_date)
 
         # Support both uppercase (API) and lowercase (browser) field names
         doc_type = (doc.get("DocType") or doc.get("doc_type") or "UNKNOWN")
@@ -314,17 +341,18 @@ class ORIApiScraper:
             # Handle both API format (timestamp) and browser format (string)
             raw_date = doc.get("RecordDate") or doc.get("record_date")
             if isinstance(raw_date, (int, float)):
-                record_date = datetime.fromtimestamp(raw_date).strftime("%Y%m%d")
+                record_date = datetime.fromtimestamp(raw_date, tz=UTC).strftime("%Y%m%d")
             elif isinstance(raw_date, str) and raw_date:
                 # Browser format is like "11/25/2024 12:03 PM"
                 try:
                     parsed = datetime.strptime(raw_date.split()[0], "%m/%d/%Y")
                     record_date = parsed.strftime("%Y%m%d")
-                except:
+                except Exception:
                     record_date = raw_date.replace("/", "").replace(" ", "")[:8]
             else:
                 record_date = "unknown"
-        except:
+        except Exception as exc:
+            logger.debug("Could not parse record date %s: %s", raw_date, exc)
             record_date = "unknown"
 
         pdf_url = f"{self.PDF_URL}/{quote(str(doc_id))}"
@@ -531,46 +559,56 @@ class ORIApiScraper:
             await page.close()  # Close the page, but keep browser alive
 
     def search_by_legal_sync(self, legal_desc: str, headless: bool = True, timeout: int = 60) -> List[Dict[str, Any]]:
-        """Synchronous wrapper for search_by_legal_browser with timeout protection."""
+        """Synchronous wrapper for search_by_legal_browser with timeout protection.
+
+        Uses subprocess isolation to ensure browser cleanup on timeout.
+        """
+        import subprocess
+        import json
+        import sys
+
+        # Use subprocess for true isolation - if it times out, we can kill it
+        script = f'''
+import asyncio
+import json
+import sys
+sys.path.insert(0, "{Path(__file__).parent.parent.parent}")
+from src.scrapers.ori_api_scraper import ORIApiScraper
+
+async def main():
+    scraper = ORIApiScraper()
+    try:
+        results = await scraper.search_by_legal_browser({legal_desc!r}, {headless})
+        print(json.dumps(results))
+    finally:
+        await scraper.close_browser()
+
+asyncio.run(main())
+'''
         try:
-            # Check if there's already a running event loop
-            asyncio.get_running_loop()
-            # If we're in an async context, we need to run in a new thread
-            import concurrent.futures
-
-            def run_in_new_loop(force_context: bool = False):
-                # Create a fresh scraper instance for thread safety
-                scraper = ORIApiScraper()
-                try:
-                    return asyncio.run(scraper.search_by_legal_browser(legal_desc, headless, force_new_context=force_context))
-                finally:
-                    # Always close browser when done
-                    try:
-                        asyncio.run(scraper.close_browser())
-                    except Exception:
-                        pass
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(run_in_new_loop, False)
-                try:
-                    return future.result(timeout=timeout)
-                except concurrent.futures.TimeoutError:
-                    logger.error(f"Browser search timed out after {timeout}s for: {legal_desc}")
-                    # Cancel the future (won't stop running task but marks it)
-                    future.cancel()
-                    # Don't retry - just return empty to avoid further hangs
-                    logger.warning(f"Skipping retry to avoid resource leak for: {legal_desc}")
-                    return []
-        except RuntimeError:
-            # No event loop running, safe to use asyncio.run()
-            try:
-                return asyncio.run(self.search_by_legal_browser(legal_desc, headless))
-            finally:
-                # Clean up browser
-                try:
-                    asyncio.run(self.close_browser())
-                except Exception:
-                    pass
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(Path(__file__).parent.parent.parent),
+                check=False,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return json.loads(result.stdout.strip())
+            if result.stderr:
+                logger.warning(f"Browser search stderr: {result.stderr[:500]}")
+            return []
+        except subprocess.TimeoutExpired:
+            logger.error(f"Browser search subprocess timed out after {timeout}s for: {legal_desc}")
+            # Subprocess is automatically killed on timeout
+            return []
+        except json.JSONDecodeError as exc:
+            logger.warning(f"Failed to parse browser search result: {exc}")
+            return []
+        except Exception as exc:
+            logger.error(f"Browser search failed for {legal_desc}: {exc}")
+            return []
 
     async def search_by_party_browser(self, party_name: str, headless: bool = True) -> List[Dict[str, Any]]:
         """
@@ -645,43 +683,54 @@ class ORIApiScraper:
             await page.close()  # Close the page, but keep browser alive
 
     def search_by_party_browser_sync(self, party_name: str, headless: bool = True, timeout: int = 60) -> List[Dict[str, Any]]:
-        """Synchronous wrapper for search_by_party_browser with timeout protection."""
+        """Synchronous wrapper for search_by_party_browser with timeout protection.
+
+        Uses subprocess isolation to ensure browser cleanup on timeout.
+        """
+        import subprocess
+        import json
+        import sys
+
+        script = f'''
+import asyncio
+import json
+import sys
+sys.path.insert(0, "{Path(__file__).parent.parent.parent}")
+from src.scrapers.ori_api_scraper import ORIApiScraper
+
+async def main():
+    scraper = ORIApiScraper()
+    try:
+        results = await scraper.search_by_party_browser({party_name!r}, {headless})
+        print(json.dumps(results))
+    finally:
+        await scraper.close_browser()
+
+asyncio.run(main())
+'''
         try:
-            # Check if there's already a running event loop
-            asyncio.get_running_loop()
-            # If we're in an async context, we need to run in a new thread
-            import concurrent.futures
-
-            def run_in_new_loop():
-                # Create a fresh scraper instance for thread safety
-                scraper = ORIApiScraper()
-                try:
-                    return asyncio.run(scraper.search_by_party_browser(party_name, headless))
-                finally:
-                    # Always close browser when done
-                    try:
-                        asyncio.run(scraper.close_browser())
-                    except Exception:
-                        pass
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(run_in_new_loop)
-                try:
-                    return future.result(timeout=timeout)
-                except concurrent.futures.TimeoutError:
-                    logger.error(f"Party browser search timed out after {timeout}s for: {party_name}")
-                    future.cancel()
-                    return []
-        except RuntimeError:
-            # No event loop running, safe to use asyncio.run()
-            try:
-                return asyncio.run(self.search_by_party_browser(party_name, headless))
-            finally:
-                # Clean up browser
-                try:
-                    asyncio.run(self.close_browser())
-                except Exception:
-                    pass
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(Path(__file__).parent.parent.parent),
+                check=False,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return json.loads(result.stdout.strip())
+            if result.stderr:
+                logger.warning(f"Party browser search stderr: {result.stderr[:500]}")
+            return []
+        except subprocess.TimeoutExpired:
+            logger.error(f"Party browser search subprocess timed out after {timeout}s for: {party_name}")
+            return []
+        except json.JSONDecodeError as exc:
+            logger.warning(f"Failed to parse party browser search result: {exc}")
+            return []
+        except Exception as exc:
+            logger.error(f"Party browser search failed for {party_name}: {exc}")
+            return []
 
     async def search_by_party_and_instrument_browser(self, party_name: str, instrument: str,
                                                        headless: bool = True) -> List[Dict[str, Any]]:
@@ -870,7 +919,7 @@ class ORIApiScraper:
 
         return list(by_instrument.values())
 
-    async def download_pdf_browser(self, instrument: str, output_dir: Path, doc_type: str = "UNKNOWN", headless: bool = True, fresh_context: bool = False) -> Optional[Path]:
+    async def download_pdf_browser(self, instrument: str, output_dir: Path, doc_type: str = "UNKNOWN", headless: bool = True, fresh_context: bool = False, record_date: str = "") -> Optional[Path]:
         """
         Download PDF for a document using browser-based approach.
 
@@ -882,6 +931,7 @@ class ORIApiScraper:
             doc_type: Document type for filename
             headless: Run browser in headless mode
             fresh_context: If True, create new browser context with fresh fingerprint
+            record_date: Recording date for filename (YYYYMMDD format)
 
         Returns:
             Path to downloaded PDF or None if failed
@@ -890,7 +940,8 @@ class ORIApiScraper:
 
         # Clean up doc type for filename
         doc_type_clean = doc_type.replace("(", "").replace(")", "").replace(" ", "_")
-        filename = f"unknown_{doc_type_clean}_{instrument}.pdf"
+        date_prefix = record_date if record_date else "unknown"
+        filename = f"{date_prefix}_{doc_type_clean}_{instrument}.pdf"
         filepath = output_dir / filename
 
         # Check if already exists
@@ -926,8 +977,8 @@ class ORIApiScraper:
                             doc_id = json_data["Data"][0].get("ID")
                             if doc_id:
                                 doc_id_future.set_result(doc_id)
-                    except:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Failed to parse OnBase response for %s: %s", instrument, exc)
 
             page.on("response", handle_response)
 
@@ -980,14 +1031,14 @@ class ORIApiScraper:
 
         except Exception as e:
             logger.error(f"Error downloading PDF for {instrument}: {e}")
-            try:
+            with suppress(Exception):
                 await page.close()
-            except:
-                pass
             return None
 
-    def download_pdf_browser_sync(self, instrument: str, output_dir: Path, doc_type: str = "UNKNOWN", headless: bool = True, fresh_context: bool = False, timeout: int = 90) -> Optional[Path]:
+    def download_pdf_browser_sync(self, instrument: str, output_dir: Path, doc_type: str = "UNKNOWN", headless: bool = True, fresh_context: bool = False, timeout: int = 90, record_date: str = "") -> Optional[Path]:
         """Synchronous wrapper for download_pdf_browser with timeout protection.
+
+        Uses subprocess isolation to ensure browser cleanup on timeout.
 
         Args:
             instrument: Instrument number to download
@@ -996,39 +1047,54 @@ class ORIApiScraper:
             headless: Run browser in headless mode
             fresh_context: If True, create new browser context with fresh fingerprint
             timeout: Timeout in seconds (default 90s for PDF downloads)
+            record_date: Recording date for filename (YYYYMMDD format)
         """
+        import subprocess
+        import sys
+
+        # Ensure output_dir exists
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use subprocess for true isolation - if it times out, we can kill it
+        script = f'''
+import asyncio
+import sys
+from pathlib import Path
+sys.path.insert(0, "{Path(__file__).parent.parent.parent}")
+from src.scrapers.ori_api_scraper import ORIApiScraper
+
+async def main():
+    scraper = ORIApiScraper()
+    try:
+        result = await scraper.download_pdf_browser({instrument!r}, Path({str(output_dir)!r}), {doc_type!r}, {headless}, {fresh_context}, {record_date!r})
+        if result:
+            print(str(result))
+        else:
+            print("")
+    finally:
+        await scraper.close_browser()
+
+asyncio.run(main())
+'''
         try:
-            asyncio.get_running_loop()
-            # Already in async context - use thread
-            import concurrent.futures
-
-            def run_in_new_loop():
-                # Create a fresh scraper instance for thread safety
-                scraper = ORIApiScraper()
-                try:
-                    return asyncio.run(scraper.download_pdf_browser(instrument, output_dir, doc_type, headless, fresh_context))
-                finally:
-                    # Always close browser when done
-                    try:
-                        asyncio.run(scraper.close_browser())
-                    except Exception:
-                        pass
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(run_in_new_loop)
-                try:
-                    return future.result(timeout=timeout)
-                except concurrent.futures.TimeoutError:
-                    logger.error(f"PDF download timed out after {timeout}s for: {instrument}")
-                    future.cancel()
-                    return None
-        except RuntimeError:
-            # No event loop running
-            try:
-                return asyncio.run(self.download_pdf_browser(instrument, output_dir, doc_type, headless, fresh_context))
-            finally:
-                # Clean up browser
-                try:
-                    asyncio.run(self.close_browser())
-                except Exception:
-                    pass
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(Path(__file__).parent.parent.parent),
+                check=False,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return Path(result.stdout.strip())
+            if result.stderr:
+                logger.warning(f"PDF download stderr: {result.stderr[:500]}")
+            return None
+        except subprocess.TimeoutExpired:
+            logger.error(f"PDF download subprocess timed out after {timeout}s for: {instrument}")
+            # Subprocess is automatically killed on timeout
+            return None
+        except Exception as exc:
+            logger.error(f"PDF download failed for {instrument}: {exc}")
+            return None

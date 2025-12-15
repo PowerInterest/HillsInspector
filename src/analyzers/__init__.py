@@ -20,18 +20,16 @@ from .encumbrance_calculator import (
 )
 
 __all__ = [
-    # Chain builder
-    'build_chain_of_title',
-    'chain_to_dict',
     'Encumbrance',
     'OwnershipPeriod',
+    'SurvivalAnalysis',
+    'analyze_lien_priority',
+    'build_chain_of_title',
+    'calculate_encumbrance',
+    'calculate_maximum_bid',
+    'chain_to_dict',
+    'estimate_equity',
     'is_deed_type',
     'is_encumbrance_type',
     'is_satisfaction_type',
-    # Encumbrance calculator
-    'calculate_encumbrance',
-    'estimate_equity',
-    'analyze_lien_priority',
-    'calculate_maximum_bid',
-    'SurvivalAnalysis',
 ]

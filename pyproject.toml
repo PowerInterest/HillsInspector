@@ -9,7 +9,6 @@ dependencies = [
     "lxml",
     "pytest",
     "fastapi",
-    "nicegui",
     "uvicorn",
     "mcp",
     "duckdb",

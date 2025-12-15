@@ -99,10 +99,9 @@ async def download_pdf_for_case(
                 instrument_number = case_href.split("OBKey__1006_1=")[-1]
 
             # Download PDF
-            pdf_path = await _download_final_judgment(
+            return await _download_final_judgment(
                 page, case_href, case_number, parcel_id, instrument_number, storage
             )
-            return pdf_path
 
         logger.warning(f"Case {case_number} not found on auction page for {date_str}")
         return None
@@ -143,8 +142,8 @@ async def _download_final_judgment(
                         doc_id = json_data["Data"][0].get("ID")
                         if doc_id:
                             doc_id_future.set_result(doc_id)
-                except:
-                    pass
+                except Exception as exc:
+                    logger.debug(f"Failed to parse OnBase response for {case_number}: {exc}")
 
         new_page.on("response", handle_response)
 
@@ -153,7 +152,7 @@ async def _download_final_judgment(
 
         try:
             onbase_doc_id = await asyncio.wait_for(doc_id_future, timeout=15.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"Could not find Document ID for {case_number}")
             return None
 
@@ -234,9 +233,9 @@ def extract_and_save_judgment(pdf_path: Path, case_number: str, parcel_id: str, 
     if updated:
         logger.success(f"Stored Final Judgment data for {case_number}")
         return True
-    else:
-        logger.warning(f"No fields updated for {case_number}")
-        return False
+
+    logger.warning(f"No fields updated for {case_number}")
+    return False
 
 
 async def main():

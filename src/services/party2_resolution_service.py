@@ -11,11 +11,11 @@ Also handles self-transfer detection when grantor and grantee are the same perso
 
 See /docs/2ndparty.md for detailed documentation.
 """
-import asyncio
 import re
 import tempfile
+from contextlib import suppress
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Any, List
+from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
@@ -283,11 +283,9 @@ class Party2ResolutionService:
                 return None
 
             # Cleanup temp images
-            for p in image_paths:
-                try:
+            with suppress(Exception):
+                for p in image_paths:
                     p.unlink()
-                except Exception:
-                    pass
 
             party2 = ocr_result.get("grantee") or ocr_result.get("party2")
             party1 = doc.get("party1") or doc.get("grantor") or ocr_result.get("grantor")
@@ -513,4 +511,4 @@ def detect_self_transfer(party1: str, party2: str) -> Tuple[bool, Optional[str]]
     Convenience function for use outside the service class.
     """
     service = Party2ResolutionService()
-    return service._detect_self_transfer(party1, party2)
+    return service._detect_self_transfer(party1, party2)  # noqa: SLF001

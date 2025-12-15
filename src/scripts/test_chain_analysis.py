@@ -2,9 +2,10 @@ import sys
 import os
 import json
 from datetime import date, datetime
+from pathlib import Path
 
 # Add project root to path
-sys.path.append(os.getcwd())
+sys.path.append(str(Path.cwd()))
 
 from src.db.operations import PropertyDB
 from src.services.title_chain_service import TitleChainService
@@ -13,7 +14,7 @@ def json_serial(obj):
     """JSON serializer for objects not serializable by default json code"""
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
-    raise TypeError ("Type %s not serializable" % type(obj))
+    raise TypeError(f"Type {type(obj)} not serializable")
 
 def run_test():
     import shutil
@@ -69,7 +70,7 @@ def run_test():
         """, [folio]).fetchall()
         
         columns = [desc[0] for desc in conn.description]
-        docs = [dict(zip(columns, r)) for r in docs_rows]
+        docs = [dict(zip(columns, r, strict=True)) for r in docs_rows]
         print(f"Found {len(docs)} documents.")
         
         try:
@@ -87,7 +88,7 @@ def run_test():
                 if deed['notes']:
                     for note in deed['notes']:
                         print(f"    [!] {note}")
-                print("")
+                print()
                     
             # Print Encumbrances
             print("\n--- Encumbrances ---")

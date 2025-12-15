@@ -2,9 +2,8 @@ import asyncio
 import random
 import json
 from typing import Optional
-from pathlib import Path
 from loguru import logger
-from playwright.async_api import async_playwright, Page, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import async_playwright
 
 from src.models.property import Property
 from src.services.scraper_storage import ScraperStorage
@@ -49,7 +48,7 @@ class HCPAScraper:
                 search_box = page.locator("#basic input[data-bind*='value: parcelNumber']")
                 await search_box.wait_for(state="visible")
                 
-                await asyncio.sleep(random.uniform(0.5, 1.5))
+                await asyncio.sleep(random.uniform(0.5, 1.5))  # noqa: S311
                 await search_box.fill(prop.parcel_id)
                 await page.click("#basic button[data-bind*='click: search']")
                 
@@ -187,16 +186,13 @@ class HCPAScraper:
                     images = await page.locator("img").all()
                     for img in images:
                         src = await img.get_attribute("src")
-                        if src and ("photo" in src.lower() or "pictometry" in src.lower() or "GetImage" in src):
+                        if src and ("photo" in src.lower() or "pictometry" in src.lower() or "getimage" in src.lower()):
                             if src.startswith("http"):
                                 prop.image_url = src
+                            elif src.startswith("/"):
+                                prop.image_url = f"https://gis.hcpafl.org{src}"
                             else:
-                                # Handle relative URLs
-                                base = self.BASE_URL
-                                if src.startswith("/"):
-                                    prop.image_url = f"https://gis.hcpafl.org{src}"
-                                else:
-                                    prop.image_url = f"https://gis.hcpafl.org/PropertySearch/{src}"
+                                prop.image_url = f"https://gis.hcpafl.org/PropertySearch/{src}"
                             logger.info("Found property image URL for {parcel}: {url}", parcel=prop.parcel_id, url=prop.image_url)
                             break
                 except Exception as e:
@@ -224,14 +220,14 @@ class HCPAScraper:
         if not val: return None
         try:
             return int(str(val).replace(',', '').split('.')[0])
-        except:
+        except (ValueError, TypeError):
             return None
 
     def _parse_float(self, val):
         if not val: return None
         try:
             return float(str(val).replace(',', '').replace('$', ''))
-        except:
+        except (ValueError, TypeError):
             return None
 
 if __name__ == "__main__":

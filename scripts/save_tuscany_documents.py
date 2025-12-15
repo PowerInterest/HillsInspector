@@ -3,8 +3,13 @@ Save the 12 ORI documents for the TUSCANY property to the database.
 Folio/PIN: 19272689C000000001980A
 Address: 7870 TUSCANY WOODS DR, TAMPA, FL 33647
 """
-from src.db.operations import PropertyDB
 from datetime import datetime
+from src.db.operations import PropertyDB
+
+
+def utc_date(year: int, month: int, day: int) -> datetime.date:
+    """Return a timezone-aware date in UTC."""
+    return datetime(year, month, day, tzinfo=datetime.UTC).date()
 
 # The 12 documents from the legal search for L 198 TUSCANY*
 folio = '19272689C000000001980A'
@@ -13,7 +18,7 @@ documents = [
     {
         'instrument_number': '2024340948',
         'document_type': '(D) DEED',
-        'recording_date': datetime(2024, 7, 18).date(),
+        'recording_date': utc_date(2024, 7, 18),
         'book': '34020',
         'page': '1168',
         'party1': 'BICKNELL ROBERT S; WILSON DIANA L',
@@ -23,7 +28,7 @@ documents = [
     {
         'instrument_number': '2024340947',
         'document_type': '(MTG) MORTGAGE',
-        'recording_date': datetime(2024, 7, 18).date(),
+        'recording_date': utc_date(2024, 7, 18),
         'book': '34020',
         'page': '1155',
         'party1': 'BOAKYE ERNEST',
@@ -33,7 +38,7 @@ documents = [
     {
         'instrument_number': '2019204847',
         'document_type': '(LN) LIEN',
-        'recording_date': datetime(2019, 4, 30).date(),
+        'recording_date': utc_date(2019, 4, 30),
         'book': '29543',
         'page': '1737',
         'party1': 'BICKNELL ROBERT',
@@ -43,7 +48,7 @@ documents = [
     {
         'instrument_number': '2018444946',
         'document_type': '(MTG) MORTGAGE',
-        'recording_date': datetime(2018, 12, 7).date(),
+        'recording_date': utc_date(2018, 12, 7),
         'book': '28917',
         'page': '1259',
         'party1': 'BICKNELL ROBERT S; WILSON DIANA L',
@@ -53,7 +58,7 @@ documents = [
     {
         'instrument_number': '2018444945',
         'document_type': '(D) DEED',
-        'recording_date': datetime(2018, 12, 7).date(),
+        'recording_date': utc_date(2018, 12, 7),
         'book': '28917',
         'page': '1256',
         'party1': 'ROLLISON DANA E; ROLLISON SHARON D',
@@ -63,7 +68,7 @@ documents = [
     {
         'instrument_number': '2015290188',
         'document_type': '(D) DEED',
-        'recording_date': datetime(2015, 7, 8).date(),
+        'recording_date': utc_date(2015, 7, 8),
         'book': '26260',
         'page': '89',
         'party1': 'ROLLISON DANA E',
@@ -73,7 +78,7 @@ documents = [
     {
         'instrument_number': '2011113109',
         'document_type': '(NOC) NOTICE OF COMMENCEMENT',
-        'recording_date': datetime(2011, 3, 18).date(),
+        'recording_date': utc_date(2011, 3, 18),
         'book': '23264',
         'page': '1348',
         'party1': 'ROLLISON DANA',
@@ -83,7 +88,7 @@ documents = [
     {
         'instrument_number': '2010434206',
         'document_type': '(AFF) AFFIDAVIT',
-        'recording_date': datetime(2010, 12, 30).date(),
+        'recording_date': utc_date(2010, 12, 30),
         'book': '23078',
         'page': '1505',
         'party1': 'ROLLISON DANA E; ROLLISON SHARON D',
@@ -93,7 +98,7 @@ documents = [
     {
         'instrument_number': '2010434205',
         'document_type': '(MTG) MORTGAGE',
-        'recording_date': datetime(2010, 12, 30).date(),
+        'recording_date': utc_date(2010, 12, 30),
         'book': '23078',
         'page': '1494',
         'party1': 'ROLLISON DANA E',
@@ -103,7 +108,7 @@ documents = [
     {
         'instrument_number': '2010434204',
         'document_type': '(D) DEED',
-        'recording_date': datetime(2010, 12, 30).date(),
+        'recording_date': utc_date(2010, 12, 30),
         'book': '23078',
         'page': '1490',
         'party1': 'STANDARD PACIFIC OF FLORIDA GP INC',
@@ -113,7 +118,7 @@ documents = [
     {
         'instrument_number': '2010326174',
         'document_type': '(PR) PARTIAL RELEASE',
-        'recording_date': datetime(2010, 9, 17).date(),
+        'recording_date': utc_date(2010, 9, 17),
         'book': '22830',
         'page': '1102',
         'party1': 'JPMORGAN CHASE BANK NATIONAL ASSOCIATION',
@@ -123,7 +128,7 @@ documents = [
     {
         'instrument_number': '2018287696',
         'document_type': '(RELLP) RELEASE LIS PENDENS',
-        'recording_date': datetime(2018, 7, 10).date(),
+        'recording_date': utc_date(2018, 7, 10),
         'book': '28515',
         'page': '768',
         'party1': 'TUSCANY AT TAMPA PALMS HOMEOWNERS ASSOCIATION INC',
@@ -141,7 +146,7 @@ def main():
         result = db.conn.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'documents'").fetchall()
         print('Documents table columns:', [r[0] for r in result])
     except Exception as e:
-        print(f'Creating documents table...')
+        print(f'Creating documents table due to error: {e}')
         db.conn.execute('''
             CREATE TABLE IF NOT EXISTS documents (
                 id INTEGER PRIMARY KEY,
@@ -181,8 +186,8 @@ def main():
     # Show unique legal descriptions stored
     legals = db.conn.execute(f"SELECT DISTINCT legal_description FROM documents WHERE folio = '{folio}'").fetchall()
     print(f'\nUnique legal description variations stored:')
-    for l in legals:
-        print(f'  - {l[0]}')
+    for legal_row in legals:
+        print(f'  - {legal_row[0]}')
 
     db.close()
 

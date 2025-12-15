@@ -2,7 +2,7 @@
 Encumbrance Calculator - Calculates total surviving debt against property.
 """
 from datetime import date
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 
 from .chain_builder import Encumbrance, OwnershipPeriod, parse_date
@@ -45,7 +45,6 @@ def calculate_encumbrance(
     """
     # Get current owner's encumbrances
     ownership_timeline = chain.get("ownership_timeline", [])
-    all_encumbrances = chain.get("all_encumbrances", [])
 
     if not ownership_timeline:
         return {

@@ -2,10 +2,10 @@
 Amount validator - validates OCR-extracted financial amounts against known values.
 """
 import re
-from typing import Dict, Optional, Union, List
+from typing import Dict, List, Optional
 
 
-def parse_amount(amount_str: Union[str, float, int, None]) -> Optional[float]:
+def parse_amount(amount_str: str | float | None) -> Optional[float]:
     """
     Parse a dollar amount from various formats.
 
@@ -40,7 +40,7 @@ def parse_amount(amount_str: Union[str, float, int, None]) -> Optional[float]:
 
 
 def validate_amount(
-    extracted_amount: Union[str, float, int, None],
+    extracted_amount: str | float | None,
     context: Optional[Dict] = None
 ) -> Dict:
     """
@@ -113,9 +113,8 @@ def validate_amount(
     if sale_price:
         # For mortgages, should typically be <= sale price (sometimes slightly more with closing costs)
         doc_type = context.get("doc_type", "").upper()
-        if "MORTGAGE" in doc_type or "MTG" in doc_type:
-            if amount > sale_price * 1.1:  # 10% tolerance
-                result["flags"].append("MORTGAGE_EXCEEDS_SALE_PRICE")
+        if ("MORTGAGE" in doc_type or "MTG" in doc_type) and amount > sale_price * 1.1:
+            result["flags"].append("MORTGAGE_EXCEEDS_SALE_PRICE")
 
     # Rule 6: Suspiciously round numbers (possible OCR error)
     if amount % 10000 == 0 and amount > 100000:
@@ -136,7 +135,7 @@ def validate_amount(
 
 
 def validate_mortgage_amount(
-    principal: Union[str, float, None],
+    principal: str | float | None,
     assessed_value: Optional[float] = None,
     sale_price: Optional[float] = None
 ) -> Dict:
@@ -160,7 +159,7 @@ def validate_mortgage_amount(
 
 
 def validate_lien_amount(
-    lien_amount: Union[str, float, None],
+    lien_amount: str | float | None,
     lien_type: str = "LIEN",
     assessed_value: Optional[float] = None
 ) -> Dict:
@@ -202,7 +201,7 @@ def validate_lien_amount(
 
 
 def validate_consideration(
-    consideration: Union[str, float, None],
+    consideration: str | float | None,
     assessed_value: Optional[float] = None,
     previous_sale_price: Optional[float] = None
 ) -> Dict:

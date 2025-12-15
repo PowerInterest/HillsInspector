@@ -69,7 +69,7 @@ def test_name_normalization():
     failed = 0
 
     for input_name, expected in test_cases:
-        result = service._normalize_name(input_name)
+        result = service._normalize_name(input_name)  # noqa: SLF001
 
         if result == expected:
             status = "PASS"

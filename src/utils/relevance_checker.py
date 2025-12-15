@@ -107,9 +107,7 @@ def normalize_address(address: str) -> str:
         addr = addr.replace(full, abbr)
 
     # Remove extra whitespace
-    addr = ' '.join(addr.split())
-
-    return addr
+    return ' '.join(addr.split())
 
 
 def similarity_score(str1: str, str2: str) -> float:

@@ -3,6 +3,7 @@ Unified document analysis service for extracting structured data from ORI docume
 Downloads PDFs, converts to images, and uses vLLM for intelligent extraction.
 """
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from loguru import logger
@@ -71,8 +72,12 @@ class DocumentAnalyzer:
             return 'final_judgment'
         return 'other'
 
-    def analyze_document(self, pdf_path: str, doc_type: str,
-                         instrument: str = None) -> Optional[Dict[str, Any]]:
+    def analyze_document(
+        self,
+        pdf_path: str,
+        doc_type: str,
+        instrument: str | None = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Analyze a PDF document and extract structured data based on type.
 
@@ -161,13 +166,15 @@ class DocumentAnalyzer:
     def _cleanup_images(self, image_paths: List[str]):
         """Remove temporary image files."""
         for path in image_paths:
-            try:
+            with suppress(Exception):
                 Path(path).unlink(missing_ok=True)
-            except Exception:
-                pass
 
-    def download_and_analyze(self, instrument: str, folio: str,
-                             doc_type: str = None) -> Optional[Dict[str, Any]]:
+    def download_and_analyze(
+        self,
+        instrument: str,
+        folio: str,
+        doc_type: str | None = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Download a document from ORI and analyze it.
 
@@ -201,8 +208,11 @@ class DocumentAnalyzer:
         # Analyze
         return self.analyze_document(str(pdf_path), doc_type, instrument)
 
-    def process_documents_for_folio(self, folio: str,
-                                    doc_types: List[str] = None) -> Dict[str, Any]:
+    def process_documents_for_folio(
+        self,
+        folio: str,
+        doc_types: List[str] | None = None,
+    ) -> Dict[str, Any]:
         """
         Process all or specific document types for a folio.
 

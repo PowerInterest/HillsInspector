@@ -1,6 +1,7 @@
 import asyncio
 import json
-from typing import List, Dict, Any
+from contextlib import suppress
+from typing import Dict, Any
 from playwright.async_api import async_playwright, Page
 
 class APIDiscoveryCrawler:
@@ -24,13 +25,13 @@ class APIDiscoveryCrawler:
             try:
                 text = await response.text()
                 self.captured_endpoints[key]["response_sample"] = text[:500]
-            except Exception:
-                pass
+            except Exception as err:
+                print(f"Response capture failed: {err}")
 
     async def crawl_hcpa(self, page: Page):
         print("  -> Crawling HCPA...")
         await page.goto("https://gis.hcpafl.org/propertysearch", wait_until="networkidle")
-        # Basic search input – try common selectors
+        # Basic search input - try common selectors
         try:
             await page.fill("input[placeholder='Search...']", "123")
         except Exception:
@@ -46,34 +47,29 @@ class APIDiscoveryCrawler:
             await page.click("css=tr[data-index='0']", timeout=3000)
             await page.wait_for_load_state("networkidle")
             await asyncio.sleep(2)
-        except Exception:
-            pass
+        except Exception as err:
+            print(f"HCPA first-result click failed: {err}")
         # Visit a few tabs if present
         for tab_selector in ["text=Details", "text=Sales", "text=Values", "text=Map"]:
             try:
                 await page.click(tab_selector, timeout=2000)
                 await page.wait_for_load_state("networkidle")
                 await asyncio.sleep(1)
-            except Exception:
-                continue
+            except Exception as err:
+                print(f"HCPA tab click failed: {err}")
 
     async def crawl_clerk(self, page: Page):
         print("  -> Crawling Clerk...")
         await page.goto("https://publicaccess.hillsclerk.com/Public/ORIUtilities/DocumentSearch", wait_until="networkidle")
         # Attempt to fill a generic search field
-        try:
+        with suppress(Exception):
             await page.fill("input[type='text']", "Smith")
-        except Exception:
-            pass
-        # Click search button – common text
-        try:
+        # Click search button - common text
+        with suppress(Exception):
             await page.click("button:has-text('Search')", timeout=3000)
-        except Exception:
-            # fallback to any button
-            try:
+        if not self.captured_endpoints:
+            with suppress(Exception):
                 await page.click("button", timeout=3000)
-            except Exception:
-                pass
         await page.wait_for_load_state("networkidle")
         await asyncio.sleep(2)
         # Click first result if list appears
@@ -81,8 +77,8 @@ class APIDiscoveryCrawler:
             await page.click("css=tr[data-index='0']", timeout=3000)
             await page.wait_for_load_state("networkidle")
             await asyncio.sleep(2)
-        except Exception:
-            pass
+        except Exception as err:
+            print(f"Clerk first-result click failed: {err}")
 
     async def run(self):
         async with async_playwright() as p:

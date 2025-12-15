@@ -8,7 +8,8 @@
     <details class="map-section" open>
         <summary class="map-toggle">📍 Show Map View</summary>
         <div class="map-container">
-            <div id="auction-map"></div>
+            <div id="auction-map" style="min-height:360px;"></div>
+            <div id="auction-map-status" class="map-status">Loading map…</div>
         </div>
         {% include "partials/map_script.html" %}
     </details>

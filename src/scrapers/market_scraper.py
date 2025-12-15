@@ -10,17 +10,17 @@ import random
 from typing import Optional
 from loguru import logger
 
-from src.services.scraper_storage import ScraperStorage
-
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
+
+from src.models.property import ListingDetails
+from src.services.scraper_storage import ScraperStorage
+from src.services.vision_service import VisionService
+
 
 async def stealth_async(page):
     """Apply stealth settings to a page."""
     await Stealth().apply_stealth_async(page)
-
-from src.models.property import ListingDetails
-from src.services.vision_service import VisionService
 
 
 class MarketScraper:
@@ -40,7 +40,7 @@ class MarketScraper:
 
     async def _human_like_delay(self, min_sec: float = 0.5, max_sec: float = 4.0):
         """Add random human-like delay."""
-        await asyncio.sleep(random.uniform(min_sec, max_sec))
+        await asyncio.sleep(random.uniform(min_sec, max_sec))  # noqa: S311
 
     async def _setup_stealth_context(self, playwright):
         """Create a stealth browser context with anti-detection measures."""
@@ -98,10 +98,10 @@ class MarketScraper:
         )
 
         # Use property_id or sanitize address as ID
-        prop_id = property_id or self.storage._sanitize_filename(f"{address}_{city}")
+        prop_id = property_id or self.storage._sanitize_filename(f"{address}_{city}")  # noqa: SLF001
 
         async with async_playwright() as p:
-            browser, context, page = await self._setup_stealth_context(p)
+            browser, _context, page = await self._setup_stealth_context(p)
 
             try:
                 logger.info(f"Zillow GET: {zillow_url}")
@@ -121,10 +121,10 @@ class MarketScraper:
                 await self._human_like_delay(0.5, 1.0)
 
                 # Random mouse movements
-                for _ in range(random.randint(2, 4)):
+                for _ in range(random.randint(2, 4)):  # noqa: S311
                     await page.mouse.move(
-                        random.randint(100, 800),
-                        random.randint(100, 600)
+                        random.randint(100, 800),  # noqa: S311
+                        random.randint(100, 600)  # noqa: S311
                     )
                     await self._human_like_delay(0.2, 0.5)
 
@@ -234,10 +234,10 @@ class MarketScraper:
         zillow_url = f"https://www.zillow.com/homes/{address.replace(' ', '-')}-{city}-{state}-{zip_code}_rb/"
         
         # Use property_id or sanitize address as ID
-        prop_id = property_id or self.storage._sanitize_filename(f"{address}_{city}")
+        prop_id = property_id or self.storage._sanitize_filename(f"{address}_{city}")  # noqa: SLF001
 
         async with async_playwright() as p:
-            browser, context, page = await self._setup_stealth_context(p)
+            browser, _context, page = await self._setup_stealth_context(p)
 
             try:
                 logger.info(f"Zillow GET: {zillow_url}")
@@ -298,7 +298,8 @@ class MarketScraper:
                                 await asyncio.sleep(30)
 
                             break
-                    except Exception:
+                    except Exception as exc:
+                        logger.debug("CAPTCHA handling loop error for %s: %s", selector, exc)
                         continue
 
                 # Continue with normal scraping

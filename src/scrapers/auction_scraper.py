@@ -2,6 +2,7 @@ import asyncio
 import json
 import random
 import re
+from contextlib import suppress
 from datetime import date, timedelta
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -123,10 +124,8 @@ class AuctionScraper:
                             # Save full snapshot and screenshot for inspection
                             snapshot_path = f"logs/auction_page_{date_str.replace('/', '-')}.html"
                             Path(snapshot_path).write_text(html_snapshot, encoding="utf-8")
-                            try:
+                            with suppress(Exception):
                                 await page.screenshot(path=f"logs/auction_page_{date_str.replace('/', '-')}.png", full_page=True)
-                            except Exception:
-                                pass
                             # If we cannot find the table, exit gracefully for this date
                             break
                     
@@ -161,7 +160,7 @@ class AuctionScraper:
                     if await next_btn.count() > 0 and await next_btn.is_visible():
                         try:
                             logger.info("Advancing to next auction page for {date}", date=date_str)
-                            await asyncio.sleep(random.uniform(0.5, 2)) # Faster debug delay
+                            await asyncio.sleep(random.uniform(0.5, 2))  # noqa: S311
                             await next_btn.click(timeout=5000)
                             await page.wait_for_load_state("networkidle")
                             await page.wait_for_timeout(2000) # Small pause for dynamic content
@@ -177,7 +176,7 @@ class AuctionScraper:
                 logger.error("Error during auction scraping for {date}: {error}", date=date_str, error=e)
                 # Take screenshot on error
                 await page.screenshot(path=f"error_{date_str.replace('/', '-')}.png")
-                raise e
+                raise
             finally:
                 await browser.close()
                 
@@ -200,8 +199,9 @@ class AuctionScraper:
 
                 # Extract details table
                 details = item.locator("table.ad_tab")
-                async def cell_after(label: str) -> str:
-                    row = details.locator(f"tr:has-text('{label}')")
+
+                async def cell_after(label: str, *, _details=details) -> str:
+                    row = _details.locator(f"tr:has-text('{label}')")
                     if await row.count() == 0:
                         return ""
                     return (await row.locator("td").nth(1).inner_text()).strip()
@@ -271,8 +271,6 @@ class AuctionScraper:
                 if hcpa_url:
                     hcpa_result = await self._enrich_with_hcpa(prop)
                     if hcpa_result.get("success"):
-                        # Store the comparison data for later analysis
-                        hcpa_data = hcpa_result.get("hcpa_data", {})
                         # Log comparison between parcel_id from auction and folio from HCPA
                         hcpa_folio = hcpa_result.get("hcpa_folio")
                         if hcpa_folio and hcpa_folio != parcel_id_text:
@@ -296,8 +294,8 @@ class AuctionScraper:
                         conn = self.db.connect()
                         conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS hcpa_scrape_failed BOOLEAN DEFAULT FALSE")
                         conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS hcpa_scrape_error VARCHAR")
-                    except Exception:
-                        pass  # Column may already exist
+                    except Exception as exc:
+                        logger.debug("HCPA flags exist; skipping add: {}", exc)
 
                 properties.append(prop)
 
@@ -376,8 +374,8 @@ class AuctionScraper:
                                 first_record.get("party2") or
                                 first_record.get("PARTY2")
                             )
-                    except:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Failed to parse OnBase response for {}: {}", case_number, exc)
 
             new_page.on("response", handle_response)
 
@@ -585,10 +583,8 @@ class AuctionScraper:
                         prop.address = hcpa_addr
 
                 if hcpa_data.get("building_info", {}).get("year_built"):
-                    try:
+                    with suppress(ValueError, TypeError):
                         prop.year_built = int(hcpa_data["building_info"]["year_built"])
-                    except (ValueError, TypeError):
-                        pass
 
                 if hcpa_data.get("image_url"):
                     prop.image_url = hcpa_data["image_url"]

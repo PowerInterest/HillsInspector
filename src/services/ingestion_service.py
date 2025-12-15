@@ -1,8 +1,7 @@
-from typing import Optional, Any, List
+from typing import Optional, Any, List, Dict
 from pathlib import Path
 from datetime import datetime
 import json
-import time
 from loguru import logger
 
 from src.models.property import Property
@@ -13,6 +12,10 @@ from src.services.party2_resolution_service import Party2ResolutionService
 from src.services.document_analyzer import DocumentAnalyzer
 
 from src.services.scraper_storage import ScraperStorage
+from src.services.institutional_names import is_institutional_name, get_searchable_party_name
+
+# Maximum party name searches for gap-filling per property
+MAX_PARTY_SEARCHES = 5
 
 # Document types worth analyzing (download PDF and extract data)
 ANALYZABLE_DOC_TYPES = {
@@ -40,7 +43,7 @@ class IngestionService:
         self.analyze_pdfs = analyze_pdfs
         self.doc_analyzer = DocumentAnalyzer() if analyze_pdfs else None
 
-    def ingest_property(self, prop: Property, raw_docs: list = None):
+    def ingest_property(self, prop: Property, raw_docs: list | None = None):
         """
         Full ingestion pipeline for a single property.
         1. Fetch docs from ORI (by Legal Description with permutation fallback) - SKIPPED if raw_docs provided
@@ -74,36 +77,87 @@ class IngestionService:
                 logger.warning(f"No valid legal description for {prop.case_number}")
                 return
 
-            # Try broadest search term first via API
-            # If API returns nothing for broad term, skip to browser (more specific won't help)
-            # Only try more specific terms if we get too many results
+            # Extract filter info and search terms
+            filter_info = None
+            actual_search_terms = []
+            for term in search_terms:
+                if isinstance(term, tuple) and term[0] == "__filter__":
+                    filter_info = term[1]
+                else:
+                    actual_search_terms.append(term)
+
             successful_term = None
-            first_term = search_terms[0] if search_terms else None
 
-            if first_term:
-                logger.info(f"Searching ORI API for: {first_term}")
-                try:
-                    docs = self.ori_scraper.search_by_legal(first_term)
-                    if docs:
-                        successful_term = first_term
-                        docs_from_browser = False
-                        logger.info(f"Found {len(docs)} documents via API with term: {first_term}")
-                except Exception as e:
-                    logger.warning(f"API search failed for '{first_term}': {e}")
+            # STRATEGY: Prefer browser search for lot/block specific terms (contain wildcards)
+            # because browser search supports wildcards and returns unlimited results.
+            # The API doesn't support wildcards and is limited to 25 results.
 
-            # Fall back to browser search if API returned nothing
-            # Only try the first (broadest) term - if it fails, more specific won't help
-            if not docs:
-                logger.info("API returned no results, trying browser search...")
-                if first_term:
+            # Check if first term has wildcard (our ORI-optimized lot/block format)
+            first_term = actual_search_terms[0] if actual_search_terms else ""
+            use_browser_first = "*" in first_term
+
+            if use_browser_first:
+                # Browser search with wildcard terms (e.g., "L 44 B 2 SYMPHONY*")
+                logger.info("Using browser search for wildcard terms (ORI-optimized format)")
+                for term in actual_search_terms:
+                    logger.info(f"Searching ORI browser for: {term}")
                     try:
-                        docs = self.ori_scraper.search_by_legal_sync(first_term, headless=True)
+                        docs = self.ori_scraper.search_by_legal_sync(term, headless=True)
                         if docs:
-                            successful_term = first_term
+                            successful_term = term
                             docs_from_browser = True
-                            logger.info(f"Found {len(docs)} documents via browser with term: {first_term}")
+                            logger.info(f"Found {len(docs)} documents via browser with term: {term}")
+                            break
                     except Exception as e:
-                        logger.warning(f"Browser search failed for '{first_term}': {e}")
+                        logger.warning(f"Browser search failed for '{term}': {e}")
+
+                # Fall back to API if browser failed (strip wildcards for API)
+                if not docs:
+                    logger.info("Browser returned no results, trying API...")
+                    for term in actual_search_terms:
+                        api_term = term.rstrip("*")  # API doesn't use wildcards
+                        logger.info(f"Searching ORI API for: {api_term}")
+                        try:
+                            docs = self.ori_scraper.search_by_legal(api_term)
+                            if docs:
+                                successful_term = term
+                                docs_from_browser = False
+                                logger.info(f"Found {len(docs)} documents via API with term: {api_term}")
+                                break
+                        except Exception as e:
+                            logger.warning(f"API search failed for '{api_term}': {e}")
+            else:
+                # Non-wildcard terms: try API first (original behavior)
+                for term in actual_search_terms:
+                    logger.info(f"Searching ORI API for: {term}")
+                    try:
+                        docs = self.ori_scraper.search_by_legal(term)
+                        if docs:
+                            successful_term = term
+                            docs_from_browser = False
+                            logger.info(f"Found {len(docs)} documents via API with term: {term}")
+                            break
+                    except Exception as e:
+                        logger.warning(f"API search failed for '{term}': {e}")
+
+                # Fall back to browser search if API returned nothing
+                if not docs:
+                    logger.info("API returned no results, trying browser search...")
+                    for term in actual_search_terms:
+                        try:
+                            docs = self.ori_scraper.search_by_legal_sync(term, headless=True)
+                            if docs:
+                                successful_term = term
+                                docs_from_browser = True
+                                logger.info(f"Found {len(docs)} documents via browser with term: {term}")
+                                break
+                        except Exception as e:
+                            logger.warning(f"Browser search failed for '{term}': {e}")
+
+            # Filter results by lot/block if filter info provided
+            if docs and filter_info:
+                docs = self._filter_docs_by_lot_block(docs, filter_info)
+                logger.info(f"After lot/block filtering: {len(docs)} documents")
 
             if not docs:
                 logger.warning(f"No documents found after trying {len(search_terms)} search terms.")
@@ -152,17 +206,88 @@ class IngestionService:
                 self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
 
             processed_docs.append(mapped_doc)
-            
+
+        # Track instruments we've found so far
+        existing_instruments = {
+            str(doc.get('instrument_number', '')) for doc in processed_docs
+            if doc.get('instrument_number')
+        }
+
         # 2. Build Chain
         logger.info("Building Chain of Title...")
         analysis = self.chain_service.build_chain_and_analyze(processed_docs)
-        
+
+        # 3. Gap-filling: If chain has gaps, search by party name
+        gaps = analysis.get('gaps', [])
+        if gaps:
+            logger.info(f"Chain has {len(gaps)} gaps, attempting gap-fill...")
+            gap_docs = self._fill_chain_gaps(gaps, existing_instruments, filter_info, prop)
+
+            if gap_docs:
+                # Process new documents
+                new_grouped = self._group_ori_records_by_instrument(gap_docs)
+                for doc in new_grouped:
+                    mapped_doc = self._map_grouped_ori_doc(doc, prop)
+
+                    if self.analyze_pdfs:
+                        download_result = self._download_and_analyze_document(doc, prop.parcel_id, prefer_browser=docs_from_browser)
+                        if download_result:
+                            mapped_doc['file_path'] = download_result.get('file_path')
+                            if download_result.get('extracted_data'):
+                                mapped_doc['vision_extracted_data'] = download_result['extracted_data']
+                                mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
+
+                    doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
+                    mapped_doc['id'] = doc_id
+
+                    if mapped_doc.get('vision_extracted_data'):
+                        self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+
+                    processed_docs.append(mapped_doc)
+
+                # Rebuild chain with new documents
+                logger.info("Rebuilding chain with gap-fill documents...")
+                analysis = self.chain_service.build_chain_and_analyze(processed_docs)
+
+        # 4. Verify current owner against HCPA
+        chain_owner = analysis.get('summary', {}).get('current_owner', '')
+        hcpa_owner = getattr(prop, 'owner_name', None)
+
+        if chain_owner and chain_owner != "Unknown":
+            owner_docs = self._verify_current_owner(chain_owner, hcpa_owner, filter_info, existing_instruments)
+
+            if owner_docs:
+                # Process new owner documents
+                new_grouped = self._group_ori_records_by_instrument(owner_docs)
+                for doc in new_grouped:
+                    mapped_doc = self._map_grouped_ori_doc(doc, prop)
+
+                    if self.analyze_pdfs:
+                        download_result = self._download_and_analyze_document(doc, prop.parcel_id, prefer_browser=docs_from_browser)
+                        if download_result:
+                            mapped_doc['file_path'] = download_result.get('file_path')
+                            if download_result.get('extracted_data'):
+                                mapped_doc['vision_extracted_data'] = download_result['extracted_data']
+                                mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
+
+                    doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
+                    mapped_doc['id'] = doc_id
+
+                    if mapped_doc.get('vision_extracted_data'):
+                        self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+
+                    processed_docs.append(mapped_doc)
+
+                # Rebuild chain with owner verification documents
+                logger.info("Rebuilding chain with owner verification documents...")
+                analysis = self.chain_service.build_chain_and_analyze(processed_docs)
+
         # Transform for DB
         db_data = self._transform_analysis_for_db(analysis)
-        
-        # 3. Save Analysis
+
+        # 5. Save Analysis
         self.db.save_chain_of_title(prop.parcel_id, db_data)
-        logger.success(f"Ingestion complete for {prop.case_number}")
+        logger.success(f"Ingestion complete for {prop.case_number} ({len(processed_docs)} total docs)")
 
     def ingest_property_by_party(
         self,
@@ -322,7 +447,7 @@ class IngestionService:
 
         return search
 
-    async def ingest_property_async(self, prop: Property, raw_docs: list = None):
+    async def ingest_property_async(self, prop: Property, raw_docs: list | None = None):
         """
         Async version of ingest_property for use in async batch processing.
 
@@ -565,12 +690,8 @@ class IngestionService:
             for enc in encumbrances:
                 enc_date = self._parse_date(enc.get('date'))
                 # If enc_date is None, we can't place it. Maybe put in last period?
-                if enc_date and start_date:
-                    # Check if enc_date is >= start_date
-                    # And if end_date exists, enc_date < end_date
-                    if enc_date >= start_date:
-                        if end_date is None or enc_date < end_date:
-                            period_encs.append(self._map_encumbrance(enc))
+                if enc_date and start_date and enc_date >= start_date and (end_date is None or enc_date < end_date):
+                    period_encs.append(self._map_encumbrance(enc))
             
             timeline.append({
                 "owner": deed.get('grantee'),
@@ -626,17 +747,17 @@ class IngestionService:
         if not date_str: return None
         try:
             return datetime.strptime(date_str, "%m/%d/%Y")
-        except:
+        except ValueError:
             try:
                 return datetime.strptime(date_str, "%Y-%m-%d")
-            except:
+            except ValueError:
                 return None
 
     def _parse_amount(self, amt: Any) -> float:
         if not amt or amt == 'Unknown': return 0.0
         try:
             return float(str(amt).replace('$', '').replace(',', ''))
-        except:
+        except ValueError:
             return 0.0
 
     def _clean_legal_description(self, legal: str) -> Optional[str]:
@@ -649,6 +770,228 @@ class IngestionService:
         # So we should try to pick the most unique part.
         # For now, return the first 60 chars as a heuristic to avoid super long strings
         return legal[:60]
+
+    def _filter_docs_by_lot_block(self, docs: List[Dict], filter_info: Dict) -> List[Dict]:
+        """
+        Filter ORI documents to only those matching the specified lot/block.
+
+        ORI legal descriptions use various formats:
+        - "L 1 B 1 SUBDIVISION NAME"
+        - "L  1  B  1  SUBDIVISION NAME"
+        - "L1 B1 SUBDIVISION NAME"
+        - "LOT 1 BLOCK 1 SUBDIVISION NAME"
+
+        Args:
+            docs: List of ORI documents with 'Legal' field
+            filter_info: Dict with 'lot', 'block', 'subdivision' keys
+
+        Returns:
+            Filtered list of documents matching the lot/block
+        """
+        import re
+
+        lot = filter_info.get("lot")
+        block = filter_info.get("block")
+
+        if not lot and not block:
+            return docs
+
+        filtered = []
+        for doc in docs:
+            # Handle both API format (Legal) and browser format (legal)
+            legal = doc.get("Legal") or doc.get("legal") or ""
+            legal_upper = legal.upper()
+
+            # Check lot match - various formats: "L 1", "L1", "LOT 1"
+            lot_match = True
+            if lot:
+                # Pattern matches L/LOT followed by the lot number
+                lot_pattern = rf'\bL(?:OT)?\s*{re.escape(lot)}\b'
+                lot_match = bool(re.search(lot_pattern, legal_upper))
+
+            # Check block match - various formats: "B 1", "B1", "BLOCK 1", "BLK 1"
+            block_match = True
+            if block:
+                # Pattern matches B/BLK/BLOCK followed by the block number
+                block_pattern = rf'\bB(?:LK|LOCK)?\s*{re.escape(block)}\b'
+                block_match = bool(re.search(block_pattern, legal_upper))
+
+            if lot_match and block_match:
+                filtered.append(doc)
+
+        logger.info(f"Filtered {len(docs)} -> {len(filtered)} docs (lot={lot}, block={block})")
+        return filtered
+
+    def _fill_chain_gaps(
+        self,
+        gaps: List,
+        existing_instruments: set,
+        filter_info: Optional[dict],
+        prop: "Property"
+    ) -> List[Dict]:
+        """
+        Attempt to fill gaps in the chain of title by searching ORI by party name.
+
+        This searches for documents where gap parties appear, filters by lot/block,
+        and returns new documents that weren't already found.
+
+        Args:
+            gaps: List of ChainGap objects from TitleChainService
+            existing_instruments: Set of instrument numbers already retrieved
+            filter_info: Dict with lot/block/subdivision for filtering results
+            prop: Property object for logging
+
+        Returns:
+            List of new ORI documents that may fill gaps
+        """
+        if not gaps:
+            return []
+
+        new_docs = []
+        searches_performed = 0
+        searched_names = set()  # Avoid duplicate searches
+
+        logger.info(f"Attempting to fill {len(gaps)} chain gaps for {prop.case_number}")
+
+        for gap in gaps:
+            if searches_performed >= MAX_PARTY_SEARCHES:
+                logger.warning(f"Reached max party searches ({MAX_PARTY_SEARCHES}), stopping gap-fill")
+                break
+
+            for party_name in gap.searchable_names:
+                if searches_performed >= MAX_PARTY_SEARCHES:
+                    break
+
+                # Skip if we already searched this name
+                name_key = party_name.upper().strip()
+                if name_key in searched_names:
+                    continue
+
+                # Double-check it's not institutional (defensive)
+                if is_institutional_name(party_name):
+                    logger.debug(f"Skipping institutional name: {party_name}")
+                    continue
+
+                searched_names.add(name_key)
+                searches_performed += 1
+
+                logger.info(f"Gap-fill search #{searches_performed}: {party_name}")
+
+                try:
+                    # Search ORI by party name
+                    results = self.ori_scraper.search_by_party(party_name)
+
+                    if not results:
+                        logger.debug(f"No results for party: {party_name}")
+                        continue
+
+                    logger.info(f"Found {len(results)} docs for party: {party_name}")
+
+                    # Filter by lot/block if we have filter info
+                    if filter_info:
+                        results = self._filter_docs_by_lot_block(results, filter_info)
+                        logger.info(f"After lot/block filter: {len(results)} docs")
+
+                    # Filter out documents we already have
+                    for doc in results:
+                        instrument = str(doc.get("Instrument", ""))
+                        if instrument and instrument not in existing_instruments:
+                            new_docs.append(doc)
+                            existing_instruments.add(instrument)
+
+                except Exception as e:
+                    logger.warning(f"Gap-fill search failed for '{party_name}': {e}")
+
+        if new_docs:
+            logger.success(f"Gap-fill found {len(new_docs)} new documents after {searches_performed} searches")
+        else:
+            logger.info(f"Gap-fill completed {searches_performed} searches, no new documents found")
+
+        return new_docs
+
+    def _verify_current_owner(
+        self,
+        chain_owner: str,
+        hcpa_owner: Optional[str],
+        filter_info: Optional[dict],
+        existing_instruments: set,
+    ) -> List[Dict]:
+        """
+        Verify the chain endpoint matches HCPA owner, search by owner name if not.
+
+        When the chain's final grantee doesn't match the HCPA owner, there may be
+        a recent deed not yet found. Search by the HCPA owner name to find it.
+
+        Args:
+            chain_owner: Current owner according to chain of title
+            hcpa_owner: Current owner according to HCPA records
+            filter_info: Dict with lot/block for filtering results
+            existing_instruments: Set of already-found instruments
+
+        Returns:
+            List of new ORI documents that may update ownership
+        """
+        if not hcpa_owner or not chain_owner:
+            return []
+
+        # Normalize names for comparison
+        chain_clean = chain_owner.upper().strip()
+        hcpa_clean = hcpa_owner.upper().strip()
+
+        # Check if names match (simple check - could be more sophisticated)
+        if chain_clean == hcpa_clean:
+            logger.debug(f"Chain owner matches HCPA owner: {chain_owner}")
+            return []
+
+        # Check if significant words match
+        chain_words = set(chain_clean.replace(",", "").split())
+        hcpa_words = set(hcpa_clean.replace(",", "").split())
+        common = chain_words & hcpa_words
+        stopwords = {'LLC', 'INC', 'CORP', 'THE', 'OF', 'AND', 'TRUST', 'TRUSTEE'}
+        significant = common - stopwords
+
+        if len(significant) >= 1:
+            logger.debug(f"Chain owner likely matches HCPA owner (shared: {significant})")
+            return []
+
+        # Names don't match - search by HCPA owner
+        logger.info(f"Chain owner '{chain_owner}' != HCPA owner '{hcpa_owner}', searching for recent deed")
+
+        # Get searchable name (skip if institutional)
+        search_name = get_searchable_party_name(hcpa_owner)
+        if not search_name:
+            logger.debug(f"HCPA owner '{hcpa_owner}' is institutional or invalid, skipping search")
+            return []
+
+        try:
+            results = self.ori_scraper.search_by_party(search_name)
+            if not results:
+                logger.debug(f"No results for HCPA owner: {search_name}")
+                return []
+
+            logger.info(f"Found {len(results)} docs for HCPA owner")
+
+            # Filter by lot/block
+            if filter_info:
+                results = self._filter_docs_by_lot_block(results, filter_info)
+                logger.info(f"After lot/block filter: {len(results)} docs")
+
+            # Filter to new documents only
+            new_docs = []
+            for doc in results:
+                instrument = str(doc.get("Instrument", ""))
+                if instrument and instrument not in existing_instruments:
+                    new_docs.append(doc)
+                    existing_instruments.add(instrument)
+
+            if new_docs:
+                logger.success(f"Found {len(new_docs)} new docs for HCPA owner verification")
+
+            return new_docs
+
+        except Exception as e:
+            logger.warning(f"HCPA owner search failed: {e}")
+            return []
 
     def _group_ori_records_by_instrument(self, docs: list) -> list:
         """
@@ -686,7 +1029,12 @@ class IngestionService:
                     "legal": doc.get("legal") or doc.get("Legal", ""),
                     "party1_names": [],  # PARTY 1 = Grantor/Mortgagor/Debtor
                     "party2_names": [],  # PARTY 2 = Grantee/Mortgagee/Creditor
-                    "ID": doc.get("ID"),  # API returns document ID
+                    "ID": doc.get("ID"),  # API returns document ID for PDF download
+                    # Additional ORI API fields
+                    "sales_price": doc.get("SalesPrice"),  # Sale price or loan amount
+                    "page_count": doc.get("PageCount"),    # Number of pages in document
+                    "uuid": doc.get("UUID"),               # Unique document identifier
+                    "book_type": doc.get("BookType"),      # Book type (OR, etc.)
                 }
 
             if is_api_format:
@@ -711,13 +1059,11 @@ class IngestionService:
                 person_type = doc.get("person_type", "").upper()
                 name = doc.get("name", "").strip()
 
-                if name:
-                    if "PARTY 1" in person_type or "GRANTOR" in person_type:
-                        if name not in by_instrument[instrument]["party1_names"]:
-                            by_instrument[instrument]["party1_names"].append(name)
-                    elif "PARTY 2" in person_type or "GRANTEE" in person_type:
-                        if name not in by_instrument[instrument]["party2_names"]:
-                            by_instrument[instrument]["party2_names"].append(name)
+                if name and ("PARTY 1" in person_type or "GRANTOR" in person_type):
+                    if name not in by_instrument[instrument]["party1_names"]:
+                        by_instrument[instrument]["party1_names"].append(name)
+                elif name and ("PARTY 2" in person_type or "GRANTEE" in person_type) and name not in by_instrument[instrument]["party2_names"]:
+                    by_instrument[instrument]["party2_names"].append(name)
 
         return list(by_instrument.values())
 
@@ -905,7 +1251,7 @@ class IngestionService:
             # Check if it's a Unix timestamp (int or float)
             if isinstance(date_val, (int, float)):
                 try:
-                    parsed = dt.fromtimestamp(date_val)
+                    parsed = dt.fromtimestamp(date_val, tz=datetime.UTC)
                     rec_date = parsed.strftime("%Y-%m-%d")
                 except (ValueError, OSError):
                     pass
@@ -935,6 +1281,12 @@ class IngestionService:
             "party2": party2,
             "legal_description": grouped_doc.get("legal", ""),
             "extracted_data": grouped_doc,  # Store raw grouped data
+            # ORI API additional fields
+            "sales_price": grouped_doc.get("sales_price"),
+            "page_count": grouped_doc.get("page_count"),
+            "ori_uuid": grouped_doc.get("uuid"),
+            "ori_id": grouped_doc.get("ID"),
+            "book_type": grouped_doc.get("book_type"),
             # Party 2 resolution fields
             "party2_resolution_method": grouped_doc.get("party2_resolution_method"),
             "is_self_transfer": grouped_doc.get("is_self_transfer", False),
@@ -961,17 +1313,17 @@ class IngestionService:
                             break
                         except ValueError:
                             continue
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Could not parse record_date for %s: %s", prop.case_number, exc)
         elif "RecordDate" in ori_doc:
             # API format: timestamp
             try:
                 ts = ori_doc.get("RecordDate", 0)
                 if ts > 100000000000:  # It's ms
                     ts = ts / 1000
-                rec_date = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
-            except Exception:
-                pass
+                rec_date = datetime.fromtimestamp(ts, tz=datetime.UTC).strftime("%Y-%m-%d")
+            except Exception as exc:
+                logger.debug("Could not parse timestamp %s for %s: %s", ts, prop.case_number, exc)
 
         # Handle document type - browser: "doc_type", API: "DocType"
         doc_type = ori_doc.get("doc_type") or ori_doc.get("DocType", "UNKNOWN")

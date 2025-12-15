@@ -57,9 +57,10 @@ Usage:
 import json
 import hashlib
 import os
+from contextlib import suppress
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 import duckdb
 from loguru import logger
@@ -78,7 +79,6 @@ class ScraperRecord:
 
     # File paths (relative to data/properties/{property_id}/)
     screenshot_path: Optional[str] = None
-    vision_output_path: Optional[str] = None
     vision_output_path: Optional[str] = None
     raw_data_path: Optional[str] = None
     source_url: Optional[str] = None
@@ -100,7 +100,7 @@ class ScraperStorage:
     BASE_DIR = Path("data/properties")
     DB_PATH = "data/property_master.db"
 
-    def __init__(self, db_path: str = None, skip_db_init: bool = False):
+    def __init__(self, db_path: str | None = None, skip_db_init: bool = False):
         """
         Initialize storage service.
 
@@ -119,7 +119,7 @@ class ScraperStorage:
         conn = duckdb.connect(self.db_path)
 
         # Check if table exists and needs migration
-        try:
+        with suppress(Exception):
             result = conn.execute("""
                 SELECT column_name, column_default FROM information_schema.columns
                 WHERE table_name = 'scraper_outputs' AND column_name = 'id'
@@ -130,12 +130,9 @@ class ScraperStorage:
                 logger.info("Migrating scraper_outputs table to use auto-increment IDs")
                 conn.execute("DROP TABLE IF EXISTS scraper_outputs")
                 conn.execute("DROP SEQUENCE IF EXISTS scraper_outputs_id_seq")
-        except Exception:
-            # Table doesn't exist yet, that's fine
-            pass
 
         # Check if source_url column exists
-        try:
+        with suppress(Exception):
             result = conn.execute("""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_name = 'scraper_outputs' AND column_name = 'source_url'
@@ -144,8 +141,6 @@ class ScraperStorage:
             if not result:
                 logger.info("Adding source_url column to scraper_outputs")
                 conn.execute("ALTER TABLE scraper_outputs ADD COLUMN source_url VARCHAR")
-        except Exception:
-            pass
 
         # Create sequence for auto-increment IDs
         conn.execute("""
@@ -342,7 +337,7 @@ class ScraperStorage:
         self,
         property_id: str,
         scraper: str,
-        data: Union[Dict, str, bytes],
+        data: Dict | str | bytes,
         context: str = "",
         extension: str = "json"
     ) -> str:
@@ -505,19 +500,19 @@ class ScraperStorage:
                 "risk_level": vision_data.get("risk_level"),
                 "insurance_required": vision_data.get("insurance_required")
             }
-        elif scraper == "permits":
+        if scraper == "permits":
             permits = vision_data.get("permits", [])
             return {
                 "total": len(permits),
                 "open": sum(1 for p in permits if p.get("status", "").upper() not in ["FINALED", "CLOSED"]),
             }
-        elif scraper == "sunbiz":
+        if scraper == "sunbiz":
             entities = vision_data if isinstance(vision_data, list) else vision_data.get("entities", [])
             return {
                 "found": len(entities),
                 "active": sum(1 for e in entities if "ACTIVE" in str(e.get("status", "")).upper())
             }
-        elif scraper in ["realtor", "zillow"]:
+        if scraper in ["realtor", "zillow"]:
             return {
                 "price": vision_data.get("list_price") or vision_data.get("price"),
                 "zestimate": vision_data.get("zestimate"),
@@ -723,7 +718,7 @@ def reprocess_screenshots(scraper: str, prompt_version: str = "v2", limit: int =
                 prompt_version=prompt_version,
                 success=vision_data is not None,
                 error=None if vision_data else "Vision returned None",
-                summary=storage._extract_summary(scraper, vision_data) if vision_data else None
+                summary=storage._extract_summary(scraper, vision_data) if vision_data else None  # noqa: SLF001
             )
 
             logger.info(f"Re-processed {record.property_id}: success={vision_data is not None}")

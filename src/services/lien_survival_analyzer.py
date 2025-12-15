@@ -8,12 +8,13 @@ Relies on:
 """
 from __future__ import annotations
 
-from datetime import date
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import UTC, date, datetime
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from loguru import logger
 
-from src.models.property import Lien
+if TYPE_CHECKING:
+    from src.models.property import Lien
 
 
 class LienSurvivalAnalyzer:
@@ -44,37 +45,33 @@ class LienSurvivalAnalyzer:
         if not lien.recording_date:
             return False, None
 
-        age_years = (date.today() - lien.recording_date).days / 365.25
+        age_years = (datetime.now(tz=UTC).date() - lien.recording_date).days / 365.25
         doc_type = (lien.document_type or "").upper()
 
         # Mechanic's Liens (Construction Liens) - 1 year
         # Fla. Stat. 713.22
-        if "MECHANIC" in doc_type or "CONSTRUCTION" in doc_type:
-            if age_years > 1:
-                return True, "Expired Mechanic's Lien (>1 year)"
+        if ("MECHANIC" in doc_type or "CONSTRUCTION" in doc_type) and age_years > 1:
+            return True, "Expired Mechanic's Lien (>1 year)"
 
         # HOA/COA Claim of Lien - 1 year to file suit
         # Fla. Stat. 720.3085(1)(b) / 718.116(5)(b)
         # Note: If converted to Judgment, it lasts longer. We assume "Claim of Lien" here.
-        if "HOA" in doc_type or "CONDO" in doc_type or "ASSOCIATION" in doc_type:
-            if "CLAIM" in doc_type and age_years > 1:
-                return True, "Expired HOA Claim of Lien (>1 year without suit)"
+        if ("HOA" in doc_type or "CONDO" in doc_type or "ASSOCIATION" in doc_type) and "CLAIM" in doc_type and age_years > 1:
+            return True, "Expired HOA Claim of Lien (>1 year without suit)"
 
         # Judgment Liens - 10 years (renewable to 20)
         # Fla. Stat. 55.10
-        if "JUDGMENT" in doc_type and "FINAL" not in doc_type: # Exclude the current Final Judgment
-            if age_years > 10:
-                # We flag it as potentially expired, though it could have been re-recorded.
-                # For safety, we might want to keep it if it's close, but >20 is definitely gone.
-                if age_years > 20:
-                    return True, "Expired Judgment Lien (>20 years)"
-                return True, "Likely Expired Judgment Lien (>10 years)"
+        if "JUDGMENT" in doc_type and "FINAL" not in doc_type and age_years > 10:  # Exclude the current Final Judgment
+            # We flag it as potentially expired, though it could have been re-recorded.
+            # For safety, we might want to keep it if it's close, but >20 is definitely gone.
+            if age_years > 20:
+                return True, "Expired Judgment Lien (>20 years)"
+            return True, "Likely Expired Judgment Lien (>10 years)"
 
         # Code Enforcement - 20 years
         # Fla. Stat. 162.09(3)
-        if "CODE" in doc_type or "ENFORCEMENT" in doc_type:
-            if age_years > 20:
-                return True, "Expired Code Enforcement Lien (>20 years)"
+        if ("CODE" in doc_type or "ENFORCEMENT" in doc_type) and age_years > 20:
+            return True, "Expired Code Enforcement Lien (>20 years)"
 
         return False, None
 

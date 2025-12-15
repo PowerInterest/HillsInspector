@@ -1,7 +1,7 @@
 """
 Dashboard routes - main auction list view.
 """
-from fastapi import APIRouter, Request, Query
+from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path

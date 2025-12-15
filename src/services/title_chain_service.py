@@ -1,6 +1,21 @@
 from typing import List, Dict, Optional, Tuple, Any
-from datetime import datetime
+from datetime import UTC, datetime
+from dataclasses import dataclass
 import re
+
+from src.services.institutional_names import get_searchable_party_name
+
+
+@dataclass
+class ChainGap:
+    """Represents a gap in the chain of title that may need party name search."""
+    position: int  # Position in chain (index of deed AFTER the gap)
+    prev_grantee: str  # Expected grantor (previous owner)
+    curr_grantor: str  # Actual grantor on the deed
+    prev_date: Optional[str]  # Date of previous deed
+    curr_date: Optional[str]  # Date of current deed
+    searchable_names: List[str]  # Non-institutional names that can be searched
+
 
 class TitleChainService:
     """
@@ -67,13 +82,14 @@ class TitleChainService:
                 potential_encumbrances.append(d)
         
         # 3. Build Chain of Title
-        chain = self._build_deed_chain(deeds)
-        
+        chain, gaps = self._build_deed_chain(deeds)
+
         # 4. Analyze Encumbrances (Mortgages & Liens)
         encumbrances = self._analyze_encumbrances(potential_encumbrances, satisfactions)
-        
+
         return {
             'chain': chain,
+            'gaps': gaps,  # List of ChainGap objects for gap-filling
             'encumbrances': encumbrances,
             'nocs': nocs,
             'modifications': modifications,
@@ -84,38 +100,68 @@ class TitleChainService:
                 'active_liens': len([e for e in encumbrances if e['status'] == 'OPEN']),
                 'total_nocs': len(nocs),
                 'restrictions_count': len(restrictions),
+                'gaps_found': len(gaps),
                 'current_owner': chain[-1]['grantee'] if chain else "Unknown"
             }
         }
 
-    def _build_deed_chain(self, deeds: List[Dict]) -> List[Dict]:
+    def _build_deed_chain(self, deeds: List[Dict]) -> Tuple[List[Dict], List[ChainGap]]:
         """
         Link deeds together to form a chain of ownership.
+
+        Returns:
+            Tuple of (chain entries, list of gaps found)
         """
         chain = []
+        gaps = []
+
         for i, deed in enumerate(deeds):
             # Support both field naming conventions
             doc_type = deed.get('doc_type') or deed.get('document_type', '')
             entry = {
                 'date': deed.get('recording_date'),
-                'grantor': deed.get('party1', '').strip(), # Usually Grantor
-                'grantee': deed.get('party2', '').strip(), # Usually Grantee
+                'grantor': deed.get('party1', '').strip(),  # Usually Grantor
+                'grantee': deed.get('party2', '').strip(),  # Usually Grantee
                 'doc_type': doc_type,
                 'book_page': f"{deed.get('book')}/{deed.get('page')}",
+                'instrument': deed.get('instrument_number'),
                 'notes': []
             }
-            
+
             # Check for gaps
             if i > 0:
                 prev_grantee = chain[-1]['grantee']
                 curr_grantor = entry['grantor']
-                
+
                 # Simple fuzzy check (names can be messy)
                 if not self._names_match(prev_grantee, curr_grantor):
                     entry['notes'].append(f"GAP IN TITLE? Previous owner was {prev_grantee}, but Grantor is {curr_grantor}")
-            
+
+                    # Build list of searchable names (non-institutional)
+                    searchable_names = []
+
+                    # Try prev_grantee (the expected grantor)
+                    clean_name = get_searchable_party_name(prev_grantee)
+                    if clean_name:
+                        searchable_names.append(clean_name)
+
+                    # Try curr_grantor (actual grantor - might find linking docs)
+                    clean_name = get_searchable_party_name(curr_grantor)
+                    if clean_name and clean_name not in searchable_names:
+                        searchable_names.append(clean_name)
+
+                    if searchable_names:
+                        gaps.append(ChainGap(
+                            position=i,
+                            prev_grantee=prev_grantee,
+                            curr_grantor=curr_grantor,
+                            prev_date=chain[-1].get('date'),
+                            curr_date=entry.get('date'),
+                            searchable_names=searchable_names
+                        ))
+
             chain.append(entry)
-        return chain
+        return chain, gaps
 
     def _extract_refs(self, text: str) -> Tuple[List[Tuple[str, str]], List[str]]:
         """Extract Book/Page and Instrument pairs from text."""
@@ -236,26 +282,23 @@ class TitleChainService:
         }
         significant_common = common - stopwords
         
-        if len(significant_common) >= 1:
-            # If they share at least one significant word (e.g. "WELLS" in "WELLS FARGO")
-            # This is loose, but better than just first word.
-            return True
-            
-        return False
+        # If they share at least one significant word (e.g. "WELLS" in "WELLS FARGO")
+        # This is loose, but better than just first word.
+        return bool(significant_common)
 
     def _parse_date(self, date_val: Any) -> datetime:
         if not date_val:
-            return datetime.min
+            return datetime.min.replace(tzinfo=UTC)
         if isinstance(date_val, datetime):
             return date_val
         if hasattr(date_val, 'timetuple'): # duck typing for date
-             return datetime.combine(date_val, datetime.min.time())
+             return datetime.combine(date_val, datetime.min.time()).replace(tzinfo=UTC)
             
         try:
             return datetime.strptime(str(date_val), "%Y-%m-%d")
-        except:
+        except ValueError:
             try:
                 # Fallback for old format or user entered
                 return datetime.strptime(str(date_val), "%m/%d/%Y")
-            except:
-                return datetime.min
+            except ValueError:
+                return datetime.min.replace(tzinfo=UTC)

@@ -5,7 +5,6 @@ Processes all Final Judgment PDFs in data/pdfs/final_judgments/
 and stores the extracted data in the database.
 """
 
-import asyncio
 import json
 import argparse
 from pathlib import Path

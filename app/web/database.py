@@ -4,13 +4,30 @@ Uses the existing PropertyDB from src/db/operations.py
 """
 import duckdb
 import json
-from datetime import date, datetime, timedelta
+import os
+from contextlib import suppress
+from datetime import UTC, date, datetime, timedelta
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from loguru import logger
 
 
-DB_PATH = Path(__file__).resolve().parents[2] / "data" / "property_master.db"
+def _resolve_db_path() -> Path:
+    """Prefer a web-safe snapshot DB if present, else fall back to the main file."""
+    data_dir = Path(__file__).resolve().parents[2] / "data"
+    # Allow override via env for explicit control
+    env_path = os.getenv("HILLS_WEB_DB")
+    if env_path:
+        return Path(env_path).expanduser().resolve()
+
+    web_path = data_dir / "property_master_web.db"
+    if web_path.exists():
+        return web_path.resolve()
+
+    return (data_dir / "property_master.db").resolve()
+
+
+DB_PATH = _resolve_db_path()
 SCRAPER_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "scraper_outputs.db"
 
 
@@ -43,7 +60,7 @@ def get_upcoming_auctions(
     """
     conn = get_connection()
 
-    today = date.today()
+    today = datetime.now(tz=UTC).date()
     end_date = today + timedelta(days=days_ahead)
 
     # Build query with optional joins to bulk_parcels
@@ -101,7 +118,7 @@ def get_upcoming_auctions(
     try:
         results = conn.execute(query, params).fetchall()
         columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        return [dict(zip(columns, row, strict=True)) for row in results]
     except Exception as e:
         logger.error(f"Error fetching auctions: {e}")
         # Fallback query without bulk_parcels join
@@ -125,7 +142,7 @@ def get_upcoming_auctions(
         """
         results = conn.execute(fallback_query, [today, end_date, limit, offset]).fetchall()
         columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        return [dict(zip(columns, row, strict=True)) for row in results]
     finally:
         conn.close()
 
@@ -161,7 +178,7 @@ def get_auction_map_points(days_ahead: int = 60) -> List[Dict[str, Any]]:
             results = conn.execute(base_query.format(where_clause="")).fetchall()
 
         columns = [desc[0] for desc in conn.description]
-        rows = [dict(zip(columns, row)) for row in results]
+        rows = [dict(zip(columns, row, strict=True)) for row in results]
 
         def fallback_coords(key: str) -> tuple[float, float]:
             """Deterministic jitter within Hillsborough area when no lat/lon stored."""
@@ -200,7 +217,7 @@ def get_auction_count(
     """Get total count of upcoming auctions."""
     conn = get_connection()
 
-    today = date.today()
+    today = datetime.now(tz=UTC).date()
     end_date = today + timedelta(days=days_ahead)
 
     query = """
@@ -248,7 +265,7 @@ def get_property_detail(folio: str) -> Optional[Dict[str, Any]]:
             return None
 
         auction_cols = [desc[0] for desc in conn.description]
-        auction = dict(zip(auction_cols, auction_result))
+        auction = dict(zip(auction_cols, auction_result, strict=True))
 
         # Get bulk parcel data (join on strap, not folio)
         parcel = None
@@ -257,9 +274,9 @@ def get_property_detail(folio: str) -> Optional[Dict[str, Any]]:
             parcel_result = conn.execute(parcel_query, [folio]).fetchone()
             if parcel_result:
                 parcel_cols = [desc[0] for desc in conn.description]
-                parcel = dict(zip(parcel_cols, parcel_result))
-        except:
-            pass
+                parcel = dict(zip(parcel_cols, parcel_result, strict=True))
+        except Exception as err:
+            logger.debug(f"bulk_parcels lookup failed for {folio}: {err}")
 
         # Get liens
         liens = []
@@ -272,9 +289,9 @@ def get_property_detail(folio: str) -> Optional[Dict[str, Any]]:
             liens_result = conn.execute(liens_query, [auction.get("case_number")]).fetchall()
             if liens_result:
                 liens_cols = [desc[0] for desc in conn.description]
-                liens = [dict(zip(liens_cols, row)) for row in liens_result]
-        except:
-            pass
+                liens = [dict(zip(liens_cols, row, strict=True)) for row in liens_result]
+        except Exception as err:
+            logger.debug(f"Error fetching liens for {folio}: {err}")
 
         # Get encumbrances (from chain analysis)
         encumbrances = []
@@ -287,9 +304,9 @@ def get_property_detail(folio: str) -> Optional[Dict[str, Any]]:
             enc_result = conn.execute(enc_query, [folio]).fetchall()
             if enc_result:
                 enc_cols = [desc[0] for desc in conn.description]
-                encumbrances = [dict(zip(enc_cols, row)) for row in enc_result]
-        except:
-            pass
+                encumbrances = [dict(zip(enc_cols, row, strict=True)) for row in enc_result]
+        except Exception as err:
+            logger.debug(f"Error fetching encumbrances for {folio}: {err}")
 
         # Get Chain of Title
         chain = []
@@ -302,9 +319,9 @@ def get_property_detail(folio: str) -> Optional[Dict[str, Any]]:
             chain_result = conn.execute(chain_query, [folio]).fetchall()
             if chain_result:
                 chain_cols = [desc[0] for desc in conn.description]
-                chain = [dict(zip(chain_cols, row)) for row in chain_result]
-        except:
-            pass
+                chain = [dict(zip(chain_cols, row, strict=True)) for row in chain_result]
+        except Exception as err:
+            logger.debug(f"Error fetching chain for {folio}: {err}")
 
         # Calculate net equity
         market_value = (parcel or {}).get("market_value") or auction.get("assessed_value") or 0
@@ -357,7 +374,7 @@ def get_sources_for_property(folio: str) -> List[Dict[str, Any]]:
         # Check if table exists first
         try:
             conn.execute("SELECT 1 FROM property_sources LIMIT 1")
-        except:
+        except Exception:
             return []
             
         query = """
@@ -368,7 +385,7 @@ def get_sources_for_property(folio: str) -> List[Dict[str, Any]]:
         results = conn.execute(query, [folio]).fetchall()
         if results:
             columns = [desc[0] for desc in conn.description]
-            return [dict(zip(columns, row)) for row in results]
+            return [dict(zip(columns, row, strict=True)) for row in results]
         return []
     except Exception as e:
         logger.warning(f"Error fetching sources: {e}")
@@ -406,7 +423,7 @@ def get_nocs_for_property(folio: str) -> List[Dict[str, Any]]:
         if not results:
             return []
         cols = [desc[0] for desc in conn.description]
-        return [dict(zip(cols, row)) for row in results]
+        return [dict(zip(cols, row, strict=True)) for row in results]
     except Exception as e:
         logger.error(f"Error fetching NOCs for {folio}: {e}")
         return []
@@ -453,7 +470,7 @@ def search_properties(
         """
         results = conn.execute(sql, [search_term, search_term, search_term, search_term, limit]).fetchall()
         columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        return [dict(zip(columns, row, strict=True)) for row in results]
     except Exception as e:
         logger.error(f"Error searching: {e}")
         return []
@@ -483,7 +500,7 @@ def get_auctions_by_date(auction_date: date) -> List[Dict[str, Any]]:
         """
         results = conn.execute(query, [auction_date]).fetchall()
         columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        return [dict(zip(columns, row, strict=True)) for row in results]
     except Exception as e:
         logger.error(f"Error fetching auctions for date {auction_date}: {e}")
         return []
@@ -503,7 +520,7 @@ def get_liens_for_property(case_number: str) -> List[Dict[str, Any]]:
         """
         results = conn.execute(query, [case_number]).fetchall()
         columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        return [dict(zip(columns, row, strict=True)) for row in results]
     except Exception as e:
         logger.error(f"Error fetching liens for {case_number}: {e}")
         return []
@@ -524,7 +541,7 @@ def get_documents_for_property(folio: str) -> List[Dict[str, Any]]:
         """
         results = conn.execute(query, [folio]).fetchall()
         columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        return [dict(zip(columns, row, strict=True)) for row in results]
     except Exception as e:
         logger.warning(f"Documents table may not exist or error: {e}")
         return []
@@ -556,7 +573,7 @@ def get_sales_history(folio: str) -> List[Dict[str, Any]]:
 
         if results:
             columns = [desc[0] for desc in conn.description]
-            return [dict(zip(columns, row)) for row in results]
+            return [dict(zip(columns, row, strict=True)) for row in results]
         return []
     except Exception as e:
         logger.warning(f"Error fetching sales history: {e}")
@@ -577,7 +594,7 @@ def get_document_by_instrument(folio: str, instrument_number: str) -> Optional[D
         result = conn.execute(query, [folio, instrument_number]).fetchone()
         if result:
             columns = [desc[0] for desc in conn.description]
-            return dict(zip(columns, result))
+            return dict(zip(columns, result, strict=True))
         return None
     except Exception as e:
         logger.warning(f"Error fetching document by instrument {instrument_number}: {e}")
@@ -590,41 +607,46 @@ def get_dashboard_stats() -> Dict[str, Any]:
     """Get summary statistics for the dashboard."""
     conn = get_connection()
 
-    today = date.today()
+    today = datetime.now(tz=UTC).date()
 
     try:
         stats = {}
 
         # Total upcoming auctions
-        stats["total_auctions"] = conn.execute("""
+        total_row = conn.execute("""
             SELECT COUNT(*) FROM auctions WHERE auction_date >= ?
-        """, [today]).fetchone()[0]
+        """, [today]).fetchone()
+        stats["total_auctions"] = total_row[0] if total_row else 0
 
         # Foreclosures vs Tax Deeds
-        stats["foreclosures"] = conn.execute("""
+        fore_row = conn.execute("""
             SELECT COUNT(*) FROM auctions
             WHERE auction_date >= ? AND auction_type = 'FORECLOSURE'
-        """, [today]).fetchone()[0]
+        """, [today]).fetchone()
+        stats["foreclosures"] = fore_row[0] if fore_row else 0
 
-        stats["tax_deeds"] = conn.execute("""
+        tax_row = conn.execute("""
             SELECT COUNT(*) FROM auctions
             WHERE auction_date >= ? AND auction_type = 'TAX_DEED'
-        """, [today]).fetchone()[0]
+        """, [today]).fetchone()
+        stats["tax_deeds"] = tax_row[0] if tax_row else 0
 
         # Auctions this week
         week_end = today + timedelta(days=7)
-        stats["this_week"] = conn.execute("""
+        week_row = conn.execute("""
             SELECT COUNT(*) FROM auctions
             WHERE auction_date >= ? AND auction_date <= ?
-        """, [today, week_end]).fetchone()[0]
+        """, [today, week_end]).fetchone()
+        stats["this_week"] = week_row[0] if week_row else 0
 
         # Toxic titles flagged
         try:
-            stats["toxic_flagged"] = conn.execute("""
+            toxic_row = conn.execute("""
                 SELECT COUNT(*) FROM auctions
                 WHERE auction_date >= ? AND is_toxic_title = TRUE
-            """, [today]).fetchone()[0]
-        except:
+            """, [today]).fetchone()
+            stats["toxic_flagged"] = toxic_row[0] if toxic_row else 0
+        except Exception:
             stats["toxic_flagged"] = 0
 
         return stats
@@ -689,7 +711,7 @@ def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
     if not folios:
         return result
 
-    folios_unique = list({f for f in folios if f})
+    folios_unique: List[str] = [str(f) for f in {f for f in folios if f}]
 
     # Batch read scraper_outputs for latest records per scraper/folio
     if SCRAPER_DB_PATH.exists() and folios_unique:
@@ -720,10 +742,8 @@ def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
                             continue
                         data = result[property_id]
                         data["has_enrichments"] = True
-                        try:
+                        with suppress(Exception):
                             summary = json.loads(summary) if isinstance(summary, str) else summary
-                        except Exception:
-                            pass
 
                         if scraper == "fema":
                             data["flood_zone"] = (summary or {}).get("flood_zone")
@@ -798,7 +818,7 @@ def get_upcoming_auctions_with_enrichments(
     )
 
     # Get enrichments for all folios
-    folios = [a.get("folio") for a in auctions if a.get("folio")]
+    folios = [str(a.get("folio")) for a in auctions if a.get("folio")]
     enrichments = get_bulk_enrichments(folios)
 
     # Attach enrichments to each auction
@@ -867,7 +887,7 @@ def get_failed_hcpa_scrapes(
 
         if results:
             columns = [desc[0] for desc in conn.description]
-            return [dict(zip(columns, row)) for row in results]
+            return [dict(zip(columns, row, strict=True)) for row in results]
         return []
 
     except Exception as e:
@@ -900,7 +920,7 @@ def get_failed_hcpa_count() -> int:
         conn.close()
 
 
-def mark_hcpa_reviewed(case_number: str, notes: str = None) -> bool:
+def mark_hcpa_reviewed(case_number: str, notes: str | None = None) -> bool:
     """
     Mark an auction as manually reviewed (clears the failed flag).
 

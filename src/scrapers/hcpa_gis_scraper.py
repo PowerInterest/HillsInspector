@@ -20,6 +20,7 @@ import json
 import re
 import argparse
 import asyncio
+from contextlib import suppress
 from pathlib import Path
 from urllib.parse import quote
 import requests
@@ -59,7 +60,12 @@ def convert_bulk_parcel_to_url_format(bulk_parcel: str) -> str:
     return bulk_parcel
 
 
-async def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage: ScraperStorage = None, timeout: int = 120) -> dict:
+async def scrape_hcpa_property(
+    parcel_id: str | None = None,
+    folio: str | None = None,
+    storage: ScraperStorage | None = None,
+    timeout_seconds: int = 120,
+) -> dict:
     """
     Scrape property data from HCPA GIS portal (async version).
 
@@ -67,7 +73,7 @@ async def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage
         parcel_id: The parcel ID in URL format (e.g., 1829134XZ000012000090A)
         folio: The folio number (e.g., 1918870000) - will search for parcel
         storage: Optional ScraperStorage instance
-        timeout: Overall timeout in seconds for the scrape operation
+        timeout_seconds: Overall timeout in seconds for the scrape operation
 
     Returns:
         Dictionary with property data including sales history
@@ -75,11 +81,11 @@ async def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage
     try:
         return await asyncio.wait_for(
             _scrape_hcpa_property_impl(parcel_id, folio, storage),
-            timeout=timeout
+            timeout=timeout_seconds,
         )
     except TimeoutError:
         prop_id = folio if folio else parcel_id
-        logger.error(f"HCPA GIS scrape timed out after {timeout}s for {prop_id}")
+        logger.error(f"HCPA GIS scrape timed out after {timeout_seconds}s for {prop_id}")
         # Return empty result instead of crashing
         return {
             "parcel_id": parcel_id,
@@ -92,11 +98,15 @@ async def scrape_hcpa_property(parcel_id: str = None, folio: str = None, storage
             "tax_collector_id": None,
             "image_url": None,
             "permits": [],
-            "error": f"Timeout after {timeout}s"
+            "error": f"Timeout after {timeout_seconds}s",
         }
 
 
-async def _scrape_hcpa_property_impl(parcel_id: str = None, folio: str = None, storage: ScraperStorage = None) -> dict:
+async def _scrape_hcpa_property_impl(
+    parcel_id: str | None = None,
+    folio: str | None = None,
+    storage: ScraperStorage | None = None,
+) -> dict:
     """Internal implementation of HCPA property scraping."""
     if not storage:
         storage = ScraperStorage()
@@ -237,19 +247,15 @@ async def _scrape_hcpa_property_impl(parcel_id: str = None, folio: str = None, s
                             book_page_link = cells[0].locator("a").first
                             link_href = None
                             if book_page_link:
-                                try:
+                                with suppress(Exception):
                                     link_href = await book_page_link.get_attribute("href")
-                                except Exception:
-                                    pass
 
                             # Also get the instrument link
                             instrument_link = cells[1].locator("a").first
                             instrument_href = None
                             if instrument_link:
-                                try:
+                                with suppress(Exception):
                                     instrument_href = await instrument_link.get_attribute("href")
-                                except Exception:
-                                    pass
 
                             # Parse book/page
                             book_page_match = re.search(r'(\d+)\s*/\s*(\d+)', book_page)
@@ -350,15 +356,13 @@ async def _scrape_hcpa_property_impl(parcel_id: str = None, folio: str = None, s
             # Look for permit section or permit links
             permit_links = await page.locator("a[href*='permit'], a[href*='accela']").all()
             for permit_link in permit_links[:10]:  # Limit to 10 permits
-                try:
+                with suppress(Exception):
                     permit_href = await permit_link.get_attribute("href")
                     permit_text = (await permit_link.inner_text()).strip()
                     result["permits"].append({
                         "permit_number": permit_text,
                         "link": permit_href,
                     })
-                except Exception:
-                    pass
 
             # Also look for permits in a table
             permit_table = page.locator("table").filter(has_text="Permit").first

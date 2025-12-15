@@ -126,24 +126,126 @@ This creates:
 
 ### 3. Run Auction Ingestion
 
-#### Ingest Next 2 Months of Auctions
+#### Run Full Update (Next 60 Days)
 ```powershell
-uv run python -m src.ingest.run_ingestion
+uv run python main.py --update
 ```
 
-This will:
-- Scrape foreclosure auctions for the next 60 days
-- Scrape tax deed auctions for the next 60 days
-- Enrich all properties with HCPA data
-- Store everything in the database
-- Create folder structures for each property
-
-#### Ingest Specific Date
+#### Run Test Batch (Small Set)
 ```powershell
-uv run python -m src.ingest.run_ingestion 2025-11-26
+uv run python main.py --test
 ```
 
-### 3. Query Data
+#### Debug Single Property
+```powershell
+uv run python main.py --debug
+```
+
+### 4. Pipeline Steps
+The pipeline (`src/pipeline.py`) executes the following 14 steps.
+
+#### 1. Scrape Foreclosure Auctions
+- **Source:** [hillsborough.realforeclose.com](https://hillsborough.realforeclose.com)
+- **Method:** Playwright (Headless)
+- **Downloads:** Final Judgment PDF
+- **DB Updates:** `auctions` table
+  - Columns: `case_number`, `folio`, `parcel_id`, `auction_date`, `final_judgment_amount`, `assessed_value`, `property_address`, `plaintiff`, `defendant`
+
+#### 1.5. Scrape Tax Deed Auctions
+- **Source:** [hillsborough.realtaxdeed.com](https://hillsborough.realtaxdeed.com)
+- **Method:** Playwright (Headless)
+- **Downloads:** None
+- **DB Updates:** `auctions` table
+  - Columns: `case_number`, `certificate_number`, `opening_bid`, `parcel_id`, `auction_type`
+
+#### 2. Extract Final Judgment Data
+- **Source:** [publicaccess.hillsclerk.com](https://publicaccess.hillsclerk.com) (OnBase)
+- **Method:** Playwright (Download) + Vision API (Extraction)
+- **Downloads:** Final Judgment PDF (if missing)
+- **DB Updates:** `auctions` table
+  - Columns: `extracted_judgment_data`, `raw_judgment_text`, `principal_amount`, `interest_amount`, `foreclosure_type`, `lis_pendens_date`
+
+#### 3. Bulk Data Enrichment
+- **Source:** Local `parcel.dbf` (from [hcpafl.org](https://www.hcpafl.org))
+- **Method:** Polars / DuckDB
+- **Downloads:** None
+- **DB Updates:** `parcels` table
+  - Columns: `owner_name`, `legal_description`, `year_built`, `beds`, `baths`, `heated_area`, `lot_size`, `market_value`
+
+#### 4. HCPA GIS - Sales History
+- **Source:** [gis.hcpafl.org](https://gis.hcpafl.org/propertysearch/)
+- **Method:** Playwright
+- **Downloads:** Sales History Documents (optional)
+- **DB Updates:**
+  - `sales_history` table: `book`, `page`, `instrument`, `sale_date`, `sale_price`, `doc_type`
+  - `parcels` table: `legal_description` (high quality from GIS)
+
+#### 5. ORI Ingestion & Chain of Title
+- **Source:** [publicaccess.hillsclerk.com](https://publicaccess.hillsclerk.com/PAVDirectSearch/)
+- **Method:** API (Primary) + Playwright (Fallback)
+- **Downloads:** PDFs (Deeds, Mortgages, Liens, Lis Pendens)
+- **DB Updates:**
+  - `documents` table: `document_type`, `instrument_number`, `book`, `page`, `recording_date`, `ocr_text`, `extracted_data`
+  - `chain_of_title` table: `owner_name`, `acquisition_date`, `acquisition_instrument`
+  - `encumbrances` table: `encumbrance_type`, `amount`, `creditor`, `recording_date`
+
+#### 6. Lien Survival Analysis
+- **Source:** Internal Logic
+- **Method:** Python (Statute rules + Date comparison)
+- **Downloads:** None
+- **DB Updates:** `encumbrances` table
+  - Columns: `survival_status` ('SURVIVED', 'WIPED_OUT', 'EXPIRED')
+
+#### 7. Sunbiz Entity Lookup
+- **Source:** [search.sunbiz.org](https://search.sunbiz.org)
+- **Method:** Playwright
+- **Downloads:** None
+- **DB Updates:** `scraper_results` (via Storage)
+  - Content: JSON blob with officer names, entity status, and filing dates
+
+#### 8. Building Permits
+- **Source:** [aca-prod.accela.com](https://aca-prod.accela.com/TAMPA/)
+- **Method:** Playwright + Vision API
+- **Downloads:** Screenshots
+- **DB Updates:** `permits` table
+  - Columns: `permit_number`, `status`, `issue_date`, `description`, `contractor`, `estimated_cost`
+
+#### 9. FEMA Flood Zone
+- **Source:** [hazards.fema.gov](https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer)
+- **Method:** REST API
+- **Downloads:** None
+- **DB Updates:** `parcels` table
+  - Columns: `flood_zone`, `flood_risk`, `flood_insurance_required`
+
+#### 10. Market Data - Zillow
+- **Source:** [zillow.com](https://www.zillow.com)
+- **Method:** Playwright (Stealth) + Vision API
+- **Downloads:** Screenshots
+- **DB Updates:** `market_data` table
+  - Columns: `zestimate`, `rent_estimate`, `listing_status`, `price`
+
+#### 11. Market Data - Realtor.com
+- **Source:** [realtor.com](https://www.realtor.com)
+- **Method:** Playwright (Stealth) + Vision API
+- **Downloads:** Screenshots
+- **DB Updates:** `market_data` table
+  - Columns: `hoa_monthly`, `list_price`, `days_on_market`, `price_history`
+
+#### 12. Property Enrichment (Fallback)
+- **Source:** [gis.hcpafl.org](https://gis.hcpafl.org/propertysearch/)
+- **Method:** Playwright + Vision API
+- **Downloads:** Screenshots
+- **DB Updates:** `parcels` table
+  - Columns: `owner_name`, `year_built`, `beds`, `baths` (only if missing)
+
+#### 13. Tax Payment Status
+- **Source:** [hillsborough.county-taxes.com](https://hillsborough.county-taxes.com/public)
+- **Method:** Playwright (Visible Mode)
+- **Downloads:** Screenshots
+- **DB Updates:** `liens` table
+  - Columns: `document_type`='TAX', `amount`, `description`
+
+### 5. Query Data
 
 ```python
 from src.db.operations import PropertyDB

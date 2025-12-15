@@ -3,6 +3,7 @@ Service for extracting dollar amounts from encumbrance documents (mortgages, lie
 by downloading PDFs from ORI and analyzing them with vLLM vision.
 """
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from loguru import logger
@@ -63,7 +64,7 @@ class EncumbranceAmountExtractor:
 
         encumbrances = []
         for row in results:
-            encumbrances.append(dict(zip(cols, row)))
+            encumbrances.append(dict(zip(cols, row, strict=True)))
 
         conn.close()
         return encumbrances
@@ -162,10 +163,8 @@ class EncumbranceAmountExtractor:
 
             # Clean up temp images
             for img_path in page_images:
-                try:
+                with suppress(Exception):
                     Path(img_path).unlink()
-                except Exception:
-                    pass
 
             if result:
                 result['instrument'] = instrument
@@ -179,8 +178,13 @@ class EncumbranceAmountExtractor:
             logger.error(f"Error extracting amount from {pdf_path}: {e}")
             return None
 
-    def update_encumbrance_amount(self, encumbrance_id: int, amount: float,
-                                   confidence: str, source_phrase: str = None) -> bool:
+    def update_encumbrance_amount(
+        self,
+        encumbrance_id: int,
+        amount: float,
+        confidence: str,
+        source_phrase: str | None = None,
+    ) -> bool:
         """
         Update an encumbrance record with the extracted amount.
 

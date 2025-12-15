@@ -12,6 +12,7 @@ Usage:
 
 import asyncio
 import re
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import List, Optional, Dict, Any
@@ -213,11 +214,9 @@ class SunbizScraper:
                     # Assume "First Last" or "First Middle Last"
                     last_name = name_parts[-1]
                     first_name = name_parts[0]
-                    middle_name = " ".join(name_parts[1:-1]) if len(name_parts) > 2 else ""
                 else:
                     last_name = name_parts[0] if name_parts else ""
                     first_name = ""
-                    middle_name = ""
 
                 await page.locator("#SearchTerm").fill(last_name)
 
@@ -322,7 +321,6 @@ class SunbizScraper:
             await page.wait_for_load_state("networkidle")
 
             # Get page content
-            content = await page.content()
             text = await page.locator("body").inner_text()
 
             # Parse entity type from title or content
@@ -355,10 +353,8 @@ class SunbizScraper:
                 # Date Filed
                 if "Date Filed" in line:
                     next_line = lines[i+1].strip() if i+1 < len(lines) else ""
-                    try:
+                    with suppress(ValueError, TypeError):
                         entity.filing_date = datetime.strptime(next_line, "%m/%d/%Y").date()
-                    except (ValueError, TypeError):
-                        pass
 
                 # Status
                 if "Status" in line and line.strip() == "Status":

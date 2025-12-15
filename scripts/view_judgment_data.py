@@ -3,7 +3,6 @@ View extracted Final Judgment data from the database.
 """
 import duckdb
 from pathlib import Path
-import json
 from loguru import logger
 import sys
 
@@ -45,7 +44,7 @@ def view_data():
     print("-" * 100)
     
     for row in results:
-        case_num, f_type, j_date, amount, principal, plaintiff, extracted_at = row
+        case_num, f_type, j_date, amount, _principal, plaintiff, _extracted_at = row
         amount_str = f"${amount:,.2f}" if amount else "N/A"
         date_str = str(j_date) if j_date else "N/A"
         type_str = (f_type or "Unknown")[:15]

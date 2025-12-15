@@ -4,6 +4,7 @@ Provides high-level functions for inserting and querying data.
 """
 import os
 import duckdb
+from contextlib import suppress
 from datetime import date, datetime
 from typing import List, Optional, Dict, Any, Any as AnyType
 import json
@@ -35,6 +36,147 @@ class PropertyDB:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
     
+    def initialize_pipeline_flags(self):
+        """
+        Initialize boolean flags on the auctions table to track pipeline progress.
+        Backfills state based on existing data.
+        """
+        conn = self.connect()
+        
+        # 1. Add columns if they don't exist
+        flags = [
+            "needs_judgment_extraction",
+            "needs_hcpa_enrichment",
+            "needs_ori_ingestion",
+            "needs_lien_survival",
+            "needs_sunbiz_search",
+            "needs_permit_check",
+            "needs_flood_check",
+            "needs_market_data",
+            "needs_tax_check",
+            "needs_homeharvest_enrichment" # New flag
+        ]
+        
+        for flag in flags:
+            conn.execute(f"ALTER TABLE auctions ADD COLUMN IF NOT EXISTS {flag} BOOLEAN DEFAULT TRUE")
+            
+        # 2. Backfill state based on existing data
+        
+        # Step 2: Judgment Extraction
+        # If we have extracted data, we don't need to run it again
+        conn.execute("""
+            UPDATE auctions 
+            SET needs_judgment_extraction = FALSE 
+            WHERE extracted_judgment_data IS NOT NULL
+        """)
+        
+        # Step 4/12: HCPA Enrichment
+        # If we have an owner name in parcels table, we likely ran enrichment
+        # Note: We join on parcel_id/folio
+        conn.execute("""
+            UPDATE auctions
+            SET needs_hcpa_enrichment = FALSE
+            WHERE parcel_id IN (
+                SELECT folio FROM parcels WHERE owner_name IS NOT NULL
+            )
+        """)
+        
+        # Step 5: ORI Ingestion
+        # If we have documents for this folio, we ran ORI ingestion
+        conn.execute("""
+            UPDATE auctions
+            SET needs_ori_ingestion = FALSE
+            WHERE parcel_id IN (
+                SELECT DISTINCT folio FROM documents
+            )
+        """)
+        
+        # Step 6: Lien Survival
+        # If status is ANALYZED or FLAGGED, we ran analysis
+        conn.execute("""
+            UPDATE auctions
+            SET needs_lien_survival = FALSE
+            WHERE status IN ('ANALYZED', 'FLAGGED')
+        """)
+        
+        # Step 8: Permits
+        # If we have permits for this folio
+        conn.execute("""
+            UPDATE auctions
+            SET needs_permit_check = FALSE
+            WHERE parcel_id IN (
+                SELECT DISTINCT folio FROM permits
+            )
+        """)
+        
+        # Step 9: Flood Check
+        # Flood data would be stored separately - for now, skip this backfill
+        # as the flood_zone column doesn't exist yet in parcels
+        # TODO: Create flood_data table or add column when implementing FEMA lookup
+        
+        # Step 10/11: Market Data
+        # If we have market data rows
+        conn.execute("""
+            UPDATE auctions
+            SET needs_market_data = FALSE
+            WHERE parcel_id IN (
+                SELECT DISTINCT folio FROM market_data
+            )
+        """)
+
+        # Step 14: HomeHarvest Enrichment
+        conn.execute("""
+            UPDATE auctions
+            SET needs_homeharvest_enrichment = FALSE
+            WHERE folio IN (
+                SELECT DISTINCT folio FROM home_harvest
+                WHERE created_at >= CURRENT_DATE - INTERVAL 7 DAY
+            )
+        """)
+        
+        # Step 13: Tax Check
+        # If we have tax liens
+        conn.execute("""
+            UPDATE auctions
+            SET needs_tax_check = FALSE
+            WHERE parcel_id IN (
+                SELECT DISTINCT folio FROM liens WHERE document_type LIKE 'TAX%'
+            )
+        """)
+        
+        print("Pipeline flags initialized and backfilled.")
+
+    def mark_step_complete(self, case_number: str, step_flag: str):
+        """
+        Mark a specific pipeline step as complete for an auction.
+        
+        Args:
+            case_number: Case number of the auction
+            step_flag: Name of the flag column (e.g., 'needs_permit_check')
+        """
+        conn = self.connect()
+        # Sanitize input to prevent injection (though internal use only)
+        valid_flags = {
+            "needs_judgment_extraction",
+            "needs_hcpa_enrichment",
+            "needs_ori_ingestion",
+            "needs_lien_survival",
+            "needs_sunbiz_search",
+            "needs_permit_check",
+            "needs_flood_check",
+            "needs_market_data",
+            "needs_tax_check",
+            "needs_homeharvest_enrichment" # New flag
+        }
+        if step_flag not in valid_flags:
+            raise ValueError(f"Invalid flag name: {step_flag}")
+            
+        conn.execute(f"""
+            UPDATE auctions 
+            SET {step_flag} = FALSE, updated_at = CURRENT_TIMESTAMP
+            WHERE case_number = ?
+        """, [case_number])
+
     def upsert_auction(self, prop: Property) -> int:
         """
         Insert or update an auction property.
@@ -209,7 +351,7 @@ class PropertyDB:
         """, [auction_date]).fetchall()
         
         columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        return [dict(zip(columns, row, strict=True)) for row in results]
     
     def get_pending_analysis(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get auctions that need lien analysis."""
@@ -223,7 +365,7 @@ class PropertyDB:
         """, [limit]).fetchall()
         
         columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        return [dict(zip(columns, row, strict=True)) for row in results]
     
     def mark_as_analyzed(self, case_number: str):
         """Mark an auction as analyzed."""
@@ -454,7 +596,7 @@ class PropertyDB:
         if not rows:
             return []
         columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, r)) for r in rows]
+        return [dict(zip(columns, r, strict=True)) for r in rows]
 
     @staticmethod
     def _dict_to_lien(data: Dict[str, Any]) -> Lien:
@@ -607,7 +749,14 @@ class PropertyDB:
         Save a document to the documents table.
         """
         conn = self.connect()
-        
+
+        # Migration: Add new ORI API fields if they don't exist
+        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS sales_price FLOAT")
+        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS page_count INTEGER")
+        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS ori_uuid VARCHAR")
+        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS ori_id VARCHAR")
+        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS book_type VARCHAR")
+
         # Check if exists by instrument number
         inst = doc_data.get("instrument_number")
         existing = None
@@ -651,8 +800,9 @@ class PropertyDB:
                 folio, case_number, document_type, file_path, ocr_text,
                 extracted_data, recording_date, book, page,
                 instrument_number, party1, party2, legal_description,
-                party2_resolution_method, is_self_transfer, self_transfer_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                party2_resolution_method, is_self_transfer, self_transfer_type,
+                sales_price, page_count, ori_uuid, ori_id, book_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, [
             folio,
             doc_data.get("case_number"),
@@ -669,7 +819,12 @@ class PropertyDB:
             doc_data.get("legal_description"),
             doc_data.get("party2_resolution_method"),
             doc_data.get("is_self_transfer", False),
-            doc_data.get("self_transfer_type")
+            doc_data.get("self_transfer_type"),
+            doc_data.get("sales_price"),
+            doc_data.get("page_count"),
+            doc_data.get("ori_uuid"),
+            doc_data.get("ori_id"),
+            doc_data.get("book_type"),
         ])
 
         # Get the inserted ID (DuckDB compatible)
@@ -774,7 +929,7 @@ class PropertyDB:
         ownership_timeline = []
 
         for row in periods:
-            period = dict(zip(columns, row))
+            period = dict(zip(columns, row, strict=True))
             period_id = period["id"]
 
             # Get encumbrances for this period
@@ -785,7 +940,7 @@ class PropertyDB:
             """, [period_id]).fetchall()
 
             enc_columns = [desc[0] for desc in conn.description]
-            period["encumbrances"] = [dict(zip(enc_columns, e)) for e in encumbrances]
+            period["encumbrances"] = [dict(zip(enc_columns, e, strict=True)) for e in encumbrances]
 
             ownership_timeline.append(period)
 
@@ -801,9 +956,6 @@ class PropertyDB:
         """Save market data from Zillow/Realtor."""
         conn = self.connect()
 
-        import json
-        from datetime import date
-
         conn.execute("""
             INSERT INTO market_data (
                 folio, source, capture_date, listing_status, list_price,
@@ -813,7 +965,7 @@ class PropertyDB:
         """, [
             folio,
             source,
-            date.today(),
+            datetime.now(tz=datetime.UTC).date(),
             data.get("listing_status"),
             data.get("list_price") or data.get("price"),
             data.get("zestimate"),
@@ -873,10 +1025,8 @@ class PropertyDB:
         
         # Check if table exists and recreate if needed (for dev)
         # In prod we'd migrate, but here we just want it to work
-        try:
+        with suppress(Exception):
             conn.execute("SELECT nextval('property_sources_id_seq')")
-        except:
-            pass
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS property_sources (
@@ -926,9 +1076,9 @@ class PropertyDB:
             WHERE folio = ?
             ORDER BY created_at DESC
         """, [folio]).fetchall()
-        
+
         columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        return [dict(zip(columns, row, strict=True)) for row in results]
 
     def save_sales_history(self, folio: str, strap: str, sales: List[Dict]):
         """
@@ -1004,7 +1154,7 @@ class PropertyDB:
             return []
 
         columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row)) for row in results]
+        return [dict(zip(columns, row, strict=True)) for row in results]
 
     # ------------------------------------------------------------------
     # Restriction / Easement helpers
@@ -1048,7 +1198,7 @@ class PropertyDB:
         if not rows:
             return []
         columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row)) for row in rows]
+        return [dict(zip(columns, row, strict=True)) for row in rows]
 
     def folio_has_restrictions(self, folio: str) -> bool:
         """Quick existence check for restriction/easement docs for a folio."""
@@ -1086,7 +1236,7 @@ class PropertyDB:
         if not rows:
             return []
         columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row)) for row in rows]
+        return [dict(zip(columns, row, strict=True)) for row in rows]
 
     def get_tax_status(self, folio: str) -> Dict[str, Any]:
         """
@@ -1100,7 +1250,7 @@ class PropertyDB:
             }
         """
         liens = self.get_tax_liens(folio)
-        amounts = [l.get("amount") for l in liens if l.get("amount") is not None]
+        amounts = [lien.get("amount") for lien in liens if lien.get("amount") is not None]
         total_amount = sum(amounts) if amounts else None
         return {
             "has_tax_liens": len(liens) > 0,

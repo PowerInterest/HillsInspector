@@ -4,6 +4,7 @@ Property detail routes.
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
+from datetime import UTC, datetime
 from pathlib import Path
 import os
 
@@ -171,9 +172,15 @@ async def property_chain_of_title(request: Request, folio: str):
 
 
 def _sanitize_folio(folio: str) -> str:
-    safe = folio.replace("-", "").replace(" ", "").replace(":", "_")
-    safe = safe.replace("/", "_").replace("\\", "_").replace(",", "").replace("#", "")
-    return safe
+    return (
+        folio.replace("-", "")
+        .replace(" ", "")
+        .replace(":", "_")
+        .replace("/", "_")
+        .replace("\\", "_")
+        .replace(",", "")
+        .replace("#", "")
+    )
 
 
 @router.get("/{folio}/doc/{doc_id}")
@@ -209,14 +216,12 @@ async def property_title_report(request: Request, folio: str):
     if not prop:
         raise HTTPException(status_code=404, detail="Property not found")
 
-    from datetime import date
-
     return templates.TemplateResponse(
         "title_report.html",
         {
             "request": request,
             "property": prop,
-            "generated_date": date.today().strftime("%B %d, %Y")
+            "generated_date": datetime.now(tz=UTC).strftime("%B %d, %Y")
         }
     )
 

@@ -72,6 +72,16 @@ Integrate `HillsGovHubScraper` to verify NOCs (Notice of Commencement) against a
 ### Async Pipeline Refactor
 - ✅ Basic async ingestion implemented (`ingest_property_async`)
 - Still needed: bounded async orchestration and checkpointed stages (see `docs/async.md`) so reruns skip completed work and IO-heavy scrapes run concurrently with rate limits.
+- **Constraint:** Implement parallelizable phases (as detailed in `docs/Fast.md`) **ONLY AFTER** the whole pipeline and website works completely.
+
+### Liens & Mortgage Survivability on Web
+- Web dashboard is not yet showing which liens survive the sale; need to surface survival status and totals.
+- Mortgage documents must be fully processed to compute total encumbrances vs the final judgment.
+- Determine first vs second mortgages by recording date and document text; display the order and amounts.
+- Each referenced document should be clickable to open the underlying file in a new tab (link to stored doc).
+- Sales History is not rendering on the web page; this comes from HCPA data and should be wired in.
+- Title report view is broken and needs to be fixed/rewired.
+- Title chain should be visualized as a graph with linked documents.
 
 ## Medium Priority
 

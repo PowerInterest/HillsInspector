@@ -20,7 +20,7 @@ from loguru import logger
 class ORIScraper:
     BASE_DIRECT = "https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html"
 
-    async def _scrape_table(self, url: str, timeout: int = 30000) -> List[Dict[str, str]]:
+    async def _scrape_table(self, url: str, time_limit_ms: int = 30000) -> List[Dict[str, str]]:
         """
         Common method to scrape ORI result table from a PAVDirectSearch URL.
         Returns list of dicts with column headers as keys.
@@ -29,7 +29,7 @@ class ORIScraper:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             try:
-                await page.goto(url, timeout=timeout)
+                await page.goto(url, timeout=time_limit_ms)
                 await page.wait_for_load_state("networkidle")
                 await asyncio.sleep(1)  # Extra wait for JS rendering
 
@@ -76,7 +76,7 @@ class ORIScraper:
         """Search by legal description (CQID=321)."""
         url = f"{self.BASE_DIRECT}?CQID=321&OBKey__1011_1={quote(legal_desc)}"
         logger.debug(f"Legal search URL: {url}")
-        return await self._scrape_table(url, timeout=60000)
+        return await self._scrape_table(url, time_limit_ms=60000)
 
     def search_by_legal_sync(self, legal_desc: str) -> List[Dict[str, str]]:
         """Synchronous wrapper for search_by_legal."""
@@ -86,7 +86,7 @@ class ORIScraper:
         """Search by party name (CQID=326)."""
         url = f"{self.BASE_DIRECT}?CQID=326&OBKey__486_1={quote(name)}"
         logger.debug(f"Name search URL: {url}")
-        return await self._scrape_table(url, timeout=60000)
+        return await self._scrape_table(url, time_limit_ms=60000)
 
     def search_by_name_sync(self, name: str) -> List[Dict[str, str]]:
         """Synchronous wrapper for search_by_name."""

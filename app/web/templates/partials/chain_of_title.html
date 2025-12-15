@@ -16,35 +16,53 @@
 
                 {% if is_break %}
                 <li class="timeline-break">
-                    <div class="break-icon"></div>
                     <div class="break-line"></div>
-                    <div class="break-text">Potential break in chain</div>
+                    <div class="break-text">⚠️ Broken Chain: Grantee doesn't match next Grantor</div>
                 </li>
                 {% endif %}
 
                 <li class="timeline-item">
                     <div class="timeline-dot"></div>
-                    <div class="timeline-content">
-                        <div class="timeline-date">{{ transfer.acquisition_date }}</div>
-                        <div class="timeline-title">
-                            <strong>{{ transfer.owner_name or 'Unknown' }}</strong>
-                            <span class="timeline-subtitle">acquired from {{ transfer.acquired_from or 'Unknown' }}</span>
-                        </div>
-                        <div class="timeline-body">
-                            <p>
-                                <strong>Document:</strong> {{ transfer.acquisition_doc_type }} ({{ transfer.acquisition_instrument }})
-                                {% if transfer.document_id %}
-                                    <a href="/property/{{ folio }}/doc/{{ transfer.document_id }}" target="_blank" class="doc-link">View Doc</a>
-                                {% endif %}
-                            </p>
-                            <p>
-                                <strong>Price:</strong>
+                    <div class="timeline-content transfer-card">
+                        <div class="transfer-header">
+                            <div class="transfer-date">{{ transfer.acquisition_date or 'Date Unknown' }}</div>
+                            <div class="transfer-type">
+                                <span class="badge badge-secondary">{{ transfer.acquisition_doc_type or 'DOC' }}</span>
+                            </div>
+                            <div class="transfer-price">
                                 {% if transfer.acquisition_price %}
                                     ${{ "{:,.0f}".format(transfer.acquisition_price) }}
                                 {% else %}
                                     -
                                 {% endif %}
-                            </p>
+                            </div>
+                        </div>
+                        
+                        <div class="transfer-flow">
+                            <div class="transfer-party grantor">
+                                <span class="party-label">Grantor (From)</span>
+                                <span class="party-name">{{ transfer.acquired_from or 'Unknown' }}</span>
+                            </div>
+                            
+                            <div class="transfer-arrow">
+                                <span class="arrow-icon">➜</span>
+                            </div>
+                            
+                            <div class="transfer-party grantee">
+                                <span class="party-label">Grantee (To)</span>
+                                <span class="party-name">{{ transfer.owner_name or 'Unknown' }}</span>
+                            </div>
+                        </div>
+
+                        <div class="transfer-footer">
+                            <span class="instrument-info">
+                                Instrument: {{ transfer.acquisition_instrument or 'N/A' }}
+                            </span>
+                            {% if transfer.document_id %}
+                                <a href="/property/{{ folio }}/doc/{{ transfer.document_id }}" target="_blank" class="btn-view-doc">
+                                    View Document
+                                </a>
+                            {% endif %}
                         </div>
                     </div>
                 </li>
@@ -52,7 +70,7 @@
              <li class="timeline-item timeline-start">
                 <div class="timeline-dot"></div>
                 <div class="timeline-content">
-                    <div class="timeline-title">Chain begins</div>
+                    <div class="timeline-title">Chain Start</div>
                 </div>
             </li>
         </ul>

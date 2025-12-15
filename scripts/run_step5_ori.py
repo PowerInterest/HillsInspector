@@ -118,7 +118,6 @@ def run_step_5(max_properties: int = 100, analyze_pdfs: bool = False):
 
     processed = 0
     errors = 0
-    skipped = 0
 
     try:
         for item in to_process:

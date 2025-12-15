@@ -2,6 +2,9 @@
 import sys
 from pathlib import Path
 from loguru import logger
+
+# Add project root to path
+sys.path.append(".")
 from src.services.vision_service import VisionService
 
 # Configure detailed logging
@@ -30,32 +33,39 @@ def test_simple_extraction():
     logger.info("\nTesting simple image analysis...")
     vs = VisionService()
     
-    # Find any image to test with
-    test_images = list(Path("data/temp/pdf_images").glob("*.png")) if Path("data/temp/pdf_images").exists() else []
+    test_image = Path("data/realtor_screenshots/realtor_10014_CARLOWAY_HILLS_DR_20251202_153305.png")
     
-    if not test_images:
-        logger.warning("No test images found. Creating one from a PDF...")
-        import fitz
-        pdf_dir = Path("data/pdfs/final_judgments")
-        pdfs = list(pdf_dir.glob("*.pdf"))
-        
-        if not pdfs:
-            logger.error("No PDFs found to test with")
-            return False
-        
-        # Convert first page of first PDF
-        doc = fitz.open(str(pdfs[0]))
-        page = doc[0]
-        temp_dir = Path("data/temp/pdf_images")
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        temp_image = temp_dir / "test_page.png"
-        pix = page.get_pixmap(dpi=200)
-        pix.save(str(temp_image))
-        doc.close()
-        logger.info(f"Created test image: {temp_image}")
-        test_images = [temp_image]
+    if not test_image.exists():
+        logger.warning(f"Primary test image {test_image} not found. Searching for alternatives.")
+        # Fallback to finding any png in realtor_screenshots
+        images = list(Path("data/realtor_screenshots").glob("*.png"))
+        if images:
+            test_image = images[0]
+            logger.info(f"Using alternative test image: {test_image}")
+        else:
+            logger.warning("No PNG test images found. Attempting to create one from a PDF...")
+            import fitz # PyMuPDF
+            
+            # Check data/properties for PDFs
+            pdf_dir = Path("data/properties")
+            pdfs = list(pdf_dir.glob("*.pdf"))
+            
+            if not pdfs:
+                logger.error("No PDFs found to test with in data/properties or data/realtor_screenshots.")
+                return False
+            
+            # Convert first page of first PDF
+            doc = fitz.open(str(pdfs[0]))
+            page = doc[0]
+            temp_dir = Path("data/temp/pdf_images")
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            temp_image = temp_dir / "test_page_from_pdf.png"
+            pix = page.get_pixmap(dpi=200)
+            pix.save(str(temp_image))
+            doc.close()
+            logger.info(f"Created test image from PDF: {temp_image}")
+            test_image = temp_image
     
-    test_image = test_images[0]
     logger.info(f"Using test image: {test_image}")
     
     # Try simple text extraction
@@ -65,9 +75,9 @@ def test_simple_extraction():
         logger.success(f"✓ Successfully extracted text ({len(result)} characters)")
         logger.info(f"First 200 chars: {result[:200]}")
         return True
-    else:
-        logger.error("Failed to extract text from image")
-        return False
+
+    logger.error("Failed to extract text from image")
+    return False
 
 if __name__ == "__main__":
     logger.info("=" * 60)

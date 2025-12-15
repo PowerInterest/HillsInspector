@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 - Entry point: `main.py` (flags: `--test`, `--update`, `--web`, `--new`); orchestration in `src/pipeline.py`.
 - Scrapers in `src/scrapers/`; ingest helpers in `src/ingest/`; transforms/enrichment in `src/services/`; shared utilities in `src/utils/`.
-- DuckDB schema and scripts in `src/db/`; FastAPI + Jinja app in `app/web/` with API helpers in `app/services/` and DB wiring in `app/database.py`.
+- DuckDB schema and scripts in `src/db/`; FastAPI + Jinja app in `app/web/` with API helpers in `app/services/` and DB wiring in `app/web/database.py`.
 - Raw artifacts live under `data/properties/` (per-folio parquet/json/pdfs/photos); logs in `logs/`; docs in `docs/`; maintenance scripts in `scripts/`.
 - Tests belong in `tests/` mirroring module paths; fixtures in `tests/fixtures/`.
 

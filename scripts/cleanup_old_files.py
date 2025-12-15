@@ -79,7 +79,7 @@ def cleanup_duplicate_vision(prop_dir: Path, dry_run: bool = True) -> int:
             files.sort(key=lambda x: x[0], reverse=True)
 
             # Keep the newest, remove the rest
-            for timestamp, filepath in files[1:]:
+            for _timestamp, filepath in files[1:]:
                 if dry_run:
                     logger.debug(f"[DRY RUN] Would remove: {filepath}")
                 else:

@@ -25,7 +25,7 @@ Usage:
 """
 
 import requests
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 from loguru import logger
 
@@ -50,9 +50,9 @@ class FloodZoneResult:
         """Human-readable risk level."""
         if self.is_high_risk:
             return "HIGH RISK - Special Flood Hazard Area (SFHA)"
-        elif self.is_moderate_risk:
+        if self.is_moderate_risk:
             return "MODERATE RISK - 0.2% annual chance flood"
-        elif self.is_minimal_risk:
+        if self.is_minimal_risk:
             return "MINIMAL RISK - Outside flood hazard area"
         return "UNDETERMINED"
 

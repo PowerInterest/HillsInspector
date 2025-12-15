@@ -2,8 +2,10 @@ import base64
 import json
 import re
 import requests
+import io
 from typing import Dict, Optional, Any
 from loguru import logger
+from PIL import Image
 
 
 def robust_json_parse(text: str, context: str = "") -> Optional[Dict[str, Any]]:
@@ -42,7 +44,7 @@ def robust_json_parse(text: str, context: str = "") -> Optional[Dict[str, Any]]:
 
     try:
         return json.loads(fixed2)
-    except json.JSONDecodeError as e:
+    except json.JSONDecodeError:
         print(f"Failed to parse JSON from Vision API response ({context}): {cleaned[:500]}...")
         return None
 
@@ -915,39 +917,89 @@ class VisionService:
     """
 
     # API Configuration - Remote vLLM servers (with failover)
+    # 10.10.0.33 has Qwen3-VL-8B with 262k context
     # 10.10.1.5 has 262k context, 10.10.2.27 only has 11k - prioritize the larger one
-    API_URLS = [
-        "http://10.10.1.5:6969/v1/chat/completions",
-        "http://10.10.2.27:6969/v1/chat/completions",
+    # 192.168.86.26:1234 is LM Studio on Windows (uses different model ID)
+    API_ENDPOINTS = [
+        {"url": "http://10.10.0.33:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
+        {"url": "http://10.10.1.5:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
+        {"url": "http://10.10.2.27:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
+        {"url": "http://192.168.86.26:1234/v1/chat/completions", "model": "qwen/qwen3-vl-8b"},
     ]
+    # Legacy attributes for backwards compatibility
+    API_URLS = [ep["url"] for ep in API_ENDPOINTS]
     MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({'Connection': 'keep-alive'})
-        self._active_url = None  # Cache the working URL
+        self._active_endpoint = None  # Cache the working endpoint {"url": ..., "model": ...}
 
     @property
-    def API_URL(self) -> str:
+    def API_URL(self) -> str:  # noqa: N802
         """Get the active API URL, checking availability if needed."""
-        if self._active_url:
-            return self._active_url
+        return self._get_active_endpoint()["url"]
+
+    @property
+    def active_model(self) -> str:
+        """Get the model ID for the active endpoint."""
+        return self._get_active_endpoint()["model"]
+
+    def _get_active_endpoint(self) -> dict:
+        """Get the active endpoint config, checking availability if needed."""
+        if self._active_endpoint:
+            return self._active_endpoint
         # Find first available server
-        for url in self.API_URLS:
+        for endpoint in self.API_ENDPOINTS:
             try:
-                base_url = url.rsplit('/v1/', 1)[0]
+                base_url = endpoint["url"].rsplit('/v1/', 1)[0]
                 response = self.session.get(f"{base_url}/v1/models", timeout=3)
                 if response.status_code == 200:
-                    self._active_url = url
-                    return url
-            except Exception:
+                    self._active_endpoint = endpoint
+                    logger.info("Using vision endpoint: {} (model: {})", endpoint["url"], endpoint["model"])
+                    return endpoint
+            except Exception as exc:
+                logger.debug("Vision endpoint {} unavailable: {}", endpoint["url"], exc)
                 continue
-        # Default to first URL if none available
-        return self.API_URLS[0]
+        # Default to first endpoint if none available
+        return self.API_ENDPOINTS[0]
+
+    def _try_all_endpoints(self, payload: dict, timeout: int = 120) -> Optional[requests.Response]:
+        """
+        Try to post to all endpoints until one succeeds.
+        On timeout or connection error, try the next endpoint.
+        """
+        errors = []
+        for endpoint in self.API_ENDPOINTS:
+            try:
+                logger.info("Trying vision endpoint: {} (model: {})", endpoint["url"], endpoint["model"])
+                # Update model in payload for this endpoint
+                payload_copy = payload.copy()
+                payload_copy["model"] = endpoint["model"]
+                response = self.session.post(endpoint["url"], json=payload_copy, timeout=timeout)
+                if response.ok:
+                    # Cache this endpoint as the working one
+                    self._active_endpoint = endpoint
+                    return response
+                errors.append(f"{endpoint['url']}: HTTP {response.status_code}")
+            except requests.exceptions.Timeout as e:
+                logger.warning("Timeout on endpoint {}: {}", endpoint["url"], e)
+                errors.append(f"{endpoint['url']}: Timeout")
+                continue
+            except requests.exceptions.ConnectionError as e:
+                logger.warning("Connection error on endpoint {}: {}", endpoint["url"], e)
+                errors.append(f"{endpoint['url']}: Connection error")
+                continue
+            except Exception as e:
+                logger.warning("Error on endpoint {}: {}", endpoint["url"], e)
+                errors.append(f"{endpoint['url']}: {e}")
+                continue
+        logger.error("All vision endpoints failed: {}", errors)
+        return None
 
     def reset_active_url(self):
         """Reset cached URL to force re-check on next request."""
-        self._active_url = None
+        self._active_endpoint = None
 
     def check_server(self) -> bool:
         """
@@ -965,7 +1017,7 @@ class VisionService:
             # Fallback: try a minimal completion request
             try:
                 payload = {
-                    "model": self.MODEL,
+                    "model": self.active_model,
                     "messages": [{"role": "user", "content": "test"}],
                     "max_tokens": 1
                 }
@@ -974,28 +1026,56 @@ class VisionService:
             except Exception:
                 return False
         
-    def _encode_image(self, image_path: str) -> str:
-        """Encode image to base64 string."""
-        with open(image_path, "rb") as f:
-            return base64.b64encode(f.read()).decode()
+    def _encode_image(self, image_path: str, max_dimension: int = 1280) -> str:
+        """
+        Encode image to base64 string, resizing if necessary.
+        
+        Qwen2-VL Recommendation:
+        - 1024-1280px is optimal for balancing document legibility and token usage.
+        - Higher resolutions exponentially increase token count and VRAM usage.
+        - 1280px is a safe upper limit for most consumer GPUs (approx 1200-1600 tokens).
+        """
+        try:
+            with Image.open(image_path) as img:
+                # Convert to RGB if needed (e.g. for RGBA or P modes)
+                if img.mode not in ('RGB', 'L'):
+                    img = img.convert('RGB')
+                
+                # Resize if too large
+                width, height = img.size
+                if width > max_dimension or height > max_dimension:
+                    ratio = min(max_dimension / width, max_dimension / height)
+                    new_size = (int(width * ratio), int(height * ratio))
+                    img = img.resize(new_size, Image.Resampling.LANCZOS)
+                    # logger.debug(f"Resized image {image_path} from {width}x{height} to {new_size[0]}x{new_size[1]}")
+                
+                # Save to buffer
+                buffer = io.BytesIO()
+                img.save(buffer, format="JPEG", quality=85)
+                return base64.b64encode(buffer.getvalue()).decode()
+        except Exception as e:
+            logger.warning(f"Failed to process image {image_path} with PIL: {e}. Falling back to raw read.")
+            with open(image_path, "rb") as f:
+                return base64.b64encode(f.read()).decode()
 
     def analyze_image(self, image_path: str, prompt: str, max_tokens: int = 1024) -> Optional[str]:
         """
         Analyze an image with a text prompt.
-        
+        Tries all available endpoints on failure.
+
         Args:
             image_path: Path to the image file.
             prompt: Text prompt for the model.
             max_tokens: Max tokens for response.
-            
+
         Returns:
             The text response from the model, or None if failed.
         """
         try:
             base64_image = self._encode_image(image_path)
-            
+
             payload = {
-                "model": self.MODEL,
+                "model": "",  # Will be set by _try_all_endpoints
                 "messages": [
                     {
                         "role": "user",
@@ -1008,24 +1088,27 @@ class VisionService:
                         ]
                     }
                 ],
-                "max_tokens": max_tokens,
+                "max_tokens": 2000,
                 "temperature": 0.1
             }
-            
-            response = self.session.post(self.API_URL, json=payload, timeout=120)
-            response.raise_for_status()
-            
+
+            response = self._try_all_endpoints(payload, timeout=120)
+            if response is None:
+                logger.error("All vision endpoints failed for {}", image_path)
+                return None
+
             result = response.json()
             content = result["choices"][0]["message"]["content"]
             return content.strip()
-            
-        except Exception as e:
+
+        except Exception:
             logger.exception("Vision API error while analyzing {}", image_path)
             return None
 
     def analyze_images(self, image_paths: list[str], prompt: str, max_tokens: int = 4000) -> Optional[str]:
         """
         Analyze multiple images with a single text prompt in one request.
+        Tries all available endpoints on failure.
 
         Args:
             image_paths: List of image file paths.
@@ -1048,26 +1131,28 @@ class VisionService:
             content_blocks.append({"type": "text", "text": prompt})
 
             payload = {
-                "model": self.MODEL,
+                "model": "",  # Will be set by _try_all_endpoints
                 "messages": [
                     {
                         "role": "user",
                         "content": content_blocks
                     }
                 ],
-                "max_tokens": max_tokens,
+                "max_tokens": 2000,
                 "temperature": 0.1
             }
 
-            response = self.session.post(self.API_URL, json=payload, timeout=120)
-            response.raise_for_status()
+            response = self._try_all_endpoints(payload, timeout=180)  # Longer timeout for multi-image
+            if response is None:
+                logger.error("All vision endpoints failed for multi-image request ({} images)", len(image_paths))
+                return None
 
             result = response.json()
             content = result["choices"][0]["message"]["content"]
             return content.strip() if content else None
 
         except Exception as e:
-            print(f"Vision API Error (multi-image): {e}")
+            logger.exception("Vision API Error (multi-image): {}", e)
             return None
 
     def extract_text(self, image_path: str) -> str:

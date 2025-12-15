@@ -94,7 +94,22 @@ def create_database(db_path: str = "data/property_master.db"):
             
             -- Status
             status VARCHAR DEFAULT 'PENDING',  -- 'PENDING', 'ANALYZED', 'FLAGGED'
-            
+
+            -- Pipeline Flags (tracks which steps need to run)
+            needs_judgment_extraction BOOLEAN DEFAULT TRUE,
+            needs_hcpa_enrichment BOOLEAN DEFAULT TRUE,
+            needs_ori_ingestion BOOLEAN DEFAULT TRUE,
+            needs_lien_survival BOOLEAN DEFAULT TRUE,
+            needs_sunbiz_search BOOLEAN DEFAULT TRUE,
+            needs_permit_check BOOLEAN DEFAULT TRUE,
+            needs_flood_check BOOLEAN DEFAULT TRUE,
+            needs_market_data BOOLEAN DEFAULT TRUE,
+            needs_tax_check BOOLEAN DEFAULT TRUE,
+            needs_homeharvest_enrichment BOOLEAN DEFAULT TRUE,
+
+            -- HCPA Scrape Status
+            hcpa_scrape_failed BOOLEAN DEFAULT FALSE,
+
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -156,6 +171,13 @@ def create_database(db_path: str = "data/property_master.db"):
             party1 VARCHAR,
             party2 VARCHAR,
             legal_description VARCHAR,
+
+            -- ORI API Additional Fields
+            sales_price FLOAT,          -- Sale price or loan amount from ORI
+            page_count INTEGER,         -- Number of pages in document
+            ori_uuid VARCHAR,           -- ORI unique document identifier
+            ori_id VARCHAR,             -- ORI encrypted ID for PDF download
+            book_type VARCHAR,          -- Book type (OR, etc.)
 
             -- Party 2 Resolution Fields
             party2_resolution_method VARCHAR,  -- 'cqid_326', 'ocr_extraction', NULL if original
@@ -299,6 +321,113 @@ def create_database(db_path: str = "data/property_master.db"):
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # Create home_harvest table (from HomeHarvest enrichment)
+    conn.execute("CREATE SEQUENCE IF NOT EXISTS homeharvest_id_seq START 1")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS home_harvest (
+            -- Primary Key & Links
+            id BIGINT PRIMARY KEY DEFAULT nextval('homeharvest_id_seq'),
+            folio VARCHAR, -- Foreign key to our main parcels table
+            
+            -- Basic Information
+            property_url VARCHAR,
+            property_id VARCHAR,
+            listing_id VARCHAR,
+            mls VARCHAR,
+            mls_id VARCHAR,
+            mls_status VARCHAR,
+            status VARCHAR,
+            permalink VARCHAR,
+
+            -- Address Details
+            street VARCHAR,
+            unit VARCHAR,
+            city VARCHAR,
+            state VARCHAR,
+            zip_code VARCHAR,
+            formatted_address VARCHAR,
+
+            -- Property Description
+            style VARCHAR,
+            beds DOUBLE,
+            full_baths DOUBLE,
+            half_baths DOUBLE,
+            sqft DOUBLE,
+            year_built INTEGER,
+            stories DOUBLE,
+            garage DOUBLE,
+            lot_sqft DOUBLE,
+            text_description VARCHAR,
+            property_type VARCHAR,
+
+            -- Property Listing Details
+            days_on_mls INTEGER,
+            list_price DOUBLE,
+            list_price_min DOUBLE,
+            list_price_max DOUBLE,
+            list_date TIMESTAMP,
+            pending_date TIMESTAMP,
+            sold_price DOUBLE,
+            last_sold_date TIMESTAMP,
+            last_status_change_date TIMESTAMP,
+            last_update_date TIMESTAMP,
+            last_sold_price DOUBLE,
+            price_per_sqft DOUBLE,
+            new_construction BOOLEAN,
+            hoa_fee DOUBLE,
+            monthly_fees JSON,
+            one_time_fees JSON,
+            estimated_value DOUBLE,
+
+            -- Tax Information
+            tax_assessed_value DOUBLE,
+            tax_history JSON,
+
+            -- Location Details
+            latitude DOUBLE,
+            longitude DOUBLE,
+            neighborhoods VARCHAR,
+            county VARCHAR,
+            fips_code VARCHAR,
+            parcel_number VARCHAR,
+            nearby_schools JSON,
+
+            -- Agent/Broker/Office Info
+            agent_uuid VARCHAR,
+            agent_name VARCHAR,
+            agent_email VARCHAR,
+            agent_phone JSON,
+            agent_state_license VARCHAR,
+            broker_uuid VARCHAR,
+            broker_name VARCHAR,
+            office_uuid VARCHAR,
+            office_name VARCHAR,
+            office_email VARCHAR,
+            office_phones JSON,
+
+            -- Additional Fields
+            estimated_monthly_rental DOUBLE,
+            tags JSON,
+            flags JSON,
+            photos JSON,
+            primary_photo VARCHAR,
+            alt_photos JSON,
+            open_houses JSON,
+            units JSON,
+            pet_policy VARCHAR,
+            parking VARCHAR,
+            terms VARCHAR,
+            current_estimates JSON,
+            estimates JSON,
+
+            -- Metadata
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_homeharvest_folio ON home_harvest(folio)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_homeharvest_address ON home_harvest(formatted_address)")
     
     # Create indices for fast lookups
     print("Creating indices...")

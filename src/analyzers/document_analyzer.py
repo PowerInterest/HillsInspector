@@ -1,7 +1,7 @@
 import fitz  # PyMuPDF
 import easyocr
 import os
-from typing import Optional, List
+from contextlib import suppress
 
 class DocumentAnalyzer:
     def __init__(self):
@@ -83,22 +83,18 @@ class DocumentAnalyzer:
             # Clean and convert to float
             valid_amounts = []
             for amt in amounts:
-                try:
+                with suppress(Exception):
                     val = float(amt.replace('$', '').replace(',', ''))
                     valid_amounts.append(val)
-                except:
-                    pass
             
             if valid_amounts:
                 details['judgment_amount'] = max(valid_amounts)
                 
         # 2. Find Interest Rate (e.g., 4.75% or 4.75 %)
-        interest = re.search(r'(\d+\.?\d*)\s*%', text)
-        if interest:
-            try:
-                details['interest_rate'] = float(interest.group(1))
-            except:
-                pass
+            interest = re.search(r'(\d+\.?\d*)\s*%', text)
+            if interest:
+                with suppress(Exception):
+                    details['interest_rate'] = float(interest.group(1))
                 
         # 3. Find Case Number (e.g., 20-CA-1234)
         # This is hard because OCR might mess it up, but let's try standard formats

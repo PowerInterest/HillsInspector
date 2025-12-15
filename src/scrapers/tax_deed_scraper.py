@@ -70,18 +70,33 @@ class TaxDeedScraper:
                 page_num = 1
                 while True:
                     logger.info("Scraping tax deed results page {page_num} for {date}", page_num=page_num, date=date_str)
-                    
+
                     # Wait for the table to be visible (with try/except for empty pages)
                     try:
                         await page.wait_for_selector(".Head_W", timeout=10000)
                     except Exception:
                         logger.info("No auction data found on tax deed page {page_num} for {date}", page_num=page_num, date=date_str)
                         break
+
+                    # Scrape current page
+                    page_properties = await self._scrape_current_page(page, target_date)
+                    properties.extend(page_properties)
+                    logger.info("Found {count} properties on page {page_num}", count=len(page_properties), page_num=page_num)
+
+                    # Check for next page button
+                    next_btn = page.locator("a.PageRight:not(.disabled)")
+                    if await next_btn.count() > 0 and await next_btn.is_visible():
+                        await next_btn.click()
+                        await page.wait_for_load_state("networkidle")
+                        page_num += 1
+                    else:
+                        # No more pages
+                        break
                         
             except Exception as e:
                 logger.error("Error during tax deed scraping for {date}: {error}", date=date_str, error=e)
                 await page.screenshot(path=f"error_taxdeed_{date_str.replace('/', '-')}.png")
-                raise e
+                raise
             finally:
                 await browser.close()
                 
@@ -100,8 +115,8 @@ class TaxDeedScraper:
                 item_container = label.locator("xpath=./ancestor::table[1]")
                 
                 # Helper to extract text by label
-                async def get_text_by_label(lbl: str) -> str:
-                    row = item_container.locator(f"tr:has-text('{lbl}')")
+                async def get_text_by_label(lbl: str, *, _container=item_container) -> str:
+                    row = _container.locator(f"tr:has-text('{lbl}')")
                     if await row.count() > 0:
                         # Assuming value is in the second cell
                         return await row.locator("td").nth(1).inner_text()

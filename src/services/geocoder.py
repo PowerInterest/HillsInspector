@@ -38,9 +38,9 @@ def geocode_address(address: str) -> Optional[Tuple[float, float]]:
         return tuple(cache[address])  # type: ignore[arg-type]
 
     url = f"https://nominatim.openstreetmap.org/search?format=json&limit=1&q={parse.quote(address)}"
-    req = request.Request(url, headers={"User-Agent": USER_AGENT})
+    req = request.Request(url, headers={"User-Agent": USER_AGENT})  # noqa: S310
     try:
-        with request.urlopen(req, timeout=10) as resp:
+        with request.urlopen(req, timeout=10) as resp:  # noqa: S310
             data = json.loads(resp.read().decode("utf-8"))
             if not data:
                 logger.warning("Geocode: no result for {addr}", addr=address)

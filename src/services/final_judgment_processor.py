@@ -1,4 +1,5 @@
 import os
+from contextlib import suppress
 from pathlib import Path
 from typing import Optional, Dict, Any
 from loguru import logger
@@ -65,10 +66,8 @@ class FinalJudgmentProcessor:
 
             # Clean up temp images
             for img_path in page_images:
-                try:
+                with suppress(Exception):
                     Path(img_path).unlink()
-                except Exception:
-                    pass
 
             if not merged_json:
                 logger.warning(f"No data extracted from PDF for case {case_number}")

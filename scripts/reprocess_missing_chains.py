@@ -11,6 +11,7 @@ This script:
 
 import duckdb
 import asyncio
+from contextlib import suppress
 from pathlib import Path
 from loguru import logger
 import sys
@@ -21,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.scrapers.ori_api_scraper import ORIApiScraper
 from src.services.vision_service import VisionService
 from src.services.title_chain_service import TitleChainService
-from src.db.operations import PropertyDB
 
 
 def get_folios_missing_chain(conn) -> list[str]:
@@ -83,9 +83,9 @@ async def download_pdf_if_needed(ori_scraper: ORIApiScraper, doc: dict, folio: s
             size = pdf_path.stat().st_size
             logger.info(f"Downloaded: {pdf_path.name} ({size} bytes)")
             return pdf_path
-        else:
-            logger.warning(f"Failed to download PDF for instrument {instrument}")
-            return None
+
+        logger.warning(f"Failed to download PDF for instrument {instrument}")
+        return None
     except Exception as e:
         logger.error(f"Error downloading PDF for {instrument}: {e}")
         return None
@@ -131,14 +131,10 @@ def extract_parties_from_pdf(vision_service: VisionService, pdf_path: Path, doc_
 
         # Clean up temp images
         for img_path in image_paths:
-            try:
+            with suppress(Exception):
                 Path(img_path).unlink()
-            except:
-                pass
-        try:
+        with suppress(Exception):
             temp_dir.rmdir()
-        except:
-            pass
 
         return result
 

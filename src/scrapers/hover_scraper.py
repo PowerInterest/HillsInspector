@@ -73,7 +73,7 @@ class HoverScraper:
                 # If the value is 'CA', select_option(value='CA') works.
                 try:
                     await page.get_by_label("Court Type").select_option(value=case_type)
-                except:
+                except Exception:
                     # Try selecting by label containing the type
                     # This is risky without knowing the exact options.
                     # For now, let's assume 'CA' works or log warning.
@@ -83,7 +83,7 @@ class HoverScraper:
                 await page.get_by_label("Sequence #").fill(seq)
                 
                 # Search
-                await asyncio.sleep(random.uniform(1, 2))
+                await asyncio.sleep(random.uniform(1, 2))  # noqa: S311
                 await page.click("button:has-text('Search')")
                 
                 # Wait for results
@@ -95,7 +95,7 @@ class HoverScraper:
                 # Look for a link with the case number
                 case_link = page.locator(f"a:has-text('{seq}')")
                 if await case_link.count() > 0:
-                    await asyncio.sleep(random.uniform(1, 2))
+                    await asyncio.sleep(random.uniform(1, 2))  # noqa: S311
                     await case_link.first.click()
                     await page.wait_for_load_state("networkidle")
                     

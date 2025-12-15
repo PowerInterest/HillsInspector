@@ -1,6 +1,5 @@
 import duckdb
 from pathlib import Path
-import pandas as pd
 
 DB_PATH = Path("../../data/property_master.db")
 
@@ -11,19 +10,19 @@ def analyze_missing_data():
         print("Analyzing 'auctions' table...")
         auctions_df = con.execute("SELECT * FROM auctions").fetchdf()
         print(f"Total Auctions: {len(auctions_df)}")
-        print(auctions_df.isnull().sum())
+        print(auctions_df.isna().sum())
         print("\n")
 
         print("Analyzing 'parcels' table...")
         parcels_df = con.execute("SELECT * FROM parcels").fetchdf()
         print(f"Total Parcels: {len(parcels_df)}")
-        print(parcels_df.isnull().sum())
+        print(parcels_df.isna().sum())
         print("\n")
         
         print("Analyzing 'liens' table...")
         liens_df = con.execute("SELECT * FROM liens").fetchdf()
         print(f"Total Liens: {len(liens_df)}")
-        print(liens_df.isnull().sum())
+        print(liens_df.isna().sum())
         print("\n")
         
         # Specific checks

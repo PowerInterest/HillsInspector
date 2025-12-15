@@ -1,4 +1,5 @@
 import duckdb
+from contextlib import suppress
 from loguru import logger
 
 def migrate():
@@ -23,11 +24,9 @@ def migrate():
         """)
         
         # Add ID sequence if not exists
-        try:
+        with suppress(Exception):
             conn.execute("CREATE SEQUENCE IF NOT EXISTS permits_id_seq")
             conn.execute("ALTER TABLE permits ALTER COLUMN id SET DEFAULT nextval('permits_id_seq')")
-        except Exception:
-            pass
 
         # Add new columns
         try:

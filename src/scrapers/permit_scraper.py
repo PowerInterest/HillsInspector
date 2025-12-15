@@ -21,6 +21,7 @@ Usage:
 
 import asyncio
 import re
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -364,10 +365,8 @@ class PermitScraper:
             except Exception as e:
                 logger.error(f"Error scraping {source}: {e}")
                 # Take error screenshot
-                try:
+                with suppress(Exception):
                     await page.screenshot(path=str(self.output_dir / f"error_{source}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"))
-                except:
-                    pass
 
             finally:
                 await browser.close()
@@ -408,7 +407,8 @@ class PermitScraper:
                             await field.fill(value)
                         logger.debug(f"Filled {field_name}: {value}")
                         break
-                except:
+                except Exception as exc:
+                    logger.debug(f"Could not fill {field_name} for selector {selector}: {exc}")
                     continue
 
     async def _extract_with_vision(self, screenshot_path: str, page: Page) -> List[PermitDetail]:
@@ -429,10 +429,8 @@ class PermitScraper:
 
                     # Parse date
                     if p.get("issue_date"):
-                        try:
+                        with suppress(ValueError, TypeError):
                             permit.issue_date = datetime.strptime(p["issue_date"], "%m/%d/%Y").date()
-                        except (ValueError, TypeError):
-                            pass
 
                     permits.append(permit)
 
@@ -576,10 +574,8 @@ class PermitScraper:
                     )
                     
                     if date_str:
-                        try:
+                        with suppress(Exception):
                             permit.issue_date = datetime.strptime(date_str.strip(), "%m/%d/%Y").date()
-                        except:
-                            pass
                             
                     permits.append(permit)
 

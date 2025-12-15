@@ -1,6 +1,5 @@
 import duckdb
 from pathlib import Path
-import json
 
 def inspect_data():
     db_path = "data/property_master.db"

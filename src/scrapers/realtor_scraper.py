@@ -123,7 +123,7 @@ class RealtorScraper:
 
     async def _human_delay(self, min_sec: float = 0.5, max_sec: float = 2.0):
         """Add random human-like delay."""
-        await asyncio.sleep(random.uniform(min_sec, max_sec))
+        await asyncio.sleep(random.uniform(min_sec, max_sec))  # noqa: S311
 
     async def _setup_stealth_browser(self, playwright):
         """Create a stealth browser context with anti-detection measures."""
@@ -159,15 +159,15 @@ class RealtorScraper:
     async def _simulate_human_behavior(self, page: Page):
         """Simulate human-like browsing behavior."""
         # Random scrolling
-        for _ in range(random.randint(2, 4)):
-            scroll_amount = random.randint(200, 500)
+        for _ in range(random.randint(2, 4)):  # noqa: S311
+            scroll_amount = random.randint(200, 500)  # noqa: S311
             await page.evaluate(f'window.scrollBy(0, {scroll_amount})')
             await self._human_delay(0.3, 0.8)
 
         # Random mouse movements
-        for _ in range(random.randint(3, 6)):
-            x = random.randint(100, 1800)
-            y = random.randint(100, 900)
+        for _ in range(random.randint(3, 6)):  # noqa: S311
+            x = random.randint(100, 1800)  # noqa: S311
+            y = random.randint(100, 900)  # noqa: S311
             await page.mouse.move(x, y)
             await self._human_delay(0.1, 0.3)
 
@@ -182,8 +182,7 @@ class RealtorScraper:
         city_slug = city.replace(' ', '-')
 
         # Realtor.com URL pattern: /realestateandhomes-detail/{address}_{city}_{state}_{zip}
-        url = f"{self.BASE_URL}/realestateandhomes-detail/{addr_slug}_{city_slug}_{state}_{zip_code}"
-        return url
+        return f"{self.BASE_URL}/realestateandhomes-detail/{addr_slug}_{city_slug}_{state}_{zip_code}"
 
     async def get_listing_details(
         self,
@@ -216,7 +215,7 @@ class RealtorScraper:
         logger.info(f"Fetching Realtor.com listing: {realtor_url}")
 
         async with async_playwright() as p:
-            browser, context, page = await self._setup_stealth_browser(p)
+            browser, _context, page = await self._setup_stealth_browser(p)
 
             try:
                 # Navigate with extended timeout
@@ -229,10 +228,27 @@ class RealtorScraper:
 
                 # Check for blocking/captcha
                 content = await page.content()
-                if "captcha" in content.lower() or "blocked" in content.lower():
-                    logger.warning("Realtor.com may have blocked the request")
-                    # Still try to capture screenshot
-                    await self._human_delay(5.0, 10.0)
+                page_text = await page.inner_text("body")
+
+                # Check for common block patterns
+                is_blocked = (
+                    "captcha" in content.lower() or
+                    "blocked" in content.lower() or
+                    "request could not be processed" in page_text.lower() or
+                    "reference id is" in page_text.lower() or
+                    "unblockrequest@realtor.com" in page_text.lower()
+                )
+
+                if is_blocked:
+                    logger.warning("Realtor.com blocked the request (bot detection triggered)")
+                    # Still capture screenshot for debugging
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    safe_addr = re.sub(r'[^\w\s-]', '', address).replace(' ', '_')[:30]
+                    screenshot_path = self.output_dir / f"realtor_{safe_addr}_{timestamp}.png"
+                    await page.screenshot(path=str(screenshot_path), full_page=True)
+                    listing.screenshot_path = str(screenshot_path)
+                    logger.info(f"Blocked page screenshot saved: {screenshot_path}")
+                    return listing  # Return early with empty listing
 
                 # Check if we landed on a valid listing page
                 if "realestateandhomes-detail" not in page.url and "property" not in page.url:
@@ -402,6 +418,23 @@ class RealtorScraper:
         listing = await self.get_listing_details(address, city, state, zip_code)
 
         if listing:
+            # Check if we actually got data (not just a blocked page)
+            has_data = listing.list_price is not None or listing.beds is not None or listing.sqft is not None
+
+            if not has_data:
+                logger.warning(f"Realtor.com returned no data for {property_id} (likely blocked)")
+                # Record the failed attempt
+                self.storage.record_scrape(
+                    property_id=property_id,
+                    scraper="realtor",
+                    screenshot_path=listing.screenshot_path,
+                    vision_output_path=None,
+                    vision_data={"error": "blocked", "url": listing.realtor_url},
+                    prompt_version="v1",
+                    success=False
+                )
+                return None
+
             # Convert to dict for storage
             listing_data = {
                 "address": listing.address,
@@ -484,7 +517,7 @@ class RealtorScraper:
         logger.info(f"Searching Realtor.com: {search_query}")
 
         async with async_playwright() as p:
-            browser, context, page = await self._setup_stealth_browser(p)
+            browser, _context, page = await self._setup_stealth_browser(p)
 
             try:
                 logger.info(f"Realtor.com GET: {search_url}")
