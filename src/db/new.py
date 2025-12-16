@@ -21,6 +21,9 @@ def create_database(db_path: str = "data/property_master.db"):
     conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_analysis_id START 1")
     conn.execute("CREATE SEQUENCE IF NOT EXISTS liens_id_seq START 1")
     conn.execute("CREATE SEQUENCE IF NOT EXISTS sales_history_seq START 1")
+    conn.execute("CREATE SEQUENCE IF NOT EXISTS chain_of_title_seq START 1")
+    conn.execute("CREATE SEQUENCE IF NOT EXISTS encumbrances_seq START 1")
+    conn.execute("CREATE SEQUENCE IF NOT EXISTS legal_variations_seq START 1")
     
     # Create parcels table (from HCPA bulk data)
     conn.execute("""
@@ -149,7 +152,9 @@ def create_database(db_path: str = "data/property_master.db"):
             description TEXT,
             contractor VARCHAR,
             estimated_cost FLOAT,
-            
+            url VARCHAR,
+            noc_instrument VARCHAR,
+
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -246,7 +251,7 @@ def create_database(db_path: str = "data/property_master.db"):
     # Create legal_variations table
     conn.execute("""
         CREATE TABLE IF NOT EXISTS legal_variations (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY DEFAULT nextval('legal_variations_seq'),
             folio VARCHAR,
             variation_text VARCHAR,
             source_instrument VARCHAR,
@@ -259,7 +264,7 @@ def create_database(db_path: str = "data/property_master.db"):
     # Create chain_of_title table
     conn.execute("""
         CREATE TABLE IF NOT EXISTS chain_of_title (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY DEFAULT nextval('chain_of_title_seq'),
             folio VARCHAR,
             owner_name VARCHAR,
             acquired_from VARCHAR,
@@ -275,7 +280,7 @@ def create_database(db_path: str = "data/property_master.db"):
     # Create encumbrances table (enhanced)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS encumbrances (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY DEFAULT nextval('encumbrances_seq'),
             folio VARCHAR,
             chain_period_id INTEGER,
             encumbrance_type VARCHAR,

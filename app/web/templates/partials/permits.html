@@ -1,0 +1,103 @@
+<div class="permits-section">
+    <h3>Building Permits</h3>
+    {% if permits %}
+    <div class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Permit #</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Description</th>
+                    <th>Contractor</th>
+                    <th>Est. Cost</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for permit in permits %}
+                <tr>
+                    <td>{{ permit.issue_date.strftime('%m/%d/%Y') if permit.issue_date else '-' }}</td>
+                    <td>
+                        {% if permit.url %}
+                        <a href="{{ permit.url }}" target="_blank">{{ permit.permit_number }}</a>
+                        {% else %}
+                        {{ permit.permit_number }}
+                        {% endif %}
+                    </td>
+                    <td>{{ permit.permit_type }}</td>
+                    <td>
+                        <span class="badge {% if permit.status in ['Issued', 'Active', 'Open'] %}badge-warning{% elif permit.status in ['Finaled', 'Closed', 'Certificate of Occupancy'] %}badge-success{% else %}badge-secondary{% endif %}">
+                            {{ permit.status }}
+                        </span>
+                    </td>
+                    <td class="desc-cell" title="{{ permit.description }}">{{ permit.description[:50] }}{% if permit.description|length > 50 %}...{% endif %}</td>
+                    <td>{{ permit.contractor or '-' }}</td>
+                    <td class="text-right">{{ "${:,.0f}".format(permit.estimated_cost) if permit.estimated_cost else '-' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="no-data">No building permits found.</p>
+    {% endif %}
+</div>
+
+<div class="noc-section" style="margin-top: 2rem;">
+    <h3>Notices of Commencement (NOCs)</h3>
+    <p class="section-subtitle">NOCs indicate construction work that may result in mechanic's liens if unpaid.</p>
+    {% if nocs %}
+    <div class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Recording Date</th>
+                    <th>Instrument</th>
+                    <th>Owner</th>
+                    <th>Contractor/Party 2</th>
+                    <th>Document</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for noc in nocs %}
+                <tr>
+                    <td>{{ noc.recording_date.strftime('%m/%d/%Y') if noc.recording_date else '-' }}</td>
+                    <td>{{ noc.instrument_number }}</td>
+                    <td>{{ noc.party1 or '-' }}</td>
+                    <td>{{ noc.party2 or '-' }}</td>
+                    <td>
+                        {% if noc.id %}
+                        <a href="/property/{{ folio }}/doc/{{ noc.id }}" target="_blank" class="btn btn-sm btn-outline">View PDF</a>
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="no-data">No Notices of Commencement found in title search.</p>
+    {% endif %}
+</div>
+
+<style>
+.badge-success {
+    background-color: #d1fae5;
+    color: #065f46;
+}
+.desc-cell {
+    max-width: 250px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.section-subtitle {
+    font-size: 0.9em;
+    color: #666;
+    margin-top: -0.5rem;
+    margin-bottom: 1rem;
+}
+</style>

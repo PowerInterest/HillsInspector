@@ -324,7 +324,15 @@ def get_property_detail(folio: str) -> Optional[Dict[str, Any]]:
             logger.debug(f"Error fetching chain for {folio}: {err}")
 
         # Calculate net equity
-        market_value = (parcel or {}).get("market_value") or auction.get("assessed_value") or 0
+        enrichments = get_property_enrichments(folio)
+        market = get_market_snapshot(folio)
+
+        market_value = (
+            market.get("blended_estimate")
+            or (parcel or {}).get("market_value")
+            or auction.get("assessed_value")
+            or 0
+        )
         judgment = auction.get("final_judgment_amount") or 0
         surviving = auction.get("est_surviving_debt") or 0
         net_equity = market_value - judgment - surviving
@@ -340,6 +348,8 @@ def get_property_detail(folio: str) -> Optional[Dict[str, Any]]:
             "sales": get_sales_history(folio),
             "net_equity": net_equity,
             "market_value": market_value,
+            "market": market,
+            "enrichments": enrichments,
             "sources": get_sources_for_property(folio)
         }
 
@@ -426,6 +436,29 @@ def get_nocs_for_property(folio: str) -> List[Dict[str, Any]]:
         return [dict(zip(cols, row, strict=True)) for row in results]
     except Exception as e:
         logger.error(f"Error fetching NOCs for {folio}: {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def get_permits_for_property(folio: str) -> List[Dict[str, Any]]:
+    """Get all permits for a property."""
+    conn = get_connection()
+    try:
+        results = conn.execute(
+            """
+            SELECT * FROM permits
+            WHERE folio = ?
+            ORDER BY issue_date DESC NULLS LAST
+            """,
+            [folio],
+        ).fetchall()
+        if not results:
+            return []
+        cols = [desc[0] for desc in conn.description]
+        return [dict(zip(cols, row, strict=True)) for row in results]
+    except Exception as e:
+        logger.error(f"Error fetching permits for {folio}: {e}")
         return []
     finally:
         conn.close()
@@ -701,6 +734,198 @@ def get_property_enrichments(folio: str) -> Dict[str, Any]:
     return bulk.get(folio, _default_enrichments())
 
 
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _safe_json(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        with suppress(Exception):
+            return json.loads(value)
+    return value
+
+
+def get_tax_status_for_property(folio: str) -> Dict[str, Any]:
+    """Tax status + liens (stored in liens table as document_type LIKE 'TAX%')."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM liens
+            WHERE folio = ?
+              AND UPPER(COALESCE(document_type, '')) LIKE 'TAX%'
+            ORDER BY recording_date
+            """,
+            [folio],
+        ).fetchall()
+        if not rows:
+            return {"has_tax_liens": False, "total_amount_due": None, "liens": []}
+        cols = [desc[0] for desc in conn.description]
+        liens = [dict(zip(cols, row, strict=True)) for row in rows]
+        amounts = [_safe_float(l.get("amount")) for l in liens]
+        total = sum([a for a in amounts if a is not None]) if any(amounts) else None
+        return {"has_tax_liens": True, "total_amount_due": total, "liens": liens}
+    except Exception as e:
+        logger.debug(f"Error fetching tax status for {folio}: {e}")
+        return {"has_tax_liens": False, "total_amount_due": None, "liens": []}
+    finally:
+        conn.close()
+
+
+def get_market_snapshot(folio: str) -> Dict[str, Any]:
+    """
+    Market snapshot for a folio.
+
+    - Blended estimate: simple mean of available *estimate* values (no bulk data).
+    - Show Zestimate separately from list price.
+    - Photos come from latest HomeHarvest record.
+    """
+    conn = get_connection()
+    try:
+        # Latest HomeHarvest row
+        homeharvest = None
+        photos: list[str] = []
+        try:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM home_harvest
+                WHERE folio = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                [folio],
+            ).fetchone()
+            if row:
+                cols = [desc[0] for desc in conn.description]
+                homeharvest = dict(zip(cols, row, strict=True))
+                primary = (homeharvest.get("primary_photo") or "").strip()
+                if primary:
+                    photos.append(primary)
+                for field in ("photos", "alt_photos"):
+                    extra = _safe_json(homeharvest.get(field))
+                    if isinstance(extra, list):
+                        for url in extra:
+                            if isinstance(url, str) and url.strip():
+                                photos.append(url.strip())
+        except Exception as err:
+            logger.debug(f"HomeHarvest lookup failed for {folio}: {err}")
+
+        # Latest market_data per source
+        zillow = None
+        realtor = None
+        try:
+            z = conn.execute(
+                """
+                SELECT *
+                FROM market_data
+                WHERE folio = ? AND source = 'Zillow'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                [folio],
+            ).fetchone()
+            if z:
+                cols = [desc[0] for desc in conn.description]
+                zillow = dict(zip(cols, z, strict=True))
+        except Exception as err:
+            logger.debug(f"Zillow market_data lookup failed for {folio}: {err}")
+
+        try:
+            r = conn.execute(
+                """
+                SELECT *
+                FROM market_data
+                WHERE folio = ? AND source = 'Realtor'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                [folio],
+            ).fetchone()
+            if r:
+                cols = [desc[0] for desc in conn.description]
+                realtor = dict(zip(cols, r, strict=True))
+        except Exception as err:
+            logger.debug(f"Realtor market_data lookup failed for {folio}: {err}")
+
+        # Estimates (for blending)
+        zestimate = _safe_float((zillow or {}).get("zestimate"))
+        homeharvest_estimated = _safe_float((homeharvest or {}).get("estimated_value"))
+        realtor_estimate = _safe_float((realtor or {}).get("zestimate"))
+        estimate_values = [v for v in [zestimate, homeharvest_estimated, realtor_estimate] if v is not None]
+        blended = sum(estimate_values) / len(estimate_values) if estimate_values else None
+
+        # List prices shown separately
+        realtor_list_price = _safe_float((realtor or {}).get("list_price"))
+        homeharvest_list_price = _safe_float((homeharvest or {}).get("list_price"))
+
+        return {
+            "blended_estimate": blended,
+            "estimates": {
+                "zillow_zestimate": zestimate,
+                "homeharvest_estimated_value": homeharvest_estimated,
+                "realtor_estimate": realtor_estimate,
+            },
+            "list_prices": {
+                "realtor_list_price": realtor_list_price,
+                "homeharvest_list_price": homeharvest_list_price,
+            },
+            "sources": {
+                "zillow": zillow,
+                "realtor": realtor,
+                "homeharvest": homeharvest,
+            },
+            "photos": list(dict.fromkeys(photos)),  # stable de-dupe
+        }
+    finally:
+        conn.close()
+
+
+def get_bulk_homeharvest_photos(folios: List[str]) -> Dict[str, str]:
+    """Return latest HomeHarvest primary_photo per folio (for cards)."""
+    result: Dict[str, str] = {}
+    if not folios:
+        return result
+    conn = get_connection()
+    try:
+        placeholders = ",".join(["?"] * len(folios))
+        rows = conn.execute(
+            f"""
+            WITH latest AS (
+                SELECT
+                    folio,
+                    primary_photo,
+                    ROW_NUMBER() OVER (PARTITION BY folio ORDER BY created_at DESC) AS rn
+                FROM home_harvest
+                WHERE folio IN ({placeholders})
+            )
+            SELECT folio, primary_photo
+            FROM latest
+            WHERE rn = 1
+            """,
+            folios,
+        ).fetchall()
+        for folio, primary_photo in rows:
+            if folio and primary_photo:
+                result[str(folio)] = str(primary_photo)
+        return result
+    except Exception as e:
+        logger.debug(f"HomeHarvest bulk photo lookup failed: {e}")
+        return result
+    finally:
+        conn.close()
+
+
 def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
     """
     Get enrichments for multiple properties at once (for grid view).
@@ -822,6 +1047,7 @@ def get_upcoming_auctions_with_enrichments(
     enrichments = get_bulk_enrichments(folios)
 
     # Attach enrichments to each auction
+    photos = get_bulk_homeharvest_photos(folios)
     for auction in auctions:
         folio = auction.get("folio")
         if folio and folio in enrichments:
@@ -832,7 +1058,8 @@ def get_upcoming_auctions_with_enrichments(
                 "flood_zone": None,
                 "permits_open": 0,
                 "liens_surviving": 0
-            }
+                }
+        auction["photo_url"] = photos.get(str(folio)) if folio else None
 
     return auctions
 

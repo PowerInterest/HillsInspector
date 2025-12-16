@@ -56,7 +56,7 @@ logger.add(
     rotation="00:00",  # Rotate at midnight daily
     retention="30 days",
     level="INFO",
-    format="{time:HH:mm:ss} | {level: <8} | {module}:{function}:{line} | {extra} - {message}\n{exception}",
+    format="{time:HH:mm:ss} | {level: <8} | {module}:{function}:{line} | {extra} - {message}{exception}",
     backtrace=True,
     diagnose=True,
     enqueue=True,
@@ -87,14 +87,27 @@ async def handle_test():
     """Run pipeline for next auction data (small set)."""
     logger.info("Running TEST pipeline (small batch)...")
     # Run full pipeline with limited auctions
-    await run_full_pipeline(max_auctions=5)
+    await run_full_pipeline(max_auctions=5, geocode_missing_parcels=False)
 
-async def handle_update(start_date: date | None = None, start_step: int = 1):
+async def handle_update(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    start_step: int = 1,
+    geocode_missing_parcels: bool = True,
+    geocode_limit: int | None = 25,
+):
     """Run full update for next 60 days."""
     logger.info(f"Running FULL UPDATE pipeline (from step {start_step})...")
 
     # 1. Run main pipeline (Scrape -> Extract -> Ingest -> Analyze -> Enrich)
-    await run_full_pipeline(max_auctions=10, start_date=start_date, start_step=start_step)
+    await run_full_pipeline(
+        max_auctions=1000,
+        start_date=start_date,
+        end_date=end_date,
+        start_step=start_step,
+        geocode_missing_parcels=geocode_missing_parcels,
+        geocode_limit=geocode_limit,
+    )
 
     logger.success("Full update complete.")
 
@@ -106,7 +119,7 @@ async def handle_debug():
     DEBUG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     os.environ["HILLS_DB_PATH"] = str(DEBUG_DB_PATH)
     create_database(str(DEBUG_DB_PATH))
-    await run_full_pipeline(max_auctions=1, property_limit=1)
+    await run_full_pipeline(max_auctions=1, property_limit=1, geocode_missing_parcels=False)
     logger.success("Debug run complete.")
 
 def handle_web(port: int):
@@ -153,8 +166,21 @@ def main():
                         help="Port for web server (default 8080 or WEB_PORT env var)")
     parser.add_argument("--start-date", type=str, default=None,
                         help="Start date for --update (YYYY-MM-DD). Defaults to tomorrow.")
+    parser.add_argument("--end-date", type=str, default=None,
+                        help="End date for --update (YYYY-MM-DD). If not specified, defaults to 30 days after start.")
     parser.add_argument("--start-step", type=int, default=1,
-                        help="Step number to start from (1-13). Use to resume after failures.")
+                        help="Step number to start from (1-15). Use to resume after failures.")
+    parser.add_argument(
+        "--no-geocode",
+        action="store_true",
+        help="Disable final geocoding of parcels missing latitude/longitude.",
+    )
+    parser.add_argument(
+        "--geocode-limit",
+        type=int,
+        default=25,
+        help="Max parcels to geocode at pipeline end (default 25, use 0 for no geocoding).",
+    )
 
     args = parser.parse_args()
 
@@ -167,6 +193,15 @@ def main():
             logger.error(f"Invalid date format: {args.start_date}. Use YYYY-MM-DD.")
             sys.exit(1)
 
+    # Parse end date if provided
+    end_date = None
+    if args.end_date:
+        try:
+            end_date = date.fromisoformat(args.end_date)
+        except ValueError:
+            logger.error(f"Invalid date format: {args.end_date}. Use YYYY-MM-DD.")
+            sys.exit(1)
+
     if args.new:
         handle_new()
     elif args.test:
@@ -174,7 +209,17 @@ def main():
     elif args.debug:
         asyncio.run(handle_debug())
     elif args.update:
-        asyncio.run(handle_update(start_date=start_date, start_step=args.start_step))
+        geocode_missing = not args.no_geocode and args.geocode_limit != 0
+        geocode_limit = None if args.geocode_limit == 0 else args.geocode_limit
+        asyncio.run(
+            handle_update(
+                start_date=start_date,
+                end_date=end_date,
+                start_step=args.start_step,
+                geocode_missing_parcels=geocode_missing,
+                geocode_limit=geocode_limit,
+            )
+        )
     elif args.web:
         handle_web(args.port)
 

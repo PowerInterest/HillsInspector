@@ -10,6 +10,18 @@
     const clearStatus = () => statusEl && (statusEl.textContent = '', statusEl.style.display = 'none');
     const showStatus = (msg) => statusEl && (statusEl.textContent = msg, statusEl.style.display = 'block');
 
+    // Custom house icon for property markers
+    const houseIcon = L.divIcon({
+      className: 'property-marker',
+      html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32">
+        <path fill="#2563eb" stroke="#1e40af" stroke-width="1" d="M12 2.1L1 12h3v9h6v-6h4v6h6v-9h3L12 2.1z"/>
+        <circle cx="12" cy="22" r="3" fill="#1e40af" opacity="0.3"/>
+      </svg>`,
+      iconSize: [32, 32],
+      iconAnchor: [16, 32],
+      popupAnchor: [0, -32]
+    });
+
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors'
     })
@@ -37,7 +49,7 @@
           if (lat == null || lon == null) {
             return;
           }
-          const marker = L.marker([lat, lon]);
+          const marker = L.marker([lat, lon], { icon: houseIcon });
           const popup = `
             <div class="map-popup">
               <div class="popup-address"><a href="${url}">${address || 'Unknown'}</a></div>

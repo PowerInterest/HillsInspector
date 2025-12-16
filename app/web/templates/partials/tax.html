@@ -1,0 +1,50 @@
+{% set liens = tax.liens or [] %}
+
+<section class="card">
+    <h2>Tax Status</h2>
+    <div class="info-grid">
+        <div class="info-item">
+            <span class="info-label">Has Tax Liens</span>
+            <span class="info-value">
+                {% if tax.has_tax_liens %}Yes{% else %}No{% endif %}
+            </span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Total Amount Due</span>
+            <span class="info-value money">
+                {{ "${:,.2f}".format(tax.total_amount_due) if tax.total_amount_due else "-" }}
+            </span>
+        </div>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Tax Liens</h2>
+    {% if liens %}
+    <div class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Type</th>
+                    <th>Amount</th>
+                    <th>Description</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for lien in liens %}
+                <tr>
+                    <td>{{ lien.recording_date or "-" }}</td>
+                    <td>{{ lien.document_type or "-" }}</td>
+                    <td class="money">{{ "${:,.2f}".format(lien.amount) if lien.amount else "-" }}</td>
+                    <td>{{ lien.description or "-" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">No tax lien records found.</p>
+    {% endif %}
+</section>
+

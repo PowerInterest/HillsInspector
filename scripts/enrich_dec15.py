@@ -2,6 +2,7 @@ from src.services.homeharvest_service import HomeHarvestService
 from src.db.operations import PropertyDB
 from loguru import logger
 from datetime import date
+import re
 
 def enrich_dec15_auctions():
     """
@@ -37,12 +38,28 @@ def enrich_dec15_auctions():
     
     props_to_enrich = []
     for r in results:
-        addr = r[1].strip()
-        city = r[2].strip() if r[2] else "Tampa"
-        zip_c = r[3].strip() if r[3] else ""
-        state = "FL"
+        raw_addr = r[1].strip()
+        # Fix HCPA format "CITY, FL- ZIP" -> "CITY, FL ZIP"
+        clean_addr = raw_addr.replace("FL- ", "FL ").replace("  ", " ")
         
-        location = f"{addr}, {city}, {state} {zip_c}".strip()
+        # Check if address already looks complete (ends with FL + Zip)
+        if re.search(r'FL\s+\d{5}', clean_addr):
+            location = clean_addr
+        else:
+            city = r[2].strip() if r[2] else "Tampa"
+            zip_c = r[3].strip() if r[3] else ""
+            state = "FL"
+            
+            # If address doesn't have city, append it
+            parts = [clean_addr]
+            if city and city.upper() not in clean_addr.upper():
+                parts.append(city)
+            if "FL" not in clean_addr.upper():
+                parts.append(state)
+            if zip_c and zip_c not in clean_addr:
+                parts.append(zip_c)
+                
+            location = ", ".join(parts).replace("FL, ", "FL ")
         
         props_to_enrich.append({
             "folio": r[0],

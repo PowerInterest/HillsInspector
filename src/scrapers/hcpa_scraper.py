@@ -109,102 +109,124 @@ class HCPAScraper:
                     except Exception as e:
                         logger.warning(f"Element screenshot failed: {e}. Fallback to full page.")
                         screenshot_bytes = await page.screenshot(full_page=True)
-                
-                # Save using ScraperStorage
-                screenshot_path = self.storage.save_screenshot(
-                    property_id=prop.parcel_id,
-                    scraper="hcpa",
-                    image_data=screenshot_bytes,
-                    context="details"
-                )
-                logger.info("Captured HCPA details screenshot: {path}", path=screenshot_path)
-                
-                # Get full path for vision service
-                full_screenshot_path = self.storage.get_full_path(prop.parcel_id, screenshot_path)
 
-                # Use VisionService to extract data
-                from src.services.vision_service import VisionService
-                vision = VisionService()
-                
-                logger.info("Analyzing HCPA screenshot with VisionService...")
-                data = vision.extract_hcpa_details(str(full_screenshot_path))
-                
-                if data:
-                    logger.info("Successfully extracted HCPA data: {keys}", keys=data.keys())
-                    
-                    # Save vision output
-                    vision_path = self.storage.save_vision_output(
+                    # Save using ScraperStorage
+                    screenshot_path = self.storage.save_screenshot(
                         property_id=prop.parcel_id,
                         scraper="hcpa",
-                        vision_data=data,
-                        screenshot_path=screenshot_path,
-                        prompt_version="v1"
+                        image_data=screenshot_bytes,
+                        context="details"
                     )
-                    
-                    # Record scrape
-                    self.storage.record_scrape(
-                        property_id=prop.parcel_id,
-                        scraper="hcpa",
-                        screenshot_path=screenshot_path,
-                        vision_output_path=vision_path,
-                        vision_data=data,
-                        success=True
-                    )
-                    
-                    # Map to Property object
-                    if "owner_info" in data:
-                        prop.owner_name = data["owner_info"].get("owner_name")
-                        
-                    if "building_info" in data:
-                        b_info = data["building_info"]
-                        prop.year_built = self._parse_int(b_info.get("year_built"))
-                        prop.beds = self._parse_float(b_info.get("beds"))
-                        prop.baths = self._parse_float(b_info.get("baths"))
-                        prop.heated_area = self._parse_float(b_info.get("heated_area"))
-                        
-                    # Store the full raw analysis for later use (e.g. sales history)
-                    # We need to add a field to Property model or save to DB directly
-                    # For now, let's save to a JSON file or log it
-                    prop.market_analysis_content = json.dumps(data) # Reusing this field for now
-                    
+                    logger.info("Captured HCPA details screenshot: {path}", path=screenshot_path)
+
+                    # Get full path for vision service
+                    full_screenshot_path = self.storage.get_full_path(prop.parcel_id, screenshot_path)
+
+                    # Use VisionService to extract data
+                    from src.services.vision_service import VisionService
+                    vision = VisionService()
+
+                    logger.info("Analyzing HCPA screenshot with VisionService...")
+                    data = vision.extract_hcpa_details(str(full_screenshot_path))
+
+                    if data:
+                        logger.info("Successfully extracted HCPA data: {keys}", keys=data.keys())
+
+                        # Save vision output
+                        vision_path = self.storage.save_vision_output(
+                            property_id=prop.parcel_id,
+                            scraper="hcpa",
+                            vision_data=data,
+                            screenshot_path=screenshot_path,
+                            prompt_version="v1"
+                        )
+
+                        # Record scrape
+                        self.storage.record_scrape(
+                            property_id=prop.parcel_id,
+                            scraper="hcpa",
+                            screenshot_path=screenshot_path,
+                            vision_output_path=vision_path,
+                            vision_data=data,
+                            success=True
+                        )
+
+                        # Map to Property object
+                        if "owner_info" in data:
+                            prop.owner_name = data["owner_info"].get("owner_name")
+
+                        if "building_info" in data:
+                            b_info = data["building_info"]
+                            prop.year_built = self._parse_int(b_info.get("year_built"))
+                            prop.beds = self._parse_float(b_info.get("beds"))
+                            prop.baths = self._parse_float(b_info.get("baths"))
+                            prop.heated_area = self._parse_float(b_info.get("heated_area"))
+
+                        # Extract legal description from property details
+                        if "property_details" in data:
+                            p_details = data["property_details"]
+                            if p_details.get("legal_description"):
+                                prop.legal_description = p_details.get("legal_description")
+                                logger.info("Extracted legal description for {parcel}: {legal}",
+                                           parcel=prop.parcel_id,
+                                           legal=prop.legal_description[:50] if prop.legal_description else "N/A")
+
+                        # Extract value summary (assessed value, market value, etc.)
+                        if "value_summary" in data:
+                            v_summary = data["value_summary"]
+                            if v_summary.get("assessed_value"):
+                                prop.assessed_value = self._parse_float(v_summary.get("assessed_value"))
+                            # Could add market_value to Property model if needed
+
+                        # Extract sales history - this is important for chain of title
+                        if "sales_history" in data and isinstance(data["sales_history"], list):
+                            prop.sales_history = data["sales_history"]
+                            logger.info("Extracted {count} sales history records for {parcel}",
+                                       count=len(prop.sales_history), parcel=prop.parcel_id)
+
+                        # Store the full raw analysis for later use
+                        prop.market_analysis_content = json.dumps(data)
+
+                    else:
+                        logger.warning("VisionService returned no data for HCPA screenshot")
+                        # Record failed scrape (or partial success since we got screenshot)
+                        self.storage.record_scrape(
+                            property_id=prop.parcel_id,
+                            scraper="hcpa",
+                            screenshot_path=screenshot_path,
+                            success=False,
+                            error="No data extracted from vision service"
+                        )
+
+                    # Image Extraction
+                    try:
+                        # Try to find the main property image
+                        # Strategy 1: Look for img with specific ID or class if known (not known yet)
+                        # Strategy 2: Look for img with src containing 'photo' or 'cam'
+                        images = await page.locator("img").all()
+                        for img in images:
+                            src = await img.get_attribute("src")
+                            if src and ("photo" in src.lower() or "pictometry" in src.lower() or "getimage" in src.lower()):
+                                if src.startswith("http"):
+                                    prop.image_url = src
+                                elif src.startswith("/"):
+                                    prop.image_url = f"https://gis.hcpafl.org{src}"
+                                else:
+                                    prop.image_url = f"https://gis.hcpafl.org/PropertySearch/{src}"
+                                logger.info("Found property image URL for {parcel}: {url}", parcel=prop.parcel_id, url=prop.image_url)
+                                break
+                    except Exception as e:
+                        logger.error("Error extracting image for parcel {parcel}: {error}", parcel=prop.parcel_id, error=e)
+
+                    logger.info("Enriched parcel {parcel}: owner={owner} year_built={year}", parcel=prop.parcel_id, owner=prop.owner_name, year=prop.year_built)
+
+                    if not prop.owner_name:
+                        logger.warning("Owner not found for parcel {parcel}. Dumping HTML to debug_hcpa_result.html", parcel=prop.parcel_id)
+                        content = await page.content()
+                        with open("debug_hcpa_result.html", "w", encoding="utf-8") as f:
+                            f.write(content)
                 else:
-                    logger.warning("VisionService returned no data for HCPA screenshot")
-                    # Record failed scrape (or partial success since we got screenshot)
-                    self.storage.record_scrape(
-                        property_id=prop.parcel_id,
-                        scraper="hcpa",
-                        screenshot_path=screenshot_path,
-                        success=False,
-                        error="No data extracted from vision service"
-                    )
-
-                # Image Extraction
-                try:
-                    # Try to find the main property image
-                    # Strategy 1: Look for img with specific ID or class if known (not known yet)
-                    # Strategy 2: Look for img with src containing 'photo' or 'cam'
-                    images = await page.locator("img").all()
-                    for img in images:
-                        src = await img.get_attribute("src")
-                        if src and ("photo" in src.lower() or "pictometry" in src.lower() or "getimage" in src.lower()):
-                            if src.startswith("http"):
-                                prop.image_url = src
-                            elif src.startswith("/"):
-                                prop.image_url = f"https://gis.hcpafl.org{src}"
-                            else:
-                                prop.image_url = f"https://gis.hcpafl.org/PropertySearch/{src}"
-                            logger.info("Found property image URL for {parcel}: {url}", parcel=prop.parcel_id, url=prop.image_url)
-                            break
-                except Exception as e:
-                    logger.error("Error extracting image for parcel {parcel}: {error}", parcel=prop.parcel_id, error=e)
-
-                logger.info("Enriched parcel {parcel}: owner={owner} year_built={year}", parcel=prop.parcel_id, owner=prop.owner_name, year=prop.year_built)
-                
-                if not prop.owner_name:
-                    logger.warning("Owner not found for parcel {parcel}. Dumping HTML to debug_hcpa_result.html", parcel=prop.parcel_id)
-                    content = await page.content()
-                    with open("debug_hcpa_result.html", "w", encoding="utf-8") as f:
-                        f.write(content)
+                    logger.warning("HCPA search returned no results for parcel {parcel}", parcel=prop.parcel_id)
                 
             except Exception as e:
                 logger.error("Error enriching property {parcel}: {error}", parcel=prop.parcel_id, error=e)

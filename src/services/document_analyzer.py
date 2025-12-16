@@ -149,6 +149,10 @@ class DocumentAnalyzer:
             num_pages = min(len(doc), max_pages)
 
             page_images = []
+            
+            # Ensure temp dir exists (in case it was deleted)
+            self.temp_dir.mkdir(parents=True, exist_ok=True)
+            
             for i in range(num_pages):
                 page = doc[i]
                 img_path = self.temp_dir / f"{prefix}_p{i+1}.png"

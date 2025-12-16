@@ -650,6 +650,12 @@ class PermitScraper:
                 source_path=str(latest_screenshot),
                 context=city.lower().replace(" ", "_")
             )
+            
+            # Clean up temporary file
+            try:
+                latest_screenshot.unlink()
+            except Exception as e:
+                logger.debug(f"Failed to delete temp screenshot {latest_screenshot}: {e}")
 
         # Save vision output
         vision_path = None

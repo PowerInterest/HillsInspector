@@ -35,6 +35,12 @@ body {
     font-size: 14px;
 }
 
+.muted {
+    color: var(--color-text-muted);
+    font-size: 12px;
+    margin-top: 0.25rem;
+}
+
 a {
     color: var(--color-primary);
     text-decoration: none;
@@ -399,7 +405,7 @@ a:hover {
 
 /* ===== Property Detail ===== */
 .property-detail {
-    max-width: 1200px;
+    max-width: 1400px;
 }
 
 .breadcrumb {
@@ -451,15 +457,15 @@ a:hover {
     font-weight: 700;
 }
 
-/* Property Grid */
-.property-grid {
+/* Property Detail Grid */
+.property-detail-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 1.5rem;
 }
 
 @media (max-width: 900px) {
-    .property-grid {
+    .property-detail-grid {
         grid-template-columns: 1fr;
     }
 }
@@ -780,6 +786,20 @@ a:hover {
     border-radius: var(--radius-sm);
     font-size: 0.85rem;
     box-shadow: var(--shadow-sm);
+}
+
+/* Custom property marker for map */
+.property-marker {
+    background: transparent;
+    border: none;
+}
+.property-marker svg {
+    filter: drop-shadow(1px 2px 2px rgba(0,0,0,0.3));
+    cursor: pointer;
+    transition: transform 0.15s ease;
+}
+.property-marker:hover svg {
+    transform: scale(1.15);
 }
 
 .map-popup {
@@ -1290,6 +1310,10 @@ a:hover {
     width: 100%;
 }
 
+.property-tabs {
+    margin-top: 1rem;
+}
+
 .tabs {
     display: flex;
     border-bottom: 2px solid var(--color-border);
@@ -1324,6 +1348,65 @@ a:hover {
 
 .tab-content.active {
     display: block;
+}
+
+/* ===== Photos (Market/HomeHarvest) ===== */
+.property-media .media-hero {
+    width: 100%;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+}
+
+.property-media .media-hero img {
+    width: 100%;
+    height: 240px;
+    object-fit: cover;
+    display: block;
+}
+
+.property-media .media-thumbs {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+}
+
+.property-media .media-thumbs img {
+    width: 88px;
+    height: 66px;
+    object-fit: cover;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    flex: 0 0 auto;
+}
+
+.photo-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.photo-item {
+    display: block;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    border: 1px solid var(--color-border);
+    background: #f9fafb;
+}
+
+.photo-item img {
+    width: 100%;
+    height: 140px;
+    object-fit: cover;
+    display: block;
+}
+
+@media (max-width: 900px) {
+    .photo-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }
 
 /* ===== Timeline ===== */

@@ -32,6 +32,13 @@ Runs the complete pipeline: scraping auctions (next 60 days), downloading judgme
 uv run main.py --update
 ```
 
+### 2.5. Process Limited Date Range
+To process only auctions within a specific date range, use `--start-date` and `--end-date`:
+```powershell
+uv run python main.py --update --start-date 2025-12-18 --end-date 2025-12-18
+```
+This is useful for testing a single day's auctions or reprocessing a specific period.
+
 ### 3. Start Web Server
 Launches the local web dashboard to view results.
 ```powershell

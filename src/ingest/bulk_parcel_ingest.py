@@ -423,6 +423,38 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
     """
     conn = duckdb.connect(db_path)
 
+    # Check if bulk_parcels table exists, if not try to load from parquet
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM bulk_parcels").fetchone()[0]
+        if count == 0:
+            raise Exception("Empty table")
+        logger.info(f"bulk_parcels table has {count:,} records")
+    except Exception:
+        # Try to load from parquet file
+        # Look for specific dated file first, then latest
+        parquet_candidates = [
+            BULK_DATA_DIR / "bulk_parcels_20251204.parquet",  # Specific file from user
+            PARQUET_DIR / "bulk_parcels_latest.parquet",
+        ]
+
+        parquet_file = None
+        for candidate in parquet_candidates:
+            if candidate.exists():
+                parquet_file = candidate
+                break
+
+        if parquet_file is None:
+            logger.warning("No bulk_parcels table or parquet file found. Skipping enrichment.")
+            return {
+                "error": "No bulk_parcels data available",
+                "hint": "Run: uv run python -m src.ingest.bulk_parcel_ingest <parcel.dbf>",
+            }
+
+        logger.info(f"Loading bulk_parcels from parquet: {parquet_file}")
+        df = pl.read_parquet(parquet_file)
+        ingest_to_duckdb(df, db_path)
+        logger.success(f"Loaded {len(df):,} records from parquet")
+
     # Ensure parcels table has legal description columns
     conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS legal_description VARCHAR")
     conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS judgment_legal_description VARCHAR")

@@ -1,6 +1,6 @@
 from typing import Optional, Any, List, Dict
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from loguru import logger
 
@@ -1251,7 +1251,7 @@ class IngestionService:
             # Check if it's a Unix timestamp (int or float)
             if isinstance(date_val, (int, float)):
                 try:
-                    parsed = dt.fromtimestamp(date_val, tz=datetime.UTC)
+                    parsed = dt.fromtimestamp(date_val, tz=timezone.utc)
                     rec_date = parsed.strftime("%Y-%m-%d")
                 except (ValueError, OSError):
                     pass
@@ -1321,7 +1321,7 @@ class IngestionService:
                 ts = ori_doc.get("RecordDate", 0)
                 if ts > 100000000000:  # It's ms
                     ts = ts / 1000
-                rec_date = datetime.fromtimestamp(ts, tz=datetime.UTC).strftime("%Y-%m-%d")
+                rec_date = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
             except Exception as exc:
                 logger.debug("Could not parse timestamp %s for %s: %s", ts, prop.case_number, exc)
 

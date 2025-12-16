@@ -14,7 +14,11 @@ from app.web.database import (
     get_liens_for_property,
     get_documents_for_property,
     get_sales_history,
-    get_document_by_instrument
+    get_document_by_instrument,
+    get_market_snapshot,
+    get_tax_status_for_property,
+    get_permits_for_property,
+    get_nocs_for_property,
 )
 
 router = APIRouter()
@@ -49,7 +53,9 @@ async def property_detail(request: Request, folio: str):
             "liens": prop.get("liens", []),
             "encumbrances": prop.get("encumbrances", []),
             "net_equity": prop.get("net_equity", 0),
-            "market_value": prop.get("market_value", 0)
+            "market_value": prop.get("market_value", 0),
+            "market": prop.get("market", {}),
+            "enrichments": prop.get("enrichments", {}),
         }
     )
 
@@ -136,6 +142,69 @@ async def property_sales_history(request: Request, folio: str):
             "request": request,
             "sales": sales,
             "folio": folio
+        }
+    )
+
+
+@router.get("/{folio}/market", response_class=HTMLResponse)
+async def property_market(request: Request, folio: str):
+    """
+    HTMX partial - blended market data + HomeHarvest gallery.
+    """
+    prop = get_property_detail(folio) or get_property_by_case(folio)
+    if not prop:
+        return HTMLResponse("<p>Property not found</p>")
+    market = prop.get("market") or get_market_snapshot(prop.get("folio") or folio)
+    return templates.TemplateResponse(
+        "partials/market.html",
+        {
+            "request": request,
+            "folio": prop.get("folio") or folio,
+            "auction": prop.get("auction", {}),
+            "market": market,
+        },
+    )
+
+
+@router.get("/{folio}/tax", response_class=HTMLResponse)
+async def property_tax(request: Request, folio: str):
+    """
+    HTMX partial - tax status and tax liens.
+    """
+    prop = get_property_detail(folio) or get_property_by_case(folio)
+    if not prop:
+        return HTMLResponse("<p>Property not found</p>")
+    status = get_tax_status_for_property(prop.get("folio") or folio)
+    return templates.TemplateResponse(
+        "partials/tax.html",
+        {
+            "request": request,
+            "folio": prop.get("folio") or folio,
+            "auction": prop.get("auction", {}),
+            "tax": status,
+        },
+    )
+
+
+@router.get("/{folio}/permits", response_class=HTMLResponse)
+async def property_permits(request: Request, folio: str):
+    """
+    HTMX partial - permits and NOCs.
+    """
+    prop = get_property_detail(folio) or get_property_by_case(folio)
+    if not prop:
+        return HTMLResponse("<p>Property not found</p>")
+        
+    permits = get_permits_for_property(prop.get("folio") or folio)
+    nocs = get_nocs_for_property(prop.get("folio") or folio)
+    
+    return templates.TemplateResponse(
+        "partials/permits.html",
+        {
+            "request": request,
+            "permits": permits,
+            "nocs": nocs,
+            "folio": prop.get("folio") or folio
         }
     )
 

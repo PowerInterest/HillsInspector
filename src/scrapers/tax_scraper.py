@@ -140,9 +140,16 @@ class TaxScraper:
                     await asyncio.sleep(3)
 
                     # Save screenshot for records
-                    screenshot_path = f"data/tax_detail_{parcel_id}.png"
-                    await page.screenshot(path=screenshot_path, full_page=True)
-                    logger.info(f"Saved screenshot to {screenshot_path}")
+                    screenshot_bytes = await page.screenshot(full_page=True)
+                    screenshot_path = self.storage.save_screenshot(
+                        property_id=parcel_id,
+                        scraper="tax_collector",
+                        image_data=screenshot_bytes,
+                        context="detail_page"
+                    )
+                    # Convert to full path for VisionService
+                    full_screenshot_path = self.storage.get_full_path(parcel_id, screenshot_path)
+                    logger.info(f"Saved screenshot to {full_screenshot_path}")
 
                     # Try accessibility tree first (faster, no network needed)
                     tax_data = await self._extract_tax_from_aria(page)
@@ -151,12 +158,12 @@ class TaxScraper:
                     # If accessibility extraction didn't find key data, try vision extraction
                     if not tax_data.get("account_number") and not tax_data.get("paid_in_full"):
                         logger.info(f"Text extraction incomplete, trying vision extraction...")
-                        vision_data = self._extract_tax_from_screenshot(screenshot_path)
+                        vision_data = self._extract_tax_from_screenshot(str(full_screenshot_path))
                         if vision_data.get("account_number") or vision_data.get("paid_in_full"):
                             logger.info(f"Vision extracted tax data: {vision_data}")
                             tax_data = vision_data
                         else:
-                            logger.info(f"Vision extraction also incomplete, screenshot saved to {screenshot_path}")
+                            logger.info(f"Vision extraction also incomplete, screenshot saved to {full_screenshot_path}")
 
                     # Always return tax status data (not just liens)
                     tax_record = {
@@ -216,9 +223,16 @@ class TaxScraper:
                         await asyncio.sleep(1)
 
                         # Save screenshot for records
-                        screenshot_path = f"data/tax_detail_{parcel_id}.png"
-                        await page.screenshot(path=screenshot_path, full_page=True)
-                        logger.info(f"Saved screenshot to {screenshot_path}")
+                        screenshot_bytes = await page.screenshot(full_page=True)
+                        screenshot_path = self.storage.save_screenshot(
+                            property_id=parcel_id,
+                            scraper="tax_collector",
+                            image_data=screenshot_bytes,
+                            context="detail_page"
+                        )
+                        # Convert to full path for VisionService
+                        full_screenshot_path = self.storage.get_full_path(parcel_id, screenshot_path)
+                        logger.info(f"Saved screenshot to {full_screenshot_path}")
 
                         # Try accessibility tree first (faster, no network needed)
                         tax_data = await self._extract_tax_from_aria(page)
@@ -227,12 +241,12 @@ class TaxScraper:
                         # If accessibility extraction didn't find key data, try vision extraction
                         if not tax_data.get("account_number") and not tax_data.get("paid_in_full"):
                             logger.info(f"Text extraction incomplete, trying vision extraction...")
-                            vision_data = self._extract_tax_from_screenshot(screenshot_path)
+                            vision_data = self._extract_tax_from_screenshot(str(full_screenshot_path))
                             if vision_data.get("account_number") or vision_data.get("paid_in_full"):
                                 logger.info(f"Vision extracted tax data: {vision_data}")
                                 tax_data = vision_data
                             else:
-                                logger.info(f"Vision extraction also incomplete, screenshot saved to {screenshot_path}")
+                                logger.info(f"Vision extraction also incomplete, screenshot saved to {full_screenshot_path}")
 
                         # Always return tax status data (not just liens)
                         tax_record = {

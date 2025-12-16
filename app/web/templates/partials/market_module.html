@@ -1,0 +1,47 @@
+{% set estimates = market.estimates or {} %}
+{% set list_prices = market.list_prices or {} %}
+
+<section class="card">
+    <h2>Market</h2>
+    <p class="muted">Blended estimate is the simple mean of available estimates (excludes bulk).</p>
+
+    <div class="info-grid">
+        <div class="info-item">
+            <span class="info-label">Blended Estimate</span>
+            <span class="info-value money">
+                {{ "${:,.0f}".format(market.blended_estimate) if market.blended_estimate else "-" }}
+            </span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Zestimate</span>
+            <span class="info-value money">
+                {{ "${:,.0f}".format(estimates.zillow_zestimate) if estimates.zillow_zestimate else "-" }}
+            </span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">HomeHarvest Est.</span>
+            <span class="info-value money">
+                {{ "${:,.0f}".format(estimates.homeharvest_estimated_value) if estimates.homeharvest_estimated_value else "-" }}
+            </span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Realtor Estimate</span>
+            <span class="info-value money">
+                {{ "${:,.0f}".format(estimates.realtor_estimate) if estimates.realtor_estimate else "-" }}
+            </span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Realtor List Price</span>
+            <span class="info-value money">
+                {{ "${:,.0f}".format(list_prices.realtor_list_price) if list_prices.realtor_list_price else "-" }}
+            </span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">HomeHarvest List Price</span>
+            <span class="info-value money">
+                {{ "${:,.0f}".format(list_prices.homeharvest_list_price) if list_prices.homeharvest_list_price else "-" }}
+            </span>
+        </div>
+    </div>
+</section>
+

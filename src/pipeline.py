@@ -21,6 +21,7 @@ Steps:
 import asyncio
 import contextlib
 import json
+import re
 import urllib.parse
 from datetime import date, timedelta, datetime, UTC
 from pathlib import Path
@@ -49,7 +50,7 @@ from src.services.scraper_storage import ScraperStorage
 from src.ingest.bulk_parcel_ingest import enrich_auctions_from_bulk
 from src.services.data_linker import link_permits_to_nocs
 from src.db.operations import PropertyDB
-from src.models.property import Lien, Property
+from src.models.property import Property
 from playwright.async_api import async_playwright
 
 from src.services.homeharvest_service import HomeHarvestService
@@ -450,14 +451,20 @@ async def run_full_pipeline(
     property_limit: Optional[int] = None,
     start_step: int = 1,
     start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    geocode_missing_parcels: bool = False,
+    geocode_limit: int | None = 25,
 ):
     """Run the complete property analysis pipeline with smart skip logic.
 
     Args:
         max_auctions: Limit applied to later market data steps.
         property_limit: Optional cap on total auctions ingested (foreclosure + tax deed).
-        start_step: Step number to start from (1-13). Use to resume after failures.
+        start_step: Step number to start from (1-15). Use to resume after failures.
         start_date: Date to start scraping from. Defaults to tomorrow.
+        end_date: Date to stop scraping (inclusive). Defaults to 30 days after start_date.
+        geocode_missing_parcels: Whether to geocode parcels missing latitude/longitude.
+        geocode_limit: Maximum number of parcels to geocode per run (None = no limit).
     """
 
     logger.info("=" * 60)
@@ -473,7 +480,9 @@ async def run_full_pipeline(
     # Default to tomorrow if no start_date specified
     if start_date is None:
         start_date = today + timedelta(days=1)
-    end_date = start_date + timedelta(days=30)
+    # Use provided end_date, otherwise default to 30 days after start
+    if end_date is None:
+        end_date = start_date + timedelta(days=30)
     if property_limit:
         end_date = start_date  # constrain debug runs to the nearest auction day
 
@@ -747,7 +756,8 @@ async def run_full_pipeline(
             logger.info(f"Fetching HCPA GIS for {folio}...")
             try:
                 # scrape_hcpa_property is an async function with timeout protection
-                result = await scrape_hcpa_property(folio=folio, timeout_seconds=90)
+                # Use parcel_id parameter for direct URL access (more reliable than search)
+                result = await scrape_hcpa_property(parcel_id=folio, timeout_seconds=90)
 
                 # Check for timeout/error in result
                 if result and result.get("error"):
@@ -763,7 +773,8 @@ async def run_full_pipeline(
                     )
                     gis_count += 1
                     gis_errors = 0  # Reset error count on success
-                    db.mark_step_complete(case_number, "needs_hcpa_enrichment")
+                    # Mark ALL auctions with this folio as complete (avoid duplicate scrapes)
+                    db.mark_step_complete_by_folio(folio, "needs_hcpa_enrichment")
 
                 # Save legal description for ORI search in Step 4
                 if result and result.get("legal_description"):
@@ -995,18 +1006,21 @@ async def run_full_pipeline(
         with logger.contextualize(folio=folio, case_number=case_number, step="lien_survival"):
             logger.info("Analyzing lien survival...")
 
+            # Fetch encumbrances with full details for new analyzer
             try:
                 encs_rows = db.execute_query(
-                    f"""SELECT id, encumbrance_type, recording_date, book, page, amount
+                    f"""SELECT id, encumbrance_type, recording_date, creditor, debtor,
+                               amount, instrument, book, page, is_satisfied
                         FROM encumbrances
-                        WHERE folio = '{folio}' AND is_satisfied = FALSE"""
+                        WHERE folio = '{folio}'"""
                 )
             except Exception as e:
                 logger.exception(f"Failed to fetch encumbrances: {e}")
                 continue
 
-            liens_for_analysis = []
-            lien_id_map = {}
+            # Build encumbrances list for new analyzer
+            encumbrances = []
+            enc_id_map = {}  # Map instrument/recording_date combo to DB id
 
             for row in encs_rows:
                 rec_date = None
@@ -1016,15 +1030,38 @@ async def run_full_pipeline(
                             str(row["recording_date"]), "%Y-%m-%d"
                         ).date()
 
-                lien_obj = Lien(
-                    document_type=row["encumbrance_type"],
-                    recording_date=rec_date or date.min,
-                    amount=row["amount"],
-                    book=row["book"],
-                    page=row["page"],
+                enc = {
+                    "encumbrance_type": row["encumbrance_type"],
+                    "recording_date": rec_date,
+                    "creditor": row.get("creditor"),
+                    "debtor": row.get("debtor"),
+                    "amount": row["amount"],
+                    "instrument": row.get("instrument"),
+                    "is_satisfied": row.get("is_satisfied", False),
+                }
+                encumbrances.append(enc)
+                # Use instrument as key, fall back to recording_date + type
+                key = row.get("instrument") or f"{rec_date}_{row['encumbrance_type']}"
+                enc_id_map[key] = row["id"]
+
+            # Get current owner acquisition date from chain_of_title
+            current_owner_acquisition_date = None
+            try:
+                chain_rows = db.execute_query(
+                    f"""SELECT acquisition_date
+                        FROM chain_of_title
+                        WHERE folio = '{folio}'
+                        ORDER BY acquisition_date DESC
+                        LIMIT 1"""
                 )
-                liens_for_analysis.append(lien_obj)
-                lien_id_map[id(lien_obj)] = row["id"]
+                if chain_rows and chain_rows[0].get("acquisition_date"):
+                    acq_str = str(chain_rows[0]["acquisition_date"])
+                    with contextlib.suppress(ValueError):
+                        current_owner_acquisition_date = datetime.strptime(
+                            acq_str, "%Y-%m-%d"
+                        ).date()
+            except Exception as e:
+                logger.warning(f"Failed to get chain_of_title: {e}")
 
             # Get judgment data for lis pendens date
             judgment_data = {}
@@ -1038,34 +1075,40 @@ async def run_full_pipeline(
                 with contextlib.suppress(ValueError):
                     lis_pendens_date = datetime.strptime(lp_str, "%Y-%m-%d").date()
 
+            # Get plaintiff from auction
+            plaintiff = auction.get("plaintiff")
+
+            # Run the new analyzer
             survival_result = survival_analyzer.analyze(
-                liens=liens_for_analysis,
+                encumbrances=encumbrances,
                 foreclosure_type=auction.get("foreclosure_type")
                 or judgment_data.get("foreclosure_type"),
                 lis_pendens_date=lis_pendens_date,
+                current_owner_acquisition_date=current_owner_acquisition_date,
+                plaintiff=plaintiff,
                 original_mortgage_amount=auction.get("original_mortgage_amount"),
             )
 
-            # Update survival status
-            surviving_ids = []
-            expired_ids = []
+            # Update survival status for each category
+            results = survival_result.get("results", {})
 
-            for surviving_lien in survival_result["surviving_liens"]:
-                lid = lien_id_map.get(id(surviving_lien))
-                if lid:
-                    db.update_encumbrance_survival(lid, "SURVIVED")
-                    surviving_ids.append(lid)
+            # Process each status category
+            status_mapping = {
+                "survived": "SURVIVED",
+                "extinguished": "EXTINGUISHED",
+                "expired": "EXPIRED",
+                "satisfied": "SATISFIED",
+                "historical": "HISTORICAL",
+                "foreclosing": "FORECLOSING",
+            }
 
-            for expired_lien in survival_result.get("expired_liens", []):
-                lid = lien_id_map.get(id(expired_lien))
-                if lid:
-                    db.update_encumbrance_survival(lid, "EXPIRED")
-                    expired_ids.append(lid)
-
-            for row in encs_rows:
-                lid = row["id"]
-                if lid not in surviving_ids and lid not in expired_ids:
-                    db.update_encumbrance_survival(lid, "WIPED_OUT")
+            for category, status in status_mapping.items():
+                for enc in results.get(category, []):
+                    # Find the DB id using instrument or recording_date + type
+                    key = enc.get("instrument") or f"{enc.get('recording_date')}_{enc.get('type')}"
+                    db_id = enc_id_map.get(key)
+                    if db_id:
+                        db.update_encumbrance_survival(db_id, status)
 
             # Mark as analyzed and record case number
             db.mark_as_analyzed(case_number)
@@ -1073,7 +1116,13 @@ async def run_full_pipeline(
             db.mark_step_complete(case_number, "needs_lien_survival")
             analyzed_count += 1
 
-            logger.info(f"  Surviving: {len(survival_result['surviving_liens'])}")
+            summary = survival_result.get("summary", {})
+            logger.info(
+                f"  Survived: {summary.get('survived_count', 0)}, "
+                f"Extinguished: {summary.get('extinguished_count', 0)}, "
+                f"Historical: {summary.get('historical_count', 0)}, "
+                f"Foreclosing: {summary.get('foreclosing_count', 0)}"
+            )
 
     logger.success(f"Analyzed {analyzed_count} properties")
 
@@ -1466,6 +1515,7 @@ async def run_full_pipeline(
     for row in auctions_for_tax:
         folio = row["parcel_id"]
         case_number = row["case_number"]
+        property_address = row.get("property_address")
         if not folio:
             continue
 
@@ -1475,9 +1525,14 @@ async def run_full_pipeline(
             db.mark_step_complete(case_number, "needs_tax_check")
             continue
 
-        logger.info(f"Checking tax status for {folio}...")
+        # Skip if no address - can't search tax collector without it
+        if not property_address:
+            logger.warning(f"Skipping tax check for {folio} - no property address available")
+            continue
+
+        logger.info(f"Checking tax status for {folio} ({property_address})...")
         try:
-            liens = await tax_scraper.get_tax_liens(folio)
+            liens = await tax_scraper.get_tax_liens(folio, property_address)
             if liens:
                 for lien in liens:
                     db.save_liens(folio, [lien])
@@ -1520,6 +1575,77 @@ async def run_full_pipeline(
     # =========================================================================
     # DONE
     # =========================================================================
+    # =========================================================================
+    # STEP 15: Geocode Missing Parcel Coordinates (Nominatim, cached)
+    # =========================================================================
+    logger.info("\n" + "=" * 60)
+    logger.info("STEP 15: GEOCODE MISSING PARCELS")
+    logger.info("=" * 60)
+
+    if start_step > 15:
+        logger.info("Skipping step 15 (start_step > 15)")
+    elif not geocode_missing_parcels:
+        logger.info("Skipping step 15 (disabled)")
+    else:
+        from src.services.geocoder import geocode_address
+
+        db.ensure_geocode_columns()
+
+        query = """
+            SELECT DISTINCT
+                p.folio,
+                p.property_address,
+                p.city,
+                p.zip_code
+            FROM parcels p
+            JOIN auctions a ON a.parcel_id = p.folio
+            WHERE (p.latitude IS NULL OR p.longitude IS NULL)
+              AND p.property_address IS NOT NULL
+              AND p.property_address != ''
+              AND a.auction_date >= ?
+              AND a.auction_date <= ?
+        """
+        params: list[object] = [start_date, end_date]
+        if geocode_limit is not None:
+            query += " LIMIT ?"
+            params.append(geocode_limit)
+
+        try:
+            rows = db.execute_query(query, params)
+        except Exception as exc:
+            logger.error(f"Failed to query parcels needing geocode: {exc}")
+            rows = []
+
+        logger.info(f"Found {len(rows)} parcels needing geocode")
+        updated = 0
+        for row in rows:
+            folio = row.get("folio")
+            address = (row.get("property_address") or "").strip()
+            if not folio or not address:
+                continue
+
+            # Check if address already contains state abbreviation (FL)
+            # Pattern: ", FL" or ", FL-" or ", FL " typically indicates full address
+            if re.search(r',\s*FL[\s\-]', address, re.IGNORECASE):
+                # Address already has city/state/zip - normalize "FL-" to "FL " and use as-is
+                full_address = re.sub(r'FL-\s*', 'FL ', address)
+            else:
+                # Address needs city/state/zip appended
+                city = (row.get("city") or "Tampa").strip()
+                zip_code = (row.get("zip_code") or "").strip()
+                full_address = f"{address}, {city}, FL {zip_code}".strip()
+
+            coords = geocode_address(full_address)
+            if not coords:
+                continue
+
+            lat, lon = coords
+            db.update_parcel_coordinates(str(folio), lat, lon)
+            updated += 1
+            logger.info(f"Geocoded {folio}: ({lat}, {lon})")
+
+        logger.success(f"Geocoded {updated}/{len(rows)} parcels")
+
     logger.info("\n" + "=" * 60)
     logger.success("PIPELINE COMPLETE")
     logger.info("=" * 60)

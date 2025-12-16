@@ -89,7 +89,7 @@ def download_pdf(doc: dict, output_dir: Path, session: requests.Session) -> Path
     instrument = doc.get("Instrument", "unknown")
     doc_type = doc.get("DocType", "UNKNOWN").replace("(", "").replace(")", "").replace(" ", "_")
     try:
-        record_date = datetime.fromtimestamp(doc.get("RecordDate", 0), tz=datetime.UTC).strftime("%Y%m%d")
+        record_date = datetime.fromtimestamp(doc.get("RecordDate", 0), tz=UTC).strftime("%Y%m%d")
     except (OSError, ValueError):
         record_date = "unknown"
 

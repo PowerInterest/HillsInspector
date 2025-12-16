@@ -15,7 +15,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from loguru import logger
 
 # Add parent directory to path for imports
@@ -141,7 +141,7 @@ async def main(max_properties: int = 3):
     logger.info("=" * 60)
 
     # Find next weekday for auction
-    today = datetime.now(tz=datetime.UTC).date()
+    today = datetime.now(tz=timezone.utc).date()
     target = today + timedelta(days=1)
     while target.weekday() >= 5:  # Skip weekends
         target += timedelta(days=1)

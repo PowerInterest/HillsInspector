@@ -2,6 +2,7 @@ from typing import List, Dict, Optional, Tuple, Any
 from datetime import UTC, datetime
 from dataclasses import dataclass
 import re
+import json
 
 from src.services.institutional_names import get_searchable_party_name
 
@@ -200,6 +201,27 @@ class TitleChainService:
                 enc_lender = enc.get('party1', '').strip()
                 enc_debtor = enc.get('party2', '').strip()
 
+            # Extract amount from JSON if not at top level
+            amount_val = enc.get('amount')
+            if not amount_val or amount_val == 'Unknown':
+                try:
+                    # Check both fields: 'extracted_data' (from DB) or 'vision_extracted_data' (in-memory)
+                    ext_data = enc.get('vision_extracted_data') or enc.get('extracted_data')
+                    
+                    if ext_data:
+                        if isinstance(ext_data, str):
+                            ext_data = json.loads(ext_data)
+                        
+                        # Try common amount fields
+                        amount_val = (
+                            ext_data.get('amount') or 
+                            ext_data.get('total_judgment_amount') or 
+                            ext_data.get('principal_amount') or 
+                            ext_data.get('sales_price')
+                        )
+                except Exception:
+                    pass
+
             for sat in satisfactions:
                 sat_date = self._parse_date(sat.get('recording_date'))
                 if sat_date <= enc_date:
@@ -244,7 +266,7 @@ class TitleChainService:
             results.append({
                 'type': enc_type,
                 'date': enc.get('recording_date'),
-                'amount': enc.get('amount', 'Unknown'),
+                'amount': amount_val or 0.0,
                 'creditor': enc_lender,
                 'debtor': enc_debtor,
                 'book_page': f"{enc.get('book')}/{enc.get('page')}",

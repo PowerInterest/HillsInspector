@@ -5,9 +5,10 @@ Provides high-level functions for inserting and querying data.
 import os
 import duckdb
 from contextlib import suppress
-from datetime import date, datetime
+from datetime import date, datetime, UTC
 from typing import List, Optional, Dict, Any, Any as AnyType
 import json
+from loguru import logger
 
 from src.models.property import Property, Lien
 
@@ -172,10 +173,44 @@ class PropertyDB:
             raise ValueError(f"Invalid flag name: {step_flag}")
             
         conn.execute(f"""
-            UPDATE auctions 
+            UPDATE auctions
             SET {step_flag} = FALSE, updated_at = CURRENT_TIMESTAMP
             WHERE case_number = ?
         """, [case_number])
+
+    def mark_step_complete_by_folio(self, folio: str, step_flag: str):
+        """
+        Mark a specific pipeline step as complete for ALL auctions with this folio.
+
+        This prevents duplicate scraping when the same property appears in multiple
+        auctions (e.g., same folio with different case numbers).
+
+        Args:
+            folio: Parcel ID / folio number
+            step_flag: Name of the flag column (e.g., 'needs_hcpa_enrichment')
+        """
+        conn = self.connect()
+        # Sanitize input to prevent injection (though internal use only)
+        valid_flags = {
+            "needs_judgment_extraction",
+            "needs_hcpa_enrichment",
+            "needs_ori_ingestion",
+            "needs_lien_survival",
+            "needs_sunbiz_search",
+            "needs_permit_check",
+            "needs_flood_check",
+            "needs_market_data",
+            "needs_tax_check",
+            "needs_homeharvest_enrichment"
+        }
+        if step_flag not in valid_flags:
+            raise ValueError(f"Invalid flag name: {step_flag}")
+
+        conn.execute(f"""
+            UPDATE auctions
+            SET {step_flag} = FALSE, updated_at = CURRENT_TIMESTAMP
+            WHERE parcel_id = ?
+        """, [folio])
 
     def upsert_auction(self, prop: Property) -> int:
         """
@@ -338,7 +373,92 @@ class PropertyDB:
             folio
         ])
 
+        # Save sales history if available
+        if prop.sales_history:
+            self.save_sales_history_from_hcpa(folio, prop.sales_history)
+
         return folio
+
+    def save_sales_history_from_hcpa(self, folio: str, sales: List[Dict]):
+        """
+        Save sales history records from HCPA enrichment (vision-extracted).
+
+        The vision prompt extracts: date, price, instrument, deed_type, grantor, grantee
+        """
+        conn = self.connect()
+
+        # Ensure table exists and has grantor/grantee columns
+        self.create_sales_history_table()
+        conn.execute("ALTER TABLE sales_history ADD COLUMN IF NOT EXISTS grantor VARCHAR")
+        conn.execute("ALTER TABLE sales_history ADD COLUMN IF NOT EXISTS grantee VARCHAR")
+
+        # Create index on instrument for faster lookups
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_history_instrument ON sales_history(folio, instrument)")
+
+        saved_count = 0
+        for sale in sales:
+            try:
+                # Parse sale price - handle both 'price' and 'sale_price' keys
+                price_str = str(sale.get('price', sale.get('sale_price', ''))).replace('$', '').replace(',', '')
+                try:
+                    sale_price = float(price_str) if price_str else None
+                except (ValueError, TypeError):
+                    sale_price = None
+
+                # Get instrument number
+                instrument = sale.get('instrument', '')
+
+                # Skip if no instrument number (can't dedupe without it)
+                if not instrument:
+                    continue
+
+                # Check if record already exists by folio + instrument
+                existing = conn.execute("""
+                    SELECT id FROM sales_history
+                    WHERE folio = ? AND instrument = ?
+                """, [folio, instrument]).fetchone()
+
+                if existing:
+                    # Update existing record
+                    conn.execute("""
+                        UPDATE sales_history SET
+                            sale_date = ?,
+                            doc_type = ?,
+                            sale_price = ?,
+                            grantor = ?,
+                            grantee = ?
+                        WHERE folio = ? AND instrument = ?
+                    """, [
+                        sale.get('date'),
+                        sale.get('deed_type', sale.get('doc_type')),
+                        sale_price,
+                        sale.get('grantor'),
+                        sale.get('grantee'),
+                        folio,
+                        instrument
+                    ])
+                else:
+                    # Insert new record
+                    conn.execute("""
+                        INSERT INTO sales_history (
+                            folio, instrument, sale_date, doc_type,
+                            sale_price, grantor, grantee
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, [
+                        folio,
+                        instrument,
+                        sale.get('date'),
+                        sale.get('deed_type', sale.get('doc_type')),
+                        sale_price,
+                        sale.get('grantor'),
+                        sale.get('grantee')
+                    ])
+                saved_count += 1
+            except Exception as e:
+                logger.warning(f"Error saving HCPA sale record for {folio}: {e}")
+
+        if saved_count > 0:
+            logger.info(f"Saved {saved_count} sales history records for {folio}")
     
     def get_auctions_by_date(self, auction_date: date) -> List[Dict[str, Any]]:
         """Get all auctions for a specific date."""
@@ -851,13 +971,14 @@ class PropertyDB:
 
         # Insert ownership periods
         for period in chain_data.get("ownership_timeline", []):
-            # Insert chain record
-            conn.execute("""
+            # Insert chain record and get the ID using RETURNING clause
+            result = conn.execute("""
                 INSERT INTO chain_of_title (
                     folio, owner_name, acquired_from, acquisition_date,
                     disposition_date, acquisition_instrument, acquisition_doc_type,
                     acquisition_price
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
             """, [
                 folio,
                 period.get("owner"),
@@ -869,10 +990,8 @@ class PropertyDB:
                 period.get("acquisition_price")
             ])
 
-            # Get the chain period ID
-            chain_id = conn.execute(
-                "SELECT currval('chain_id_seq')"
-            ).fetchone()[0]
+            # Get the chain period ID from the RETURNING clause
+            chain_id = result.fetchone()[0]
 
             # Insert encumbrances for this period
             for enc in period.get("encumbrances", []):
@@ -965,7 +1084,7 @@ class PropertyDB:
         """, [
             folio,
             source,
-            datetime.now(tz=datetime.UTC).date(),
+            datetime.now(tz=UTC).date(),
             data.get("listing_status"),
             data.get("list_price") or data.get("price"),
             data.get("zestimate"),

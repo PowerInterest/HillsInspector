@@ -1,0 +1,18 @@
+{% set photos = market.photos or [] %}
+
+{% include "partials/market_module.html" %}
+
+<section class="card">
+    <h2>Photos</h2>
+    {% if photos %}
+    <div class="photo-grid">
+        {% for url in photos %}
+        <a class="photo-item" href="{{ url }}" target="_blank" rel="noopener noreferrer">
+            <img src="{{ url }}" loading="lazy" alt="Property photo">
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">No HomeHarvest photos available.</p>
+    {% endif %}
+</section>
