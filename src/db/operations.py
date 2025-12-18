@@ -797,6 +797,8 @@ class PropertyDB:
                 acquisition_instrument VARCHAR,
                 acquisition_doc_type VARCHAR,
                 acquisition_price FLOAT,
+                link_status VARCHAR,
+                confidence_score FLOAT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -965,19 +967,29 @@ class PropertyDB:
         """
         conn = self.connect()
 
+        # Schema migrations (idempotent)
+        conn.execute("ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS link_status VARCHAR")
+        conn.execute("ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS confidence_score FLOAT")
+        conn.execute("ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS mrta_status VARCHAR")
+        conn.execute("ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS years_covered FLOAT")
+
         # Delete existing chain data for this folio
         conn.execute("DELETE FROM chain_of_title WHERE folio = ?", [folio])
         conn.execute("DELETE FROM encumbrances WHERE folio = ?", [folio])
 
         # Insert ownership periods
+        mrta_status = chain_data.get("mrta_status")
+        years_covered = chain_data.get("years_covered")
+
         for period in chain_data.get("ownership_timeline", []):
             # Insert chain record and get the ID using RETURNING clause
             result = conn.execute("""
                 INSERT INTO chain_of_title (
                     folio, owner_name, acquired_from, acquisition_date,
                     disposition_date, acquisition_instrument, acquisition_doc_type,
-                    acquisition_price
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    acquisition_price, link_status, confidence_score,
+                    mrta_status, years_covered
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
             """, [
                 folio,
@@ -987,7 +999,11 @@ class PropertyDB:
                 period.get("disposition_date"),
                 period.get("acquisition_instrument"),
                 period.get("acquisition_doc_type"),
-                period.get("acquisition_price")
+                period.get("acquisition_price"),
+                period.get("link_status"),
+                period.get("confidence_score"),
+                mrta_status,
+                years_covered
             ])
 
             # Get the chain period ID from the RETURNING clause

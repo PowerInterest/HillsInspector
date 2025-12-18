@@ -118,6 +118,7 @@ To support this, the `chain_of_title` table needs to store the "Link Quality":
 ```sql
 ALTER TABLE chain_of_title ADD COLUMN link_status VARCHAR; -- 'VERIFIED', 'FUZZY', 'IMPLIED', 'BROKEN'
 ALTER TABLE chain_of_title ADD COLUMN confidence_score FLOAT; -- 0.0 to 1.0
+```
 
 ## 6. Scope & Duration: The 30-Year Standard (MRTA)
 
@@ -130,7 +131,7 @@ Per Florida's **Marketable Record Title Act (MRTA)** (Chapter 712, Fla. Stat.), 
 **Algorithm Adjustment:**
 1.  Target a "Root Deed" recorded $\le$ `Current Date - 30 Years`.
 2.  If found, stop searching backwards (unless a gap exists immediately after).
-3. If not found, flag as **"Insufficent History ( < 30 Years)"**.
+3. If not found, flag as **"Insufficient History (< 30 Years)"**.
 
 ## 7. MERS Handling Strategy (The "Invisible Chain")
 
@@ -241,4 +242,3 @@ Before comparing, all names are normalized:
     *   `Steven` vs `Stephen` = Distance 2.
 *   **Result:** **Fuzzy Link (Typo)**.
 ```
-

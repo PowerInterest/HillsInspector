@@ -895,26 +895,51 @@ async def run_full_pipeline(
         except Exception as exc:
             logger.debug(f"Failed to load legal descriptions for {folio}: {exc}")
 
-        # Use HCPA legal description as primary source
-        # Fall back to judgment legal only if HCPA is not available
+        # Use HCPA legal description as primary source, fall back to:
+        # - Judgment legal (if present)
+        # - Bulk parcel raw_legal fields (metes/bounds or platted)
         primary_legal = hcpa_legal_desc or judgment_legal
 
+        legal_source = "HCPA" if hcpa_legal_desc else ("JUDGMENT" if judgment_legal else None)
+
         if not primary_legal:
-            # No HCPA legal description - mark for manual review and skip
-            logger.warning(f"No HCPA legal description for {folio} (case {case_number}), marking for manual review")
+            # Fallback to bulk_parcels raw legal fields when HCPA scrape didn't populate parcels.legal_description.
+            try:
+                bp = db.connect().execute(
+                    """
+                    SELECT raw_legal1, raw_legal2, raw_legal3, raw_legal4
+                    FROM bulk_parcels
+                    WHERE strap = ?
+                    """,
+                    [folio],
+                ).fetchone()
+                if bp:
+                    from src.utils.legal_description import combine_legal_fields
+
+                    primary_legal = combine_legal_fields(bp[0], bp[1], bp[2], bp[3])
+                    if primary_legal:
+                        legal_source = "BULK_RAW_LEGAL"
+            except Exception as exc:
+                logger.debug(f"Failed to load bulk_parcels raw_legal for {folio}: {exc}")
+
+        if not primary_legal:
+            # No legal description available anywhere - mark for manual review and skip
+            logger.warning(f"No usable legal description for {folio} (case {case_number}), marking for manual review")
             try:
                 conn = db.connect()
-                conn.execute("""
+                conn.execute(
+                    """
                     UPDATE auctions SET
                         hcpa_scrape_failed = TRUE,
-                        hcpa_scrape_error = 'No legal description from HCPA scrape'
+                        hcpa_scrape_error = 'No usable legal description (HCPA/judgment/bulk)'
                     WHERE case_number = ?
-                """, [case_number])
+                    """,
+                    [case_number],
+                )
             except Exception as exc:
-                logger.debug(f"Failed to mark missing HCPA legal for {case_number}: {exc}")
+                logger.debug(f"Failed to mark missing legal for {case_number}: {exc}")
             no_hcpa_legal_count += 1
-            # Don't mark complete here, we might get legal desc later? 
-            # Or should we mark it so we don't loop? Let's mark it complete for now to stop the loop.
+            # Mark complete so we don't loop forever; this requires manual intervention.
             db.mark_step_complete(case_number, "needs_ori_ingestion")
             continue
 
@@ -929,23 +954,24 @@ async def run_full_pipeline(
 
         # Add filter info for post-search filtering (for browser-based searches
         # that might return broader results)
-        if parsed_legal.lot or parsed_legal.block:
+        lot_filter = parsed_legal.lots or ([parsed_legal.lot] if parsed_legal.lot else None)
+        if lot_filter or parsed_legal.block:
             filter_info = {
-                "lot": parsed_legal.lot,
+                "lot": lot_filter,
                 "block": parsed_legal.block,
-                "subdivision": parsed_legal.subdivision
+                "subdivision": parsed_legal.subdivision,
+                "require_all_lots": isinstance(lot_filter, list) and len(lot_filter) > 1,
             }
             search_terms.append(("__filter__", filter_info))
 
-        # Fallback if no search terms generated
+        # Fallback if no search terms generated: use a longer prefix to keep metes-and-bounds searches specific.
         if not search_terms or (len(search_terms) == 1 and isinstance(search_terms[0], tuple)):
-            # Just use first few words with wildcard
-            legal_parts = primary_legal.upper().split()
-            first_words = " ".join(legal_parts[:3]) if len(legal_parts) >= 3 else primary_legal
-            search_terms.insert(0, f"{first_words}*")
+            prefix = primary_legal.upper().strip()[:60]
+            if prefix:
+                search_terms.insert(0, f"{prefix}*")
 
         logger.info(f"Ingesting ORI for {folio} (case {case_number})...")
-        logger.info(f"  Legal: {primary_legal}")
+        logger.info(f"  Legal ({legal_source}): {primary_legal}")
         logger.info(f"  Search terms: {search_terms}")
 
         try:

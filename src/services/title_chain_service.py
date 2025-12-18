@@ -1,10 +1,12 @@
 from typing import List, Dict, Optional, Tuple, Any
-from datetime import UTC, datetime
+from datetime import UTC, datetime, date
 from dataclasses import dataclass
 import re
 import json
+from difflib import SequenceMatcher
 
 from src.services.institutional_names import get_searchable_party_name
+from src.utils.name_matcher import NameMatcher
 
 
 @dataclass
@@ -43,7 +45,7 @@ class TitleChainService:
         def get_doc_type(d):
             return (d.get('doc_type') or d.get('document_type', '')).upper()
 
-        deeds = [d for d in sorted_docs if 'DEED' in get_doc_type(d) or 'CERTIFICATE OF TITLE' in get_doc_type(d)]
+        transfer_docs = [d for d in sorted_docs if self._is_transfer_doc(get_doc_type(d))]
 
         # Encumbrances: Mortgages, Liens, Judgments, Lis Pendens
         # Exclude Satisfactions from this list initially
@@ -82,87 +84,446 @@ class TitleChainService:
             elif any(k in doc_type for k in encumbrance_keywords):
                 potential_encumbrances.append(d)
         
-        # 3. Build Chain of Title
-        chain, gaps = self._build_deed_chain(deeds)
+        # 3. Build Chain of Title (Anchor & Fill)
+        support_docs_for_inference = list(sorted_docs)
+        chain, gaps = self._build_title_chain(transfer_docs, support_docs_for_inference)
+
+        # MRTA Check (30 years)
+        mrta_status = "INSUFFICIENT"
+        years_covered = 0
+        if chain:
+            oldest_date = self._parse_date(chain[0].get("date"))
+            if oldest_date != datetime.min.replace(tzinfo=UTC):
+                years_covered = (datetime.now(tz=UTC) - oldest_date).days / 365.25
+                if years_covered >= 30:
+                    mrta_status = "SATISFIED"
+                else:
+                    mrta_status = f"PARTIAL ({int(years_covered)} years)"
 
         # 4. Analyze Encumbrances (Mortgages & Liens)
         encumbrances = self._analyze_encumbrances(potential_encumbrances, satisfactions)
 
+        ownership_timeline = self._chain_to_ownership_timeline(chain)
+
         return {
             'chain': chain,
-            'gaps': gaps,  # List of ChainGap objects for gap-filling
+            'ownership_timeline': ownership_timeline,
+            'gaps': gaps,
             'encumbrances': encumbrances,
             'nocs': nocs,
             'modifications': modifications,
             'restrictions': restrictions,
             'tax_liens': [e for e in encumbrances if 'TAX' in str(e.get('type', '')).upper()],
+            'mrta_status': mrta_status,
+            'years_covered': round(years_covered, 1),
             'summary': {
-                'total_deeds': len(deeds),
+                'total_deeds': len(transfer_docs),
                 'active_liens': len([e for e in encumbrances if e['status'] == 'OPEN']),
                 'total_nocs': len(nocs),
                 'restrictions_count': len(restrictions),
                 'gaps_found': len(gaps),
-                'current_owner': chain[-1]['grantee'] if chain else "Unknown"
+                'current_owner': ownership_timeline[-1]['owner'] if ownership_timeline else "Unknown",
+                'mrta_status': mrta_status
             }
         }
 
-    def _build_deed_chain(self, deeds: List[Dict]) -> Tuple[List[Dict], List[ChainGap]]:
+    def _is_transfer_doc(self, doc_type: str) -> bool:
         """
-        Link deeds together to form a chain of ownership.
+        Determine if a document should be treated as a transfer "anchor" in the chain.
+        """
+        dt = (doc_type or "").upper()
+        if not dt:
+            return False
+
+        # Exclusions (mortgage-like)
+        if "DEED OF TRUST" in dt or "TRUST DEED" in dt:
+            return False
+
+        # Core anchors
+        if "CERTIFICATE OF TITLE" in dt:
+            return True
+        if "TAX DEED" in dt:
+            return True
+
+        # Many transfer docs include "DEED" as a substring
+        if "DEED" in dt:
+            return True
+
+        # Non-standard transfers / equitable title signals
+        if "CONTRACT FOR DEED" in dt or "AGREEMENT" in dt and "DEED" in dt:
+            return True
+        if "AGREEMENT FOR DEED" in dt or "AGD" in dt:
+            return True
+        if "PERSONAL REPRESENTATIVE" in dt and "DEED" in dt:
+            return True
+        
+        # Probate transfers
+        if (
+            ("PROBATE" in dt or "SUMMARY ADMINISTRATION" in dt or "ORDER OF SUMMARY" in dt)
+            and ("DEED" in dt or "ORDER" in dt or "ADMINISTRATION" in dt)
+        ):
+            return True
+
+        return False
+
+    def _build_title_chain(
+        self, transfer_docs: List[Dict], support_docs: List[Dict]
+    ) -> Tuple[List[Dict], List[ChainGap]]:
+        """
+        Build a chain of ownership from transfer docs and fill gaps using support docs.
 
         Returns:
             Tuple of (chain entries, list of gaps found)
         """
-        chain = []
-        gaps = []
+        transfer_docs_sorted = sorted(
+            transfer_docs, key=lambda d: self._parse_date(d.get("recording_date"))
+        )
+        support_docs_sorted = sorted(
+            support_docs, key=lambda d: self._parse_date(d.get("recording_date"))
+        )
 
-        for i, deed in enumerate(deeds):
-            # Support both field naming conventions
-            doc_type = deed.get('doc_type') or deed.get('document_type', '')
-            entry = {
-                'date': deed.get('recording_date'),
-                'grantor': deed.get('party1', '').strip(),  # Usually Grantor
-                'grantee': deed.get('party2', '').strip(),  # Usually Grantee
-                'doc_type': doc_type,
-                'book_page': f"{deed.get('book')}/{deed.get('page')}",
-                'instrument': deed.get('instrument_number'),
-                'notes': []
+        # If we have no transfer docs, infer a minimal chain from support docs.
+        if not transfer_docs_sorted:
+            inferred_chain = self._infer_chain_from_support_docs(support_docs_sorted)
+            return inferred_chain, []
+
+        chain: List[Dict[str, Any]] = []
+        gaps: List[ChainGap] = []
+
+        for transfer in transfer_docs_sorted:
+            doc_type = transfer.get("doc_type") or transfer.get("document_type", "")
+            entry: Dict[str, Any] = {
+                "date": transfer.get("recording_date"),
+                "grantor": (transfer.get("party1") or "").strip(),
+                "grantee": (transfer.get("party2") or "").strip(),
+                "doc_type": doc_type,
+                "book_page": f"{transfer.get('book')}/{transfer.get('page')}",
+                "instrument": transfer.get("instrument_number"),
+                "sales_price": transfer.get("sales_price"),
+                "link_status": "VERIFIED" if not chain else None,
+                "confidence_score": 1.0 if not chain else None,
+                "notes": [],
             }
 
-            # Check for gaps
-            if i > 0:
-                prev_grantee = chain[-1]['grantee']
-                curr_grantor = entry['grantor']
+            if chain:
+                prev_owner = chain[-1].get("grantee") or ""
+                curr_grantor = entry.get("grantor") or ""
 
-                # Simple fuzzy check (names can be messy)
-                if not self._names_match(prev_grantee, curr_grantor):
-                    entry['notes'].append(f"GAP IN TITLE? Previous owner was {prev_grantee}, but Grantor is {curr_grantor}")
+                # If the previous deed is missing a grantee, we don't have an owner
+                # anchor to compare against.
+                if not prev_owner:
+                    entry["link_status"] = "INCOMPLETE"
+                    entry["confidence_score"] = 0.4
+                    entry["notes"].append("Previous deed missing grantee; cannot verify link")
+                    chain.append(entry)
+                    continue
 
-                    # Build list of searchable names (non-institutional)
-                    searchable_names = []
+                # If the current deed is missing a grantor, we can't verify linkage.
+                # Treat as an incomplete (but not broken) link and move on.
+                if not curr_grantor:
+                    entry["link_status"] = "INCOMPLETE"
+                    entry["confidence_score"] = 0.4
+                    entry["notes"].append("Missing grantor in indexed parties; cannot verify link")
+                    chain.append(entry)
+                    continue
 
-                    # Try prev_grantee (the expected grantor)
-                    clean_name = get_searchable_party_name(prev_grantee)
-                    if clean_name:
-                        searchable_names.append(clean_name)
+                match_type, score = NameMatcher.match(prev_owner, curr_grantor)
+                if match_type != "NONE" and score >= 0.8:
+                    entry["link_status"] = "VERIFIED" if score >= 0.95 else "FUZZY"
+                    entry["confidence_score"] = score
+                else:
+                    # Attempt to fill gap: infer that current grantor acquired via missing deed
+                    implied = self._infer_owner_in_interval(
+                        start=self._parse_date(chain[-1].get("date")),
+                        end=self._parse_date(entry.get("date")),
+                        support_docs=support_docs_sorted,
+                        desired_owner=curr_grantor,
+                    )
+                    if implied:
+                        implied_entry = {
+                            "date": implied.get("date"),
+                            "grantor": prev_owner,
+                            "grantee": implied.get("owner"),
+                            "doc_type": "IMPLIED",
+                            "book_page": implied.get("book_page"),
+                            "instrument": implied.get("instrument"),
+                            "sales_price": None,
+                            "link_status": "IMPLIED",
+                            "confidence_score": implied.get("confidence", 0.7),
+                            "notes": [
+                                f"Implied ownership from support doc: {implied.get('source_type')} {implied.get('instrument') or implied.get('book_page')}".strip()
+                            ],
+                        }
+                        chain.append(implied_entry)
 
-                    # Try curr_grantor (actual grantor - might find linking docs)
-                    clean_name = get_searchable_party_name(curr_grantor)
-                    if clean_name and clean_name not in searchable_names:
-                        searchable_names.append(clean_name)
-
-                    if searchable_names:
-                        gaps.append(ChainGap(
-                            position=i,
-                            prev_grantee=prev_grantee,
-                            curr_grantor=curr_grantor,
-                            prev_date=chain[-1].get('date'),
-                            curr_date=entry.get('date'),
-                            searchable_names=searchable_names
-                        ))
+                        match2, score2 = NameMatcher.match(
+                            implied_entry.get("grantee") or "", curr_grantor
+                        )
+                        if match2 != "NONE" and score2 >= 0.8:
+                            entry["link_status"] = "VERIFIED" if score2 >= 0.95 else "FUZZY"
+                            entry["confidence_score"] = score2
+                        else:
+                            entry["link_status"] = "BROKEN"
+                            entry["confidence_score"] = 0.0
+                            entry["notes"].append(
+                                f"GAP IN TITLE: previous owner {prev_owner} does not link to grantor {curr_grantor}"
+                            )
+                            self._append_gap(gaps, len(chain), prev_owner, curr_grantor, chain[-2], entry)
+                    else:
+                        entry["link_status"] = "BROKEN"
+                        entry["confidence_score"] = 0.0
+                        entry["notes"].append(
+                            f"GAP IN TITLE: previous owner {prev_owner} does not link to grantor {curr_grantor}"
+                        )
+                        self._append_gap(gaps, len(chain), prev_owner, curr_grantor, chain[-1], entry)
 
             chain.append(entry)
+
+        # Post-loop: Check for implied ownership AFTER the last recorded deed (Tail Inference)
+        # This handles cases where the last deed is old (e.g. 1978) but a new owner appears
+        # in a mortgage later (e.g. 2001) without a recorded deed.
+        if chain:
+            last_entry = chain[-1]
+            last_date = self._parse_date(last_entry.get("date"))
+            last_owner = last_entry.get("grantee") or ""
+            
+            # Look for signals from last_date to NOW
+            # (We use datetime.max as end date to scan everything after)
+            tail_implied = self._infer_owner_in_interval(
+                start=last_date,
+                end=datetime.max.replace(tzinfo=UTC),
+                support_docs=support_docs_sorted,
+                desired_owner="" # We don't know who we're looking for, just ANY new owner
+            )
+            
+            if tail_implied:
+                new_owner = tail_implied.get("owner")
+                # Only add if it's actually a NEW owner
+                match_type, score = NameMatcher.match(last_owner, new_owner)
+                if match_type == "NONE" and score < 0.8:
+                    implied_entry = {
+                        "date": tail_implied.get("date"),
+                        "grantor": last_owner,
+                        "grantee": new_owner,
+                        "doc_type": "IMPLIED",
+                        "book_page": tail_implied.get("book_page"),
+                        "instrument": tail_implied.get("instrument"),
+                        "sales_price": None,
+                        "link_status": "IMPLIED",
+                        "confidence_score": tail_implied.get("confidence", 0.6),
+                        "notes": [
+                            f"Implied ownership from support doc (Tail): {tail_implied.get('source_type')} {tail_implied.get('instrument') or tail_implied.get('book_page')}".strip()
+                        ],
+                    }
+                    chain.append(implied_entry)
+                    
+                    # Add gap tracking
+                    self._append_gap(gaps, len(chain), last_owner, new_owner, last_entry, implied_entry)
+
         return chain, gaps
+
+    def _append_gap(
+        self,
+        gaps: List[ChainGap],
+        position: int,
+        prev_owner: str,
+        curr_grantor: str,
+        prev_entry: Dict[str, Any],
+        curr_entry: Dict[str, Any],
+    ) -> None:
+        searchable_names: List[str] = []
+        for nm in (prev_owner, curr_grantor):
+            clean = get_searchable_party_name(nm)
+            if clean and clean not in searchable_names:
+                searchable_names.append(clean)
+
+        if searchable_names:
+            gaps.append(
+                ChainGap(
+                    position=position,
+                    prev_grantee=prev_owner,
+                    curr_grantor=curr_grantor,
+                    prev_date=prev_entry.get("date"),
+                    curr_date=curr_entry.get("date"),
+                    searchable_names=searchable_names,
+                )
+            )
+
+    def _infer_owner_in_interval(
+        self,
+        start: datetime,
+        end: datetime,
+        support_docs: List[Dict],
+        desired_owner: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Find the most plausible owner signal in (start, end) from support docs.
+
+        Returns dict with keys: owner, date, instrument, book_page, source_type, confidence.
+        """
+        if start == datetime.min.replace(tzinfo=UTC) or end == datetime.min.replace(tzinfo=UTC):
+            return None
+        if end <= start:
+            return None
+
+        # Collect candidates inside interval.
+        candidates: List[Dict[str, Any]] = []
+        for d in support_docs:
+            d_date = self._parse_date(d.get("recording_date"))
+            if d_date <= start or d_date >= end:
+                continue
+            owner = self._owner_candidate_from_support_doc(d)
+            if not owner:
+                continue
+            candidates.append(
+                {
+                    "owner": owner,
+                    "date": d.get("recording_date"),
+                    "instrument": d.get("instrument_number"),
+                    "book_page": f"{d.get('book')}/{d.get('page')}",
+                    "source_type": d.get("doc_type") or d.get("document_type"),
+                }
+            )
+
+        if not candidates:
+            return None
+
+        # Prefer a candidate that matches the deed grantor (strongest evidence).
+        for c in candidates:
+            match_type, score = NameMatcher.match(c["owner"], desired_owner)
+            if match_type != "NONE" and score >= 0.8:
+                c["confidence"] = max(0.7, score)
+                return c
+
+        # Otherwise, take the most frequent owner candidate (by normalized tokens).
+        buckets: Dict[str, List[Dict[str, Any]]] = {}
+        for c in candidates:
+            # Use NameMatcher.normalize to get a stable key
+            key = " ".join(sorted(NameMatcher.normalize(c["owner"])))
+            buckets.setdefault(key, []).append(c)
+
+        best_key = max(buckets, key=lambda k: len(buckets[k]))
+        best = sorted(buckets[best_key], key=lambda x: self._parse_date(x["date"]))[0]
+        best["confidence"] = 0.6
+        return best
+
+    def _infer_chain_from_support_docs(self, support_docs: List[Dict]) -> List[Dict[str, Any]]:
+        """
+        Fallback when we have documents but no transfer anchors.
+
+        Build a minimal, low-confidence chain using ownership signals (mortgage/NOC/etc).
+        """
+        inferred: List[Dict[str, Any]] = []
+        last_owner: Optional[str] = None
+
+        for d in support_docs:
+            owner = self._owner_candidate_from_support_doc(d)
+            if not owner:
+                continue
+
+            if last_owner:
+                match_type, score = NameMatcher.match(last_owner, owner)
+                if match_type != "NONE" and score >= 0.85:
+                    continue
+
+            inferred.append(
+                {
+                    "date": d.get("recording_date"),
+                    "grantor": last_owner or "",
+                    "grantee": owner,
+                    "doc_type": "INFERRED",
+                    "book_page": f"{d.get('book')}/{d.get('page')}",
+                    "instrument": d.get("instrument_number"),
+                    "sales_price": None,
+                    "link_status": "IMPLIED" if last_owner else "IMPLIED",
+                    "confidence_score": 0.55 if last_owner else 0.6,
+                    "notes": [
+                        f"Inferred owner from support doc: {(d.get('doc_type') or d.get('document_type') or '').strip()}"
+                    ],
+                }
+            )
+            last_owner = owner
+
+        if not inferred and support_docs:
+            # We have documents but no reliable ownership signals; create a placeholder segment
+            # so the caller can avoid "missing chain" records.
+            first = support_docs[0]
+            inferred.append(
+                {
+                    "date": first.get("recording_date"),
+                    "grantor": "",
+                    "grantee": "Unknown (No Ownership Signals)",
+                    "doc_type": "INFERRED",
+                    "book_page": f"{first.get('book')}/{first.get('page')}",
+                    "instrument": first.get("instrument_number"),
+                    "sales_price": None,
+                    "link_status": "INFERRED",
+                    "confidence_score": 0.0,
+                    "notes": [
+                        "No transfer docs and no owner-signature support docs found; placeholder chain segment.",
+                    ],
+                }
+            )
+
+        return inferred
+
+    def _owner_candidate_from_support_doc(self, doc: Dict) -> Optional[str]:
+        """
+        Extract the best-guess owner name from a non-transfer document.
+
+        This is used only for *inference*; it should be conservative.
+        """
+        doc_type = (doc.get("doc_type") or doc.get("document_type") or "").upper()
+        if not doc_type:
+            return None
+
+        party1 = (doc.get("party1") or "").strip()
+        party2 = (doc.get("party2") or "").strip()
+
+        # Mortgages: owner/borrower is typically party1
+        if "MORTGAGE" in doc_type or doc_type.startswith("(MTG)") or "HELOC" in doc_type:
+            return party1 or None
+
+        # NOC: signed by owner (often party1)
+        if "NOTICE OF COMMENCEMENT" in doc_type or "NOC" in doc_type:
+            return party1 or None
+
+        # Lis Pendens: defendant is typically party2
+        if "LIS PENDENS" in doc_type:
+            return party2 or None
+
+        # HOA/COA liens: debtor/owner is often party2; claimant is party1
+        if "HOA" in doc_type or "ASSOCIATION" in doc_type or "CONDO" in doc_type:
+            return party2 or None
+
+        # Generic liens/judgments: debtor is often party2
+        if "LIEN" in doc_type or "JUDGMENT" in doc_type:
+            return party2 or None
+
+        # Affidavits are often filed by/for owners; treat as a weak ownership signal.
+        if "AFFIDAVIT" in doc_type:
+            return party1 or None
+
+        return None
+
+    def _chain_to_ownership_timeline(self, chain: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        timeline: List[Dict[str, Any]] = []
+        for i, entry in enumerate(chain):
+            next_date = chain[i + 1].get("date") if i < len(chain) - 1 else None
+            timeline.append(
+                {
+                    "owner": entry.get("grantee") or "Unknown",
+                    "acquired_from": entry.get("grantor") or None,
+                    "acquisition_date": entry.get("date"),
+                    "disposition_date": next_date,
+                    "acquisition_instrument": entry.get("instrument"),
+                    "acquisition_doc_type": entry.get("doc_type"),
+                    "acquisition_price": entry.get("sales_price"),
+                    "link_status": entry.get("link_status"),
+                    "confidence_score": entry.get("confidence_score"),
+                }
+            )
+        return timeline
 
     def _extract_refs(self, text: str) -> Tuple[List[Tuple[str, str]], List[str]]:
         """Extract Book/Page and Instrument pairs from text."""
@@ -254,7 +615,7 @@ class TitleChainService:
                 # In a Satisfaction, Party 1 is usually the Bank/Lienor (releasing)
                 sat_releasor = sat.get('party1', '').strip()
                 
-                if self._names_match(enc_lender, sat_releasor):
+                if NameMatcher.are_linked(enc_lender, sat_releasor, threshold=0.85):
                     # Only match if we haven't found a specific ref yet
                     # And maybe check amounts if available? (TODO)
                     status = 'SATISFIED'
@@ -270,6 +631,7 @@ class TitleChainService:
                 'creditor': enc_lender,
                 'debtor': enc_debtor,
                 'book_page': f"{enc.get('book')}/{enc.get('page')}",
+                'instrument': enc.get('instrument_number'),
                 'status': status,
                 'satisfaction_ref': f"{matched_satisfaction.get('book')}/{matched_satisfaction.get('page')}" if matched_satisfaction else None,
                 'match_method': match_method
@@ -277,50 +639,23 @@ class TitleChainService:
             
         return results
 
-    def _names_match(self, name1: str, name2: str) -> bool:
-        """
-        Fuzzy name matching.
-        """
-        if not name1 or not name2:
-            return False
-            
-        # Tokenize and clean
-        def clean_tokens(n):
-            return set(n.upper().replace(',', '').replace('.', '').split())
-            
-        t1 = clean_tokens(name1)
-        t2 = clean_tokens(name2)
-        
-        # Intersection of tokens
-        common = t1.intersection(t2)
-        
-        # If they share significant words (ignoring common stopwords like LLC, INC, BANK)
-        # If they share significant words (ignoring common stopwords like LLC, INC, BANK)
-        stopwords = {
-            'LLC', 'INC', 'CORP', 'COMPANY', 'BANK', 'NA', 'ASSOCIATION', 'THE', 'OF', 'AND',
-            'SECRETARY', 'DEPARTMENT', 'HOUSING', 'URBAN', 'DEVELOPMENT', 'USA', 'UNITED', 'STATES',
-            'TRUST', 'FSB', 'NATIONAL', 'SYSTEMS', 'ELECTRONIC', 'REGISTRATION', 'FINANCIAL',
-            'GROUP', 'HOLDINGS', 'LTD', 'LP', 'PA', 'PARTNERS'
-        }
-        significant_common = common - stopwords
-        
-        # If they share at least one significant word (e.g. "WELLS" in "WELLS FARGO")
-        # This is loose, but better than just first word.
-        return bool(significant_common)
-
     def _parse_date(self, date_val: Any) -> datetime:
         if not date_val:
             return datetime.min.replace(tzinfo=UTC)
         if isinstance(date_val, datetime):
-            return date_val
+            return date_val.replace(tzinfo=UTC) if date_val.tzinfo is None else date_val
+        if isinstance(date_val, date):
+            return datetime.combine(date_val, datetime.min.time()).replace(tzinfo=UTC)
         if hasattr(date_val, 'timetuple'): # duck typing for date
              return datetime.combine(date_val, datetime.min.time()).replace(tzinfo=UTC)
             
         try:
-            return datetime.strptime(str(date_val), "%Y-%m-%d")
+            dt = datetime.strptime(str(date_val), "%Y-%m-%d")
+            return dt.replace(tzinfo=UTC)
         except ValueError:
             try:
                 # Fallback for old format or user entered
-                return datetime.strptime(str(date_val), "%m/%d/%Y")
+                dt = datetime.strptime(str(date_val), "%m/%d/%Y")
+                return dt.replace(tzinfo=UTC)
             except ValueError:
                 return datetime.min.replace(tzinfo=UTC)

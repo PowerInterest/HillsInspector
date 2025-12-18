@@ -5,6 +5,8 @@ import re
 from typing import Dict, Optional, Tuple
 from difflib import SequenceMatcher
 
+from src.utils.legal_description import parse_legal_description
+
 
 def extract_lot_block(legal_description: str) -> Optional[Tuple[str, str]]:
     """
@@ -163,6 +165,10 @@ def verify_document_relevance(document: Dict, property_info: Dict) -> Dict:
     doc_legal = document.get('legal_description', '').upper()
     prop_legal = property_info.get('legal_description', '').upper()
 
+    lot_block_mismatch = False
+    lot_mismatch = False
+    block_mismatch = False
+
     if doc_legal and prop_legal:
         # Extract LOT and BLOCK
         doc_lot_block = extract_lot_block(doc_legal)
@@ -173,6 +179,7 @@ def verify_document_relevance(document: Dict, property_info: Dict) -> Dict:
             if checks["legal_match"]:
                 details.append(f"LOT/BLOCK match: L{doc_lot_block[0]} B{doc_lot_block[1]}")
             else:
+                lot_block_mismatch = True
                 details.append(f"LOT/BLOCK mismatch: doc L{doc_lot_block[0]} B{doc_lot_block[1]} vs prop L{prop_lot_block[0]} B{prop_lot_block[1]}")
         else:
             # Try UNIT/CONDO match
@@ -183,6 +190,17 @@ def verify_document_relevance(document: Dict, property_info: Dict) -> Dict:
                 checks["legal_match"] = doc_unit[0] == prop_unit[0]  # Unit numbers match
                 if checks["legal_match"]:
                     details.append(f"UNIT match: {doc_unit[0]}")
+
+        # Parsed lot/block mismatch check (handles cases where one side is missing BLOCK)
+        doc_parsed = parse_legal_description(doc_legal)
+        prop_parsed = parse_legal_description(prop_legal)
+
+        if prop_parsed.lot and doc_parsed.lot and doc_parsed.lot != prop_parsed.lot:
+            lot_mismatch = True
+            details.append(f"LOT mismatch: doc LOT {doc_parsed.lot} vs prop LOT {prop_parsed.lot}")
+        if prop_parsed.block and doc_parsed.block and doc_parsed.block != prop_parsed.block:
+            block_mismatch = True
+            details.append(f"BLOCK mismatch: doc BLOCK {doc_parsed.block} vs prop BLOCK {prop_parsed.block}")
 
         # Calculate text similarity
         checks["similarity_score"] = similarity_score(doc_legal, prop_legal)
@@ -220,12 +238,15 @@ def verify_document_relevance(document: Dict, property_info: Dict) -> Dict:
             details.append(f"Folio match: {prop_folio}")
 
     # Overall verdict
-    checks["is_relevant"] = (
-        checks["legal_match"] or
-        checks["address_match"] or
-        checks["folio_match"] or
-        checks["similarity_score"] >= 0.80
-    )
+    if lot_block_mismatch or lot_mismatch or block_mismatch:
+        checks["is_relevant"] = False
+    else:
+        checks["is_relevant"] = (
+            checks["legal_match"]
+            or checks["address_match"]
+            or checks["folio_match"]
+            or checks["similarity_score"] >= 0.80
+        )
 
     checks["match_details"] = "; ".join(details) if details else "No matching criteria found"
 

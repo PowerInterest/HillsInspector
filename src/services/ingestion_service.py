@@ -13,6 +13,7 @@ from src.services.document_analyzer import DocumentAnalyzer
 
 from src.services.scraper_storage import ScraperStorage
 from src.services.institutional_names import is_institutional_name, get_searchable_party_name
+from src.utils.relevance_checker import verify_document_relevance
 
 # Maximum party name searches for gap-filling per property
 MAX_PARTY_SEARCHES = 5
@@ -62,6 +63,7 @@ class IngestionService:
         docs = raw_docs or []
         # Track whether docs came from browser (affects PDF download strategy)
         docs_from_browser = False
+        filter_info = None
 
         if not docs:
             # Get search terms from Property (set by pipeline) or fall back to legal description
@@ -102,12 +104,25 @@ class IngestionService:
                 for term in actual_search_terms:
                     logger.info(f"Searching ORI browser for: {term}")
                     try:
-                        docs = self.ori_scraper.search_by_legal_sync(term, headless=True)
-                        if docs:
-                            successful_term = term
-                            docs_from_browser = True
-                            logger.info(f"Found {len(docs)} documents via browser with term: {term}")
-                            break
+                        candidate_docs = self.ori_scraper.search_by_legal_sync(term, headless=True)
+                        if not candidate_docs:
+                            continue
+
+                        # Apply filtering immediately; if everything filters out, try next term.
+                        if filter_info:
+                            candidate_docs = self._filter_docs_by_lot_block(candidate_docs, filter_info)
+                        elif prop.legal_description:
+                            candidate_docs = self._filter_docs_by_relevance(candidate_docs, prop)
+
+                        if not candidate_docs:
+                            logger.info(f"All results filtered out for term: {term}, trying next term")
+                            continue
+
+                        docs = candidate_docs
+                        successful_term = term
+                        docs_from_browser = True
+                        logger.info(f"Found {len(docs)} documents via browser with term: {term}")
+                        break
                     except Exception as e:
                         logger.warning(f"Browser search failed for '{term}': {e}")
 
@@ -118,12 +133,24 @@ class IngestionService:
                         api_term = term.rstrip("*")  # API doesn't use wildcards
                         logger.info(f"Searching ORI API for: {api_term}")
                         try:
-                            docs = self.ori_scraper.search_by_legal(api_term)
-                            if docs:
-                                successful_term = term
-                                docs_from_browser = False
-                                logger.info(f"Found {len(docs)} documents via API with term: {api_term}")
-                                break
+                            candidate_docs = self.ori_scraper.search_by_legal(api_term)
+                            if not candidate_docs:
+                                continue
+
+                            if filter_info:
+                                candidate_docs = self._filter_docs_by_lot_block(candidate_docs, filter_info)
+                            elif prop.legal_description:
+                                candidate_docs = self._filter_docs_by_relevance(candidate_docs, prop)
+
+                            if not candidate_docs:
+                                logger.info(f"All results filtered out for term: {term}, trying next term")
+                                continue
+
+                            docs = candidate_docs
+                            successful_term = term
+                            docs_from_browser = False
+                            logger.info(f"Found {len(docs)} documents via API with term: {api_term}")
+                            break
                         except Exception as e:
                             logger.warning(f"API search failed for '{api_term}': {e}")
             else:
@@ -131,12 +158,24 @@ class IngestionService:
                 for term in actual_search_terms:
                     logger.info(f"Searching ORI API for: {term}")
                     try:
-                        docs = self.ori_scraper.search_by_legal(term)
-                        if docs:
-                            successful_term = term
-                            docs_from_browser = False
-                            logger.info(f"Found {len(docs)} documents via API with term: {term}")
-                            break
+                        candidate_docs = self.ori_scraper.search_by_legal(term)
+                        if not candidate_docs:
+                            continue
+
+                        if filter_info:
+                            candidate_docs = self._filter_docs_by_lot_block(candidate_docs, filter_info)
+                        elif prop.legal_description:
+                            candidate_docs = self._filter_docs_by_relevance(candidate_docs, prop)
+
+                        if not candidate_docs:
+                            logger.info(f"All results filtered out for term: {term}, trying next term")
+                            continue
+
+                        docs = candidate_docs
+                        successful_term = term
+                        docs_from_browser = False
+                        logger.info(f"Found {len(docs)} documents via API with term: {term}")
+                        break
                     except Exception as e:
                         logger.warning(f"API search failed for '{term}': {e}")
 
@@ -145,12 +184,24 @@ class IngestionService:
                     logger.info("API returned no results, trying browser search...")
                     for term in actual_search_terms:
                         try:
-                            docs = self.ori_scraper.search_by_legal_sync(term, headless=True)
-                            if docs:
-                                successful_term = term
-                                docs_from_browser = True
-                                logger.info(f"Found {len(docs)} documents via browser with term: {term}")
-                                break
+                            candidate_docs = self.ori_scraper.search_by_legal_sync(term, headless=True)
+                            if not candidate_docs:
+                                continue
+
+                            if filter_info:
+                                candidate_docs = self._filter_docs_by_lot_block(candidate_docs, filter_info)
+                            elif prop.legal_description:
+                                candidate_docs = self._filter_docs_by_relevance(candidate_docs, prop)
+
+                            if not candidate_docs:
+                                logger.info(f"All results filtered out for term: {term}, trying next term")
+                                continue
+
+                            docs = candidate_docs
+                            successful_term = term
+                            docs_from_browser = True
+                            logger.info(f"Found {len(docs)} documents via browser with term: {term}")
+                            break
                         except Exception as e:
                             logger.warning(f"Browser search failed for '{term}': {e}")
 
@@ -159,9 +210,45 @@ class IngestionService:
                 docs = self._filter_docs_by_lot_block(docs, filter_info)
                 logger.info(f"After lot/block filtering: {len(docs)} documents")
 
+            # If we don't have lot/block filtering (metes-and-bounds, acreage, etc.),
+            # apply a relevance filter against the property's legal description to avoid
+            # ingesting large, irrelevant result sets from broad wildcard searches.
+            if docs and not filter_info and prop.legal_description:
+                docs = self._filter_docs_by_relevance(docs, prop)
+                logger.info(f"After relevance filtering: {len(docs)} documents")
+
             if not docs:
-                logger.warning(f"No documents found after trying {len(search_terms)} search terms.")
-                return
+                # Fallback: try party search by current owner name (helps metes-and-bounds cases
+                # where the legal description is hard to match in ORI).
+                owner_name = getattr(prop, "owner_name", None)
+                owner_search = None
+                if owner_name and not is_institutional_name(owner_name):
+                    owner_search = self._normalize_party_name_for_search(owner_name)
+
+                if owner_search:
+                    owner_terms = self._generate_owner_party_search_terms(owner_name)
+                    logger.info(f"No legal results; trying ORI party search by owner: {owner_terms}")
+                    try:
+                        for term in owner_terms:
+                            docs = self.ori_scraper.search_by_party(term)
+                            if not docs:
+                                # Browser name search bypasses the 25-result API limit.
+                                docs = self.ori_scraper.search_by_party_browser_sync(term, headless=True)
+                            if not docs:
+                                continue
+
+                            docs = self._filter_docs_by_relevance(docs, prop)
+                            if docs:
+                                logger.info(f"Owner party search yielded {len(docs)} relevant documents")
+                                successful_term = f"OWNER_PARTY:{term}"
+                                docs_from_browser = True
+                                break
+                    except Exception as e:
+                        logger.warning(f"Owner party search failed for '{owner_search}': {e}")
+
+                if not docs:
+                    logger.warning(f"No documents found after trying {len(search_terms)} search terms.")
+                    return
 
             # Log successful search term for future reference
             if successful_term:
@@ -447,6 +534,36 @@ class IngestionService:
 
         return search
 
+    def _generate_owner_party_search_terms(self, owner_name: str) -> List[str]:
+        """
+        Generate multiple party search strings for an owner name.
+
+        ORI names may be indexed as:
+        - "FIRST MIDDLE LAST"
+        - "LAST FIRST MIDDLE"
+        - "LAST FIRST"
+
+        This is a best-effort helper used only as a fallback when legal searches fail.
+        """
+        base = self._normalize_party_name_for_search(owner_name)
+        if not base:
+            return []
+
+        terms = [base]
+
+        # Try "LAST FIRST*" if it looks like a personal name without a comma.
+        raw = owner_name.strip().upper()
+        if "," not in raw:
+            tokens = [t for t in raw.replace(".", " ").split() if t]
+            if len(tokens) >= 2:
+                last = tokens[-1]
+                first = tokens[0]
+                swapped = f"{last} {first}*"
+                if swapped not in terms:
+                    terms.append(swapped)
+
+        return terms
+
     async def ingest_property_async(self, prop: Property, raw_docs: list | None = None):
         """
         Async version of ingest_property for use in async batch processing.
@@ -674,6 +791,46 @@ class IngestionService:
             logger.warning(f"Failed to update document {doc_id} with extracted data: {e}")
 
     def _transform_analysis_for_db(self, analysis: dict) -> dict:
+        if analysis.get("ownership_timeline"):
+            # Prefer service-produced timeline (includes inferred/implied links)
+            timeline = []
+            for period in analysis["ownership_timeline"]:
+                timeline.append(
+                    {
+                        "owner": period.get("owner"),
+                        "acquired_from": period.get("acquired_from"),
+                        "acquisition_date": period.get("acquisition_date"),
+                        "disposition_date": period.get("disposition_date"),
+                        "acquisition_instrument": period.get("acquisition_instrument"),
+                        "acquisition_doc_type": period.get("acquisition_doc_type"),
+                        "acquisition_price": period.get("acquisition_price"),
+                        "link_status": period.get("link_status"),
+                        "confidence_score": period.get("confidence_score"),
+                        "encumbrances": [],
+                    }
+                )
+
+            # Attach encumbrances by date interval (best effort)
+            encumbrances = analysis.get("encumbrances", [])
+            for i, period in enumerate(timeline):
+                start_date = self._parse_date(period.get("acquisition_date"))
+                end_date = (
+                    self._parse_date(timeline[i + 1].get("acquisition_date"))
+                    if i < len(timeline) - 1
+                    else None
+                )
+                for enc in encumbrances:
+                    enc_date = self._parse_date(enc.get("date"))
+                    if (
+                        enc_date
+                        and start_date
+                        and enc_date >= start_date
+                        and (end_date is None or enc_date < end_date)
+                    ):
+                        period["encumbrances"].append(self._map_encumbrance(enc))
+
+            return {"ownership_timeline": timeline}
+
         chain = analysis.get('chain', [])
         encumbrances = analysis.get('encumbrances', [])
         
@@ -698,9 +855,11 @@ class IngestionService:
                 "acquired_from": deed.get('grantor'),
                 "acquisition_date": deed.get('date'),
                 "disposition_date": chain[i+1].get('date') if i < len(chain) - 1 else None,
-                "acquisition_instrument": None,
+                "acquisition_instrument": deed.get("instrument"),
                 "acquisition_doc_type": deed.get('doc_type'),
-                "acquisition_price": None,
+                "acquisition_price": deed.get("sales_price"),
+                "link_status": deed.get("link_status"),
+                "confidence_score": deed.get("confidence_score"),
                 "encumbrances": period_encs
             })
 
@@ -716,6 +875,8 @@ class IngestionService:
                 "acquisition_instrument": None,
                 "acquisition_doc_type": "UNKNOWN",
                 "acquisition_price": None,
+                "link_status": "INFERRED",
+                "confidence_score": 0.0,
                 "encumbrances": [self._map_encumbrance(e) for e in encumbrances]
             })
 
@@ -734,7 +895,7 @@ class IngestionService:
             "creditor": enc.get('creditor'),
             "amount": self._parse_amount(enc.get('amount')),
             "recording_date": enc.get('date'),
-            "instrument": None, # Not in analysis dict?
+            "instrument": enc.get("instrument"),
             "book": bk,
             "page": pg,
             "is_satisfied": enc.get('status') == 'SATISFIED',
@@ -790,11 +951,51 @@ class IngestionService:
         """
         import re
 
-        lot = filter_info.get("lot")
+        lot_value = filter_info.get("lot")
         block = filter_info.get("block")
+        require_all_lots = bool(filter_info.get("require_all_lots"))
 
-        if not lot and not block:
+        lots: List[str] = []
+        if isinstance(lot_value, (list, tuple, set)):
+            lots = [str(x) for x in lot_value if x is not None and str(x).strip()]
+        elif lot_value:
+            lots = [str(lot_value).strip()]
+
+        if not lots and not block:
             return docs
+
+        subdivision = (filter_info.get("subdivision") or "").upper()
+        subdiv_words = re.findall(r"[A-Z0-9]+", subdivision)
+
+        # Build a small set of required subdivision tokens to use when BLOCK is missing
+        # in ORI's indexed legal (very common).
+        required_subdiv_tokens: List[str] = []
+        if subdiv_words:
+            required_subdiv_tokens.append(subdiv_words[0])  # always require first token
+
+            generic_first = {
+                "OAK",
+                "BLOOMINGDALE",
+                "LAKE",
+                "PARK",
+                "COUNTRY",
+                "TAMPA",
+                "THE",
+            }
+            if subdiv_words[0] in generic_first and len(subdiv_words) >= 2:
+                required_subdiv_tokens.append(subdiv_words[1])
+
+            if "SECTION" in subdiv_words:
+                i = subdiv_words.index("SECTION")
+                if i + 1 < len(subdiv_words):
+                    required_subdiv_tokens.append(subdiv_words[i + 1])
+            if "UNIT" in subdiv_words:
+                i = subdiv_words.index("UNIT")
+                if i + 1 < len(subdiv_words):
+                    nxt = subdiv_words[i + 1]
+                    if nxt == "NO" and i + 2 < len(subdiv_words):
+                        nxt = subdiv_words[i + 2]
+                    required_subdiv_tokens.append(nxt)
 
         filtered = []
         for doc in docs:
@@ -804,23 +1005,76 @@ class IngestionService:
 
             # Check lot match - various formats: "L 1", "L1", "LOT 1"
             lot_match = True
-            if lot:
-                # Pattern matches L/LOT followed by the lot number
-                lot_pattern = rf'\bL(?:OT)?\s*{re.escape(lot)}\b'
-                lot_match = bool(re.search(lot_pattern, legal_upper))
+            if lots:
+                lot_hits = 0
+                for lot in lots:
+                    lot_pattern = rf'\bL(?:OT)?\s*{re.escape(lot)}\b'
+                    if re.search(lot_pattern, legal_upper):
+                        lot_hits += 1
+                if require_all_lots:
+                    lot_match = lot_hits == len(lots)
+                else:
+                    lot_match = lot_hits > 0
 
             # Check block match - various formats: "B 1", "B1", "BLOCK 1", "BLK 1"
             block_match = True
+            has_any_block = bool(re.search(r"\bB(?:LK|LOCK)?\s*[A-Z0-9]+\b", legal_upper))
             if block:
-                # Pattern matches B/BLK/BLOCK followed by the block number
                 block_pattern = rf'\bB(?:LK|LOCK)?\s*{re.escape(block)}\b'
                 block_match = bool(re.search(block_pattern, legal_upper))
+
+            # If the record doesn't include any BLOCK in the indexed legal, fall back to
+            # subdivision token requirements to avoid discarding correct records.
+            if block and not has_any_block:
+                if required_subdiv_tokens:
+                    block_match = all(
+                        re.search(rf"\\b{re.escape(tok)}\\b", legal_upper)
+                        for tok in required_subdiv_tokens
+                    )
+                else:
+                    block_match = True
 
             if lot_match and block_match:
                 filtered.append(doc)
 
-        logger.info(f"Filtered {len(docs)} -> {len(filtered)} docs (lot={lot}, block={block})")
+        logger.info(f"Filtered {len(docs)} -> {len(filtered)} docs (lot={lots or None}, block={block})")
         return filtered
+
+    def _filter_docs_by_relevance(self, docs: List[Dict], prop: Property) -> List[Dict]:
+        prop_legal = (prop.legal_description or "").strip()
+        if not prop_legal:
+            return docs
+
+        prop_info = {
+            "legal_description": prop_legal,
+            "property_address": prop.address or "",
+            "folio": prop.parcel_id or "",
+        }
+
+        prop_upper = prop_legal.upper().lstrip()
+        similarity_threshold = 0.90 if prop_upper.startswith(("COM ", "BEG ", "BEGIN", "COMMENCE", "COMMENCING", "TRACT")) else 0.80
+
+        kept = []
+        scored = []
+        for d in docs:
+            doc_legal = d.get("legal") or d.get("Legal") or d.get("legal_description") or ""
+            doc_addr = d.get("property_address") or d.get("Address") or ""
+            checks = verify_document_relevance(
+                {"legal_description": doc_legal, "property_address": doc_addr, "folio": d.get("folio") or ""},
+                prop_info,
+            )
+            scored.append((float(checks.get("similarity_score", 0.0) or 0.0), bool(checks.get("is_relevant", False)), d))
+
+        for score, is_relevant, doc in scored:
+            if is_relevant and score >= similarity_threshold:
+                kept.append(doc)
+
+        # If nothing passes strict threshold, keep a conservative top-N by similarity
+        if not kept:
+            top = sorted(scored, key=lambda t: t[0], reverse=True)[:25]
+            kept = [doc for score, is_relevant, doc in top if is_relevant and score > 0.0]
+
+        return kept
 
     def _fill_chain_gaps(
         self,
@@ -1247,9 +1501,12 @@ class IngestionService:
         rec_date = None
         date_val = grouped_doc.get("record_date", "")
         if date_val:
-            from datetime import datetime as dt
+            from datetime import datetime as dt, date
+            # Handle date object (from DB/testing)
+            if isinstance(date_val, (date, dt)):
+                rec_date = date_val.strftime("%Y-%m-%d")
             # Check if it's a Unix timestamp (int or float)
-            if isinstance(date_val, (int, float)):
+            elif isinstance(date_val, (int, float)):
                 try:
                     parsed = dt.fromtimestamp(date_val, tz=timezone.utc)
                     rec_date = parsed.strftime("%Y-%m-%d")

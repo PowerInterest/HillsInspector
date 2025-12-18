@@ -15,7 +15,7 @@ This module generates search permutations to find the right match.
 
 import re
 from typing import List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from loguru import logger
 
 
@@ -25,6 +25,7 @@ class LegalDescription:
     raw_text: str
     subdivision: Optional[str] = None
     lot: Optional[str] = None
+    lots: List[str] = field(default_factory=list)
     block: Optional[str] = None
     unit: Optional[str] = None
     phase: Optional[str] = None
@@ -99,13 +100,29 @@ def parse_legal_description(raw_text: str) -> LegalDescription:
     text = raw_text.upper().strip()
     result = LegalDescription(raw_text=raw_text)
 
-    # Extract lot number (various patterns)
+    # Extract lot number(s) (various patterns)
     # Lots can be numbers, letters, or alphanumeric (e.g., "5", "J", "5A", "AA")
     lot_patterns = [
         r'\bLOT\s+([A-Z]?\d+[A-Z]?|[A-Z]{1,2})\b',  # LOT 5, LOT J, LOT 5A, LOT AA
+        r'\bLOTS\s+([A-Z]?\d+[A-Z]?|[A-Z]{1,2})\b',  # LOTS 5, LOTS J (captures first)
         r'\bL\s+([A-Z]?\d+[A-Z]?|[A-Z]{1,2})\b',     # L 5, L J
         r'\bLT\s+([A-Z]?\d+[A-Z]?|[A-Z]{1,2})\b',    # LT 5, LT J
     ]
+
+    lots_found: List[str] = []
+    for pattern in lot_patterns[:2]:  # only LOT/LOTS patterns for multi-lot capture
+        for match in re.finditer(pattern, text):
+            val = match.group(1)
+            if val and val not in lots_found:
+                lots_found.append(val)
+
+    # Also catch multiple "LOT <x>" occurrences (common: "LOT 18 ... LOT 19 ...")
+    for match in re.finditer(r'\bLOT\s+([A-Z]?\d+[A-Z]?|[A-Z]{1,2})\b', text):
+        val = match.group(1)
+        if val and val not in lots_found:
+            lots_found.append(val)
+
+    result.lots = lots_found
     for pattern in lot_patterns:
         match = re.search(pattern, text)
         if match:
@@ -126,7 +143,7 @@ def parse_legal_description(raw_text: str) -> LegalDescription:
 
     # Extract unit number (for condos) - can be numbers, letters, or alphanumeric
     unit_patterns = [
-        r'\bUNIT\s+([A-Z]?\d+[A-Z]?|[A-Z]{1,2})\b',
+        r'\bUNIT\s+(?:NO\s+)?([A-Z]?\d+[A-Z]?|[A-Z]{1,2})\b',
         r'\bU\s+([A-Z]?\d+[A-Z]?|[A-Z]{1,2})\b',
         r'\bUN\s+([A-Z]?\d+[A-Z]?|[A-Z]{1,2})\b',
         r'#\s*([A-Z]?\d+[A-Z]?|[A-Z]{1,2})\b',
@@ -143,11 +160,24 @@ def parse_legal_description(raw_text: str) -> LegalDescription:
         result.phase = phase_match.group(1) or phase_match.group(2)
 
     # Extract section-township-range (S-T-R)
+    # Common compact form: "11-30-20"
     str_match = re.search(r'\b(\d+)-(\d+)-(\d+)\b', text)
     if str_match:
         result.section = str_match.group(1)
         result.township = str_match.group(2)
         result.range = str_match.group(3)
+
+    # Narrative form: "SECTION 11, TOWNSHIP 30 SOUTH, RANGE 20 EAST"
+    if not (result.section and result.township and result.range):
+        str_words = re.search(
+            r'\bSECTION\s+(\d+)\b.*?\bTOWNSHIP\s+(\d+)\b.*?\bRANGE\s+(\d+)\b',
+            text,
+            flags=re.IGNORECASE,
+        )
+        if str_words:
+            result.section = str_words.group(1)
+            result.township = str_words.group(2)
+            result.range = str_words.group(3)
 
     # Extract plat book/page
     plat_match = re.search(r'PLAT\s+(?:BOOK|BK)?\s*(\d+)\s*(?:PAGE|PG|P)?\s*(\d+)', text)
@@ -161,8 +191,8 @@ def parse_legal_description(raw_text: str) -> LegalDescription:
     early_subdiv_patterns = [
         # Pattern for names with PHASE at end like "LAKE ST CHARLES PHASE 1"
         r'\b([A-Z]{2}[A-Z\s]+PHASE\s+\d+[A-Z]?)\b',
-        # Pattern for section-numbered subdivisions like "WESTCHASE SECTION 110"
-        r'\b([A-Z]{2}[A-Z\s]*\s+SECTION\s+\d+[A-Z]?)\b',
+        # Pattern for section subdivisions like "WESTCHASE SECTION 110" or "BLOOMINGDALE SECTION \"F\""
+        r'\b([A-Z]{2}[A-Z\s]*\s+SECTION\s+\"?[A-Z0-9]+\"?)\b',
     ]
     for pattern in early_subdiv_patterns:
         match = re.search(pattern, text)
@@ -212,6 +242,22 @@ def parse_legal_description(raw_text: str) -> LegalDescription:
             if clean_name and not clean_name.isdigit():
                 result.subdivision = clean_name
 
+    # If we *did* find a subdivision but it's very short, try to enrich it with the
+    # fuller prefix before LOT/BLOCK (common for "UNIT NO 06 ..." style legal text).
+    if result.subdivision and (result.lot or result.block):
+        before_lot = re.split(r'\b(LOT|L|LT|BLOCK|BLK|B)\b', text)[0].strip()
+        if before_lot:
+            # Prefer the prefix up through "UNIT (NO) <num>" if present.
+            unit_prefix = None
+            unit_match = re.search(r'^(.*?\bUNIT\b(?:\s+NO)?\s+\d+)', before_lot)
+            if unit_match:
+                unit_prefix = unit_match.group(1).strip()
+
+            candidate = unit_prefix or before_lot
+            candidate = re.sub(r'\s+', ' ', candidate).strip()
+            if candidate and len(candidate) > len(result.subdivision) and result.subdivision in candidate:
+                result.subdivision = candidate
+
     return result
 
 
@@ -238,54 +284,77 @@ def generate_search_permutations(legal: LegalDescription, max_permutations: int 
     """
     permutations = []
 
-    # Get subdivision first word for searches
-    subdiv_first_word = None
-    if legal.subdivision:
-        subdiv_words = legal.subdivision.split()
-        # Skip common words that aren't the actual subdivision name
-        for word in subdiv_words:
-            if word not in ('THE', 'A', 'AN', 'AT', 'OF', 'IN'):
-                subdiv_first_word = word
-                break
-        if not subdiv_first_word:
-            subdiv_first_word = subdiv_words[0]
+    def _subdivision_prefixes(subdivision: str) -> List[str]:
+        if not subdivision:
+            return []
+
+        # Use regex tokenization to split punctuation cleanly (e.g., "TOWN'N" -> ["TOWN", "N"]).
+        raw_words = re.findall(r"[A-Z0-9]+", subdivision.upper())
+        stop = {"THE", "A", "AN", "AT", "OF", "IN"}
+        words = [w for w in raw_words if w and w not in stop]
+
+        # Guard: metes-and-bounds false positives like "BEGIN AT..."
+        if words and words[0] in {"BEGIN", "BEG", "COMMENCE", "COMMENCING", "COM", "TRACT"}:
+            return []
+
+        # Most-specific prefixes first (3 words -> 2 -> 1)
+        prefixes: List[str] = []
+        max_words = min(3, len(words))
+        for k in range(max_words, 0, -1):
+            prefixes.append(" ".join(words[:k]))
+
+        # De-dup while preserving order
+        seen: set[str] = set()
+        out: List[str] = []
+        for p in prefixes:
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+        return out
+
+    subdiv_prefixes = _subdivision_prefixes(legal.subdivision or "")
+
+    # Prefer all detected lots (handles partial/multi-lot parcels like "LOT 18 ... LOT 19 ...").
+    lots_to_use = [lot for lot in (legal.lots or []) if lot] or ([legal.lot] if legal.lot else [])
 
     # Priority 1: Most specific - Lot + Block + Subdivision first word
     # This is the ORI-optimized format: "L {lot} B {block} {subdivision}*"
-    if legal.lot and legal.block and subdiv_first_word:
-        # Primary format - what ORI uses most
-        permutations.append(f"L {legal.lot} B {legal.block} {subdiv_first_word}*")
-        # Also try with BLK for alpha blocks (some records use BLK D instead of B D)
-        if not legal.block.isdigit():
-            permutations.append(f"L {legal.lot} BLK {legal.block} {subdiv_first_word}*")
+    if lots_to_use and legal.block and subdiv_prefixes:
+        for lot in lots_to_use:
+            for prefix in subdiv_prefixes:
+                permutations.append(f"L {lot} B {legal.block} {prefix}*")
+                # Also try with BLK for alpha blocks (some records use BLK D instead of B D)
+                if not legal.block.isdigit():
+                    permutations.append(f"L {lot} BLK {legal.block} {prefix}*")
 
     # Priority 2: Lot + Subdivision (no block)
-    if legal.lot and subdiv_first_word:
-        permutations.append(f"L {legal.lot} {subdiv_first_word}*")
+    if lots_to_use and subdiv_prefixes:
+        for lot in lots_to_use:
+            for prefix in subdiv_prefixes:
+                permutations.append(f"L {lot} {prefix}*")
 
     # Priority 3: Just subdivision name with wildcard (broader search)
     # This returns all lots in subdivision - useful as fallback
-    if subdiv_first_word:
-        permutations.append(f"{subdiv_first_word}*")
-
-        # Two-word subdivision for more specificity
-        if legal.subdivision:
-            subdiv_words = legal.subdivision.split()
-            if len(subdiv_words) >= 2:
-                subdiv_two = " ".join(subdiv_words[:2])
-                permutations.append(f"{subdiv_two}*")
+    if subdiv_prefixes:
+        # Include the shortest prefixes last (1-word, then 2-word if available)
+        permutations.append(f"{subdiv_prefixes[-1]}*")
+        if len(subdiv_prefixes) >= 2:
+            permutations.append(f"{subdiv_prefixes[-2]}*")
 
     # For condos, try unit + building name with wildcard
-    if legal.unit and subdiv_first_word:
-        permutations.append(f"UNIT {legal.unit} {subdiv_first_word}*")
-        permutations.append(f"U {legal.unit} {subdiv_first_word}*")
+    if legal.unit and subdiv_prefixes:
+        permutations.append(f"UNIT {legal.unit} {subdiv_prefixes[0]}*")
+        permutations.append(f"U {legal.unit} {subdiv_prefixes[0]}*")
 
     # If we have section-township-range, add that with wildcard
     if legal.section and legal.township and legal.range:
         str_search = f"{legal.section}-{legal.township}-{legal.range}"
-        if subdiv_first_word:
-            permutations.append(f"{str_search} {subdiv_first_word}*")
+        if subdiv_prefixes:
+            permutations.append(f"{str_search} {subdiv_prefixes[0]}*")
         permutations.append(f"{str_search}*")
+        # Narrative STR search (works better for metes-and-bounds ORI indexing)
+        permutations.append(f"SECTION {legal.section} TOWNSHIP {legal.township}*")
+        permutations.append(f"SECTION {legal.section} TOWNSHIP {legal.township} RANGE {legal.range}*")
 
     # Fallback: If we have lot/block but no subdivision, try lot patterns
     if not permutations and legal.lot:
@@ -294,14 +363,76 @@ def generate_search_permutations(legal: LegalDescription, max_permutations: int 
         else:
             permutations.append(f"L {legal.lot}*")
 
-    # Last resort: use first significant word from raw text with wildcard
+    # Last resort: use a specific prefix of the raw text.
+    # For metes-and-bounds (often starts with COM/BEG/etc), a longer prefix is far more specific
+    # than any single token and reduces irrelevant matches.
     if not permutations and legal.raw_text:
         words = legal.raw_text.upper().strip().split()
-        # Find first word that's not a common prefix
+        raw_upper = legal.raw_text.upper().lstrip()
+        if raw_upper.startswith(("COM ", "BEG ", "BEGIN", "COMMENCE", "COMMENCING", "TRACT")):
+            # Try extracting road names (often stable across recordings) before falling back to a raw prefix.
+            road_regex = re.compile(
+                r"\b([A-Z]{3,}(?:\s+[A-Z]{3,}){0,3})\s+"
+                r"(RD|ROAD|DR|DRIVE|AVE|AVENUE|ST|STREET|BLVD|BOULEVARD|LN|LANE|CT|COURT|PL|PLACE|WAY|HWY|HIGHWAY)\b"
+            )
+            for m in road_regex.finditer(raw_upper):
+                name = re.sub(r"\s+", " ", m.group(1).strip())
+                suffix = m.group(2).strip()
+                if name:
+                    permutations.append(f"{name} {suffix}*")
+                    permutations.append(f"{name}*")
+
+            prefix = raw_upper[:60].strip()
+            if prefix:
+                permutations.append(f"{prefix}*")
+
+            # Remove duplicates while preserving order, then return early.
+            seen = set()
+            deduped = []
+            for p in permutations:
+                if p not in seen:
+                    seen.add(p)
+                    deduped.append(p)
+            return deduped[:max_permutations]
+
+        common_prefixes = {
+            "LOT",
+            "L",
+            "LT",
+            "BLOCK",
+            "BLK",
+            "B",
+            "UNIT",
+            "U",
+            "THE",
+            "OF",
+            "IN",
+            "AT",
+            "COM",
+            "COMMENCE",
+            "COMMENCING",
+            "BEG",
+            "BEGIN",
+            "BEGINNING",
+            "RUN",
+            "THN",
+            "THENCE",
+            "ALG",
+        }
+
         for word in words:
-            if word not in ['LOT', 'L', 'LT', 'BLOCK', 'BLK', 'B', 'UNIT', 'U', 'THE', 'OF', 'IN', 'AT'] and len(word) >= 4:
-                permutations.append(f"{word}*")
+            if word in common_prefixes:
+                continue
+            # Prefer alphabetic tokens; numeric tokens are too broad.
+            cleaned = re.sub(r"[^A-Z]", "", word)
+            if len(cleaned) >= 4:
+                permutations.append(f"{cleaned}*")
                 break
+
+        if not permutations:
+            prefix = raw_upper[:60].strip()
+            if prefix:
+                permutations.append(f"{prefix}*")
 
     # Remove duplicates while preserving order
     seen = set()
@@ -397,29 +528,40 @@ def build_ori_search_terms(folio: str, legal1: str | None, legal2: str | None = 
 
     # Priority 3: Try each legal field individually
     for field in [legal1, legal2, legal3, legal4]:
-        if field and field.strip():
-            # Extract just lot + block if present
-            parsed = parse_legal_description(field)
+        if not field or not field.strip():
+            continue
 
-            # Find first significant word (likely subdivision name)
-            words = field.strip().upper().split()
-            first_significant = None
+        parsed = parse_legal_description(field)
+
+        words = field.strip().upper().split()
+        first_significant = None
         for word in words:
-            if word not in ['LOT', 'L', 'LT', 'BLOCK', 'BLK', 'B', 'UNIT', 'U', 'THE', 'OF', 'IN', 'AT'] and len(word) >= 4:
+            if word not in [
+                "LOT",
+                "L",
+                "LT",
+                "BLOCK",
+                "BLK",
+                "B",
+                "UNIT",
+                "U",
+                "THE",
+                "OF",
+                "IN",
+                "AT",
+            ] and len(word) >= 4:
                 first_significant = word
                 break
 
-            if first_significant:
-                # Always add subdivision wildcard search
-                term = f"{first_significant}*"
+        if first_significant:
+            term = f"{first_significant}*"
+            if term not in search_terms:
+                search_terms.append(term)
+
+            if parsed.lot:
+                term = f"L {parsed.lot} {first_significant}*"
                 if term not in search_terms:
                     search_terms.append(term)
-
-                # Add lot + subdivision if we have lot
-                if parsed.lot:
-                    term = f"L {parsed.lot} {first_significant}*"
-                    if term not in search_terms:
-                        search_terms.append(term)
 
     # Filter out overly generic terms that would return too many results
     generic_terms = {'BLOCK*', 'LOT*', 'UNIT*', 'PHASE*', 'THE*', 'PLAT*', 'BOOK*', 'PAGE*',
