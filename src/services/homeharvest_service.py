@@ -1,8 +1,10 @@
 import json
+import subprocess
+import sys
 import time
 import random
 import re
-from datetime import datetime, date
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -10,9 +12,159 @@ from loguru import logger
 from homeharvest import scrape_property
 from src.db.operations import PropertyDB
 
+
+def _is_blocking_error(error: Exception) -> bool:
+    """Check if an error indicates we're being blocked by Realtor.com."""
+    error_str = str(error).lower()
+    error_type = type(error).__name__
+
+    blocking_indicators = [
+        "retryerror",
+        "forbidden",
+        "403",
+        "blocked",
+        "rate limit",
+        "too many requests",
+        "429",
+    ]
+
+    return any(indicator in error_str or indicator in error_type.lower()
+               for indicator in blocking_indicators)
+
+
+def _get_installed_version() -> str | None:
+    """Get currently installed homeharvest version."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "show", "homeharvest"],
+            check=False, capture_output=True, text=True, timeout=30
+        )
+        for line in result.stdout.split("\n"):
+            if line.startswith("Version:"):
+                return line.split(":")[1].strip()
+    except Exception:
+        pass
+    return None
+
+
+def _get_latest_version() -> str | None:
+    """Get latest homeharvest version from PyPI."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "index", "versions", "homeharvest"],
+            check=False, capture_output=True, text=True, timeout=30
+        )
+        # Output format: "homeharvest (0.8.11)"
+        if "(" in result.stdout:
+            return result.stdout.split("(")[1].split(")")[0].strip()
+    except Exception:
+        pass
+    return None
+
+
+def upgrade_homeharvest() -> bool:
+    """
+    Upgrade homeharvest to latest version.
+
+    Returns:
+        True if upgrade was performed, False otherwise.
+    """
+    installed = _get_installed_version()
+    latest = _get_latest_version()
+
+    if not latest:
+        logger.warning("Could not determine latest homeharvest version")
+        return False
+
+    if installed == latest:
+        logger.info(f"HomeHarvest already at latest version ({installed})")
+        return False
+
+    logger.warning(f"Upgrading HomeHarvest: {installed} -> {latest}")
+
+    try:
+        result = subprocess.run(
+            ["uv", "pip", "install", "--upgrade", "homeharvest"],
+            check=False, capture_output=True, text=True, timeout=120
+        )
+
+        if result.returncode == 0:
+            logger.success(f"HomeHarvest upgraded to {latest}")
+            return True
+        logger.error(f"HomeHarvest upgrade failed: {result.stderr}")
+        return False
+
+    except Exception as e:
+        logger.error(f"HomeHarvest upgrade error: {e}")
+        return False
+
+
+def run_homeharvest_subprocess(limit: int = 100) -> bool:
+    """
+    Run HomeHarvest enrichment in a fresh subprocess.
+
+    This is used after upgrading HomeHarvest to use the new version
+    without requiring a full script restart.
+
+    Args:
+        limit: Maximum number of properties to process
+
+    Returns:
+        True if subprocess started successfully, False otherwise.
+    """
+    script = f'''
+from src.services.homeharvest_service import HomeHarvestService
+from loguru import logger
+import sys
+
+logger.remove()
+logger.add(sys.stdout, level="INFO")
+
+hh = HomeHarvestService(auto_upgrade=False)  # Don't try to upgrade again
+props = hh.get_pending_properties(limit={limit})
+print(f"Found {{len(props)}} properties needing HomeHarvest enrichment")
+
+if props:
+    hh.fetch_and_save(props)
+    print("Done!")
+else:
+    print("No properties need enrichment.")
+'''
+
+    logger.info(f"Spawning HomeHarvest subprocess with limit={limit}...")
+
+    try:
+        # Run in background so we don't block
+        subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        logger.success("HomeHarvest subprocess started with upgraded version")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to spawn HomeHarvest subprocess: {e}")
+        return False
+
+
 class HomeHarvestService:
-    def __init__(self):
+    # Delay between requests (seconds) - Realtor.com is aggressive with rate limiting
+    MIN_DELAY = 15.0  # Minimum delay between requests
+    MAX_DELAY = 30.0  # Maximum delay (randomized for human-like behavior)
+
+    def __init__(self, proxy: str | None = None, auto_upgrade: bool = True):
+        """
+        Initialize HomeHarvest service.
+
+        Args:
+            proxy: Optional proxy URL in format 'http://user:pass@host:port'
+            auto_upgrade: If True, automatically upgrade homeharvest on first blocking error
+        """
         self.db = PropertyDB()
+        self.proxy = proxy
+        self.auto_upgrade = auto_upgrade
+        self._upgrade_attempted = False  # Track if we've already tried upgrading this session
 
     def get_pending_properties(self, limit: int = 100, auction_date: Optional[date] = None) -> List[Dict[str, Any]]:
         """
@@ -88,10 +240,7 @@ class HomeHarvestService:
         if not properties:
             return
 
-        locations = [p["location"] for p in properties]
-        folio_map = {p["location"]: p["folio"] for p in properties}
-        
-        logger.info(f"Fetching HomeHarvest data for {len(locations)} properties...")
+        logger.info(f"Fetching HomeHarvest data for {len(properties)} properties...")
         
         try:
             # listing_type="sold" is best for comps/history
@@ -109,13 +258,21 @@ class HomeHarvestService:
             # We'll loop to be safe and handle errors per property.
             
             for i, prop in enumerate(properties):
-                self._process_single_property(prop["folio"], prop["location"])
-                
+                # First request triggers auto-upgrade check if blocked
+                success = self._process_single_property(
+                    prop["folio"], prop["location"], proxy=self.proxy, is_first=(i == 0)
+                )
+
+                # If first request was blocked and no upgrade available, stop processing
+                if i == 0 and not success and self._upgrade_attempted:
+                    logger.error("First request blocked and no upgrade available. Stopping.")
+                    break
+
                 # Add delay between requests to avoid rate limiting
                 # Skip delay after the last one
                 if i < len(properties) - 1:
-                    delay = random.uniform(3.0, 7.0)
-                    logger.debug(f"Sleeping {delay:.1f}s...")
+                    delay = random.uniform(self.MIN_DELAY, self.MAX_DELAY)  # noqa: S311
+                    logger.info(f"Waiting {delay:.0f}s before next request ({i+1}/{len(properties)} done)...")
                     time.sleep(delay)
             
             # Close DB connection to flush WAL
@@ -125,26 +282,70 @@ class HomeHarvestService:
             logger.error(f"HomeHarvest batch error: {e}")
             self.db.close()
 
-    def _process_single_property(self, folio: str, location: str):
+    def _process_single_property(
+        self, folio: str, location: str, proxy: str | None = None, is_first: bool = False
+    ) -> bool:
+        """
+        Process a single property.
+
+        Args:
+            folio: Property folio ID
+            location: Address string
+            proxy: Optional proxy URL
+            is_first: If True, this is the first request - trigger auto-upgrade on blocking
+
+        Returns:
+            True if successful, False if blocked/failed
+        """
         try:
             logger.info(f"Scraping: {location}")
-            # We search for "sold" to get history/metadata. 
-            df = scrape_property(location=location, listing_type="sold", past_days=3650) # 10 years
-            
+            # We search for "sold" to get history/metadata.
+            # Use parallel=False for single property lookups - it's slower but more reliable
+            # to avoid triggering rate limits from multiple concurrent requests.
+            df = scrape_property(
+                location=location,
+                listing_type="sold",
+                past_days=3650,  # 10 years
+                parallel=False,  # Sequential requests to reduce rate limiting
+                proxy=proxy,
+            )
+
             if df is None or df.empty:
                 logger.warning(f"No data found for {location}")
-                # Try 'for_sale' just in case it's currently active and not sold recently?
-                # df = scrape_property(location=location, listing_type="for_sale")
-                return
+                return True  # Not a blocking error, just no data
 
             # Take the most recent relevant record (usually the first one)
             # HomeHarvest returns a DataFrame.
             row = df.iloc[0]
             self._save_record(folio, row)
             logger.success(f"Saved data for {folio}")
-            
+            return True
+
         except Exception as e:
+            # Check if this is a blocking error
+            if _is_blocking_error(e):
+                logger.warning(f"Blocking error detected: {type(e).__name__}")
+
+                # On first request, try to auto-upgrade
+                if is_first and self.auto_upgrade and not self._upgrade_attempted:
+                    self._upgrade_attempted = True
+                    logger.info("First request blocked - attempting to upgrade homeharvest...")
+
+                    if upgrade_homeharvest():
+                        logger.success("Upgrade successful! Spawning subprocess with new version...")
+                        # Spawn a fresh subprocess that will use the upgraded version
+                        run_homeharvest_subprocess(limit=100)
+                        # Signal that we handled this by spawning a subprocess
+                        raise SystemExit(
+                            "HomeHarvest upgraded and subprocess spawned. "
+                            "Exiting current process - the subprocess will continue."
+                        ) from None
+                    logger.warning("No upgrade available or upgrade failed")
+
+                return False
+
             logger.error(f"Error processing {location}: {e}")
+            return False
 
     def _save_record(self, folio: str, row: pd.Series):
         conn = self.db.connect()

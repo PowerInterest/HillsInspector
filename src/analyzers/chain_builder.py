@@ -274,12 +274,26 @@ def build_chain_of_title(documents: List[Dict]) -> Dict:
 
     # Get current owner
     current_owner = ownership_periods[-1].owner if ownership_periods else "Unknown"
-
+    
+    # Check for MRTA 30-year standard
+    current_year = date.today().year
+    oldest_deed_date = parse_date(deeds[0].get("recording_date")) if deeds else None
+    
+    mrta_status = "INSUFFICIENT"
+    if oldest_deed_date:
+        years_covered = (date.today() - oldest_deed_date).days / 365.25
+        if years_covered >= 30:
+            mrta_status = "SATISFIED"
+        else:
+            mrta_status = f"PARTIAL ({int(years_covered)} years)"
+    
     return {
         "ownership_timeline": ownership_periods,
         "current_owner": current_owner,
         "total_transfers": len(deeds),
-        "all_encumbrances": all_encumbrances
+        "all_encumbrances": all_encumbrances,
+        "mrta_status": mrta_status,
+        "years_covered": (date.today() - oldest_deed_date).days / 365.25 if oldest_deed_date else 0
     }
 
 
@@ -326,7 +340,9 @@ def chain_to_dict(chain: Dict) -> Dict:
         "ownership_timeline": [period_to_dict(p) for p in chain["ownership_timeline"]],
         "current_owner": chain["current_owner"],
         "total_transfers": chain["total_transfers"],
-        "all_encumbrances": [enc_to_dict(e) for e in chain["all_encumbrances"]]
+        "all_encumbrances": [enc_to_dict(e) for e in chain["all_encumbrances"]],
+        "mrta_status": chain.get("mrta_status"),
+        "years_covered": chain.get("years_covered")
     }
 
 

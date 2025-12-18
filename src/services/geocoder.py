@@ -52,6 +52,6 @@ def geocode_address(address: str) -> Optional[Tuple[float, float]]:
             # Respect Nominatim usage policy
             time.sleep(1.0)
             return lat, lon
-    except error.URLError as exc:
+    except (error.URLError, TimeoutError, OSError) as exc:
         logger.error("Geocode failed for {addr}: {err}", addr=address, err=exc)
         return None

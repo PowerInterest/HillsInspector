@@ -345,13 +345,6 @@ class PermitScraper:
                 await page.screenshot(path=str(screenshot_path), full_page=True)
                 logger.info(f"Screenshot saved: {screenshot_path}")
 
-                # Debug: Dump HTML
-                html_content = await page.content()
-                debug_html_path = self.output_dir / f"debug_{source.replace(' ', '_')}_{safe_addr}_{timestamp}.html"
-                with open(debug_html_path, "w", encoding="utf-8") as f:
-                    f.write(html_content)
-                logger.info(f"HTML dumped to: {debug_html_path}")
-
                 # Parse results
                 if self.use_vision and self.vision:
                     permits = await self._extract_with_vision(str(screenshot_path), page)

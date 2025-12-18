@@ -122,7 +122,7 @@ async def handle_debug():
     await run_full_pipeline(max_auctions=1, property_limit=1, geocode_missing_parcels=False)
     logger.success("Debug run complete.")
 
-def handle_web(port: int):
+def handle_web(port: int, use_ngrok: bool = False):
     """Start the FastAPI web server (app/web)."""
     import uvicorn
     import socket
@@ -146,13 +146,50 @@ def handle_web(port: int):
     if ip_addr != '127.0.0.1':
         logger.info(f"Network Access (WSL): http://{ip_addr}:{port}")
 
-    uvicorn.run(
-        "app.web.main:app",
-        host="0.0.0.0",
-        port=port,
-        reload=False,
-        log_level="debug",
-    )
+    # Start ngrok tunnel if requested
+    ngrok_tunnel = None
+    if use_ngrok:
+        try:
+            from pyngrok import ngrok
+
+            # Configure ngrok (uses ~/.ngrok2/ngrok.yml for auth token)
+            logger.info("Starting ngrok tunnel...")
+
+            # Create tunnel
+            ngrok_tunnel = ngrok.connect(port, "http")
+            public_url = ngrok_tunnel.public_url
+
+            logger.success(f"ngrok tunnel established!")
+            logger.info(f"Public URL: {public_url}")
+            logger.info(f"Share this URL to access from anywhere (phone, remote computer)")
+            print()
+            print("=" * 60)
+            print(f"  PUBLIC URL: {public_url}")
+            print("=" * 60)
+            print()
+
+        except ImportError:
+            logger.error("pyngrok not installed. Run: uv add pyngrok")
+            use_ngrok = False
+        except Exception as e:
+            logger.error(f"Failed to start ngrok: {e}")
+            logger.info("Make sure ngrok is configured: ngrok config add-authtoken YOUR_TOKEN")
+            use_ngrok = False
+
+    try:
+        uvicorn.run(
+            "app.web.main:app",
+            host="0.0.0.0",
+            port=port,
+            reload=False,
+            log_level="debug",
+        )
+    finally:
+        # Clean up ngrok tunnel on shutdown
+        if ngrok_tunnel:
+            logger.info("Closing ngrok tunnel...")
+            from pyngrok import ngrok
+            ngrok.disconnect(ngrok_tunnel.public_url)
 
 def main():
     parser = argparse.ArgumentParser(description="HillsInspector Main Controller")
@@ -164,6 +201,8 @@ def main():
     group.add_argument("--web", action="store_true", help="Start web server")
     parser.add_argument("--port", type=int, default=int(os.getenv("WEB_PORT", 8080)),
                         help="Port for web server (default 8080 or WEB_PORT env var)")
+    parser.add_argument("--ngrok", action="store_true",
+                        help="Start ngrok tunnel for remote access (requires ngrok auth token)")
     parser.add_argument("--start-date", type=str, default=None,
                         help="Start date for --update (YYYY-MM-DD). Defaults to tomorrow.")
     parser.add_argument("--end-date", type=str, default=None,
@@ -221,7 +260,7 @@ def main():
             )
         )
     elif args.web:
-        handle_web(args.port)
+        handle_web(args.port, use_ngrok=args.ngrok)
 
 if __name__ == "__main__":
     main()

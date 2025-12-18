@@ -1025,6 +1025,54 @@ class PropertyDB:
         conn = self.connect()
         conn.execute("UPDATE encumbrances SET survival_status = ? WHERE id = ?", [status, encumbrance_id])
 
+    def encumbrance_exists(self, folio: str, book: str, page: str) -> bool:
+        """Check if an encumbrance with the given book/page already exists for a folio."""
+        conn = self.connect()
+        result = conn.execute(
+            "SELECT 1 FROM encumbrances WHERE folio = ? AND book = ? AND page = ? LIMIT 1",
+            [folio, book, page]
+        ).fetchone()
+        return result is not None
+
+    def insert_encumbrance(
+        self,
+        folio: str,
+        encumbrance_type: str,
+        creditor: str | None = None,
+        amount: float | None = None,
+        recording_date: str | None = None,
+        book: str | None = None,
+        page: str | None = None,
+        instrument: str | None = None,
+        survival_status: str | None = None,
+        chain_period_id: int | None = None,
+    ) -> int:
+        """
+        Insert a single encumbrance record.
+        Returns the ID of the inserted encumbrance.
+        """
+        conn = self.connect()
+        result = conn.execute("""
+            INSERT INTO encumbrances (
+                folio, chain_period_id, encumbrance_type, creditor,
+                amount, recording_date, instrument, book, page,
+                survival_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
+        """, [
+            folio,
+            chain_period_id,
+            encumbrance_type,
+            creditor,
+            amount,
+            recording_date,
+            instrument,
+            book,
+            page,
+            survival_status,
+        ])
+        return result.fetchone()[0]
+
     def get_chain_of_title(self, folio: str) -> Dict[str, Any]:
         """
         Get chain of title for a property.

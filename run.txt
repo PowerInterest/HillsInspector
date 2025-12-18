@@ -1,0 +1,20 @@
+  # Start web server with ngrok tunnel
+  uv run main.py --web --ngrok
+
+  Before first use, you need to configure ngrok with your auth token (free at ngrok.com):
+
+  ~/.local/bin/ngrok config add-authtoken YOUR_AUTH_TOKEN
+
+  What was implemented:
+  - Added --ngrok flag to main.py argument parser
+  - Modified handle_web() to optionally start an ngrok tunnel via pyngrok
+  - On startup with --ngrok, it:
+    a. Creates an HTTP tunnel to port 8080
+    b. Displays the public URL prominently (accessible from phone/remote computer)
+    c. Cleans up the tunnel on server shutdown
+
+  Usage:
+  1. Get a free ngrok auth token from https://ngrok.com
+  2. Run: ~/.local/bin/ngrok config add-authtoken YOUR_TOKEN
+  3. Start server: uv run main.py --web --ngrok
+  4. Share the displayed public URL to access from anywhere

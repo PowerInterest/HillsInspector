@@ -6,15 +6,7 @@
     {% else %}
         <ul class="timeline">
             {% for transfer in chain_of_title %}
-                {% set is_break = false %}
-                {% if not loop.first %}
-                    {% set prev_transfer = chain_of_title[loop.index0 - 1] %}
-                    {% if transfer.owner_name and prev_transfer.acquired_from and transfer.owner_name|lower != prev_transfer.acquired_from|lower %}
-                        {% set is_break = true %}
-                    {% endif %}
-                {% endif %}
-
-                {% if is_break %}
+                {% if transfer.is_chain_break %}
                 <li class="timeline-break">
                     <div class="break-line"></div>
                     <div class="break-text">⚠️ Broken Chain: Grantee doesn't match next Grantor</div>

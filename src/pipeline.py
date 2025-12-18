@@ -43,6 +43,7 @@ from src.scrapers.sunbiz_scraper import SunbizScraper
 from src.scrapers.market_scraper import MarketScraper
 from src.scrapers.realtor_scraper import RealtorScraper
 from src.scrapers.tax_scraper import TaxScraper
+from src.scrapers.ori_scraper import ORIScraper
 from src.services.final_judgment_processor import FinalJudgmentProcessor
 from src.services.lien_survival_analyzer import LienSurvivalAnalyzer
 from src.services.ingestion_service import IngestionService
@@ -1037,6 +1038,8 @@ async def run_full_pipeline(
                     "debtor": row.get("debtor"),
                     "amount": row["amount"],
                     "instrument": row.get("instrument"),
+                    "book": row.get("book"),
+                    "page": row.get("page"),
                     "is_satisfied": row.get("is_satisfied", False),
                 }
                 encumbrances.append(enc)
@@ -1069,6 +1072,85 @@ async def run_full_pipeline(
                 with contextlib.suppress(json.JSONDecodeError):
                     judgment_data = json.loads(auction["extracted_judgment_data"])
 
+            # Create foreclosing mortgage encumbrance from judgment data if not already present
+            foreclosed_mtg = judgment_data.get("foreclosed_mortgage", {})
+            mtg_book = foreclosed_mtg.get("recording_book")
+            mtg_page = foreclosed_mtg.get("recording_page")
+            
+            # Prepare foreclosing refs for analyzer
+            foreclosing_refs = {
+                "instrument": foreclosed_mtg.get("instrument_number"),
+                "book": mtg_book,
+                "page": mtg_page
+            }
+            
+            if mtg_book and mtg_page and not db.encumbrance_exists(folio, mtg_book, mtg_page):
+                # Use book/page to fetch full document details from ORI (bypasses 25-result limit)
+                mtg_instrument = foreclosed_mtg.get("instrument_number")
+                mtg_record_date = foreclosed_mtg.get("recording_date")
+                if not mtg_instrument:
+                    try:
+                        ori_scraper = ORIScraper()
+                        ori_results = ori_scraper.search_by_book_page_sync(mtg_book, mtg_page)
+                        if ori_results:
+                            # Get first result with mortgage-related doc type
+                            for ori_doc in ori_results:
+                                doc_type = ori_doc.get("ORI - Doc Type", "")
+                                if "MTG" in doc_type or "MORTGAGE" in doc_type.upper():
+                                    mtg_instrument = ori_doc.get("Instrument #")
+                                    if not mtg_record_date:
+                                        mtg_record_date = ori_doc.get("Recording Date Time", "").split()[0] if ori_doc.get("Recording Date Time") else None
+                                    logger.info(f"  Found mortgage instrument {mtg_instrument} via book/page lookup")
+                                    break
+                            # If no mortgage type found, use first result
+                            if not mtg_instrument and ori_results:
+                                mtg_instrument = ori_results[0].get("Instrument #")
+                                if not mtg_record_date:
+                                    mtg_record_date = ori_results[0].get("Recording Date Time", "").split()[0] if ori_results[0].get("Recording Date Time") else None
+                                logger.info(f"  Found instrument {mtg_instrument} via book/page lookup")
+                    except Exception as e:
+                        logger.warning(f"  Failed to lookup mortgage by book/page: {e}")
+                
+                # Update refs with found instrument if available
+                if mtg_instrument:
+                    foreclosing_refs["instrument"] = mtg_instrument
+
+                # Get amount from judgment - principal_amount or original_amount
+                mtg_amount = (
+                    judgment_data.get("principal_amount")
+                    or foreclosed_mtg.get("original_amount")
+                    or None
+                )
+                # Get creditor from plaintiff
+                mtg_creditor = auction.get("plaintiff")
+
+                enc_id = db.insert_encumbrance(
+                    folio=folio,
+                    encumbrance_type="(MTG) MORTGAGE",
+                    creditor=mtg_creditor,
+                    amount=mtg_amount,
+                    recording_date=mtg_record_date,
+                    book=mtg_book,
+                    page=mtg_page,
+                    instrument=mtg_instrument,
+                    survival_status="FORECLOSING",
+                )
+                logger.info(f"  Created foreclosing mortgage encumbrance (id={enc_id}) from judgment data")
+
+                # Add to encumbrances list for survival analysis
+                encumbrances.append({
+                    "id": enc_id,
+                    "type": "(MTG) MORTGAGE",
+                    "creditor": mtg_creditor,
+                    "amount": mtg_amount,
+                    "recording_date": mtg_record_date,
+                    "book": mtg_book,
+                    "page": mtg_page,
+                    "instrument": mtg_instrument,
+                })
+                # Add to ID map
+                enc_id_map[mtg_instrument or f"{mtg_record_date}_(MTG) MORTGAGE"] = enc_id
+
             lis_pendens_date = None
             lp_str = judgment_data.get("lis_pendens_date")
             if lp_str:
@@ -1087,6 +1169,7 @@ async def run_full_pipeline(
                 current_owner_acquisition_date=current_owner_acquisition_date,
                 plaintiff=plaintiff,
                 original_mortgage_amount=auction.get("original_mortgage_amount"),
+                foreclosing_refs=foreclosing_refs
             )
 
             # Update survival status for each category
