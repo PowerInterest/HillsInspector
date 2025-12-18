@@ -12,10 +12,10 @@ class NameMatcher:
     
     # Common legal/noise words to strip
     STOPWORDS = {
-        'THE', 'AND', 'OR', 'OF', '&', 'A', 'AN',
+        'THE', 'AND', 'OR', 'OF', '&', 'A', 'AN', 'AS',
         'LLC', 'L.L.C.', 'INC', 'INC.', 'INCORPORATED', 'CORP', 'CORPORATION',
         'PA', 'P.A.', 'LTD', 'LIMITED', 'COMPANY', 'CO',
-        'TRUST', 'TRUSTEE', 'AS TRUSTEE', 'REVOCABLE', 'LIVING', 'FAMILY',
+        'TRUST', 'TRUSTEE', 'REVOCABLE', 'LIVING', 'FAMILY',
         'ESTATE', 'OF', 'SUCCESSOR',
         'HUSBAND', 'WIFE', 'SINGLE', 'MAN', 'WOMAN', 'PERSON', 'MARRIED',
         'FKA', 'F/K/A', 'NKA', 'N/K/A', 'AKA', 'A/K/A', 'DBA', 'D/B/A'
@@ -49,15 +49,11 @@ class NameMatcher:
         clean = name.upper()
         clean = re.sub(r'[^\w\s]', ' ', clean)
         
-        # Split into tokens
         tokens = set(clean.split())
-        
-        # Remove stopwords and single characters (initials) 
-        # Note: Keeping initials can be useful for strict matching, but for fuzzy
-        # chain linking, ignoring 'A' in 'John A Smith' vs 'John Smith' is often desired.
-        # Let's keep initials if they are significant, but maybe ignore them for strict sets?
-        # Strategy: Keep initials for now.
-        significant_tokens = {t for t in tokens if t not in cls.STOPWORDS}
+
+        # Remove stopwords and single-character tokens (initials).
+        # For title chains, initials add noise and create false matches.
+        significant_tokens = {t for t in tokens if t not in cls.STOPWORDS and len(t) > 1}
         
         return significant_tokens
 
@@ -88,16 +84,17 @@ class NameMatcher:
             return "EXACT", 1.0
 
         # 2. Superset / Subset (Add/Remove Party)
-        # Note: We need reasonable overlap size to avoid false positives 
-        # e.g. "Smith" subset of "John Smith" is risky if "Smith" is common.
-        # So we verify intersection size >= min(len)
+        # Tighten this: require at least 2 meaningful tokens in the smaller name.
+        # This avoids false positives like "SMITH" being a subset of many names.
         intersection = set1.intersection(set2)
-        
-        if set1.issubset(set2):
-            return "SUPERSET", 0.95 # Name2 adds parties to Name1
-            
-        if set2.issubset(set1):
-            return "SUBSET", 0.95 # Name2 removes parties from Name1
+        min_tokens = min(len(set1), len(set2))
+
+        if min_tokens >= 2:
+            if set1.issubset(set2) and len(intersection) >= 2:
+                return "SUPERSET", 0.95  # Name2 adds parties to Name1
+
+            if set2.issubset(set1) and len(intersection) >= 2:
+                return "SUBSET", 0.95  # Name2 removes parties from Name1
 
         # 3. Alias / Nickname Check
         # If sets are disjoint or low overlap, check if one token maps to another via Alias
@@ -113,13 +110,13 @@ class NameMatcher:
         union = set1.union(set2)
         jaccard = len(intersection) / len(union)
         
-        if jaccard >= 0.6: # Arbitrary threshold, tune as needed
+        if jaccard >= 0.65:  # Slightly tighter than before
             return "FUZZY_JACCARD", round(jaccard, 2)
 
         # 5. String Similarity (Levenshtein via SequenceMatcher)
         # Good for typos: "Steven" vs "Stephen"
         ratio = SequenceMatcher(None, name1.upper(), name2.upper()).ratio()
-        if ratio > 0.85:
+        if ratio > 0.88:
             return "FUZZY_STRING", round(ratio, 2)
             
         return "NONE", 0.0
