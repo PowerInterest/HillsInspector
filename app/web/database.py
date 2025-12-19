@@ -267,6 +267,11 @@ def get_property_detail(folio: str) -> Optional[Dict[str, Any]]:
         auction_cols = [desc[0] for desc in conn.description]
         auction = dict(zip(auction_cols, auction_result, strict=True))
 
+        # Parse extracted judgment JSON for templates (DuckDB may return as str)
+        with suppress(Exception):
+            if isinstance(auction.get("extracted_judgment_data"), str):
+                auction["extracted_judgment_data"] = json.loads(auction["extracted_judgment_data"])
+
         # Get bulk parcel data (join on strap, not folio)
         parcel = None
         try:
@@ -314,7 +319,7 @@ def get_property_detail(folio: str) -> Optional[Dict[str, Any]]:
             chain_query = """
                 SELECT * FROM chain_of_title
                 WHERE folio = ?
-                ORDER BY acquisition_date DESC
+                ORDER BY acquisition_date
             """
             chain_result = conn.execute(chain_query, [folio]).fetchall()
             if chain_result:
@@ -411,6 +416,7 @@ def get_nocs_for_property(folio: str) -> List[Dict[str, Any]]:
         results = conn.execute(
             """
             SELECT
+                id,
                 document_type,
                 recording_date,
                 instrument_number,
@@ -424,7 +430,6 @@ def get_nocs_for_property(folio: str) -> List[Dict[str, Any]]:
               AND (
                   LOWER(COALESCE(document_type, '')) LIKE '%notice of commencement%'
                   OR LOWER(COALESCE(document_type, '')) LIKE '%noc%'
-                  OR LOWER(COALESCE(ocr_text, '')) LIKE '%notice of commencement%'
               )
             ORDER BY recording_date DESC NULLS LAST, created_at DESC
             """,

@@ -606,6 +606,10 @@ a:hover {
     opacity: 0.6;
 }
 
+.lien-table tr.foreclosing {
+    background: #dbeafe;
+}
+
 .survival-badge {
     display: inline-block;
     padding: 0.125rem 0.5rem;
@@ -634,6 +638,11 @@ a:hover {
     color: #374151;
 }
 
+.survival-badge.foreclosing {
+    background: #bfdbfe;
+    color: #1e40af;
+}
+
 .confidence-badge {
     font-size: 9px;
     padding: 0.125rem 0.25rem;
@@ -649,6 +658,17 @@ a:hover {
 .confidence-badge.low {
     background: #fecaca;
     color: #991b1b;
+}
+
+.joined-badge {
+    display: inline-block;
+    padding: 0.125rem 0.5rem;
+    border-radius: var(--radius-sm);
+    font-size: 10px;
+    font-weight: 700;
+    margin-left: 0.5rem;
+    background: #e9d5ff;
+    color: #6b21a8;
 }
 
 .lien-summary {
@@ -1625,5 +1645,124 @@ a:hover {
         padding: 0;
         align-self: center;
         height: 20px;
+    }
+}
+
+/* ===== Sales History ===== */
+.sales-history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.sale-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem;
+    background: #f9fafb;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--color-border);
+    gap: 1rem;
+}
+
+.sale-item:hover {
+    background: #f3f4f6;
+}
+
+.sale-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 140px;
+}
+
+.sale-date {
+    font-weight: 500;
+    font-size: 13px;
+}
+
+.sale-details {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.sale-price {
+    font-family: 'SF Mono', 'Consolas', monospace;
+    font-weight: 600;
+    font-size: 1.1rem;
+    color: var(--color-text);
+}
+
+.sale-meta {
+    display: flex;
+    gap: 1rem;
+    font-size: 12px;
+    color: var(--color-text-muted);
+}
+
+.sale-ref {
+    font-family: 'SF Mono', 'Consolas', monospace;
+}
+
+.sale-actions {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.btn-outline {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    color: var(--color-primary);
+    padding: 0.35rem 0.75rem;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 500;
+    text-decoration: none;
+    transition: all 0.2s;
+}
+
+.btn-outline:hover {
+    background: var(--color-primary);
+    color: white;
+    border-color: var(--color-primary);
+    text-decoration: none;
+}
+
+.doc-type-legend {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+}
+
+.doc-type-legend .badge {
+    margin-right: 0.25rem;
+}
+
+.text-muted {
+    color: var(--color-text-muted);
+}
+
+@media (max-width: 600px) {
+    .sale-item {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .sale-header {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .sale-details {
+        width: 100%;
+    }
+
+    .sale-actions {
+        width: 100%;
+        justify-content: flex-end;
     }
 }

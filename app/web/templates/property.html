@@ -41,12 +41,11 @@
     <div class="tabs-container property-tabs">
         <div class="tabs">
             <button class="tab-link active" onclick="openTab(event, 'basic')">Basic</button>
-            <button class="tab-link" onclick="openTab(event, 'permits')">Permits & NOCs</button>
+            <button class="tab-link" onclick="openTab(event, 'chain')">Chain of Title</button>
             <button class="tab-link" onclick="openTab(event, 'liens')">Liens & Encumbrances</button>
+            <button class="tab-link" onclick="openTab(event, 'permits')">Permits & NOCs</button>
             <button class="tab-link" onclick="openTab(event, 'tax')">Tax</button>
             <button class="tab-link" onclick="openTab(event, 'documents')">Documents</button>
-            <button class="tab-link" onclick="openTab(event, 'chain')">Chain of Title</button>
-            <button class="tab-link" onclick="openTab(event, 'sales')">Sales History</button>
         </div>
 
         <!-- Basic Tab (rendered server-side) -->
@@ -198,10 +197,54 @@
                                 <span class="info-label">Status</span>
                                 <span class="info-value">{{ auction.status or 'PENDING' }}</span>
                             </div>
+                            {% if auction.plaintiff %}
+                            <div class="info-item">
+                                <span class="info-label">Plaintiff (Foreclosing)</span>
+                                <span class="info-value">{{ auction.plaintiff }}</span>
+                            </div>
+                            {% endif %}
+                            {% if auction.foreclosure_type %}
+                            <div class="info-item">
+                                <span class="info-label">Foreclosure Type</span>
+                                <span class="info-value">{{ auction.foreclosure_type }}</span>
+                            </div>
+                            {% endif %}
+                            {% if auction.lis_pendens_date %}
+                            <div class="info-item">
+                                <span class="info-label">Lis Pendens Date</span>
+                                <span class="info-value">{{ auction.lis_pendens_date }}</span>
+                            </div>
+                            {% endif %}
+                            {% if auction.extracted_judgment_data and auction.extracted_judgment_data.get('foreclosed_mortgage') %}
+                                {% set fm = auction.extracted_judgment_data.get('foreclosed_mortgage') %}
+                                {% if fm and (fm.get('instrument_number') or fm.get('recording_book') or fm.get('recording_page')) %}
+                                <div class="info-item">
+                                    <span class="info-label">Foreclosed Mortgage Ref</span>
+                                    <span class="info-value">
+                                        {% if fm.get('instrument_number') %}Inst {{ fm.get('instrument_number') }}{% endif %}
+                                        {% if fm.get('recording_book') and fm.get('recording_page') %}
+                                            {% if fm.get('instrument_number') %} | {% endif %}
+                                            Bk/Pg {{ fm.get('recording_book') }}/{{ fm.get('recording_page') }}
+                                        {% endif %}
+                                    </span>
+                                </div>
+                                {% endif %}
+                            {% endif %}
                         </div>
                     </section>
+
                 </div>
             </div>
+            <!-- Sales History - Full Width -->
+            <section class="card" style="margin-top: 1.5rem;">
+                <h2>Sales History</h2>
+                <div id="sales-history-section"
+                     hx-get="/property/{{ property.folio }}/sales"
+                     hx-trigger="load"
+                     hx-swap="innerHTML">
+                    <div class="htmx-loading">Loading sales history...</div>
+                </div>
+            </section>
         </div>
 
         <!-- Permits Tab -->
@@ -247,15 +290,6 @@
              hx-swap="innerHTML"
              style="display:none;">
             <div class="htmx-loading">Loading chain of title...</div>
-        </div>
-
-        <!-- Sales Tab -->
-        <div id="sales" class="tab-content"
-             hx-get="/property/{{ property.folio }}/sales"
-             hx-trigger="load"
-             hx-swap="innerHTML"
-             style="display:none;">
-            <div class="htmx-loading">Loading sales history...</div>
         </div>
     </div>
 

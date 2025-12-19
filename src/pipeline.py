@@ -1186,6 +1186,18 @@ async def run_full_pipeline(
             # Get plaintiff from auction
             plaintiff = auction.get("plaintiff")
 
+            # Extract defendant names list from judgment data for "Joined" check
+            defendant_names = []
+            if judgment_data:
+                # Try explicit defendants list first
+                defs = judgment_data.get("defendants", [])
+                if isinstance(defs, list):
+                    defendant_names = [d.get("name") for d in defs if d.get("name")]
+                
+                # Fallback to single string split if list missing
+                if not defendant_names and judgment_data.get("defendant"):
+                    defendant_names = [judgment_data.get("defendant")]
+
             # Run the new analyzer
             survival_result = survival_analyzer.analyze(
                 encumbrances=encumbrances,
@@ -1195,7 +1207,8 @@ async def run_full_pipeline(
                 current_owner_acquisition_date=current_owner_acquisition_date,
                 plaintiff=plaintiff,
                 original_mortgage_amount=auction.get("original_mortgage_amount"),
-                foreclosing_refs=foreclosing_refs
+                foreclosing_refs=foreclosing_refs,
+                defendants=defendant_names or None,
             )
 
             # Update survival status for each category
@@ -1217,7 +1230,12 @@ async def run_full_pipeline(
                     key = enc.get("instrument") or f"{enc.get('recording_date')}_{enc.get('type')}"
                     db_id = enc_id_map.get(key)
                     if db_id:
-                        db.update_encumbrance_survival(db_id, status)
+                        kwargs = {}
+                        if enc.get("is_joined") is not None:
+                            kwargs["is_joined"] = enc.get("is_joined")
+                        if enc.get("is_inferred"):
+                            kwargs["is_inferred"] = True
+                        db.update_encumbrance_survival(db_id, status, **kwargs)
 
             # Mark as analyzed and record case number
             db.mark_as_analyzed(case_number)
@@ -1323,10 +1341,13 @@ async def run_full_pipeline(
 
         logger.info(f"Scraping permits for {folio}...")
         try:
-            # Parse city from address
+            # Parse city from address and extract street address only for search
+            # Full address format: "3101 E 29TH AVE, TAMPA, FL- 33610"
+            # Accela search works best with just street: "3101 E 29TH AVE"
             parts = address.split(",")
+            street_address = parts[0].strip() if parts else address
             city = parts[1].strip() if len(parts) > 1 else "Tampa"
-            permits = await permit_scraper.get_permits(address, city)
+            permits = await permit_scraper.get_permits(street_address, city)
             
             if permits:
                 # Fetch ORI docs for NOC linking

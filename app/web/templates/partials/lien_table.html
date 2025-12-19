@@ -1,4 +1,21 @@
 {% if liens or encumbrances %}
+
+{% set foreclosing_encs = encumbrances|selectattr('survival_status', 'equalto', 'FORECLOSING')|list %}
+{% if foreclosing_encs %}
+    {% set fc = foreclosing_encs[0] %}
+    <div class="lien-summary">
+        <strong>Foreclosing Lien:</strong>
+        {{ fc.encumbrance_type or 'Unknown' }}{% if fc.creditor %} — {{ fc.creditor }}{% endif %}
+        {% if fc.instrument %} (Inst {{ fc.instrument }}){% elif fc.book and fc.page %} (Bk/Pg {{ fc.book }}/{{ fc.page }}){% endif %}
+        {% if fc.is_inferred %}
+            <span style="margin-left: 0.5rem; color: var(--color-text-muted);">(Inferred)</span>
+        {% endif %}
+        {% if auction and auction.plaintiff %}
+            <span style="margin-left: 0.5rem; color: var(--color-text-muted);">(Plaintiff: {{ auction.plaintiff }})</span>
+        {% endif %}
+</div>
+{% endif %}
+
 <table class="lien-table">
     <thead>
         <tr>
@@ -10,6 +27,7 @@
         </tr>
     </thead>
     <tbody>
+        {% if not encumbrances %}
         {% for lien in liens %}
         <tr class="{% if lien.is_surviving %}surviving{% else %}wiped{% endif %}">
             <td>{{ lien.recording_date.strftime('%m/%d/%Y') if lien.recording_date else '-' }}</td>
@@ -27,9 +45,11 @@
             </td>
         </tr>
         {% endfor %}
+        {% endif %}
 
         {% for enc in encumbrances %}
-        <tr class="{% if enc.survival_status == 'SURVIVES' %}surviving{% elif enc.survival_status == 'WIPED' %}wiped{% endif %}">
+        {% set st = (enc.survival_status or '')|upper %}
+        <tr class="{% if st == 'FORECLOSING' %}foreclosing{% elif st == 'SURVIVED' %}surviving{% elif st in ['EXTINGUISHED','HISTORICAL','EXPIRED'] %}wiped{% endif %}">
             <td>{{ enc.recording_date.strftime('%m/%d/%Y') if enc.recording_date else '-' }}</td>
             <td>{{ enc.encumbrance_type or '-' }}</td>
             <td class="money-cell">
@@ -38,16 +58,29 @@
                 <span class="confidence-badge {{ enc.amount_confidence|lower }}">{{ enc.amount_confidence }}</span>
                 {% endif %}
             </td>
-            <td>{{ enc.creditor or '-' }}</td>
             <td>
-                {% if enc.survival_status == 'SURVIVES' %}
+                {{ enc.creditor or '-' }}
+                {% if enc.is_joined %}
+                <span class="joined-badge" title="Named as Defendant in Foreclosure">JOINED</span>
+                {% endif %}
+            </td>
+            <td>
+                {% if st == 'FORECLOSING' %}
+                <span class="survival-badge foreclosing">FORECLOSING{% if enc.is_inferred %} (INFERRED){% endif %}</span>
+                {% elif st == 'SURVIVED' %}
                 <span class="survival-badge survives">SURVIVES</span>
-                {% elif enc.survival_status == 'WIPED' %}
+                {% elif st == 'EXTINGUISHED' %}
                 <span class="survival-badge wiped">WIPED</span>
-                {% elif enc.survival_status == 'SATISFIED' %}
+                {% elif st == 'HISTORICAL' %}
+                <span class="survival-badge wiped">HISTORICAL</span>
+                {% elif st == 'EXPIRED' %}
+                <span class="survival-badge wiped">EXPIRED</span>
+                {% elif st == 'SATISFIED' %}
                 <span class="survival-badge satisfied">SATISFIED</span>
+                {% elif not enc.survival_status %}
+                <span class="survival-badge unknown">PENDING</span>
                 {% else %}
-                <span class="survival-badge unknown">{{ enc.survival_status or 'UNKNOWN' }}</span>
+                <span class="survival-badge unknown">{{ st }}</span>
                 {% endif %}
             </td>
         </tr>
@@ -55,7 +88,7 @@
     </tbody>
 </table>
 
-{% if liens %}
+{% if liens and not encumbrances %}
 <div class="lien-summary">
     <strong>Total Liens Found:</strong> {{ liens|length }}
     {% set surviving_count = liens|selectattr('is_surviving', 'equalto', True)|list|length %}

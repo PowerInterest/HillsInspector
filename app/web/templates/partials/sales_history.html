@@ -1,47 +1,50 @@
 {% if sales %}
-<table class="data-table">
-    <thead>
-        <tr>
-            <th>Date</th>
-            <th>Type</th>
-            <th>Sale Price</th>
-            <th>Book/Page</th>
-            <th>Instrument</th>
-            <th>Links</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for sale in sales %}
-        <tr>
-            <td>{{ sale.sale_date or '-' }}</td>
-            <td>
-                <span class="badge {% if sale.doc_type == 'WD' %}badge-info{% elif sale.doc_type == 'CT' %}badge-warning{% elif sale.doc_type == 'FD' %}badge-danger{% else %}badge-secondary{% endif %}">
-                    {{ sale.doc_type or '-' }}
-                </span>
-            </td>
-            <td class="text-right">${{ "{:,.0f}".format(sale.sale_price) if sale.sale_price else '-' }}</td>
-            <td>{{ sale.book }}/{{ sale.page }}</td>
-            <td>{{ sale.instrument or '-' }}</td>
-            <td>
-                {% if sale.ori_link %}
-                <a href="{{ sale.ori_link }}" target="_blank" class="btn btn-sm">View Deed</a>
+<div class="sales-history-list">
+    {% for sale in sales %}
+    <div class="sale-item">
+        <div class="sale-header">
+            <span class="sale-date">{{ sale.sale_date or 'Unknown Date' }}</span>
+            <span class="badge {% if sale.doc_type == 'WD' %}badge-info{% elif sale.doc_type == 'CT' %}badge-warning{% elif sale.doc_type == 'FD' %}badge-danger{% else %}badge-secondary{% endif %}">
+                {{ sale.doc_type or 'N/A' }}
+            </span>
+        </div>
+        <div class="sale-details">
+            <div class="sale-price">
+                {% if sale.sale_price %}
+                ${{ "{:,.0f}".format(sale.sale_price) }}
                 {% else %}
-                <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=319&OBKey__1530_1=O&OBKey__573_1={{ sale.book }}&OBKey__1049_1={{ sale.page }}" target="_blank" class="btn btn-sm">ORI</a>
+                <span class="text-muted">No price recorded</span>
                 {% endif %}
-            </td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
+            </div>
+            <div class="sale-meta">
+                {% if sale.book and sale.page and sale.book != 'None' and sale.page != 'None' %}
+                <span class="sale-ref">Bk {{ sale.book }} / Pg {{ sale.page }}</span>
+                {% endif %}
+                {% if sale.instrument %}
+                <span class="sale-instrument">Inst: {{ sale.instrument }}</span>
+                {% endif %}
+            </div>
+        </div>
+        <div class="sale-actions">
+            {% if sale.ori_link %}
+            <a href="{{ sale.ori_link }}" target="_blank" class="btn btn-sm btn-outline">View Deed</a>
+            {% elif sale.book and sale.page and sale.book != 'None' and sale.page != 'None' %}
+            <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=319&OBKey__1530_1=O&OBKey__573_1={{ sale.book }}&OBKey__1049_1={{ sale.page }}" target="_blank" class="btn btn-sm btn-outline">ORI Lookup</a>
+            {% elif sale.instrument %}
+            <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=319&OBKey__1530_1=O&OBKey__1528_1={{ sale.instrument }}" target="_blank" class="btn btn-sm btn-outline">ORI Lookup</a>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
 <div class="doc-type-legend">
     <small>
-        <strong>Doc Types:</strong>
-        WD = Warranty Deed |
-        CT = Certificate of Title |
-        FD = Final Deed |
-        QC = Quit Claim
+        <span class="badge badge-info">WD</span> Warranty Deed
+        <span class="badge badge-warning">CT</span> Certificate of Title
+        <span class="badge badge-danger">FD</span> Final Deed
+        <span class="badge badge-secondary">QC</span> Quit Claim
     </small>
 </div>
 {% else %}
-<p class="empty-state">No sales history found. <a href="#" hx-get="/property/{{ folio }}/enrich" hx-target="#sales-history-section" hx-swap="innerHTML">Fetch from HCPA?</a></p>
+<p class="empty-state">No sales history found.</p>
 {% endif %}

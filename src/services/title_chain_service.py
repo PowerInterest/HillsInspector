@@ -101,7 +101,8 @@ class TitleChainService:
                     mrta_status = f"PARTIAL ({int(years_covered)} years)"
 
         # 4. Analyze Encumbrances (Mortgages & Liens)
-        encumbrances = self._analyze_encumbrances(potential_encumbrances, satisfactions)
+        # Pass modifications (which includes assignments) to track creditor changes
+        encumbrances = self._analyze_encumbrances(potential_encumbrances, satisfactions, modifications)
 
         ownership_timeline = self._chain_to_ownership_timeline(chain)
 
@@ -187,23 +188,33 @@ class TitleChainService:
             inferred_chain = self._infer_chain_from_support_docs(support_docs_sorted)
             return inferred_chain, []
 
+        deed_entries: List[Dict[str, Any]] = []
+        for transfer in transfer_docs_sorted:
+            doc_type = transfer.get("doc_type") or transfer.get("document_type", "")
+            deed_entries.append(
+                {
+                    "date": transfer.get("recording_date"),
+                    "grantor": (transfer.get("party1") or "").strip(),
+                    "grantee": (transfer.get("party2") or "").strip(),
+                    "doc_type": doc_type,
+                    "book_page": f"{transfer.get('book')}/{transfer.get('page')}",
+                    "instrument": transfer.get("instrument_number"),
+                    "sales_price": transfer.get("sales_price"),
+                    "link_status": None,
+                    "confidence_score": None,
+                    "notes": [],
+                }
+            )
+
+        # Build a single best-linked chain path to avoid false breaks from unrelated deeds.
+        deed_entries = self._select_best_deed_path(deed_entries)
+
         chain: List[Dict[str, Any]] = []
         gaps: List[ChainGap] = []
 
-        for transfer in transfer_docs_sorted:
-            doc_type = transfer.get("doc_type") or transfer.get("document_type", "")
-            entry: Dict[str, Any] = {
-                "date": transfer.get("recording_date"),
-                "grantor": (transfer.get("party1") or "").strip(),
-                "grantee": (transfer.get("party2") or "").strip(),
-                "doc_type": doc_type,
-                "book_page": f"{transfer.get('book')}/{transfer.get('page')}",
-                "instrument": transfer.get("instrument_number"),
-                "sales_price": transfer.get("sales_price"),
-                "link_status": "VERIFIED" if not chain else None,
-                "confidence_score": 1.0 if not chain else None,
-                "notes": [],
-            }
+        for entry in deed_entries:
+            entry["link_status"] = "VERIFIED" if not chain else None
+            entry["confidence_score"] = 1.0 if not chain else None
 
             if chain:
                 prev_owner = chain[-1].get("grantee") or ""
@@ -263,15 +274,15 @@ class TitleChainService:
                             entry["link_status"] = "VERIFIED" if score2 >= 0.95 else "FUZZY"
                             entry["confidence_score"] = score2
                         else:
-                            entry["link_status"] = "BROKEN"
-                            entry["confidence_score"] = 0.0
+                            entry["link_status"] = "INCOMPLETE"
+                            entry["confidence_score"] = 0.3
                             entry["notes"].append(
                                 f"GAP IN TITLE: previous owner {prev_owner} does not link to grantor {curr_grantor}"
                             )
                             self._append_gap(gaps, len(chain), prev_owner, curr_grantor, chain[-2], entry)
                     else:
-                        entry["link_status"] = "BROKEN"
-                        entry["confidence_score"] = 0.0
+                        entry["link_status"] = "INCOMPLETE"
+                        entry["confidence_score"] = 0.3
                         entry["notes"].append(
                             f"GAP IN TITLE: previous owner {prev_owner} does not link to grantor {curr_grantor}"
                         )
@@ -321,6 +332,61 @@ class TitleChainService:
                     self._append_gap(gaps, len(chain), last_owner, new_owner, last_entry, implied_entry)
 
         return chain, gaps
+
+    def _select_best_deed_path(self, deed_entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Select a single best deed chain by walking backwards from the most recent deed.
+
+        ORI searches can return unrelated deeds for the same subdivision/legal snippet.
+        Including all deeds in strict chronological order creates false "broken" links.
+        This method keeps only the best-linked path to the most recent owner.
+        """
+        if not deed_entries:
+            return []
+
+        entries = sorted(deed_entries, key=lambda d: self._parse_date(d.get("date")))
+        anchor = entries[-1]
+        used: set[int] = {id(anchor)}
+        path_rev: List[Dict[str, Any]] = [anchor]
+        current = anchor
+
+        while True:
+            current_date = self._parse_date(current.get("date"))
+            current_grantor = (current.get("grantor") or "").strip()
+            if not current_grantor or current_date == datetime.min.replace(tzinfo=UTC):
+                break
+
+            best: Dict[str, Any] | None = None
+            best_score = 0.0
+            best_date = datetime.min.replace(tzinfo=UTC)
+
+            for cand in entries:
+                if id(cand) in used:
+                    continue
+                cand_date = self._parse_date(cand.get("date"))
+                if cand_date == datetime.min.replace(tzinfo=UTC) or cand_date >= current_date:
+                    continue
+                cand_grantee = (cand.get("grantee") or "").strip()
+                if not cand_grantee:
+                    continue
+
+                match_type, score = NameMatcher.match(cand_grantee, current_grantor)
+                if match_type == "NONE" or score < 0.8:
+                    continue
+
+                if score > best_score or (score == best_score and cand_date > best_date):
+                    best = cand
+                    best_score = score
+                    best_date = cand_date
+
+            if not best:
+                break
+
+            used.add(id(best))
+            path_rev.append(best)
+            current = best
+
+        return list(reversed(path_rev))
 
     def _append_gap(
         self,
@@ -533,28 +599,28 @@ class TitleChainService:
         insts = self.inst_regex.findall(text)
         return bk_pgs, insts
 
-    def _analyze_encumbrances(self, encumbrances: List[Dict], satisfactions: List[Dict]) -> List[Dict]:
+    def _analyze_encumbrances(
+        self, 
+        encumbrances: List[Dict], 
+        satisfactions: List[Dict],
+        assignments: List[Dict] = None
+    ) -> List[Dict]:
         """
-        Determine which encumbrances are still active.
+        Determine which encumbrances are still active, tracking assignments.
         """
         results = []
+        assignments = assignments or []
+        
+        # 1. Initialize Encumbrance Objects
+        # We wrap them in a mutable dict to track current status and creditor
+        active_map = {} # Key: Instrument -> Encumbrance Obj
         
         for enc in encumbrances:
-            status = 'OPEN'
-            matched_satisfaction = None
-            match_method = None
-            
             enc_date = self._parse_date(enc.get('recording_date'))
-            enc_book = str(enc.get('book', '')).strip()
-            enc_page = str(enc.get('page', '')).strip()
-            enc_inst = str(enc.get('instrument_number', '')).strip()
             enc_type = enc.get('doc_type') or enc.get('document_type', '')
             
-            # Determine Creditor/Debtor based on Document Type
-            # Mortgages: Party 1 = Borrower (Debtor), Party 2 = Lender (Creditor)
-            # Liens/LP/Judgments: Party 1 = Claimant (Creditor), Party 2 = Debtor (Owner)
+            # Determine initial Creditor/Debtor
             is_mortgage = 'MORTGAGE' in str(enc_type).upper() or 'MTG' in str(enc_type).upper()
-            
             if is_mortgage:
                 enc_lender = enc.get('party2', '').strip() 
                 enc_debtor = enc.get('party1', '').strip()
@@ -566,14 +632,9 @@ class TitleChainService:
             amount_val = enc.get('amount')
             if not amount_val or amount_val == 'Unknown':
                 try:
-                    # Check both fields: 'extracted_data' (from DB) or 'vision_extracted_data' (in-memory)
                     ext_data = enc.get('vision_extracted_data') or enc.get('extracted_data')
-                    
                     if ext_data:
-                        if isinstance(ext_data, str):
-                            ext_data = json.loads(ext_data)
-                        
-                        # Try common amount fields
+                        if isinstance(ext_data, str): ext_data = json.loads(ext_data)
                         amount_val = (
                             ext_data.get('amount') or 
                             ext_data.get('total_judgment_amount') or 
@@ -583,61 +644,127 @@ class TitleChainService:
                 except Exception:
                     pass
 
-            for sat in satisfactions:
-                sat_date = self._parse_date(sat.get('recording_date'))
-                if sat_date <= enc_date:
-                    continue
-                
-                # 1. Check Specific Reference (Book/Page or Instrument)
-                # Check legal description or notes for references
-                sat_text = (sat.get('legal_description') or '') + " " + (sat.get('notes') or '')
-                ref_bk_pgs, ref_insts = self._extract_refs(sat_text)
-                
-                # Check Book/Page match
-                if enc_book and enc_page:
-                    for ref_bk, ref_pg in ref_bk_pgs:
-                        if ref_bk == enc_book and ref_pg == enc_page:
-                            status = 'SATISFIED'
-                            matched_satisfaction = sat
-                            match_method = 'BOOK_PAGE_REF'
-                            break
-                
-                if status == 'SATISFIED': break
-
-                # Check Instrument match
-                if enc_inst and enc_inst in ref_insts:
-                    status = 'SATISFIED'
-                    matched_satisfaction = sat
-                    match_method = 'INSTRUMENT_REF'
-                    break
-                
-                # 2. Fallback: Check Names + Logic
-                # In a Satisfaction, Party 1 is usually the Bank/Lienor (releasing)
-                sat_releasor = sat.get('party1', '').strip()
-                
-                if NameMatcher.are_linked(enc_lender, sat_releasor, threshold=0.85):
-                    # Only match if we haven't found a specific ref yet
-                    # And maybe check amounts if available? (TODO)
-                    status = 'SATISFIED'
-                    matched_satisfaction = sat
-                    match_method = 'NAME_MATCH'
-                    break
+            instrument = str(enc.get('instrument_number', '')).strip()
+            book = str(enc.get('book', '')).strip()
+            page = str(enc.get('page', '')).strip()
             
-            # Support both field naming conventions
-            results.append({
+            enc_obj = {
                 'type': enc_type,
                 'date': enc.get('recording_date'),
                 'amount': amount_val or 0.0,
-                'creditor': enc_lender,
+                'original_creditor': enc_lender,
+                'current_creditor': enc_lender, # Will be updated by assignments
                 'debtor': enc_debtor,
-                'book_page': f"{enc.get('book')}/{enc.get('page')}",
-                'instrument': enc.get('instrument_number'),
-                'status': status,
-                'satisfaction_ref': f"{matched_satisfaction.get('book')}/{matched_satisfaction.get('page')}" if matched_satisfaction else None,
-                'match_method': match_method
+                'book_page': f"{book}/{page}",
+                'instrument': instrument,
+                'book': book,
+                'page': page,
+                'status': 'OPEN',
+                'satisfaction_ref': None,
+                'match_method': None,
+                'assignments': []
+            }
+            results.append(enc_obj)
+            
+            # Map for quick lookup
+            if instrument:
+                active_map[instrument] = enc_obj
+            if book and page:
+                active_map[f"{book}/{page}"] = enc_obj
+
+        # 2. Process Assignments & Satisfactions Chronologically
+        # Combine and sort by date
+        events = []
+        for a in assignments:
+            events.append({**a, '_event_type': 'ASSIGNMENT'})
+        for s in satisfactions:
+            events.append({**s, '_event_type': 'SATISFACTION'})
+            
+        events.sort(key=lambda x: self._parse_date(x.get('recording_date')))
+
+        for event in events:
+            event_date = self._parse_date(event.get('recording_date'))
+            event_text = (event.get('legal_description') or '') + " " + (event.get('notes') or '')
+            
+            # Find target encumbrance
+            target_enc = None
+            
+            # A. Check Specific References
+            ref_bk_pgs, ref_insts = self._extract_refs(event_text)
+            
+            # Check Instrument match
+            for ref_inst in ref_insts:
+                if ref_inst in active_map:
+                    target_enc = active_map[ref_inst]
+                    break
+            
+            # Check Book/Page match
+            if not target_enc:
+                for ref_bk, ref_pg in ref_bk_pgs:
+                    key = f"{ref_bk}/{ref_pg}"
+                    if key in active_map:
+                        target_enc = active_map[key]
+                        break
+            
+            # B. Check Name Match (Fallback for Satisfactions only)
+            # Only if we haven't found a target yet
+            if not target_enc and event['_event_type'] == 'SATISFACTION':
+                releasor = event.get('party1', '').strip()
+                # Iterate all OPEN encumbrances to find a match
+                # This is O(N*M) but N is small
+                for enc in results:
+                    if enc['status'] == 'OPEN':
+                        # Compare Releasor vs Current Creditor
+                        if NameMatcher.are_linked(enc['current_creditor'], releasor, threshold=0.85):
+                            target_enc = enc
+                            enc['match_method'] = 'NAME_MATCH'
+                            break
+
+            # Apply Event
+            if target_enc:
+                # Ignore events recorded BEFORE the encumbrance (bad data/OCR)
+                enc_dt = self._parse_date(target_enc['date'])
+                if event_date < enc_dt:
+                    continue
+
+                if event['_event_type'] == 'ASSIGNMENT':
+                    # Update Creditor
+                    # Assignments: Party 1 = Assignor (Old), Party 2 = Assignee (New)
+                    new_creditor = event.get('party2', '').strip()
+                    if new_creditor:
+                        target_enc['current_creditor'] = new_creditor
+                        target_enc['assignments'].append({
+                            'date': event.get('recording_date'),
+                            'assignee': new_creditor,
+                            'instrument': event.get('instrument_number')
+                        })
+                        
+                elif event['_event_type'] == 'SATISFACTION':
+                    # Mark Satisfied
+                    target_enc['status'] = 'SATISFIED'
+                    target_enc['satisfaction_ref'] = event.get('instrument_number')
+                    if not target_enc['match_method']:
+                        target_enc['match_method'] = 'REF_MATCH'
+
+        # Remap output to expected format
+        final_output = []
+        for enc in results:
+            final_output.append({
+                'type': enc['type'],
+                'date': enc['date'],
+                'amount': enc['amount'],
+                'creditor': enc['current_creditor'], # Return the UPDATED creditor
+                'original_creditor': enc['original_creditor'],
+                'debtor': enc['debtor'],
+                'book_page': enc['book_page'],
+                'instrument': enc['instrument'],
+                'status': enc['status'],
+                'satisfaction_ref': enc['satisfaction_ref'],
+                'match_method': enc['match_method'],
+                'assignments': enc['assignments']
             })
             
-        return results
+        return final_output
 
     def _parse_date(self, date_val: Any) -> datetime:
         if not date_val:

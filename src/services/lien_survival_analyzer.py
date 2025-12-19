@@ -21,7 +21,7 @@ from datetime import UTC, date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
-
+from src.utils.name_matcher import NameMatcher
 
 
 class LienSurvivalAnalyzer:
@@ -166,16 +166,20 @@ class LienSurvivalAnalyzer:
         if not lien_creditor or not plaintiff:
             return False
 
-        creditor_upper = lien_creditor.upper()
-        plaintiff_upper = plaintiff.upper()
+        # Use NameMatcher for robust comparison
+        match_type, score = NameMatcher.match(lien_creditor, plaintiff)
+        return match_type != "NONE" and score >= 0.8
 
-        # Direct name match
-        common_words = set(creditor_upper.split()) & set(plaintiff_upper.split())
-        # Remove common stopwords
-        stopwords = {"INC", "LLC", "CORP", "CORPORATION", "THE", "OF", "A", "AN", "COMPANY", "BANK", "NATIONAL", "ASSOCIATION"}
-        meaningful_words = common_words - stopwords
-
-        return len(meaningful_words) >= 2
+    def _is_joined_defendant(self, creditor: str, defendants: List[str]) -> bool:
+        """Check if the creditor was named as a defendant in the foreclosure."""
+        if not creditor or not defendants:
+            return False
+            
+        for defendant in defendants:
+            # Check for direct match or fuzzy match
+            if NameMatcher.are_linked(creditor, defendant, threshold=0.85):
+                return True
+        return False
 
     def analyze(
         self,
@@ -186,6 +190,7 @@ class LienSurvivalAnalyzer:
         plaintiff: Optional[str] = None,
         original_mortgage_amount: Optional[float] = None,
         foreclosing_refs: Optional[Dict[str, str]] = None,
+        defendants: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Analyze liens and determine survival status for the upcoming foreclosure.
@@ -199,6 +204,7 @@ class LienSurvivalAnalyzer:
             plaintiff: Name of the foreclosing party
             original_mortgage_amount: For HOA safe harbor calculation
             foreclosing_refs: Dict with keys 'instrument', 'book', 'page' of the lien being foreclosed
+            defendants: List of defendants named in the foreclosure suit
 
         Returns:
             Dict with categorized liens and summary
@@ -214,8 +220,102 @@ class LienSurvivalAnalyzer:
 
         fc_type = (foreclosure_type or "").upper()
         is_hoa_foreclosure = "HOA" in fc_type or "ASSOCIATION" in fc_type or "CONDO" in fc_type
-        is_first_mortgage_foreclosure = "FIRST" in fc_type and "MORTGAGE" in fc_type
+        is_mortgage_foreclosure = "MORTGAGE" in fc_type and not is_hoa_foreclosure
         is_tax_deed = "TAX" in fc_type and "DEED" in fc_type
+        
+        defendants_list = defendants or []
+        has_defendants = bool(defendants_list)
+
+        # Prefer priority cut-off by the foreclosing lien's recording date (not lis pendens).
+        foreclosing_priority_date: Optional[date] = None
+        foreclosing_is_inferred = False
+        if foreclosing_refs:
+            fc_instr = (foreclosing_refs.get("instrument") or "").strip()
+            fc_book = (foreclosing_refs.get("book") or "").strip()
+            fc_page = (foreclosing_refs.get("page") or "").strip()
+            for enc in encumbrances:
+                enc_date = enc.get("recording_date")
+                if isinstance(enc_date, str):
+                    with logger.catch():
+                        enc_date = datetime.fromisoformat(enc_date).date()
+                enc_instr = (enc.get("instrument") or "").strip()
+                enc_book = (enc.get("book") or "").strip()
+                enc_page = (enc.get("page") or "").strip()
+                if fc_instr and enc_instr and fc_instr == enc_instr:
+                    foreclosing_priority_date = enc_date
+                    break
+                if fc_book and fc_page and enc_book and enc_page:
+                    if fc_book == enc_book and fc_page == enc_page:
+                        foreclosing_priority_date = enc_date
+                        break
+
+        # Fallback inference: if we don't have a usable reference to the foreclosing lien,
+        # pick the best candidate mortgage from encumbrances (and clearly label it as inferred).
+        if is_mortgage_foreclosure and foreclosing_priority_date is None and not foreclosing_refs:
+            candidates: List[Dict[str, Any]] = []
+            for enc in encumbrances:
+                enc_type = (enc.get("encumbrance_type") or enc.get("type") or "").upper()
+                if "MORTGAGE" not in enc_type and "MTG" not in enc_type:
+                    continue
+                enc_date = enc.get("recording_date")
+                if isinstance(enc_date, str):
+                    with logger.catch():
+                        enc_date = datetime.fromisoformat(enc_date).date()
+                if not enc_date:
+                    continue
+                if lis_pendens_date and enc_date > lis_pendens_date:
+                    continue
+                candidates.append(enc)
+
+            def score(enc: Dict[str, Any]) -> tuple[float, float, float]:
+                enc_date = enc.get("recording_date")
+                if isinstance(enc_date, str):
+                    with logger.catch():
+                        enc_date = datetime.fromisoformat(enc_date).date()
+                enc_amount = enc.get("amount") or 0
+                enc_creditor = enc.get("creditor") or ""
+
+                name_score = 0.0
+                if plaintiff and enc_creditor:
+                    _, name_score = NameMatcher.match(enc_creditor, plaintiff)
+
+                amount_score = 0.0
+                if original_mortgage_amount and enc_amount:
+                    diff = abs(float(enc_amount) - float(original_mortgage_amount))
+                    amount_score = max(0.0, 1.0 - (diff / max(float(original_mortgage_amount), 1.0)))
+
+                date_score = 0.0
+                if lis_pendens_date and enc_date:
+                    days = abs((lis_pendens_date - enc_date).days)
+                    date_score = max(0.0, 1.0 - (days / 3650.0))  # 10-year taper
+
+                return (name_score, amount_score, date_score)
+
+            best = None
+            best_score = (-1.0, -1.0, -1.0)
+            for enc in candidates:
+                s = score(enc)
+                if s > best_score:
+                    best_score = s
+                    best = enc
+
+            if best:
+                best_date = best.get("recording_date")
+                if isinstance(best_date, str):
+                    with logger.catch():
+                        best_date = datetime.fromisoformat(best_date).date()
+                best_instr = (best.get("instrument") or "").strip()
+                best_book = (best.get("book") or "").strip()
+                best_page = (best.get("page") or "").strip()
+
+                if best_date and (best_instr or (best_book and best_page)):
+                    foreclosing_priority_date = best_date
+                    foreclosing_refs = {
+                        "instrument": best_instr or None,
+                        "book": best_book or None,
+                        "page": best_page or None,
+                    }
+                    foreclosing_is_inferred = True
 
         for enc in encumbrances:
             try:
@@ -231,6 +331,11 @@ class LienSurvivalAnalyzer:
                 lien_book = enc.get("book")
                 lien_page = enc.get("page")
 
+                # Only compute joined when we actually have an extracted defendants list.
+                is_joined: Optional[bool] = None
+                if has_defendants:
+                    is_joined = self._is_joined_defendant(creditor, defendants_list)
+
                 # Create result entry
                 entry = {
                     "type": enc_type,
@@ -243,6 +348,8 @@ class LienSurvivalAnalyzer:
                     "page": lien_page,
                     "status": None,
                     "reason": None,
+                    "is_joined": is_joined,
+                    "is_inferred": False,
                 }
 
                 # 1. Check if already satisfied
@@ -279,6 +386,7 @@ class LienSurvivalAnalyzer:
                 ):
                     entry["status"] = "FORECLOSING"
                     entry["reason"] = "This is the lien being foreclosed"
+                    entry["is_inferred"] = foreclosing_is_inferred
                     results["foreclosing"].append(entry)
                     continue
 
@@ -306,11 +414,16 @@ class LienSurvivalAnalyzer:
                         entry["status"] = "SURVIVED"
                         entry["reason"] = "First mortgage survives HOA foreclosure (FL Safe Harbor)"
                     else:
-                        # Junior liens are extinguished
-                        entry["status"] = "EXTINGUISHED"
-                        entry["reason"] = "Junior to HOA lien - will be extinguished"
+                        # Junior liens are extinguished; if we have defendants and the creditor is omitted,
+                        # it may survive (omitted junior lienor).
+                        if is_joined is False:
+                            entry["status"] = "SURVIVED"
+                            entry["reason"] = "Possible omitted defendant (not in extracted list)"
+                        else:
+                            entry["status"] = "EXTINGUISHED"
+                            entry["reason"] = "Junior to HOA lien"
 
-                elif is_first_mortgage_foreclosure or True: # Default for mortgage foreclosures
+                elif is_mortgage_foreclosure:
                     # Handle Federal Liens specifically
                     if self._is_federal_lien(enc_type, creditor):
                         # Technically extinguished if joined, but has 120-day redemption right
@@ -319,16 +432,46 @@ class LienSurvivalAnalyzer:
                         results["extinguished"].append(entry)
                         continue
 
-                    # Everything else depends on priority date (Lis Pendens)
+                    # Senior vs junior is determined by the foreclosing lien's priority date (if known).
+                    if foreclosing_priority_date and enc_date:
+                        if enc_date < foreclosing_priority_date:
+                            entry["status"] = "SURVIVED"
+                            entry["reason"] = (
+                                f"Senior to foreclosing lien ({foreclosing_priority_date})"
+                            )
+                        else:
+                            entry["status"] = "EXTINGUISHED"
+                            entry["reason"] = (
+                                f"Junior to foreclosing lien ({foreclosing_priority_date})"
+                            )
+
+                            # Omission is only plausible for liens recorded before lis pendens;
+                            # after lis pendens, later-recorded interests are bound regardless.
+                            if (
+                                is_joined is False
+                                and lis_pendens_date
+                                and enc_date < lis_pendens_date
+                            ):
+                                entry["status"] = "SURVIVED"
+                                entry["reason"] = "Possible omitted defendant (not in extracted list)"
+                    else:
+                        # Conservative: assume it survives if we can't determine
+                        entry["status"] = "SURVIVED"
+                        entry["reason"] = "Unable to determine priority - assuming survives"
+                else:
+                    # Default: use lis pendens as a coarse proxy when foreclosure type is unknown.
                     if lis_pendens_date and enc_date:
                         if enc_date < lis_pendens_date:
                             entry["status"] = "SURVIVED"
-                            entry["reason"] = f"Recorded before lis pendens ({lis_pendens_date})"
+                            entry["reason"] = (
+                                f"Recorded before lis pendens ({lis_pendens_date})"
+                            )
                         else:
                             entry["status"] = "EXTINGUISHED"
-                            entry["reason"] = f"Recorded after lis pendens ({lis_pendens_date})"
+                            entry["reason"] = (
+                                f"Recorded after lis pendens ({lis_pendens_date})"
+                            )
                     else:
-                        # Conservative: assume it survives if we can't determine
                         entry["status"] = "SURVIVED"
                         entry["reason"] = "Unable to determine priority - assuming survives"
 

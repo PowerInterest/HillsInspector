@@ -118,8 +118,9 @@
 
         .status-open { background: #ffeaa7; color: #d35400; }
         .status-satisfied { background: #55efc4; color: #00b894; }
-        .status-wiped { background: #fab1a0; color: #d63031; }
+        .status-wiped { background: #d1fae5; color: #065f46; }
         .status-surviving { background: #ff7675; color: #d63031; }
+        .status-foreclosing { background: #bfdbfe; color: #1e40af; }
 
         .print-btn {
             position: fixed;
@@ -231,10 +232,15 @@
                         <td>${{ "{:,.2f}".format(enc.amount or 0) }}</td>
                         <td>
                             <span class="status-badge 
-                                {% if enc.survival_status == 'SURVIVING' %}status-surviving
+                                {% set st = (enc.survival_status or '')|upper %}
+                                {% if st == 'FORECLOSING' %}status-foreclosing
+                                {% elif st == 'SURVIVED' %}status-surviving
+                                {% elif st in ['EXTINGUISHED','HISTORICAL','EXPIRED'] %}status-wiped
                                 {% elif enc.is_satisfied %}status-satisfied
                                 {% else %}status-open{% endif %}">
-                                {{ enc.survival_status or ("SATISFIED" if enc.is_satisfied else "OPEN") }}
+                                {% if st == 'SURVIVED' %}SURVIVES
+                                {% elif st == 'EXTINGUISHED' %}WIPED
+                                {% else %}{{ enc.survival_status or ("SATISFIED" if enc.is_satisfied else "OPEN") }}{% endif %}
                             </span>
                         </td>
                         <td>
@@ -245,6 +251,7 @@
                     </tr>
                     {% endfor %}
                     
+                    {% if not property.encumbrances %}
                     {% for lien in property.liens %}
                     <tr>
                         <td>{{ lien.document_type }}</td>
@@ -263,6 +270,7 @@
                         </td>
                     </tr>
                     {% endfor %}
+                    {% endif %}
                 </tbody>
             </table>
             {% else %}
@@ -321,6 +329,7 @@
                         <th>Grantee (Buyer)</th>
                         <th>Document</th>
                         <th>Price</th>
+                        <th>Link</th>
                         <th>Support</th>
                     </tr>
                 </thead>
@@ -332,6 +341,10 @@
                         <td>{{ transfer.owner_name }}</td>
                         <td>{{ transfer.acquisition_doc_type }}</td>
                         <td>${{ "{:,.2f}".format(transfer.acquisition_price or 0) }}</td>
+                        <td>
+                            {% if transfer.link_status %}{{ transfer.link_status }}{% else %}-{% endif %}
+                            {% if transfer.confidence_score is not none %} ({{ "{:.2f}".format(transfer.confidence_score) }}){% endif %}
+                        </td>
                         <td>
                             {% if transfer.acquisition_instrument %}
                             <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=320&OBKey__1006_1={{ transfer.acquisition_instrument }}" target="_blank">Instrument</a>

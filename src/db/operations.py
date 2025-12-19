@@ -17,12 +17,63 @@ class PropertyDB:
         # Allow overriding via env for test/debug runs
         self.db_path = db_path or os.environ.get("HILLS_DB_PATH", "data/property_master.db")
         self.conn = None
+        self._schema_migrations_applied = False
     
     def connect(self):
         """Open database connection."""
         if self.conn is None:
             self.conn = duckdb.connect(self.db_path)
+        self._apply_schema_migrations()
         return self.conn
+
+    def _apply_schema_migrations(self) -> None:
+        """
+        Apply lightweight, idempotent schema migrations.
+
+        Keep this narrow and safe: only `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
+        """
+        if self._schema_migrations_applied or self.conn is None:
+            return
+
+        conn = self.conn
+
+        def table_exists(table_name: str) -> bool:
+            with suppress(Exception):
+                row = conn.execute(
+                    """
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_name = ?
+                    LIMIT 1
+                    """,
+                    [table_name],
+                ).fetchone()
+                return row is not None
+            return False
+
+        if table_exists("encumbrances"):
+            conn.execute(
+                "ALTER TABLE encumbrances ADD COLUMN IF NOT EXISTS is_joined BOOLEAN DEFAULT FALSE"
+            )
+            conn.execute(
+                "ALTER TABLE encumbrances ADD COLUMN IF NOT EXISTS is_inferred BOOLEAN DEFAULT FALSE"
+            )
+
+        if table_exists("chain_of_title"):
+            conn.execute(
+                "ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS link_status VARCHAR"
+            )
+            conn.execute(
+                "ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS confidence_score FLOAT"
+            )
+            conn.execute(
+                "ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS mrta_status VARCHAR"
+            )
+            conn.execute(
+                "ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS years_covered FLOAT"
+            )
+
+        self._schema_migrations_applied = True
     
     def close(self):
         """Close database connection."""
@@ -811,6 +862,7 @@ class PropertyDB:
                 chain_period_id INTEGER,
                 encumbrance_type VARCHAR,
                 creditor VARCHAR,
+                debtor VARCHAR,
                 amount FLOAT,
                 amount_confidence VARCHAR,
                 amount_flags VARCHAR,
@@ -822,9 +874,18 @@ class PropertyDB:
                 satisfaction_instrument VARCHAR,
                 satisfaction_date DATE,
                 survival_status VARCHAR,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                party2_resolution_method VARCHAR,
+                is_self_transfer BOOLEAN DEFAULT FALSE,
+                self_transfer_type VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_joined BOOLEAN DEFAULT FALSE,
+                is_inferred BOOLEAN DEFAULT FALSE
             )
         """)
+
+        # Migration: Add columns if not exists
+        conn.execute("ALTER TABLE encumbrances ADD COLUMN IF NOT EXISTS is_joined BOOLEAN DEFAULT FALSE")
+        conn.execute("ALTER TABLE encumbrances ADD COLUMN IF NOT EXISTS is_inferred BOOLEAN DEFAULT FALSE")
 
         # Market data table
         conn.execute("""
@@ -973,6 +1034,28 @@ class PropertyDB:
         conn.execute("ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS mrta_status VARCHAR")
         conn.execute("ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS years_covered FLOAT")
 
+        # Preserve existing lien survival annotations across chain rebuilds (best-effort).
+        prior_survival: dict[str, dict[str, Any]] = {}
+        with suppress(Exception):
+            rows = conn.execute(
+                """
+                SELECT instrument, book, page, survival_status, is_joined, is_inferred
+                FROM encumbrances
+                WHERE folio = ?
+                """,
+                [folio],
+            ).fetchall()
+            cols = [desc[0] for desc in conn.description]
+            for row in rows:
+                rec = dict(zip(cols, row, strict=True))
+                inst = (rec.get("instrument") or "").strip()
+                book = (rec.get("book") or "").strip()
+                page = (rec.get("page") or "").strip()
+                if inst:
+                    prior_survival[f"INST:{inst}"] = rec
+                if book and page:
+                    prior_survival[f"BKPG:{book}/{page}"] = rec
+
         # Delete existing chain data for this folio
         conn.execute("DELETE FROM chain_of_title WHERE folio = ?", [folio])
         conn.execute("DELETE FROM encumbrances WHERE folio = ?", [folio])
@@ -1011,13 +1094,35 @@ class PropertyDB:
 
             # Insert encumbrances for this period
             for enc in period.get("encumbrances", []):
+                # Re-apply prior survival status if the new record doesn't have one yet.
+                survival_status = enc.get("survival_status")
+                is_joined = enc.get("is_joined")
+                is_inferred = enc.get("is_inferred")
+
+                inst = (enc.get("instrument") or "").strip()
+                book = (enc.get("book") or "").strip()
+                page = (enc.get("page") or "").strip()
+                match = None
+                if inst:
+                    match = prior_survival.get(f"INST:{inst}")
+                if match is None and book and page:
+                    match = prior_survival.get(f"BKPG:{book}/{page}")
+
+                if match:
+                    if not survival_status:
+                        survival_status = match.get("survival_status")
+                    if is_joined is None:
+                        is_joined = match.get("is_joined")
+                    if is_inferred is None:
+                        is_inferred = match.get("is_inferred")
+
                 conn.execute("""
                     INSERT INTO encumbrances (
                         folio, chain_period_id, encumbrance_type, creditor,
                         amount, amount_confidence, amount_flags, recording_date,
                         instrument, book, page, is_satisfied, satisfaction_instrument,
-                        satisfaction_date, survival_status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        satisfaction_date, survival_status, is_joined, is_inferred
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, [
                     folio,
                     chain_id,
@@ -1033,13 +1138,37 @@ class PropertyDB:
                     enc.get("is_satisfied", False),
                     enc.get("satisfaction_instrument"),
                     enc.get("satisfaction_date"),
-                    enc.get("survival_status")
+                    survival_status,
+                    bool(is_joined) if is_joined is not None else False,
+                    bool(is_inferred) if is_inferred is not None else False,
                 ])
 
-    def update_encumbrance_survival(self, encumbrance_id: int, status: str):
+        # Chain/encumbrances changed; ensure lien survival can be re-run even if it was previously marked complete.
+        try:
+            conn.execute(
+                "UPDATE auctions SET needs_lien_survival = TRUE WHERE parcel_id = ? OR folio = ?",
+                [folio, folio],
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to mark needs_lien_survival for {folio}: {exc}")
+
+    def update_encumbrance_survival(self, encumbrance_id: int, status: str, is_joined: bool = None, is_inferred: bool = None):
         """Update survival status of an encumbrance."""
         conn = self.connect()
-        conn.execute("UPDATE encumbrances SET survival_status = ? WHERE id = ?", [status, encumbrance_id])
+        updates = ["survival_status = ?"]
+        params = [status]
+        
+        if is_joined is not None:
+            updates.append("is_joined = ?")
+            params.append(is_joined)
+        
+        if is_inferred is not None:
+            updates.append("is_inferred = ?")
+            params.append(is_inferred)
+            
+        params.append(encumbrance_id)
+        sql = f"UPDATE encumbrances SET {', '.join(updates)} WHERE id = ?"
+        conn.execute(sql, params)
 
     def encumbrance_exists(self, folio: str, book: str, page: str) -> bool:
         """Check if an encumbrance with the given book/page already exists for a folio."""
@@ -1062,6 +1191,8 @@ class PropertyDB:
         instrument: str | None = None,
         survival_status: str | None = None,
         chain_period_id: int | None = None,
+        is_joined: bool = False,
+        is_inferred: bool = False,
     ) -> int:
         """
         Insert a single encumbrance record.
@@ -1072,8 +1203,8 @@ class PropertyDB:
             INSERT INTO encumbrances (
                 folio, chain_period_id, encumbrance_type, creditor,
                 amount, recording_date, instrument, book, page,
-                survival_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                survival_status, is_joined, is_inferred
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
         """, [
             folio,
@@ -1086,6 +1217,8 @@ class PropertyDB:
             book,
             page,
             survival_status,
+            is_joined,
+            is_inferred
         ])
         return result.fetchone()[0]
 

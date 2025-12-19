@@ -6,13 +6,7 @@
     {% else %}
         <ul class="timeline">
             {% for transfer in chain_of_title %}
-                {% if transfer.is_chain_break %}
-                <li class="timeline-break">
-                    <div class="break-line"></div>
-                    <div class="break-text">⚠️ Broken Chain: Grantee doesn't match next Grantor</div>
-                </li>
-                {% endif %}
-
+                {% set st = (transfer.link_status or '')|upper %}
                 <li class="timeline-item">
                     <div class="timeline-dot"></div>
                     <div class="timeline-content transfer-card">
@@ -20,6 +14,18 @@
                             <div class="transfer-date">{{ transfer.acquisition_date or 'Date Unknown' }}</div>
                             <div class="transfer-type">
                                 <span class="badge badge-secondary">{{ transfer.acquisition_doc_type or 'DOC' }}</span>
+                                {% if st %}
+                                    {% set badge_class = (
+                                        'badge-danger' if st in ['BROKEN'] else
+                                        'badge-warning' if st in ['INCOMPLETE','FUZZY'] else
+                                        'badge-secondary' if st in ['IMPLIED','INFERRED'] else
+                                        'badge-info'
+                                    ) %}
+                                    <span class="badge {{ badge_class }}">{{ st }}</span>
+                                {% endif %}
+                                {% if transfer.confidence_score is not none %}
+                                    <span class="badge badge-secondary">Score {{ "{:.2f}".format(transfer.confidence_score) }}</span>
+                                {% endif %}
                             </div>
                             <div class="transfer-price">
                                 {% if transfer.acquisition_price %}

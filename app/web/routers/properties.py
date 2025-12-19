@@ -73,10 +73,12 @@ async def property_liens(request: Request, folio: str):
         return HTMLResponse("<p>Property not found</p>")
 
     case_number = prop.get("auction", {}).get("case_number")
-    liens = get_liens_for_property(case_number) if case_number else []
-
-    # Combine with encumbrances
     encumbrances = prop.get("encumbrances", [])
+
+    # Only fetch legacy liens if we have no analyzed encumbrances for this folio.
+    liens = []
+    if not encumbrances and case_number:
+        liens = get_liens_for_property(case_number)
 
     return templates.TemplateResponse(
         "partials/lien_table.html",
@@ -84,6 +86,7 @@ async def property_liens(request: Request, folio: str):
             "request": request,
             "liens": liens,
             "encumbrances": encumbrances,
+            "auction": prop.get("auction", {}),
             "folio": folio
         }
     )
@@ -209,63 +212,6 @@ async def property_permits(request: Request, folio: str):
     )
 
 
-def _names_match(grantee: str | None, grantor: str | None) -> bool:
-    """
-    Check if grantee from previous transfer matches grantor of current transfer.
-    Handles multi-party names (comma-separated) and common abbreviations.
-    """
-    if not grantee or not grantor:
-        return True  # Can't determine, assume OK
-
-    # Normalize and split into individual names
-    def normalize(name: str) -> set[str]:
-        name = name.upper().strip()
-        # Split on comma to get individual parties
-        parties = [p.strip() for p in name.split(",")]
-        # Extract key words (3+ chars, not common legal terms)
-        stopwords = {"THE", "AND", "FOR", "INC", "LLC", "CORP", "CORPORATION",
-                     "COMPANY", "TRUST", "TRUSTEE", "ATTY", "ATTORNEY"}
-        words = set()
-        for party in parties:
-            for word in party.split():
-                word = word.strip(".,;:").replace(".", "")
-                if len(word) >= 3 and word not in stopwords:
-                    words.add(word)
-        return words
-
-    # Alias mappings for known institutional name variations
-    aliases = {
-        "HUD": {"HOUSING", "URBAN", "DEVELOPMENT", "SECRETARY"},
-        "CHASE": {"JPMORGAN", "MANHATTAN"},
-        "WELLS": {"FARGO"},
-        "FANNIE": {"FNMA", "FEDERAL", "NATIONAL"},
-        "FREDDIE": {"FHLMC", "FEDERAL", "HOME", "LOAN"},
-        "USA": {"UNITED", "STATES", "AMERICA"},
-    }
-
-    grantee_words = normalize(grantee)
-    grantor_words = normalize(grantor)
-
-    # Check for direct overlap (at least 2 significant words match)
-    overlap = grantee_words & grantor_words
-    if len(overlap) >= 2:
-        return True
-
-    # Check for single-word match on surnames (for individuals like WERNER ALAN)
-    # If either set is small (individual name), one match is enough
-    if len(overlap) >= 1 and (len(grantee_words) <= 3 or len(grantor_words) <= 3):
-        return True
-
-    # Check alias mappings
-    for key, alias_set in aliases.items():
-        if key in grantee_words or key in grantor_words:
-            combined = alias_set | {key}
-            if (grantee_words & combined) and (grantor_words & combined):
-                return True
-
-    return False
-
-
 @router.get("/{folio}/chain", response_class=HTMLResponse)
 async def property_chain_of_title(request: Request, folio: str):
     """
@@ -280,23 +226,12 @@ async def property_chain_of_title(request: Request, folio: str):
 
     chain_of_title = prop.get("chain", [])
 
-    # Enhance chain with document links and chain break detection
+    # Enhance chain with document links (display uses DB-provided link_status/confidence_score)
     for i, item in enumerate(chain_of_title):
         doc = None
         if item.get("acquisition_instrument"):
             doc = get_document_by_instrument(folio, item["acquisition_instrument"])
         item["document_id"] = doc["id"] if doc else None
-
-        # Pre-compute chain break detection
-        if i > 0:
-            prev_item = chain_of_title[i - 1]
-            # Current grantee should match previous grantor (chain goes backwards in time)
-            item["is_chain_break"] = not _names_match(
-                item.get("owner_name"),  # Current grantee
-                prev_item.get("acquired_from")  # Previous grantor
-            )
-        else:
-            item["is_chain_break"] = False
 
     return templates.TemplateResponse(
         "partials/chain_of_title.html",

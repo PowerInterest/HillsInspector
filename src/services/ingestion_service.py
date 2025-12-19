@@ -1,6 +1,6 @@
 from typing import Optional, Any, List, Dict
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 import json
 from loguru import logger
 
@@ -901,11 +901,17 @@ class IngestionService:
             "is_satisfied": enc.get('status') == 'SATISFIED',
             "satisfaction_instrument": enc.get('satisfaction_ref'),
             "satisfaction_date": None, # Not in analysis dict?
-            "survival_status": "UNKNOWN"
+            "survival_status": None
         }
 
-    def _parse_date(self, date_str: Optional[str]) -> Optional[datetime]:
-        if not date_str: return None
+    def _parse_date(self, date_val: Any) -> Optional[datetime]:
+        if not date_val: return None
+        if isinstance(date_val, datetime):
+            return date_val
+        if isinstance(date_val, date):
+            return datetime.combine(date_val, datetime.min.time())
+            
+        date_str = str(date_val)
         try:
             return datetime.strptime(date_str, "%m/%d/%Y")
         except ValueError:
