@@ -10,6 +10,9 @@ from src.scrapers.ori_api_scraper import ORIApiScraper
 from src.services.title_chain_service import TitleChainService
 from src.services.party2_resolution_service import Party2ResolutionService
 from src.services.document_analyzer import DocumentAnalyzer
+from src.services.vision_service import VisionService
+import asyncio
+import functools
 
 from src.services.scraper_storage import ScraperStorage
 from src.services.institutional_names import is_institutional_name, get_searchable_party_name
@@ -32,8 +35,9 @@ ANALYZABLE_DOC_TYPES = {
 
 
 class IngestionService:
-    def __init__(self, ori_scraper: ORIApiScraper = None, analyze_pdfs: bool = True):
+    def __init__(self, ori_scraper: ORIApiScraper = None, analyze_pdfs: bool = True, db_writer: Any = None):
         self.db = PropertyDB()
+        self.db_writer = db_writer
         # Share ORI scraper across services to avoid multiple browser sessions
         self.ori_scraper = ori_scraper or ORIApiScraper()
         self.chain_service = TitleChainService()
@@ -637,7 +641,14 @@ class IngestionService:
             # Download and analyze PDF for ALL document types
             # This extracts party data from the PDF which is more reliable than ORI indexing
             if self.analyze_pdfs:
-                download_result = self._download_and_analyze_document(doc, prop.parcel_id, prefer_browser=docs_from_browser)
+                loop = asyncio.get_running_loop()
+                # Run sync download/analysis in thread pool, guarded by semaphore
+                async with VisionService._global_semaphore:
+                    download_result = await loop.run_in_executor(
+                        None,
+                        functools.partial(self._download_and_analyze_document, doc, prop.parcel_id, prefer_browser=docs_from_browser)
+                    )
+
                 if download_result:
                     # Always set file_path if download succeeded
                     mapped_doc['file_path'] = download_result.get('file_path')
@@ -648,24 +659,41 @@ class IngestionService:
                         mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
 
             # Save to DB (after party updates)
-            doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
+            # Save to DB (via Writer if available)
+            if self.db_writer:
+                doc_id = await self.db_writer.execute_with_result(
+                    self.db.save_document, prop.parcel_id, mapped_doc
+                )
+            else:
+                doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
             mapped_doc['id'] = doc_id
 
             # Update extracted data in DB if we have it
             if mapped_doc.get('vision_extracted_data'):
-                self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+                if self.db_writer:
+                    await self.db_writer.execute_with_result(
+                        self._update_document_with_extracted_data, doc_id, mapped_doc['vision_extracted_data']
+                    )
+                else:
+                    self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
 
             processed_docs.append(mapped_doc)
 
         # 2. Build Chain
+        # 2. Build Chain
         logger.info("Building Chain of Title...")
-        analysis = self.chain_service.build_chain_and_analyze(processed_docs)
+        loop = asyncio.get_running_loop()
+        analysis = await loop.run_in_executor(None, self.chain_service.build_chain_and_analyze, processed_docs)
 
         # Transform for DB
         db_data = self._transform_analysis_for_db(analysis)
 
         # 3. Save Analysis
-        self.db.save_chain_of_title(prop.parcel_id, db_data)
+        # 3. Save Analysis
+        if self.db_writer:
+             await self.db_writer.execute_with_result(self.db.save_chain_of_title, prop.parcel_id, db_data)
+        else:
+             self.db.save_chain_of_title(prop.parcel_id, db_data)
         logger.success(f"Ingestion complete for {prop.case_number}")
 
     def _should_analyze_document(self, doc: dict) -> bool:

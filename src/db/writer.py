@@ -54,7 +54,27 @@ class DatabaseWriter:
             operation: String identifier for the operation (e.g., 'upsert_parcel')
             data: The data object/dict required for the operation.
         """
-        await self.queue.put((operation, data))
+        # Internal: Enqueue with no future
+        await self.queue.put((operation, data, None))
+
+    async def execute_with_result(self, func, *args, **kwargs) -> Any:
+        """
+        Execute a DB function sequentially via the writer queue and return the result.
+        
+        Useful for operations that read/write and need return values (e.g., IDs).
+        
+        Args:
+            func: The callable to execute (e.g., db.save_document)
+            *args: Positional arguments for func
+            **kwargs: Keyword arguments for func
+            
+        Returns:
+            The result of func(*args, **kwargs)
+        """
+        future = asyncio.get_running_loop().create_future()
+        data = {"func": func, "args": args, "kwargs": kwargs}
+        await self.queue.put(("generic_call", data, future))
+        return await future
 
     async def _worker(self):
         """Background loop to process queue items."""
@@ -71,12 +91,16 @@ class DatabaseWriter:
                 except asyncio.TimeoutError:
                     continue
 
-                operation, data = item
+                operation, data, future = item
                 
                 try:
-                    self._execute_write(operation, data)
+                    result = self._execute_write(operation, data)
+                    if future and not future.done():
+                        future.set_result(result)
                 except Exception as e:
                     logger.error(f"DB Write Error ({operation}): {e}")
+                    if future and not future.done():
+                        future.set_exception(e)
                 finally:
                     self.queue.task_done()
                     
@@ -86,9 +110,15 @@ class DatabaseWriter:
                 logger.error(f"DatabaseWriter worker crash: {e}")
                 await asyncio.sleep(1) # Prevent tight loop on crash
 
-    def _execute_write(self, operation: str, data: Any):
+    def _execute_write(self, operation: str, data: Any) -> Any:
         """Dispatch write operation to PropertyDB methods."""
         
+        if operation == "generic_call":
+            func = data["func"]
+            args = data["args"]
+            kwargs = data["kwargs"]
+            return func(*args, **kwargs)
+
         if operation == "upsert_auction":
             self.db.upsert_auction(data)
             
@@ -128,3 +158,4 @@ class DatabaseWriter:
              
         else:
             logger.warning(f"Unknown DB operation: {operation}")
+            return None

@@ -199,13 +199,16 @@ The backend is **Hyland OnBase**. Leverage [OnBase Documentation](https://suppor
 - **Goal**: Reduce pipeline runtime from >20h to <5h.
 - **Strategy**: Single-Writer Queue + Parallel Enrichment + Async Orchestration.
 - [x] **Step 1: Database Writer Queue**
-  - Create `src/db/writer.py` and `DBQueue` class.
-  - Refactor DB connection for queued writes. (Completed: Implemented writer and migrated methods to PropertyDB)
-- [ ] **Step 2: Scraper Standardization**
-  - Refactor `TaxScraper`, `PermitScraper`, `MarketScraper` to return models.
-  - Remove direct DB writes from scrapers.
-- [ ] **Step 3: Async Orchestrator**
-  - Create `src/orchestrator.py` to manage TaskGroups.
-  - Implement concurrent work pool logic.
-- [ ] **Step 4: Vision Batching**
-  - Implement bounded semaphore for Vision Service.
+    - [x] Create `src/db/writer.py` (DatabaseWriter class).
+    - [x] Implement worker loop to process queue.
+    - [x] Move write methods from `PipelineDB` to `PropertyDB`/`DatabaseWriter`.
+- [x] **Step 2: Standardize Scrapers**
+    - [x] Refactor `TaxScraper` to return Pydantic models (`TaxStatus`).
+    - [x] Refactor `PermitScraper` to return Pydantic models (`Permit`).
+    - [x] Audit `MarketScraper` (already returns `ListingDetails`).
+    - [x] Ensure scrapers have no direct DB write logic.
+- [x] **Step 3: The Orchestrator (`src/orchestrator.py`)** to manage TaskGroups.
+  - [x] Implement concurrent work pool logic.
+- [x] **Step 4: Vision Batching**
+  - [x] Implement bounded semaphore for Vision Service.
+```

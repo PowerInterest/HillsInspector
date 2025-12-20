@@ -801,6 +801,46 @@ class PropertyDB:
         conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS latitude DOUBLE")
         conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS longitude DOUBLE")
 
+    def update_legal_description(self, folio: str, legal_description: str):
+        """Update the legal description for a parcel."""
+        conn = self.connect()
+        conn.execute("""
+            UPDATE parcels
+            SET legal_description = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE folio = ?
+        """, [legal_description, folio])
+
+    def update_flood_data(self, folio: str, flood_data: Dict[str, Any]):
+        """Update flood zone information for a parcel."""
+        conn = self.connect()
+        
+        # Ensure columns exist
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_zone VARCHAR")
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_zone_subtype VARCHAR")
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_risk_level VARCHAR")
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_insurance_required BOOLEAN")
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_base_elevation FLOAT")
+        
+        conn.execute("""
+            UPDATE parcels SET
+                flood_zone = ?,
+                flood_zone_subtype = ?,
+                flood_risk_level = ?,
+                flood_insurance_required = ?,
+                flood_base_elevation = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE folio = ?
+        """, [
+            flood_data.get("flood_zone"),
+            flood_data.get("zone_subtype"),
+            flood_data.get("risk_level"),
+            flood_data.get("insurance_required"),
+            flood_data.get("static_bfe"),
+            folio
+        ])
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS latitude DOUBLE")
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS longitude DOUBLE")
+
     def update_parcel_coordinates(self, parcel_id: str, latitude: float, longitude: float):
         """Update parcel lat/lon."""
         if parcel_id is None or latitude is None or longitude is None:
@@ -1344,7 +1384,33 @@ class PropertyDB:
 
         print("sales_history table created successfully")
 
-    def create_sources_table(self):
+    def get_encumbrances_by_folio(self, folio: str) -> List[Dict[str, Any]]:
+        """Get all encumbrances for a folio."""
+        conn = self.connect()
+        rows = conn.execute("""
+            SELECT * FROM encumbrances
+            WHERE folio = ?
+            ORDER BY recording_date DESC
+        """, [folio]).fetchall()
+        
+        columns = [desc[0] for desc in conn.description]
+        return [dict(zip(columns, row, strict=True)) for row in rows]
+
+    def get_auction_by_case(self, case_number: str) -> Optional[Dict[str, Any]]:
+        """Get an auction by case number."""
+        conn = self.connect()
+        row = conn.execute("""
+            SELECT * FROM auctions
+            WHERE case_number = ?
+        """, [case_number]).fetchone()
+        
+        if not row:
+            return None
+            
+        columns = [desc[0] for desc in conn.description]
+        return dict(zip(columns, row, strict=True))
+
+    def create_property_sources_table(self):
         """Create table for tracking data sources."""
         conn = self.connect()
         
@@ -1609,6 +1675,38 @@ class PropertyDB:
             "SELECT COUNT(*) FROM auctions WHERE auction_date = ?", [auction_date]
         ).fetchone()
         return result[0] if result else 0
+
+    def get_auctions_by_date_range(self, start_date: date, end_date: date) -> List[dict]:
+        """Fetch auctions within a date range."""
+        conn = self.connect()
+        # Join with parcels to get address? Or is it in auctions?
+        # Checking upsert_auction: we store property_address in auctions table as 'address' usually?
+        # Let's check upsert_auction params.
+        # It takes address.
+        # In src/db/new.py: auctions table has (case_number, auction_date, final_judgment_amount, property_address, parcel_id, ...)
+        # So it's 'property_address'.
+        
+        query = """
+            SELECT 
+                case_number,
+                parcel_id,
+                property_address as address,
+                auction_date
+            FROM auctions 
+            WHERE auction_date BETWEEN ? AND ?
+        """
+        results = conn.execute(query, [start_date, end_date]).fetchall()
+        
+        # Convert to list of dicts
+        auctions = []
+        for row in results:
+            auctions.append({
+                "case_number": row[0],
+                "parcel_id": row[1],
+                "address": row[2],
+                "auction_date": row[3]
+            })
+        return auctions
 
     def folio_has_sales_history(self, folio: str) -> bool:
         """Check if folio has sales history data."""

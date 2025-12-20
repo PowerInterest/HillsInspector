@@ -133,8 +133,6 @@ async def _scrape_hcpa_property_impl(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={'width': 1920, 'height': 1080},
             locale='en-US',
-            viewport={'width': 1920, 'height': 1080},
-            locale='en-US',
             timezone_id='America/New_York',
         )
         page = await context.new_page()

@@ -152,7 +152,7 @@ class MarketScraper:
                 # VisionService takes path string. ScraperStorage returns relative path.
                 abs_path = self.storage.get_full_path(prop_id, screenshot_path)
                 
-                data = self.vision.extract_market_listing(str(abs_path))
+                data = await self.vision.process_async(self.vision.extract_market_listing, str(abs_path))
 
                 if data:
                     logger.debug(f"VisionService Results: {json.dumps(data, indent=2)}")
@@ -271,7 +271,8 @@ class MarketScraper:
                             abs_captcha_path = self.storage.get_full_path(prop_id, captcha_path)
 
                             # Try to solve with VisionService
-                            result = self.vision.solve_captcha(
+                            result = await self.vision.process_async(
+                                self.vision.solve_captcha,
                                 str(abs_captcha_path),
                                 confidence_threshold=captcha_confidence_threshold
                             )

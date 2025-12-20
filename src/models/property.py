@@ -3,7 +3,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 class Lien(BaseModel):
-    recording_date: date
+    recording_date: Optional[date] = None
     document_type: str
     book: Optional[str] = None
     page: Optional[str] = None
@@ -13,15 +13,41 @@ class Lien(BaseModel):
     description: Optional[str] = None
     is_surviving: Optional[bool] = None
     notes: Optional[str] = None  # Reason for survival/expiration status
+    instrument_number: Optional[str] = None
+
+class TaxCertificate(BaseModel):
+    certificate_number: str
+    face_value: float
+    issue_year: Optional[int] = None
+    interest_rate: Optional[float] = None
+
+class TaxStatus(BaseModel):
+    account_number: Optional[str] = None
+    owner: Optional[str] = None
+    situs: Optional[str] = None
+    amount_due: float = 0.0
+    paid_in_full: bool = False
+    last_payment: Optional[str] = None
+    certificates: List[TaxCertificate] = Field(default_factory=list)
+    liens: List[Lien] = Field(default_factory=list)
+
 
 class Permit(BaseModel):
     permit_number: str
     issue_date: Optional[date] = None
+    expiration_date: Optional[date] = None
+    finaled_date: Optional[date] = None
     status: str
     description: Optional[str] = None
+    work_description: Optional[str] = None
     type: str
+    contractor: Optional[str] = None
+    contractor_license: Optional[str] = None
+    estimated_cost: Optional[float] = None
+    fees_paid: Optional[float] = None
     url: Optional[str] = None
     noc_instrument: Optional[str] = None
+    module: Optional[str] = None
 
 class ListingDetails(BaseModel):
     price: Optional[float] = None

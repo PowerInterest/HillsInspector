@@ -37,34 +37,9 @@ from src.services.vision_service import VisionService
 from src.services.scraper_storage import ScraperStorage
 
 
-@dataclass
-class PermitDetail:
-    """Detailed permit information from Accela."""
-    permit_number: str
-    permit_type: str  # Building, Electrical, Plumbing, etc.
-    status: str  # Issued, Finaled, Expired, etc.
+from src.models.property import Permit
 
-    issue_date: Optional[date] = None
-    expiration_date: Optional[date] = None
-    finaled_date: Optional[date] = None
-
-    description: Optional[str] = None
-    work_description: Optional[str] = None
-
-    contractor: Optional[str] = None
-    contractor_license: Optional[str] = None
-
-    estimated_cost: Optional[float] = None
-    fees_paid: Optional[float] = None
-
-    inspections: List[Dict[str, Any]] = field(default_factory=list)
-
-    address: Optional[str] = None
-    parcel_id: Optional[str] = None
-    module: Optional[str] = None
-    
-    url: Optional[str] = None
-    noc_instrument: Optional[str] = None
+# Removed PermitDetail dataclass in favor of shared Pydantic model
 
 
 class AddressParser:
@@ -187,7 +162,7 @@ class PermitScraper:
         self.output_dir = Path("data/permit_screenshots")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    async def get_permits_city(self, address: str, city: str = "Tampa") -> List[PermitDetail]:
+    async def get_permits_city(self, address: str, city: str = "Tampa") -> List[Permit]:
         """
         Get building permits and other records from City of Tampa portal.
 
@@ -200,7 +175,7 @@ class PermitScraper:
         """
         return await self.get_tampa_records(address)
 
-    async def get_permits_county(self, address: str) -> List[PermitDetail]:
+    async def get_permits_county(self, address: str) -> List[Permit]:
         """
         Get building permits from Hillsborough County portal.
 
@@ -212,7 +187,7 @@ class PermitScraper:
         """
         return await self._scrape_accela(self.COUNTY_URL, address, "Hillsborough County")
 
-    async def get_tampa_records(self, address: str) -> List[PermitDetail]:
+    async def get_tampa_records(self, address: str) -> List[Permit]:
         """
         Get all records (Permits, Code Enforcement) from Tampa Global Search.
 
@@ -229,7 +204,7 @@ class PermitScraper:
         
         return await self._scrape_accela(url, address, "City of Tampa Global")
 
-    async def get_permits(self, address: str, city: str = "Tampa") -> List[PermitDetail]:
+    async def get_permits(self, address: str, city: str = "Tampa") -> List[Permit]:
         """
         Get permits from both City and County portals.
 
@@ -262,7 +237,7 @@ class PermitScraper:
 
         return permits
 
-    async def _scrape_accela(self, base_url: str, address: str, source: str) -> List[PermitDetail]:
+    async def _scrape_accela(self, base_url: str, address: str, source: str) -> List[Permit]:
         """
         Scrape Accela Citizen Access portal for permits.
 
@@ -272,7 +247,7 @@ class PermitScraper:
             source: Source name for logging
 
         Returns:
-            List of PermitDetail objects
+            List of Permit objects
         """
         logger.info(f"Searching {source} permits for: {address}")
         permits = []
@@ -404,16 +379,16 @@ class PermitScraper:
                     logger.debug(f"Could not fill {field_name} for selector {selector}: {exc}")
                     continue
 
-    async def _extract_with_vision(self, screenshot_path: str, page: Page) -> List[PermitDetail]:
+    async def _extract_with_vision(self, screenshot_path: str, page: Page) -> List[Permit]:
         """Extract permit data from screenshot using VisionService."""
         permits = []
 
         try:
-            data = self.vision.extract_permit_results(screenshot_path)
+            data = await self.vision.process_async(self.vision.extract_permit_results, screenshot_path)
 
             if data and data.get("permits"):
                 for p in data["permits"]:
-                    permit = PermitDetail(
+                    permit = Permit(
                         permit_number=p.get("permit_number", "Unknown"),
                         permit_type=p.get("permit_type", "Unknown"),
                         status=p.get("status", "Unknown"),
@@ -434,7 +409,7 @@ class PermitScraper:
 
         return permits
 
-    async def _extract_from_page(self, page: Page) -> List[PermitDetail]:
+    async def _extract_from_page(self, page: Page) -> List[Permit]:
         """Extract permit data directly from page HTML."""
         permits = []
 
@@ -557,7 +532,7 @@ class PermitScraper:
                     if desc:
                         desc = desc.strip()
 
-                    permit = PermitDetail(
+                    permit = Permit(
                         permit_number=permit_num,
                         permit_type=permit_type,
                         status=status,
@@ -588,7 +563,7 @@ class PermitScraper:
         address: str,
         city: str = "Tampa",
         force_refresh: bool = False
-    ) -> List[PermitDetail]:
+    ) -> List[Permit]:
         """
         Get permits for a property with caching.
 
@@ -599,7 +574,7 @@ class PermitScraper:
             force_refresh: Force re-scrape even if cached
 
         Returns:
-            List of PermitDetail objects
+            List of Permit objects
         """
         # Check cache
         if not force_refresh and not self.storage.needs_refresh(property_id, "permits", max_age_days=7):

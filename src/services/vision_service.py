@@ -3,6 +3,8 @@ import json
 import re
 import requests
 import io
+import asyncio
+import functools
 from typing import Dict, Optional, Any
 from loguru import logger
 from PIL import Image
@@ -931,9 +933,24 @@ class VisionService:
     MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 
     def __init__(self):
+        """
+        Initialize VisionService.
+        """
         self.session = requests.Session()
         self.session.headers.update({'Connection': 'keep-alive'})
-        self._active_endpoint = None  # Cache the working endpoint {"url": ..., "model": ...}
+        self._active_endpoint = None
+        # Limit concurrent vision requests to 1 to prevent GPU OOM/Timeout
+        # Since this service is used across multiple scrapers, we use a class-level semaphore?
+        # No, usually instantiated per scraper.
+        # But if instantiated per scraper, standard asyncio.Semaphore is per instance.
+        # If we want GLOBAL limit, we need a shared semaphore.
+        # Or make it a class attribute.
+        
+        # Checking if other instances share state? No.
+        # So we should make it a class attribute if we want global limit.
+        if not hasattr(VisionService, '_global_semaphore'):
+            VisionService._global_semaphore = asyncio.Semaphore(1)
+        self._semaphore = VisionService._global_semaphore
 
     @property
     def API_URL(self) -> str:  # noqa: N802
@@ -1000,6 +1017,22 @@ class VisionService:
     def reset_active_url(self):
         """Reset cached URL to force re-check on next request."""
         self._active_endpoint = None
+
+    async def process_async(self, func, *args, **kwargs):
+        """
+        Run a synchronous vision method in a thread pool with concurrency limiting.
+        
+        Args:
+            func: The synchronous method to call (e.g., self.analyze_image)
+            *args: Positional arguments for func
+            **kwargs: Keyword arguments for func
+            
+        Returns:
+            The result of func(*args, **kwargs)
+        """
+        async with self._semaphore:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, functools.partial(func, *args, **kwargs))
 
     def check_server(self) -> bool:
         """
