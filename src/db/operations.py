@@ -296,6 +296,7 @@ class PropertyDB:
                     opening_bid = ?,
                     plaintiff = COALESCE(?, plaintiff),
                     defendant = COALESCE(?, defendant),
+                    has_valid_parcel_id = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE case_number = ?
             """, [
@@ -310,18 +311,18 @@ class PropertyDB:
                 prop.opening_bid,
                 getattr(prop, 'plaintiff', None),
                 getattr(prop, 'defendant', None),
+                getattr(prop, 'has_valid_parcel_id', True),
                 prop.case_number
             ])
             return existing[0]
-        # Insert new record
         conn.execute("""
                 INSERT INTO auctions (
                     case_number, folio, parcel_id, certificate_number,
                     auction_type, auction_date, property_address,
                     assessed_value, final_judgment_amount, opening_bid,
-                    plaintiff, defendant,
+                    plaintiff, defendant, has_valid_parcel_id,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             """, [
             prop.case_number,
             prop.parcel_id,
@@ -335,6 +336,7 @@ class PropertyDB:
             prop.opening_bid,
             getattr(prop, 'plaintiff', None),
             getattr(prop, 'defendant', None),
+            getattr(prop, 'has_valid_parcel_id', True),
         ])
 
         # Fetch the new ID
@@ -873,10 +875,14 @@ class PropertyDB:
                 is_satisfied BOOLEAN DEFAULT FALSE,
                 satisfaction_instrument VARCHAR,
                 satisfaction_date DATE,
+                satisfaction_date DATE,
                 survival_status VARCHAR,
-                party2_resolution_method VARCHAR,
+                
+                -- Party 2 Resolution Fields
+                party2_resolution_method VARCHAR,  -- 'cqid_326', 'ocr_extraction', NULL if original
                 is_self_transfer BOOLEAN DEFAULT FALSE,
-                self_transfer_type VARCHAR,
+                self_transfer_type VARCHAR,  -- 'exact_match', 'trust_transfer', 'name_variation'
+                
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_joined BOOLEAN DEFAULT FALSE,
                 is_inferred BOOLEAN DEFAULT FALSE
@@ -1119,15 +1125,17 @@ class PropertyDB:
                 conn.execute("""
                     INSERT INTO encumbrances (
                         folio, chain_period_id, encumbrance_type, creditor,
-                        amount, amount_confidence, amount_flags, recording_date,
+                        debtor, amount, amount_confidence, amount_flags, recording_date,
                         instrument, book, page, is_satisfied, satisfaction_instrument,
-                        satisfaction_date, survival_status, is_joined, is_inferred
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        satisfaction_date, survival_status, is_joined, is_inferred,
+                        party2_resolution_method, is_self_transfer, self_transfer_type
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, [
                     folio,
                     chain_id,
                     enc.get("type"),
                     enc.get("creditor"),
+                    enc.get("debtor"), # Now capturing debtor
                     enc.get("amount"),
                     enc.get("amount_confidence", "HIGH"),
                     str(enc.get("amount_flags", [])),
@@ -1141,6 +1149,9 @@ class PropertyDB:
                     survival_status,
                     bool(is_joined) if is_joined is not None else False,
                     bool(is_inferred) if is_inferred is not None else False,
+                    enc.get("party2_resolution_method"),
+                    enc.get("is_self_transfer", False),
+                    enc.get("self_transfer_type"),
                 ])
 
         # Chain/encumbrances changed; ensure lien survival can be re-run even if it was previously marked complete.
@@ -1573,6 +1584,212 @@ class PropertyDB:
             "total_amount_due": total_amount,
             "liens": liens,
         }
+
+    # ------------------------------------------------------------------
+    # Pipeline Optimization Helpers (Migrated from PipelineDB)
+    # ------------------------------------------------------------------
+    def execute_query(self, query: str, params: tuple = ()) -> List[Dict[str, Any]]:
+        """Execute a raw query and return dict results."""
+        conn = self.connect()
+        results = conn.execute(query, params).fetchall()
+        columns = [desc[0] for desc in conn.description]
+        return [dict(zip(columns, row, strict=False)) for row in results]
+
+    def ensure_last_analyzed_column(self):
+        """Add last_analyzed_case_number column if missing."""
+        conn = self.connect()
+        conn.execute(
+            "ALTER TABLE parcels ADD COLUMN IF NOT EXISTS last_analyzed_case_number VARCHAR"
+        )
+
+    def get_auction_count_by_date(self, auction_date: date) -> int:
+        """Get count of auctions we have for a specific date."""
+        conn = self.connect()
+        result = conn.execute(
+            "SELECT COUNT(*) FROM auctions WHERE auction_date = ?", [auction_date]
+        ).fetchone()
+        return result[0] if result else 0
+
+    def folio_has_sales_history(self, folio: str) -> bool:
+        """Check if folio has sales history data."""
+        conn = self.connect()
+        result = conn.execute(
+            "SELECT COUNT(*) FROM sales_history WHERE folio = ?", [folio]
+        ).fetchone()
+        return result[0] > 0 if result else False
+
+    def folio_has_chain_of_title(self, folio: str) -> bool:
+        """Check if folio has chain of title data."""
+        conn = self.connect()
+        result = conn.execute(
+            "SELECT COUNT(*) FROM chain_of_title WHERE folio = ?", [folio]
+        ).fetchone()
+        return result[0] > 0 if result else False
+
+    def folio_has_encumbrances(self, folio: str) -> bool:
+        """Check if folio has encumbrances."""
+        conn = self.connect()
+        result = conn.execute(
+            "SELECT COUNT(*) FROM encumbrances WHERE folio = ?", [folio]
+        ).fetchone()
+        return result[0] > 0 if result else False
+
+    def folio_has_survival_analysis(self, folio: str) -> bool:
+        """Check if folio has survival status set on encumbrances."""
+        conn = self.connect()
+        result = conn.execute(
+            "SELECT COUNT(*) FROM encumbrances WHERE folio = ? AND survival_status IS NOT NULL AND survival_status != 'UNKNOWN'",
+            [folio],
+        ).fetchone()
+        return result[0] > 0 if result else False
+
+    def get_last_analyzed_case(self, folio: str) -> Optional[str]:
+        """Get the last analyzed case number for a folio."""
+        conn = self.connect()
+        self.ensure_last_analyzed_column()
+        result = conn.execute(
+            "SELECT last_analyzed_case_number FROM parcels WHERE folio = ?", [folio]
+        ).fetchone()
+        return result[0] if result else None
+
+    def set_last_analyzed_case(self, folio: str, case_number: str):
+        """Set the last analyzed case number for a folio."""
+        conn = self.connect()
+        self.ensure_last_analyzed_column()
+        conn.execute(
+            "INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio]
+        )
+        conn.execute(
+            "UPDATE parcels SET last_analyzed_case_number = ?, updated_at = CURRENT_TIMESTAMP WHERE folio = ?",
+            [case_number, folio],
+        )
+
+    def folio_has_permits(self, folio: str) -> bool:
+        """Check if folio has permit data."""
+        conn = self.connect()
+        result = conn.execute(
+            "SELECT COUNT(*) FROM permits WHERE folio = ?", [folio]
+        ).fetchone()
+        return result[0] > 0 if result else False
+
+    def save_permits(self, folio: str, permits: List[Any]):
+        """Save permits to database."""
+        conn = self.connect()
+        
+        saved_count = 0
+        for p in permits:
+            # Handle both Permit objects and dicts
+            if isinstance(p, dict):
+                permit_number = p.get("permit_number")
+                issue_date = p.get("issue_date")
+                status = p.get("status")
+                permit_type = p.get("permit_type")
+                description = p.get("description")
+                contractor = p.get("contractor")
+                estimated_cost = p.get("estimated_cost")
+                url = p.get("url")
+                noc_instrument = p.get("noc_instrument")
+            else:
+                permit_number = p.permit_number
+                issue_date = p.issue_date
+                status = p.status
+                permit_type = p.permit_type
+                description = p.description
+                contractor = p.contractor
+                estimated_cost = p.estimated_cost
+                url = p.url
+                noc_instrument = p.noc_instrument
+
+            try:
+                conn.execute(
+                    """INSERT OR IGNORE INTO permits
+                       (folio, permit_number, issue_date, status, permit_type,
+                        description, contractor, estimated_cost, url, noc_instrument)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        folio, permit_number, issue_date, status, permit_type,
+                        description, contractor, estimated_cost, url, noc_instrument
+                    ],
+                )
+                saved_count += 1
+            except Exception as e:
+                logger.error(f"Failed to save permit {permit_number}: {e}")
+        
+        return saved_count
+
+    def folio_has_flood_data(self, folio: str) -> bool:
+        """Check if parcel has flood zone data."""
+        conn = self.connect()
+        try:
+            result = conn.execute(
+                """SELECT COUNT(*) FROM parcels
+                   WHERE folio = ? AND flood_zone IS NOT NULL""",
+                [folio],
+            ).fetchone()
+            return result[0] > 0 if result else False
+        except Exception:
+            return False
+
+    def save_flood_data(self, folio: str, flood_zone: str, flood_risk: str, insurance_required: bool):
+        """Save flood zone data to parcels table."""
+        conn = self.connect()
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_zone VARCHAR")
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_risk VARCHAR")
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_insurance_required BOOLEAN")
+        
+        conn.execute("INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio])
+        conn.execute(
+            """UPDATE parcels SET
+               flood_zone = ?, flood_risk = ?, flood_insurance_required = ?,
+               updated_at = CURRENT_TIMESTAMP
+               WHERE folio = ?""",
+            [flood_zone, flood_risk, insurance_required, folio],
+        )
+
+    def folio_has_realtor_data(self, folio: str) -> bool:
+        """Check if folio has realtor.com data."""
+        conn = self.connect()
+        result = conn.execute(
+            "SELECT COUNT(*) FROM market_data WHERE folio = ? AND source = 'Realtor'",
+            [folio],
+        ).fetchone()
+        return result[0] > 0 if result else False
+
+    def folio_has_owner_name(self, folio: str) -> bool:
+        """Check if folio has owner name in parcels."""
+        conn = self.connect()
+        result = conn.execute(
+            "SELECT owner_name FROM parcels WHERE folio = ?", [folio]
+        ).fetchone()
+        return result is not None and result[0] is not None
+
+    def folio_has_tax_data(self, folio: str) -> bool:
+        """Check if folio has tax data."""
+        conn = self.connect()
+        result = conn.execute(
+            "SELECT COUNT(*) FROM liens WHERE folio = ? AND document_type = 'TAX'",
+            [folio],
+        ).fetchone()
+        return result[0] > 0 if result else False
+
+    def folio_has_sunbiz_data(self, folio: str) -> bool:
+        """Check if folio has sunbiz entity data (stored as recent source check or result)."""
+        # Note: ScraperStorage dependency avoided here; simplest check is if we marked step complete.
+        # But for pipeline "skip" logic, we usually check `needs_sunbiz_search`.
+        # This method was in PipelineDB using ScraperStorage.
+        # For PropertyDB, we'll check if we have entity parties or if we just rely on flags.
+        # Or checking property_sources table?
+        # Let's check property_sources for 'sunbiz'
+        conn = self.connect()
+        try:
+             result = conn.execute(
+                "SELECT COUNT(*) FROM property_sources WHERE folio = ? AND source_name = 'sunbiz' AND created_at > CURRENT_DATE - INTERVAL 30 DAY", 
+                [folio]
+             ).fetchone()
+             return result[0] > 0 if result else False
+        except Exception:
+             return False
+
 
 
 if __name__ == "__main__":

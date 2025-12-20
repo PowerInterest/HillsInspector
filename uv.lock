@@ -403,6 +403,7 @@ dependencies = [
     { name = "dbfread" },
     { name = "duckdb" },
     { name = "fastapi" },
+    { name = "homeharvest" },
     { name = "loguru" },
     { name = "lxml" },
     { name = "markitdown", extra = ["pdf"] },
@@ -434,6 +435,7 @@ requires-dist = [
     { name = "dbfread", specifier = ">=2.0.7" },
     { name = "duckdb" },
     { name = "fastapi" },
+    { name = "homeharvest", specifier = ">=0.8.11" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "lxml" },
     { name = "markitdown", extras = ["pdf"], specifier = ">=0.1.4" },
@@ -457,6 +459,21 @@ requires-dist = [
     { name = "ty", specifier = ">=0.0.1a27" },
     { name = "typer", extras = ["all"] },
     { name = "uvicorn" },
+]
+
+[[package]]
+name = "homeharvest"
+version = "0.8.11"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pandas" },
+    { name = "pydantic" },
+    { name = "requests" },
+    { name = "tenacity" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/13/27/a1530a28e8abf4fd78095aa4f29937fd0779b92a98c4a4488e9215f89e93/homeharvest-0.8.11.tar.gz", hash = "sha256:120e92386f382a7e0142b63ba02a6dcf66f3268be5073476724a6a97715e50d0", size = 146199, upload-time = "2025-12-18T05:43:28.233Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/23/9b/b735a8c1efb3bc51c3fd222a3efb8fa0a075e90cc9b792ea1bb703cc9b95/homeharvest-0.8.11-py3-none-any.whl", hash = "sha256:c6ae68d32a4da35db3fda19140997104d1f1efa079b736317b529b1bf3910af9", size = 149931, upload-time = "2025-12-18T05:43:26.614Z" },
 ]
 
 [[package]]

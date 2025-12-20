@@ -112,6 +112,9 @@ def create_database(db_path: str = "data/property_master.db"):
 
             -- HCPA Scrape Status
             hcpa_scrape_failed BOOLEAN DEFAULT FALSE,
+            
+            -- Parcel ID Validation (FALSE = mobile home or unresolved, limited analysis only)
+            has_valid_parcel_id BOOLEAN DEFAULT TRUE,
 
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -302,6 +305,9 @@ def create_database(db_path: str = "data/property_master.db"):
             party2_resolution_method VARCHAR,  -- 'cqid_326', 'ocr_extraction', NULL if original
             is_self_transfer BOOLEAN DEFAULT FALSE,
             self_transfer_type VARCHAR,  -- 'exact_match', 'trust_transfer', 'name_variation'
+
+            is_joined BOOLEAN DEFAULT FALSE,
+            is_inferred BOOLEAN DEFAULT FALSE,
 
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )

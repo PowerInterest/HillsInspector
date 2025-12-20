@@ -45,6 +45,26 @@
 - `VisionService.analyze_images()` and `*_multi()` variants for deed, mortgage, lien, final judgment extraction
 - Increased `max_tokens` from 1024 to 10000 for complex Final Judgments
 
+### ✅ Multi-Image PDF Processing (Dec 2024)
+- Vision service now sends all PDF pages to vLLM in a single batch request instead of page-by-page
+- `VisionService.analyze_images()` and `*_multi()` variants for deed, mortgage, lien, final judgment extraction
+- Increased `max_tokens` from 1024 to 10000 for complex Final Judgments
+
+### ✅ Infrastructure & Schema (Dec 2024 - Antigravity)
+- **Playwright Setup**: Created `Makefile` for automated setup, synced dependencies.
+- **Database Schema Repair**: Consolidated `encumbrances` table schema between `src/db/new.py` and `src/db/operations.py`. Fixed missing `debtor` and resolution columns in data persistence.
+- **Documentation**: Updated `README.md` with setup instructions and removed redundant sections.
+- **HCPA Scraper**: Refactored `hcpa_gis_scraper.py` with robust locators and increased timeouts for slow connections.
+
+## In Progress
+
+### Anti-Blocking Strategy
+- [x] Investigate/Configure Cloudflare WARP integration
+- [ ] Implement browser switching fallback (e.g. Chrome -> Firefox) when Chromium is blocked
+
+### Data Ingestion Enhancements
+- [x] Implement auto-download of bulk data in `--new` code path via FTP
+
 ## High Priority
 
 ### Async VisionService Refactor (Performance)
@@ -128,6 +148,11 @@ If data (judgments, liens, geocodes) already exists, skip reprocessing. Only fil
 
 ## Very Important Priority
 
+### Log Analysis & Root Cause Analysis (CRITICAL)
+- **Goal**: Review logs to analyze all warnings and errors. Identify root causes.
+- **Why**: Parsing the Final Judgment document is the basis of the whole pipeline. Any failure here is a "big deal".
+- **Action**: Locate `final_judgment_parsing` errors in logs, extract sample failures, and fix the underlying issue (regex, OCR, or layout changes).
+
 ### Bot Detection Mitigation
 Some sources (HOVER, Realtor.com) have aggressive bot detection. Current mitigations:
 - Stealth User-Agent
@@ -138,3 +163,49 @@ Some sources (HOVER, Realtor.com) have aggressive bot detection. Current mitigat
 # LOW
 ### OnBase API Discovery
 The backend is **Hyland OnBase**. Leverage [OnBase Documentation](https://support.hyland.com/r/OnBase/Public-Sector-Constituency-Web-Access/English/Foundation-22.1/Public-Sector-Constituency-Web-Access/Configuration/Front-End-Client-Configuration/Search-Panel-Settings/Configuring-Custom-Queries/Predefine-Keyword-Values-to-Search/Dynamic-Keyword-Values) to discover more advanced search capabilities and potential API endpoints.
+
+### Past Auction Analysis Page
+- **Goal**: Create a detailed page for past auctions.
+- **Content**:
+  - Successfully auctioned properties & price paid.
+  - "Good Deal" analysis (Market Value vs. Winning Bid).
+  - Unsold properties analysis (Why weren't they purchased? Reverted to plaintiff?).
+
+
+### ✅ No Parcel ID Recovery Strategy (Dec 2024)
+
+**Problem**: ~15% of auctions scraped have missing/invalid Parcel IDs (e.g., "Property Appraiser" link text). This blocks PDF download and parsing.
+
+**Root Cause**: The scraper requires a valid Parcel ID to create the storage folder. Without it, the Final Judgment PDF is never downloaded.
+
+**Fixed**:
+1. **Always Download PDF** (even without Parcel ID)
+   - Downloads to `data/properties/unknown_case_{case_number}/documents/`
+2. **Parse the PDF**
+   - Parses normally to extract legal description and parties
+3. **Limited Analysis Flag**
+   - Adds `has_valid_parcel_id` flag to DB
+   - Website displays "Limited Analysis" banner for these properties
+
+---
+
+### ✅ Log Analysis - General Errors (Dec 2024)
+- Fixed Tax Deed scraper timeouts (Case # text fallback).
+- Diagnosed vision service connection errors.
+
+## High Priority
+
+### Pipeline Optimization (Parallel Architecture)
+- **Goal**: Reduce pipeline runtime from >20h to <5h.
+- **Strategy**: Single-Writer Queue + Parallel Enrichment + Async Orchestration.
+- [x] **Step 1: Database Writer Queue**
+  - Create `src/db/writer.py` and `DBQueue` class.
+  - Refactor DB connection for queued writes. (Completed: Implemented writer and migrated methods to PropertyDB)
+- [ ] **Step 2: Scraper Standardization**
+  - Refactor `TaxScraper`, `PermitScraper`, `MarketScraper` to return models.
+  - Remove direct DB writes from scrapers.
+- [ ] **Step 3: Async Orchestrator**
+  - Create `src/orchestrator.py` to manage TaskGroups.
+  - Implement concurrent work pool logic.
+- [ ] **Step 4: Vision Batching**
+  - Implement bounded semaphore for Vision Service.

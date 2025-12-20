@@ -10,6 +10,17 @@
         <span>{{ auction.property_address or auction.folio }}</span>
     </nav>
 
+    <!-- Limited Analysis Banner (Mobile Homes / No Parcel ID) -->
+    {% if auction.has_valid_parcel_id == false %}
+    <div class="alert alert-warning" style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 15px 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+        <span style="font-size: 24px;">⚠️</span>
+        <div>
+            <strong>Limited Analysis Available</strong>
+            <p style="margin: 5px 0 0 0; color: #856404;">This property (likely a mobile home lot or unresolved parcel) does not have a standard county parcel ID. Only Final Judgment data is available. HCPA, title chain, liens, and market analysis cannot be performed.</p>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Header -->
     <div class="property-header">
         <div class="property-title">

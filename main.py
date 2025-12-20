@@ -40,6 +40,7 @@ class InterceptHandler(logging.Handler):
 # Import modules
 from src.db.new import create_database
 from src.pipeline import run_full_pipeline
+from src.ingest.bulk_parcel_ingest import download_and_ingest
 
 # Configure logging - both console and file
 logger.remove()
@@ -82,6 +83,15 @@ def handle_new():
     logger.info("Creating new database...")
     create_database(str(DB_PATH))
     logger.success("New database created successfully.")
+    
+    # Auto-download and ingest bulk data
+    try:
+        logger.info("Starting initial bulk data ingestion...")
+        download_and_ingest(db_path=str(DB_PATH), force=False)
+        logger.success("Initial bulk data ingestion complete.")
+    except Exception as e:
+        logger.error(f"Failed during initial bulk data ingestion: {e}")
+        logger.warning("Database created but bulk data missing. Run: uv run python -m src.ingest.bulk_parcel_ingest --download")
 
 async def handle_test():
     """Run pipeline for next auction data (small set)."""

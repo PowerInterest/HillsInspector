@@ -107,22 +107,41 @@ conn.execute("""
 
 **Only `uv`, `ruff`, and `ty` are approved developer tools.** No pip, flake8, or mypy.
 
-After modifying any file:
-1. Run `uv run ruff check <path>` (plus `--fix` when safe)
-2. Run `uv run ty check <path>`
-3. Resolve all issues before committing
-4. Document exact commands in PR description
-
 ## Setup
+### Quick Start (Linux/WSL/MacOS)
+We provide a `Makefile` to streamline the setup process.
 
-1.  **Install Dependencies**:
+1.  **Clone the repository**:
     ```bash
+    git clone https://github.com/PowerInterest/HillsInspector
+    cd HillsInspector
+    ```
+
+2.  **Run Setup**:
+    This will install system dependencies, sync Python packages, and install Playwright browsers.
+    ```bash
+    make setup
+    ```
+
+### Manual Setup / Windows Powershell
+
+1.  **Install `uv`**:
+    Follow instructions at [https://github.com/astral-sh/uv](https://github.com/astral-sh/uv)
+
+2.  **Install Dependencies**:
+    ```powershell
     uv sync
     ```
 
-2.  **Environment**:
-    - Python 3.12+
-    - Windows WSL Ubuntu 24.04.5
+3.  **Install Playwright Browsers**:
+    ```powershell
+    uv run playwright install chromium
+    ```
+
+4.  **Verify Installation**:
+    ```powershell
+    uv run python main.py --help
+    ```
 
 ## Final Judgment Retrieval (current approach)
 - Auction pages provide a “Case #” link that redirects to OnBase Instrument Search (`CQID=320` with `OBKey__1006_1=<instrument>`).
@@ -265,28 +284,6 @@ We enforce strict code quality using the [Astral](https://astral.sh) suite.
   - **Note:** Do NOT use EasyOCR. All vision/OCR tasks go through the Qwen service.
 
 
-## 7. Setup Commands (Windows)
-
-```powershell
-# 1. Clone Repo
-git clone [https://github.com/PowerInterest/HillsInspector](https://github.com/PowerInterest/HillsInspector)
-cd HillsInspector
-
-# 2. Initialize uv (if starting fresh)
-uv init
-
-# 3. Add Core Dependencies
-uv add polars duckdb loguru playwright tenacity python-dotenv fastapi uvicorn jinja2 python-multipart
-
-# 4. Add Dev Dependencies
-uv add --dev ruff ty playwright-stealth tqdm
-
-# 5. Install Playwright Browsers
-uv run playwright install chromium
-
-# 6. Run Checks
-uv run ruff check .
-uv run ty check
 
 ## 3. Technical Stack (Strict)
 * **Language:** Python 3.12

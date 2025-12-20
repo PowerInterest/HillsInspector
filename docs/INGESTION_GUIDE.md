@@ -93,8 +93,9 @@ Before scraping auctions, load the bulk parcel data from HCPA for instant enrich
 # Extract parcel.dbf to data/bulk_data/
 
 # Ingest parcels (~528K records, takes ~50 seconds)
-uv run python -m src.ingest.bulk_parcel_ingest "data/bulk_data/parcel_4_public.dbf"
-
+# This automtically downloads parcel and LatLon zip files, merges them, and saves to Parquet
+uv run python -m src.ingest.bulk_parcel_ingest --download
+ 
 # Ingest lookup tables (DOR codes, subdivisions)
 uv run python -m src.ingest.bulk_parcel_ingest --lookup-tables
 
@@ -103,7 +104,7 @@ uv run python -m src.ingest.bulk_parcel_ingest --validate
 ```
 
 This creates:
-- `bulk_parcels` table (~528K Hillsborough parcels)
+- `bulk_parcels` table (~528K Hillsborough parcels, including Lat/Lon)
 - `dor_codes` table (305 land use categories)
 - `subdivisions` table (~11,500 subdivision names)
 - Parquet files in `data/parquet/` for efficient storage
@@ -271,6 +272,7 @@ with PropertyDB() as db:
    - `year_built`, `beds`, `baths`, `stories`, `heated_area`, `lot_size`
    - `assessed_value`, `market_value`, `just_value`, `taxable_value`
    - `last_sale_date`, `last_sale_price`
+   - `latitude`, `longitude` - From LatLon table
    - `raw_sub` - Links to subdivisions table
 
 2. **dor_codes** - DOR land use code lookups (305 codes)
@@ -288,6 +290,7 @@ with PropertyDB() as db:
    - `owner_name`, `property_address`, `city`, `zip_code`
    - `year_built`, `beds`, `baths`, `heated_area`
    - `assessed_value`, `market_value`
+   - `latitude`, `longitude`
 
 5. **auctions** - Auction listings
    - `case_number` (PK) - Court case number

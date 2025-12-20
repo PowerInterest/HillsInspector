@@ -125,7 +125,13 @@ class TaxDeedScraper:
                 # Case Number
                 case_row = label.locator("xpath=./ancestor::tr[1]")
                 case_link = case_row.locator("a")
-                case_number = await case_link.inner_text()
+                
+                # Robust Case Number Extraction: Try link first, then plain text
+                if await case_link.count() > 0:
+                    case_number = await case_link.nth(0).inner_text(timeout=5000)
+                else:
+                    # Fallback to second column text (usually class="AD_DTA")
+                    case_number = await case_row.locator("td").nth(1).inner_text(timeout=5000)
 
                 # Certificate Number
                 cert_text = await get_text_by_label("Certificate #:")
@@ -135,7 +141,12 @@ class TaxDeedScraper:
                 if "Link" in parcel_id_text or not parcel_id_text.strip():
                      row = item_container.locator("tr:has-text('Parcel ID:')")
                      if await row.count() > 0:
-                         parcel_id_text = await row.locator("a").inner_text()
+                         parcel_ids_links = row.locator("a")
+                         if await parcel_ids_links.count() > 0:
+                            parcel_id_text = await parcel_ids_links.nth(0).inner_text()
+                         else:
+                            # Try just getting the text if no link
+                             parcel_id_text = await row.locator("td").nth(1).inner_text()
 
                 address = await get_text_by_label("Property Address:")
                 value_text = await get_text_by_label("Assessed Value:")

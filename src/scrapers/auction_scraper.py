@@ -263,6 +263,7 @@ class AuctionScraper:
                     plaintiff=plaintiff,
                     defendant=defendant,
                     hcpa_url=hcpa_url,
+                    has_valid_parcel_id=bool(parcel_id_text),  # FALSE for mobile homes/unresolved
                 )
 
                 # Immediately enrich with HCPA data if we have the URL
@@ -323,18 +324,15 @@ class AuctionScraper:
         """
         result = {"pdf_path": None, "plaintiff": None, "defendant": None}
 
+        # Use parcel_id if available, otherwise fall back to case_number for storage
+        # This ensures we always download the PDF, even when parcel_id is missing
+        storage_id = parcel_id if parcel_id else f"unknown_case_{case_number}"
         if not parcel_id:
-            logger.warning(f"Cannot save Final Judgment for {case_number}: No Parcel ID")
-            return result
+            logger.info(f"No Parcel ID for {case_number}, using fallback storage: {storage_id}")
 
         # Check if already exists in storage
         # We use instrument number as doc_id if available, else case number
         doc_id = instrument_number if instrument_number else case_number
-
-        # Check if file exists (logic handled by storage usually, but we can check existence)
-        # For now, we'll just proceed to download and let storage overwrite or we can check
-        # But ScraperStorage doesn't expose "exists" easily without path construction.
-        # We'll rely on the fact that we want to ensure we have it.
 
         new_context = None
         new_page = None
@@ -417,7 +415,7 @@ class AuctionScraper:
                 
             # Save using ScraperStorage
             saved_path = self.storage.save_document(
-                property_id=parcel_id,
+                property_id=storage_id,
                 file_data=pdf_bytes,
                 doc_type="final_judgment",
                 doc_id=doc_id, # Instrument number or Case number
@@ -425,7 +423,7 @@ class AuctionScraper:
             )
             
             # Get full path for return
-            full_path = self.storage.get_full_path(parcel_id, saved_path)
+            full_path = self.storage.get_full_path(storage_id, saved_path)
             logger.info(f"Saved PDF to {full_path}")
 
             result["pdf_path"] = str(full_path)
@@ -467,6 +465,19 @@ class AuctionScraper:
             for p in potential_paths:
                 if p.exists():
                     pdf_path = p
+                    break
+        else:
+            # No parcel_id - check fallback unknown_case folder
+            doc_id = prop.instrument_number if prop.instrument_number else prop.case_number
+            fallback_folder = f"unknown_case_{prop.case_number}"
+            potential_paths = [
+                self.storage.get_full_path(fallback_folder, f"documents/final_judgment_{doc_id}.pdf"),
+                self.storage.get_full_path(fallback_folder, f"documents/final_judgment_{prop.case_number}.pdf")
+            ]
+            for p in potential_paths:
+                if p.exists():
+                    pdf_path = p
+                    logger.info(f"Found PDF in fallback location for {prop.case_number}: {p}")
                     break
         
         if not pdf_path or not pdf_path.exists():

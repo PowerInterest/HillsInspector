@@ -53,6 +53,7 @@ class Property(BaseModel):
     plaintiff: Optional[str] = None  # Party 1 from PAV page
     defendant: Optional[str] = None  # Party 2 from PAV page
     hcpa_url: Optional[str] = None  # Direct link to HCPA property page
+    has_valid_parcel_id: bool = True  # FALSE for mobile homes/unresolved parcels (limited analysis)
 
     # Enriched Data
     owner_name: Optional[str] = None

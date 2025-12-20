@@ -26,6 +26,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 from loguru import logger
+import asyncio
+from src.ingest.bulk_downloader import download_latest_bulk_data
 
 # For reading DBF files (shapefile attribute table)
 try:
@@ -299,6 +301,8 @@ def ingest_to_duckdb(df: pl.DataFrame, db_path: str = str(DB_PATH)) -> dict:
             raw_legal2 VARCHAR,
             raw_legal3 VARCHAR,
             raw_legal4 VARCHAR,
+            latitude FLOAT,
+            longitude FLOAT,
             ingest_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -330,7 +334,8 @@ def ingest_to_duckdb(df: pl.DataFrame, db_path: str = str(DB_PATH)) -> dict:
             heated_area, lot_size, assessed_value, market_value, just_value,
             land_value, building_value, extra_features_value, taxable_value,
             last_sale_date, last_sale_price,
-            raw_type, raw_sub, raw_taxdist, raw_muni, raw_legal1, raw_legal2, raw_legal3, raw_legal4
+            raw_type, raw_sub, raw_taxdist, raw_muni, raw_legal1, raw_legal2, raw_legal3, raw_legal4,
+            latitude, longitude
         )
         SELECT
             folio, pin, strap, owner_name, property_address, city, zip_code,
@@ -338,7 +343,8 @@ def ingest_to_duckdb(df: pl.DataFrame, db_path: str = str(DB_PATH)) -> dict:
             heated_area, lot_size, assessed_value, market_value, just_value,
             land_value, building_value, extra_features_value, taxable_value,
             last_sale_date, last_sale_price,
-            raw_type, raw_sub, raw_taxdist, raw_muni, raw_legal1, raw_legal2, raw_legal3, raw_legal4
+            raw_type, raw_sub, raw_taxdist, raw_muni, raw_legal1, raw_legal2, raw_legal3, raw_legal4,
+            latitude, longitude
         FROM df_temp
     """)
 
@@ -356,9 +362,9 @@ def ingest_to_duckdb(df: pl.DataFrame, db_path: str = str(DB_PATH)) -> dict:
     return stats
 
 
-def ingest_dbf_file(dbf_path: Path, db_path: str = str(DB_PATH)) -> dict:
+def ingest_dbf_file(dbf_path: Path, db_path: str = str(DB_PATH), ingest_to_db: bool = True) -> dict:
     """
-    Full ingestion pipeline: DBF -> Polars -> Parquet -> DuckDB.
+    Full ingestion pipeline: DBF -> Polars -> Parquet -> DuckDB (optional).
     """
     stats = {"source_file": str(dbf_path)}
 
@@ -370,9 +376,12 @@ def ingest_dbf_file(dbf_path: Path, db_path: str = str(DB_PATH)) -> dict:
     parquet_path = save_to_parquet(df)
     stats["parquet_file"] = str(parquet_path)
 
-    # Step 3: Ingest to DuckDB
-    db_stats = ingest_to_duckdb(df, db_path)
-    stats.update(db_stats)
+    # Step 3: Ingest to DuckDB (Optional)
+    if ingest_to_db:
+        db_stats = ingest_to_duckdb(df, db_path)
+        stats.update(db_stats)
+    else:
+        logger.info("Skipping DuckDB ingestion (saved to Parquet only)")
 
     # Step 4: Update metadata
     metadata = get_ingest_metadata()
@@ -406,9 +415,72 @@ def ingest_from_zip(zip_path: Path, db_path: str = str(DB_PATH)) -> dict:
             logger.info(f"Found DBF file: {dbf_name}")
 
             zf.extract(dbf_name, tmpdir)
-            dbf_path = Path(tmpdir) / dbf_name
+    return ingest_dbf_file(dbf_path, db_path, ingest_to_db=ingest_to_db)
 
-            return ingest_dbf_file(dbf_path, db_path)
+
+def download_and_ingest(db_path: str = str(DB_PATH), force: bool = False, ingest_to_db: bool = False) -> dict:
+    """
+    Orchestrate download and ingestion of bulk data.
+    Defaults to Parquet-only (ingest_to_db=False) to avoid DB bloat until needed.
+    """
+    if not force and not should_refresh():
+        logger.info("Bulk data is up to date. Skipping download.")
+        return {}
+    
+    logger.info("Starting bulk data auto-download...")
+    
+    # Run async downloader synchronously
+    downloads = asyncio.run(download_latest_bulk_data(BULK_DATA_DIR))
+    
+    if not downloads.get("parcel_zip"):
+        raise RuntimeError("Failed to download parcel data ZIP")
+
+    # 1. Load Main Parcel Data
+    logger.info("Processing Parcel Data...")
+    df_parcels = dbf_zip_to_polars(downloads["parcel_zip"], "parcel")
+
+    # 2. Load LatLon Data (if available)
+    if downloads.get("latlon_zip"):
+        try:
+            logger.info("Processing LatLon Data...")
+            df_latlon = load_latlon_data(downloads["latlon_zip"])
+            
+            # Join on FOLIO
+            logger.info("Merging Parcel and LatLon data...")
+            # Left join to keep all parcels, adding lat/lon where matches found
+            df_parcels = df_parcels.join(df_latlon, on="folio", how="left")
+            
+            logger.info(f"Merged dimensions: {df_parcels.shape}")
+        except Exception as e:
+            logger.error(f"Failed to merge LatLon data: {e}")
+    
+    # 3. Save to Parquet
+    parquet_path = save_to_parquet(df_parcels)
+    stats = {
+        "records": len(df_parcels), 
+        "parquet_file": str(parquet_path)
+    }
+
+    # 4. Ingest to DuckDB (Optional)
+    if ingest_to_db:
+        # Note: We need to handle the new lat/lon columns in ingest_to_duckdb if we want them in the DB
+        # For now, ingest_to_duckdb follows hardcoded schema.
+        # We can update the schema to include lat/lon or just ignore them for the bulk table.
+        # Let's verify if ingest_to_duckdb supports extra columns (it uses SELECT FROM df, so requires schema match)
+        # We should update ingest_to_duckdb to generic loading or add columns.
+        db_stats = ingest_to_duckdb(df_parcels, db_path)
+        stats.update(db_stats)
+    else:
+        logger.info("Skipping DuckDB ingestion (saved to Parquet only)")
+
+    # Update metadata
+    metadata = get_ingest_metadata()
+    metadata["last_ingest_date"] = datetime.now().isoformat()
+    metadata["last_record_count"] = len(df_parcels)
+    metadata["last_parquet_file"] = str(parquet_path)
+    save_ingest_metadata(metadata)
+    
+    return stats
 
 
 def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
@@ -464,6 +536,9 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
     conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS raw_legal4 VARCHAR")
     conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS strap VARCHAR")
     conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS bulk_folio VARCHAR")
+    # Add coordinate columns if they don't exist (might already be there from schema)
+    conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS latitude FLOAT")
+    conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS longitude FLOAT")
 
     # Count auctions without parcel data
     # NOTE: auctions.folio is actually STRAP format, bulk_parcels.strap matches it
@@ -481,14 +556,15 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
             land_use, year_built, beds, baths, heated_area, lot_size,
             assessed_value, market_value, last_sale_date, last_sale_price,
             strap, raw_legal1, raw_legal2, raw_legal3, raw_legal4,
-            legal_description
+            legal_description, latitude, longitude
         )
         SELECT
             a.folio, a.folio, b.folio, b.owner_name, b.property_address, b.city, b.zip_code,
             b.land_use, b.year_built, b.beds, b.baths, b.heated_area, b.lot_size,
             b.assessed_value, b.market_value, b.last_sale_date, b.last_sale_price,
             b.strap, b.raw_legal1, b.raw_legal2, b.raw_legal3, b.raw_legal4,
-            CONCAT_WS(' ', b.raw_legal1, b.raw_legal2, b.raw_legal3, b.raw_legal4)
+            CONCAT_WS(' ', b.raw_legal1, b.raw_legal2, b.raw_legal3, b.raw_legal4),
+            b.latitude, b.longitude
         FROM auctions a
         INNER JOIN bulk_parcels b ON a.folio = b.strap
         LEFT JOIN parcels p ON a.folio = p.folio
@@ -520,6 +596,8 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
                 parcels.legal_description,
                 CONCAT_WS(' ', b.raw_legal1, b.raw_legal2, b.raw_legal3, b.raw_legal4)
             ),
+            latitude = COALESCE(parcels.latitude, b.latitude),
+            longitude = COALESCE(parcels.longitude, b.longitude),
             updated_at = CURRENT_TIMESTAMP
         FROM bulk_parcels b
         WHERE parcels.folio = b.strap
@@ -627,6 +705,61 @@ def ingest_dor_codes(dbf_path: Path, db_path: str = str(DB_PATH)) -> dict:
 
     logger.info(f"Ingested {count} DOR codes to DuckDB")
     return {"dor_codes_count": count, "parquet_file": str(parquet_path)}
+
+
+def dbf_zip_to_polars(zip_path: Path, filename_pattern: str) -> pl.DataFrame:
+    """Helper to extract a specific DBF from a zip and load it into Polars."""
+    logger.info(f"Extracting {filename_pattern} from {zip_path}")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            files = [n for n in zf.namelist() if n.lower().endswith('.dbf') and filename_pattern.lower() in n.lower()]
+            if not files:
+                # Fallback: any DBF
+                files = [n for n in zf.namelist() if n.lower().endswith('.dbf')]
+            
+            if not files:
+                 raise FileNotFoundError(f"No matching DBF found in {zip_path}")
+            
+            target_file = files[0]
+            zf.extract(target_file, tmpdir)
+            return dbf_to_polars(Path(tmpdir) / target_file)
+
+
+def load_latlon_data(zip_path: Path) -> pl.DataFrame:
+    """
+    Load LatLon data from zip.
+    Expected columns: FOLIO, Name, lat, lon
+    """
+    if DBF is None:
+         raise ImportError("dbfread required")
+
+    logger.info(f"Loading LatLon data from {zip_path}")
+    # We can reuse dbf_to_polars logic but we need to map columns differently
+    # Since dbf_to_polars is hardcoded for parcel schema, we'll implement a simple reader here or genericize dbf_to_polars
+    # For now, let's use a specialized reader since the schema is simple
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            target = [n for n in zf.namelist() if n.lower().endswith('.dbf')][0]
+            zf.extract(target, tmpdir)
+            dbf_path = Path(tmpdir) / target
+            
+            dbf = DBF(str(dbf_path), encoding='latin-1')
+            
+            folios = []
+            lats = []
+            lons = []
+            
+            for record in dbf:
+                folios.append(safe_str(record.get('FOLIO')))
+                lats.append(safe_float(record.get('lat')))
+                lons.append(safe_float(record.get('lon')))
+                
+            return pl.DataFrame({
+                "folio": folios,
+                "latitude": lats,
+                "longitude": lons
+            }).filter(pl.col("folio").is_not_null())
 
 
 def ingest_subdivisions(dbf_path: Path, db_path: str = str(DB_PATH)) -> dict:
@@ -779,12 +912,17 @@ if __name__ == "__main__":
         print("  python -m src.ingest.bulk_parcel_ingest --enrich")
         print("  python -m src.ingest.bulk_parcel_ingest --validate")
         print("  python -m src.ingest.bulk_parcel_ingest --check-refresh")
+        print("  python -m src.ingest.bulk_parcel_ingest --check-refresh")
         print("  python -m src.ingest.bulk_parcel_ingest --lookup-tables")
+        print("  python -m src.ingest.bulk_parcel_ingest --download")
         sys.exit(1)
 
     arg = sys.argv[1]
 
-    if arg == "--enrich":
+    if arg == "--download":
+        stats = download_and_ingest(force=True)
+        print(f"Download & Ingest Complete: {stats}")
+    elif arg == "--enrich":
         stats = enrich_auctions_from_bulk()
         print(f"Enrichment stats: {stats}")
     elif arg == "--validate":

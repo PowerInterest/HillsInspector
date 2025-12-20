@@ -64,7 +64,7 @@ async def scrape_hcpa_property(
     parcel_id: str | None = None,
     folio: str | None = None,
     storage: ScraperStorage | None = None,
-    timeout_seconds: int = 120,
+    timeout_seconds: int = 300, # Increased from 120s for slow connections
 ) -> dict:
     """
     Scrape property data from HCPA GIS portal (async version).
@@ -133,9 +133,14 @@ async def _scrape_hcpa_property_impl(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={'width': 1920, 'height': 1080},
             locale='en-US',
+            viewport={'width': 1920, 'height': 1080},
+            locale='en-US',
             timezone_id='America/New_York',
         )
         page = await context.new_page()
+        # Set default navigation timeout to 60s
+        page.set_default_navigation_timeout(60000)
+        page.set_default_timeout(30000) # 30s for actions
         await apply_stealth(page)
 
         if parcel_id:
@@ -187,16 +192,24 @@ async def _scrape_hcpa_property_impl(
         # Extract property info from the Property Record Card section
         try:
             # Get owner name (TBL 3 LLC in example)
-            owner_elem = page.locator("text=Mailing Address").first
-            if owner_elem:
-                # The owner is above Mailing Address
-                card_text = await page.locator(".parcel-result, #parcel-result").first.inner_text()
-                result["property_info"]["card_text"] = card_text[:2000]
+            # Use specific locator for owner/mailing address section if possible
+            # Fallback to looking for "Mailing Address" text
+            mailing_addr_header = page.locator("text=Mailing Address").first
+            if await mailing_addr_header.count() > 0:
+                # The owner is typically in the card text or above the mailing address
+                # Try finding the specific parcel result container
+                result_container = page.locator(".parcel-result, #parcel-result, .property-card").first
+                if await result_container.count() > 0:
+                    try:
+                        card_text = await result_container.inner_text(timeout=5000)
+                        result["property_info"]["card_text"] = card_text[:2000]
+                    except Exception:
+                        logger.warning("Could not extract inner text from parcel result container")
 
             # Get specific fields using the page structure
             # Folio
             folio_elem = page.locator("text=Folio:").first
-            if folio_elem:
+            if await folio_elem.count() > 0:
                 parent = folio_elem.locator("xpath=..").first
                 folio_text = await parent.inner_text()
                 match = re.search(r'Folio:\s*([\d-]+)', folio_text)
@@ -205,7 +218,7 @@ async def _scrape_hcpa_property_impl(
 
             # Site Address
             addr_elem = page.locator("text=Site Address").first
-            if addr_elem:
+            if await addr_elem.count() > 0:
                 parent = addr_elem.locator("xpath=..").first
                 if parent:
                     addr_text = await parent.inner_text()
@@ -214,13 +227,13 @@ async def _scrape_hcpa_property_impl(
                         result["property_info"]["site_address"] = lines[1].strip()
 
         except Exception as e:
-            print(f"Error extracting property info: {e}")
+            logger.error(f"Error extracting property info: {e}")
 
         # Extract Sales History table
         try:
             # Find the Sales History section
             sales_header = page.locator("text=Sales History").first
-            if sales_header:
+            if await sales_header.count() > 0:
                 print("Found Sales History section")
 
                 # Get the table that follows Sales History
@@ -282,24 +295,24 @@ async def _scrape_hcpa_property_impl(
         # Extract Legal Description from Legal Lines section
         try:
             legal_header = page.locator("text=Legal Lines").first
-            if legal_header:
+            if await legal_header.count() > 0:
                 # Find the table after Legal Lines
                 legal_table = page.locator("table").filter(has_text="Legal Description").first
-                if legal_table:
+                if await legal_table.count() > 0:
                     legal_cells = await legal_table.locator("td").all()
                     if len(legal_cells) >= 2:
                         result["legal_description"] = (await legal_cells[1].inner_text()).strip()
                         print(f"Legal Description: {result['legal_description']}")
         except Exception as e:
-            print(f"Error extracting legal description: {e}")
+            logger.error(f"Error extracting legal description: {e}")
 
         # Extract Building Characteristics
         try:
             building_header = page.locator("text=Building Characteristics").first
-            if building_header:
+            if await building_header.count() > 0:
                 # Get year built, type, etc.
                 year_built = page.locator("text=Year Built").first
-                if year_built:
+                if await year_built.count() > 0:
                     parent = year_built.locator("xpath=..").first
                     text = await parent.inner_text()
                     match = re.search(r'Year Built\s+(\d+)', text)
@@ -308,19 +321,19 @@ async def _scrape_hcpa_property_impl(
 
                 # Get building type
                 type_elem = page.locator("text=Type:").first
-                if type_elem:
+                if await type_elem.count() > 0:
                     parent = type_elem.locator("xpath=..").first
                     text = await parent.inner_text()
                     match = re.search(r'Type:\s+(.+)', text)
                     if match:
                         result["building_info"]["type"] = match.group(1).strip()
         except Exception as e:
-            print(f"Error extracting building info: {e}")
+            logger.error(f"Error extracting building info: {e}")
 
         # Extract Tax Collector Link
         try:
             tax_link = page.locator("a[href*='county-taxes.com']").first
-            if tax_link:
+            if await tax_link.count() > 0:
                 href = await tax_link.get_attribute("href")
                 result["tax_collector_link"] = href
                 # Extract the tax collector ID from URL
@@ -331,25 +344,25 @@ async def _scrape_hcpa_property_impl(
                         result["tax_collector_id"] = tax_id_match.group(1)
                     print(f"Tax Collector Link: {href}")
         except Exception as e:
-            print(f"Error extracting tax collector link: {e}")
+            logger.error(f"Error extracting tax collector link: {e}")
 
         # Extract Property Image URL
         try:
             # Look for property image in various possible locations
             img_elem = page.locator("img[src*='hcpafl.org'], img[alt*='property'], img[class*='property-image']").first
-            if img_elem:
+            if await img_elem.count() > 0:
                 img_src = await img_elem.get_attribute("src")
                 result["image_url"] = img_src
                 print(f"Property Image URL: {img_src}")
             else:
                 # Try finding image container
                 img_container = page.locator(".property-image, .parcel-image, [class*='photo']").first
-                if img_container:
+                if await img_container.count() > 0:
                     nested_img = img_container.locator("img").first
-                    if nested_img:
+                    if await nested_img.count() > 0:
                         result["image_url"] = await nested_img.get_attribute("src")
         except Exception as e:
-            print(f"Error extracting image URL: {e}")
+            logger.error(f"Error extracting image URL: {e}")
 
         # Extract Permits
         try:
@@ -366,14 +379,14 @@ async def _scrape_hcpa_property_impl(
 
             # Also look for permits in a table
             permit_table = page.locator("table").filter(has_text="Permit").first
-            if permit_table and len(result["permits"]) == 0:
+            if await permit_table.count() > 0 and len(result["permits"]) == 0:
                 permit_rows = await permit_table.locator("tr").all()
                 for row in permit_rows[1:]:  # Skip header
                     cells = await row.locator("td").all()
                     if len(cells) >= 2:
                         permit_number = (await cells[0].inner_text()).strip()
                         permit_link_elem = cells[0].locator("a").first
-                        permit_link = await permit_link_elem.get_attribute("href") if permit_link_elem else None
+                        permit_link = await permit_link_elem.get_attribute("href") if await permit_link_elem.count() > 0 else None
                         permit_type = (await cells[1].inner_text()).strip() if len(cells) > 1 else ""
 
                         result["permits"].append({

@@ -893,6 +893,7 @@ class IngestionService:
         return {
             "type": enc.get('type'),
             "creditor": enc.get('creditor'),
+            "debtor": enc.get('debtor'), # Now included
             "amount": self._parse_amount(enc.get('amount')),
             "recording_date": enc.get('date'),
             "instrument": enc.get("instrument"),
@@ -901,7 +902,11 @@ class IngestionService:
             "is_satisfied": enc.get('status') == 'SATISFIED',
             "satisfaction_instrument": enc.get('satisfaction_ref'),
             "satisfaction_date": None, # Not in analysis dict?
-            "survival_status": None
+            "survival_status": None,
+            # Document resolution fields (passed through)
+            "party2_resolution_method": enc.get('party2_resolution_method'),
+            "is_self_transfer": enc.get('is_self_transfer'),
+            "self_transfer_type": enc.get('self_transfer_type'),
         }
 
     def _parse_date(self, date_val: Any) -> Optional[datetime]:
