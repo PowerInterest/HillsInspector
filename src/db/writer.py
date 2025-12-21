@@ -1,7 +1,7 @@
 import asyncio
-import logging
-from typing import Any, List, Optional
+import contextlib
 from pathlib import Path
+from typing import Any
 from loguru import logger
 from src.db.operations import PropertyDB
 
@@ -40,10 +40,8 @@ class DatabaseWriter:
             await self.queue.join()  # Wait for queue to process
             # Force wake up the worker so it can exit
             self._worker_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._worker_task
-            except asyncio.CancelledError:
-                pass
         logger.info("DatabaseWriter stopped.")
 
     async def enqueue(self, operation: str, data: Any):
@@ -88,7 +86,7 @@ class DatabaseWriter:
                 try:
                     # Timeout allows checking self.running periodically
                     item = await asyncio.wait_for(self.queue.get(), timeout=1.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
 
                 operation, data, future = item
@@ -125,11 +123,7 @@ class DatabaseWriter:
         elif operation == "upsert_parcel":
             # Fix: upsert_parcel expects Property object, but enqueue sends dict
             from src.models.property import Property
-            if isinstance(data, dict):
-                # Ensure fields match model
-                prop = Property(**data)
-            else:
-                prop = data
+            prop = Property(**data) if isinstance(data, dict) else data
             self.db.upsert_parcel(prop)
             
         elif operation == "save_market_data":
@@ -152,7 +146,7 @@ class DatabaseWriter:
             self.db.save_permits(folio, permits)
             
         elif operation == "save_flood_data":
-             self.db.save_flood_data(
+            self.db.save_flood_data(
                 folio=data["folio"],
                 flood_zone=data["flood_zone"],
                 flood_risk=data["flood_risk"],
@@ -160,12 +154,13 @@ class DatabaseWriter:
             )
             
         elif operation == "update_step_status":
-             # Generic step completion mark
-             self.db.mark_step_complete(data["case_number"], data["step_column"])
+            # Generic step completion mark
+            self.db.mark_step_complete(data["case_number"], data["step_column"])
 
         elif operation == "update_tax_status":
-             self.db.update_parcel_tax_status(data["folio"], data["tax_status"], data["tax_warrant"])
+            self.db.update_parcel_tax_status(data["folio"], data["tax_status"], data["tax_warrant"])
              
         else:
             logger.warning(f"Unknown DB operation: {operation}")
             return None
+        return None

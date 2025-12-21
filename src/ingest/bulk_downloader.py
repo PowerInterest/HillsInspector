@@ -118,4 +118,4 @@ if __name__ == "__main__":
         print(f"Downloads complete: {downloads}")
     except Exception as e:
         logger.error(f"Download failed: {e}")
-        exit(1)
+        sys.exit(1)

@@ -74,7 +74,7 @@ class RedfinScraper:
             Dictionary with property data including photos, or None if not found.
         """
         async with async_playwright() as p:
-            browser, context, page = await self._setup_browser(p)
+            browser, _context, page = await self._setup_browser(p)
             try:
                 # Navigate to Redfin
                 logger.info(f"Searching Redfin for: {address}")
@@ -117,7 +117,8 @@ class RedfinScraper:
                         autocomplete_found = True
                         logger.debug(f"Found autocomplete with selector: {sel}")
                         break
-                    except Exception:
+                    except Exception as exc:
+                        logger.debug(f"Autocomplete selector failed: {sel} ({exc})")
                         continue
 
                 if autocomplete_found:

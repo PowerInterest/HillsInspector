@@ -100,8 +100,8 @@ class PipelineOrchestrator:
         if chain and chain.get("ownership_timeline"):
              acq = chain["ownership_timeline"][-1].get("acquisition_date")
              if acq:
-                 try: current_owner_acq_date = datetime.strptime(str(acq), "%Y-%m-%d").date()
-                 except: pass
+                 with contextlib.suppress(ValueError, TypeError):
+                     current_owner_acq_date = datetime.strptime(str(acq), "%Y-%m-%d").date()
 
         # Prepare encumbrances list
         encumbrances = []
@@ -700,4 +700,3 @@ class PipelineOrchestrator:
 
          except Exception as e:
              logger.exception(f"Survival analysis failed for {prop.parcel_id}: {e}")
-

@@ -1535,7 +1535,7 @@ class PropertyDB:
             return None
 
         cols = [desc[0] for desc in conn.description]
-        data = dict(zip(cols, row))
+        data = dict(zip(cols, row, strict=False))
 
         return {
             "parcel_id": data.get("folio"),

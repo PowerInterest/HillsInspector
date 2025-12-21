@@ -745,7 +745,7 @@ def load_latlon_data(zip_path: Path) -> pl.DataFrame:
     
     with tempfile.TemporaryDirectory() as tmpdir:
         with zipfile.ZipFile(zip_path, 'r') as zf:
-            target = [n for n in zf.namelist() if n.lower().endswith('.dbf')][0]
+            target = next(n for n in zf.namelist() if n.lower().endswith('.dbf'))
             zf.extract(target, tmpdir)
             dbf_path = Path(tmpdir) / target
             

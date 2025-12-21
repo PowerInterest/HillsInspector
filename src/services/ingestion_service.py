@@ -1,6 +1,6 @@
 from typing import Optional, Any, List, Dict
 from pathlib import Path
-from datetime import datetime, timezone, date
+from datetime import UTC, date, datetime
 import json
 from loguru import logger
 
@@ -696,7 +696,7 @@ class IngestionService:
             if self.analyze_pdfs:
                 loop = asyncio.get_running_loop()
                 # Run sync download/analysis in thread pool, guarded by semaphore
-                async with VisionService._global_semaphore:
+                async with VisionService.global_semaphore():
                     download_result = await loop.run_in_executor(
                         None,
                         functools.partial(self._download_and_analyze_document, doc, prop.parcel_id, prefer_browser=docs_from_browser)
@@ -758,7 +758,7 @@ class IngestionService:
                     mapped_doc = self._map_grouped_ori_doc(doc, prop)
 
                     if self.analyze_pdfs:
-                        async with VisionService._global_semaphore:
+                        async with VisionService.global_semaphore():
                             download_result = await loop.run_in_executor(
                                 None,
                                 functools.partial(self._download_and_analyze_document, doc, prop.parcel_id, prefer_browser=docs_from_browser)
@@ -808,7 +808,7 @@ class IngestionService:
                     mapped_doc = self._map_grouped_ori_doc(doc, prop)
 
                     if self.analyze_pdfs:
-                        async with VisionService._global_semaphore:
+                        async with VisionService.global_semaphore():
                             download_result = await loop.run_in_executor(
                                 None,
                                 functools.partial(self._download_and_analyze_document, doc, prop.parcel_id, prefer_browser=docs_from_browser)
@@ -1205,10 +1205,7 @@ class IngestionService:
                     lot_pattern = rf'\bL(?:OT)?\s*{re.escape(lot)}\b'
                     if re.search(lot_pattern, legal_upper):
                         lot_hits += 1
-                if require_all_lots:
-                    lot_match = lot_hits == len(lots)
-                else:
-                    lot_match = lot_hits > 0
+                lot_match = lot_hits == len(lots) if require_all_lots else lot_hits > 0
 
             # Check block match - various formats: "B 1", "B1", "BLOCK 1", "BLK 1"
             block_match = True
@@ -1695,14 +1692,14 @@ class IngestionService:
         rec_date = None
         date_val = grouped_doc.get("record_date", "")
         if date_val:
-            from datetime import datetime as dt, date
+            from datetime import UTC, date, datetime as dt
             # Handle date object (from DB/testing)
             if isinstance(date_val, (date, dt)):
                 rec_date = date_val.strftime("%Y-%m-%d")
             # Check if it's a Unix timestamp (int or float)
             elif isinstance(date_val, (int, float)):
                 try:
-                    parsed = dt.fromtimestamp(date_val, tz=timezone.utc)
+                    parsed = dt.fromtimestamp(date_val, tz=UTC)
                     rec_date = parsed.strftime("%Y-%m-%d")
                 except (ValueError, OSError):
                     pass
@@ -1772,7 +1769,7 @@ class IngestionService:
                 ts = ori_doc.get("RecordDate", 0)
                 if ts > 100000000000:  # It's ms
                     ts = ts / 1000
-                rec_date = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+                rec_date = datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d")
             except Exception as exc:
                 logger.debug("Could not parse timestamp %s for %s: %s", ts, prop.case_number, exc)
 

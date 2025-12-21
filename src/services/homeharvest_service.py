@@ -1,9 +1,10 @@
 import json
+import random
+import re
+import shutil
 import subprocess
 import sys
 import time
-import random
-import re
 from datetime import date
 from typing import Any, Dict, List, Optional
 
@@ -42,8 +43,8 @@ def _get_installed_version() -> str | None:
         for line in result.stdout.split("\n"):
             if line.startswith("Version:"):
                 return line.split(":")[1].strip()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(f"Failed to read installed homeharvest version: {exc}")
     return None
 
 
@@ -57,8 +58,8 @@ def _get_latest_version() -> str | None:
         # Output format: "homeharvest (0.8.11)"
         if "(" in result.stdout:
             return result.stdout.split("(")[1].split(")")[0].strip()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(f"Failed to read latest homeharvest version: {exc}")
     return None
 
 
@@ -83,8 +84,13 @@ def upgrade_homeharvest() -> bool:
     logger.warning(f"Upgrading HomeHarvest: {installed} -> {latest}")
 
     try:
+        uv_path = shutil.which("uv")
+        if not uv_path:
+            logger.error("uv not found on PATH; cannot upgrade homeharvest")
+            return False
+
         result = subprocess.run(
-            ["uv", "pip", "install", "--upgrade", "homeharvest"],
+            [uv_path, "pip", "install", "--upgrade", "homeharvest"],
             check=False, capture_output=True, text=True, timeout=120
         )
 

@@ -950,9 +950,16 @@ class VisionService:
         
         # Checking if other instances share state? No.
         # So we should make it a class attribute if we want global limit.
-        if not hasattr(VisionService, '_global_semaphore'):
+        if not hasattr(VisionService, "_global_semaphore"):
             VisionService._global_semaphore = asyncio.Semaphore(1)
         self._semaphore = VisionService._global_semaphore
+
+    @classmethod
+    def global_semaphore(cls) -> asyncio.Semaphore:
+        """Expose the shared semaphore for cross-service throttling."""
+        if not hasattr(cls, "_global_semaphore"):
+            cls._global_semaphore = asyncio.Semaphore(1)
+        return cls._global_semaphore
 
     @property
     def API_URL(self) -> str:  # noqa: N802

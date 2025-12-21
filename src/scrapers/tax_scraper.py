@@ -9,7 +9,7 @@ from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 from src.services.scraper_storage import ScraperStorage
 from src.services.vision_service import VisionService
-from src.models.property import TaxStatus, Lien, TaxCertificate
+from src.models.property import TaxStatus, TaxCertificate
 
 
 @dataclass
@@ -92,7 +92,11 @@ class TaxScraper:
                 has_detail_markers = any(marker in text for marker in ["Account Summary", "Real Estate Account", "Property Information", "Amount Due", "Assessed Value"])
                 already_on_detail = (
                     has_detail_markers and
-                    (not is_search_page or "/property-tax/" in page_url and len(page_url.split("/")[-1]) > 15)
+                    (
+                        not is_search_page or (
+                            "/property-tax/" in page_url and len(page_url.split("/")[-1]) > 15
+                        )
+                    )
                 )
 
                 view_links = []
@@ -112,7 +116,8 @@ class TaxScraper:
                             if len(view_buttons) > 0:
                                 view_links = view_buttons
                                 break
-                        except Exception:
+                        except Exception as exc:
+                            logger.debug(f"View selector failed ({selector}): {exc}")
                             continue
 
                     if len(view_links) == 0:
@@ -123,7 +128,8 @@ class TaxScraper:
                                 if len(view_buttons) > 0:
                                     view_links = view_buttons
                                     break
-                            except Exception:
+                            except Exception as exc:
+                                logger.debug(f"View selector retry failed ({selector}): {exc}")
                                 continue
 
                 if len(view_links) == 0 and not already_on_detail:

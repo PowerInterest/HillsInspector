@@ -55,10 +55,7 @@ class LienSurvivalAnalyzer:
             return True
         
         # Municipal Utility Liens (Water/Sewer often superpriority)
-        if "UTILITY" in doc_type or "WATER" in doc_type or "SEWER" in doc_type:
-            return True
-            
-        return False
+        return "UTILITY" in doc_type or "WATER" in doc_type or "SEWER" in doc_type
 
     def _is_federal_lien(self, lien_type: str, creditor: str) -> bool:
         """Check if lien is held by Federal Gov (IRS, DOJ, etc)."""
@@ -158,9 +155,12 @@ class LienSurvivalAnalyzer:
             # Check Book/Page
             fc_book = foreclosing_refs.get('book')
             fc_page = foreclosing_refs.get('page')
-            if fc_book and fc_page and lien_book and lien_page:
-                if str(fc_book).strip() == str(lien_book).strip() and str(fc_page).strip() == str(lien_page).strip():
-                    return True
+            if (
+                fc_book and fc_page and lien_book and lien_page and
+                str(fc_book).strip() == str(lien_book).strip() and
+                str(fc_page).strip() == str(lien_page).strip()
+            ):
+                return True
 
         # 2. Name Matching (Lower Confidence)
         if not lien_creditor or not plaintiff:
@@ -244,10 +244,9 @@ class LienSurvivalAnalyzer:
                 if fc_instr and enc_instr and fc_instr == enc_instr:
                     foreclosing_priority_date = enc_date
                     break
-                if fc_book and fc_page and enc_book and enc_page:
-                    if fc_book == enc_book and fc_page == enc_page:
-                        foreclosing_priority_date = enc_date
-                        break
+                if fc_book and fc_page and enc_book and enc_page and fc_book == enc_book and fc_page == enc_page:
+                    foreclosing_priority_date = enc_date
+                    break
 
         # Fallback inference: if we don't have a usable reference to the foreclosing lien,
         # pick the best candidate mortgage from encumbrances (and clearly label it as inferred).
@@ -371,12 +370,15 @@ class LienSurvivalAnalyzer:
                 # Note: Superpriority liens from prior owners might still attach, but generally
                 # a previous foreclosure wiped them unless they were superpriority then too.
                 # Simplification: If before current owner, assume historical/wiped unless clearly superpriority.
-                if current_owner_acquisition_date and enc_date and enc_date < current_owner_acquisition_date:
-                    if not self._is_superpriority(enc_type, creditor):
-                        entry["status"] = "HISTORICAL"
-                        entry["reason"] = f"Recorded before current owner acquired ({current_owner_acquisition_date})"
-                        results["historical"].append(entry)
-                        continue
+                if (
+                    current_owner_acquisition_date and enc_date and
+                    enc_date < current_owner_acquisition_date and
+                    not self._is_superpriority(enc_type, creditor)
+                ):
+                    entry["status"] = "HISTORICAL"
+                    entry["reason"] = f"Recorded before current owner acquired ({current_owner_acquisition_date})"
+                    results["historical"].append(entry)
+                    continue
                     # If it IS superpriority, we fall through to check it below (it might survive)
 
                 # 4. Check if this is the foreclosing party's lien
@@ -413,15 +415,14 @@ class LienSurvivalAnalyzer:
                     if self._is_first_mortgage(enc_type, creditor):
                         entry["status"] = "SURVIVED"
                         entry["reason"] = "First mortgage survives HOA foreclosure (FL Safe Harbor)"
-                    else:
+                    elif is_joined is False:
                         # Junior liens are extinguished; if we have defendants and the creditor is omitted,
                         # it may survive (omitted junior lienor).
-                        if is_joined is False:
-                            entry["status"] = "SURVIVED"
-                            entry["reason"] = "Possible omitted defendant (not in extracted list)"
-                        else:
-                            entry["status"] = "EXTINGUISHED"
-                            entry["reason"] = "Junior to HOA lien"
+                        entry["status"] = "SURVIVED"
+                        entry["reason"] = "Possible omitted defendant (not in extracted list)"
+                    else:
+                        entry["status"] = "EXTINGUISHED"
+                        entry["reason"] = "Junior to HOA lien"
 
                 elif is_mortgage_foreclosure:
                     # Handle Federal Liens specifically
