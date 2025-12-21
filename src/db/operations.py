@@ -331,6 +331,9 @@ class PropertyDB:
         """
         conn = self.connect()
 
+        # Ensure column exists (dynamic schema update)
+        conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS has_valid_parcel_id BOOLEAN DEFAULT TRUE")
+
         # Check if auction already exists
         existing = conn.execute(
             "SELECT id FROM auctions WHERE case_number = ?",

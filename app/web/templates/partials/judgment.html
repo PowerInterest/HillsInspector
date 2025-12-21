@@ -1,0 +1,332 @@
+{% if judgment and judgment.extracted_judgment_data %}
+{% set jd = judgment.extracted_judgment_data %}
+
+<div class="judgment-data">
+    <!-- Extraction Status -->
+    <div class="extraction-status" style="margin-bottom: 20px; padding: 10px 15px; background: #d4edda; border-radius: 6px; border: 1px solid #c3e6cb;">
+        <strong>Extracted:</strong> {{ judgment.judgment_extracted_at.strftime('%B %d, %Y at %I:%M %p') if judgment.judgment_extracted_at else 'Unknown' }}
+        {% if jd.confidence_score %}
+        <span style="margin-left: 15px;">
+            <strong>Confidence:</strong> {{ "%.0f"|format(jd.confidence_score * 100) }}%
+        </span>
+        {% endif %}
+    </div>
+
+    <div class="judgment-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px;">
+
+        <!-- Case Information -->
+        <section class="card">
+            <h3>Case Information</h3>
+            <div class="info-grid">
+                <div class="info-item">
+                    <span class="info-label">Case Number</span>
+                    <span class="info-value">{{ judgment.case_number or jd.case_number or '-' }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Foreclosure Type</span>
+                    <span class="info-value">{{ judgment.foreclosure_type or jd.foreclosure_type or '-' }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Lis Pendens Date</span>
+                    <span class="info-value">{{ judgment.lis_pendens_date or jd.lis_pendens_date or '-' }}</span>
+                </div>
+                {% if jd.foreclosure_sale_date %}
+                <div class="info-item">
+                    <span class="info-label">Sale Date</span>
+                    <span class="info-value">{{ jd.foreclosure_sale_date }}</span>
+                </div>
+                {% endif %}
+            </div>
+        </section>
+
+        <!-- Parties -->
+        <section class="card">
+            <h3>Parties</h3>
+            <div class="info-grid">
+                <div class="info-item">
+                    <span class="info-label">Plaintiff</span>
+                    <span class="info-value">{{ judgment.plaintiff or jd.plaintiff or '-' }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Defendant(s)</span>
+                    <span class="info-value">
+                        {% if jd.defendants and jd.defendants is iterable and jd.defendants is not string %}
+                            {% for d in jd.defendants %}
+                                {{ d.name if d is mapping else d }}{% if not loop.last %}, {% endif %}
+                            {% endfor %}
+                        {% else %}
+                            {{ judgment.defendant or jd.defendants or '-' }}
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Judgment Amounts -->
+        <section class="card">
+            <h3>Judgment Amounts</h3>
+            <div class="info-grid">
+                <div class="info-item">
+                    <span class="info-label">Total Judgment</span>
+                    <span class="info-value money">{{ "${:,.2f}".format(judgment.final_judgment_amount) if judgment.final_judgment_amount else (("${:,.2f}".format(jd.total_judgment_amount)) if jd.total_judgment_amount else '-') }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Principal</span>
+                    <span class="info-value money">{{ "${:,.2f}".format(judgment.principal_amount) if judgment.principal_amount else (("${:,.2f}".format(jd.principal_amount)) if jd.principal_amount else '-') }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Interest</span>
+                    <span class="info-value money">{{ "${:,.2f}".format(judgment.interest_amount) if judgment.interest_amount else (("${:,.2f}".format(jd.interest_amount)) if jd.interest_amount else '-') }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Attorney Fees</span>
+                    <span class="info-value money">{{ "${:,.2f}".format(judgment.attorney_fees) if judgment.attorney_fees else (("${:,.2f}".format(jd.attorney_fees)) if jd.attorney_fees else '-') }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Court Costs</span>
+                    <span class="info-value money">{{ "${:,.2f}".format(judgment.court_costs) if judgment.court_costs else (("${:,.2f}".format(jd.court_costs)) if jd.court_costs else '-') }}</span>
+                </div>
+                {% if jd.per_diem_interest %}
+                <div class="info-item">
+                    <span class="info-label">Per Diem Interest</span>
+                    <span class="info-value money">{{ "${:,.2f}".format(jd.per_diem_interest) }}/day</span>
+                </div>
+                {% endif %}
+            </div>
+        </section>
+
+        <!-- Foreclosed Mortgage -->
+        {% if jd.foreclosed_mortgage %}
+        {% set fm = jd.foreclosed_mortgage %}
+        <section class="card">
+            <h3>Foreclosed Mortgage</h3>
+            <div class="info-grid">
+                {% if fm.original_amount %}
+                <div class="info-item">
+                    <span class="info-label">Original Amount</span>
+                    <span class="info-value money">{{ "${:,.2f}".format(fm.original_amount) }}</span>
+                </div>
+                {% endif %}
+                {% if fm.original_date %}
+                <div class="info-item">
+                    <span class="info-label">Original Date</span>
+                    <span class="info-value">{{ fm.original_date }}</span>
+                </div>
+                {% endif %}
+                {% if fm.instrument_number %}
+                <div class="info-item">
+                    <span class="info-label">Instrument #</span>
+                    <span class="info-value">{{ fm.instrument_number }}</span>
+                </div>
+                {% endif %}
+                {% if fm.recording_book and fm.recording_page %}
+                <div class="info-item">
+                    <span class="info-label">Book/Page</span>
+                    <span class="info-value">{{ fm.recording_book }}/{{ fm.recording_page }}</span>
+                </div>
+                {% endif %}
+                {% if fm.original_lender %}
+                <div class="info-item">
+                    <span class="info-label">Original Lender</span>
+                    <span class="info-value">{{ fm.original_lender }}</span>
+                </div>
+                {% endif %}
+                {% if fm.current_holder %}
+                <div class="info-item">
+                    <span class="info-label">Current Holder</span>
+                    <span class="info-value">{{ fm.current_holder }}</span>
+                </div>
+                {% endif %}
+            </div>
+        </section>
+        {% endif %}
+
+        <!-- Property Information -->
+        {% if jd.property_address or jd.legal_description %}
+        <section class="card">
+            <h3>Property (from Judgment)</h3>
+            <div class="info-grid">
+                {% if jd.property_address %}
+                <div class="info-item">
+                    <span class="info-label">Address</span>
+                    <span class="info-value">{{ jd.property_address }}</span>
+                </div>
+                {% endif %}
+                {% if jd.legal_description %}
+                <div class="info-item" style="grid-column: 1 / -1;">
+                    <span class="info-label">Legal Description</span>
+                    <span class="info-value" style="font-size: 0.9em;">{{ jd.legal_description }}</span>
+                </div>
+                {% endif %}
+            </div>
+        </section>
+        {% endif %}
+
+        <!-- Junior Liens Joined -->
+        {% if jd.junior_liens_joined and jd.junior_liens_joined|length > 0 %}
+        <section class="card" style="grid-column: 1 / -1;">
+            <h3>Junior Liens Joined in Foreclosure</h3>
+            <div class="table-container">
+                <table class="auction-table">
+                    <thead>
+                        <tr>
+                            <th>Type</th>
+                            <th>Holder</th>
+                            <th>Amount</th>
+                            <th>Instrument/Ref</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for lien in jd.junior_liens_joined %}
+                        <tr>
+                            <td>{{ lien.lien_type or lien.type or '-' }}</td>
+                            <td>{{ lien.holder or lien.creditor or '-' }}</td>
+                            <td class="money">{{ "${:,.2f}".format(lien.amount) if lien.amount else '-' }}</td>
+                            <td>{{ lien.instrument_number or lien.reference or '-' }}</td>
+                            <td>
+                                {% if lien.status == 'defaulted' or lien.is_defaulted %}
+                                <span class="badge badge-danger">Defaulted</span>
+                                {% elif lien.status == 'joined' %}
+                                <span class="badge badge-warning">Joined</span>
+                                {% else %}
+                                <span class="badge">{{ lien.status or 'Joined' }}</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        {% endif %}
+
+        <!-- Additional Extracted Fields -->
+        {% if jd.notes or jd.warnings or jd.red_flags %}
+        <section class="card" style="grid-column: 1 / -1;">
+            <h3>Notes & Warnings</h3>
+            {% if jd.warnings %}
+            <div class="alert alert-warning" style="margin-bottom: 10px; padding: 10px; background: #fff3cd; border-radius: 4px;">
+                <strong>Warnings:</strong>
+                <ul style="margin: 5px 0 0 20px;">
+                    {% for w in jd.warnings %}
+                    <li>{{ w }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+            {% if jd.red_flags %}
+            <div class="alert alert-danger" style="margin-bottom: 10px; padding: 10px; background: #f8d7da; border-radius: 4px;">
+                <strong>Red Flags:</strong>
+                <ul style="margin: 5px 0 0 20px;">
+                    {% for rf in jd.red_flags %}
+                    <li>{{ rf.flag if rf is mapping else rf }} {% if rf is mapping and rf.severity %}({{ rf.severity }}){% endif %}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+            {% endif %}
+            {% if jd.notes %}
+            <div style="padding: 10px; background: #f8f9fa; border-radius: 4px;">
+                <strong>Notes:</strong> {{ jd.notes }}
+            </div>
+            {% endif %}
+        </section>
+        {% endif %}
+
+    </div>
+
+    <!-- Raw JSON (Collapsible) -->
+    <details style="margin-top: 20px;">
+        <summary style="cursor: pointer; padding: 10px; background: #e9ecef; border-radius: 4px;">
+            View Raw Extracted Data (JSON)
+        </summary>
+        <pre style="background: #1e1e1e; color: #dcdcdc; padding: 15px; border-radius: 4px; overflow-x: auto; font-size: 12px; margin-top: 10px;">{{ jd|tojson(indent=2) }}</pre>
+    </details>
+</div>
+
+{% elif judgment and judgment.raw_judgment_text %}
+<div class="judgment-data">
+    <div class="alert alert-warning" style="margin-bottom: 20px; padding: 15px; background: #fff3cd; border-radius: 6px;">
+        <strong>Extraction Pending</strong>
+        <p style="margin: 5px 0 0 0;">The final judgment PDF has been captured but structured data has not yet been extracted. Raw text is available below.</p>
+    </div>
+
+    <details open>
+        <summary style="cursor: pointer; padding: 10px; background: #e9ecef; border-radius: 4px;">
+            Raw Judgment Text
+        </summary>
+        <pre style="background: #f8f9fa; padding: 15px; border-radius: 4px; overflow-x: auto; font-size: 12px; margin-top: 10px; white-space: pre-wrap;">{{ judgment.raw_judgment_text }}</pre>
+    </details>
+</div>
+
+{% else %}
+<div class="empty-state" style="text-align: center; padding: 60px 20px; background: #f8f9fa; border-radius: 8px;">
+    <h3 style="color: #6c757d;">No Judgment Data Available</h3>
+    <p style="color: #868e96;">The final judgment has not been extracted for this property yet.</p>
+    <p style="color: #868e96; font-size: 0.9em;">Run the pipeline with <code>--update</code> to extract judgment data.</p>
+</div>
+{% endif %}
+
+<style>
+.judgment-data .card {
+    background: white;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.judgment-data .card h3 {
+    margin: 0 0 15px 0;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+    font-size: 1.1em;
+    color: #333;
+}
+
+.judgment-data .info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+}
+
+.judgment-data .info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.judgment-data .info-label {
+    font-size: 0.75em;
+    color: #6c757d;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.judgment-data .info-value {
+    font-size: 0.95em;
+    color: #212529;
+}
+
+.judgment-data .info-value.money {
+    font-family: 'Monaco', 'Consolas', monospace;
+    color: #28a745;
+}
+
+.judgment-data .badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.8em;
+    background: #e9ecef;
+}
+
+.judgment-data .badge-danger {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.judgment-data .badge-warning {
+    background: #fff3cd;
+    color: #856404;
+}
+</style>

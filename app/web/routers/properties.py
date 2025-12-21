@@ -19,6 +19,7 @@ from app.web.database import (
     get_tax_status_for_property,
     get_permits_for_property,
     get_nocs_for_property,
+    get_judgment_data,
 )
 
 router = APIRouter()
@@ -227,7 +228,7 @@ async def property_chain_of_title(request: Request, folio: str):
     chain_of_title = prop.get("chain", [])
 
     # Enhance chain with document links (display uses DB-provided link_status/confidence_score)
-    for i, item in enumerate(chain_of_title):
+    for item in chain_of_title:
         doc = None
         if item.get("acquisition_instrument"):
             doc = get_document_by_instrument(folio, item["acquisition_instrument"])
@@ -239,6 +240,27 @@ async def property_chain_of_title(request: Request, folio: str):
             "request": request,
             "chain_of_title": chain_of_title,
             "folio": folio
+        }
+    )
+
+
+@router.get("/{folio}/judgment", response_class=HTMLResponse)
+async def property_judgment(request: Request, folio: str):
+    """
+    HTMX partial - extracted final judgment data.
+    """
+    prop = get_property_detail(folio) or get_property_by_case(folio)
+    if not prop:
+        return HTMLResponse("<p>Property not found</p>")
+
+    judgment = get_judgment_data(prop.get("folio") or folio)
+
+    return templates.TemplateResponse(
+        "partials/judgment.html",
+        {
+            "request": request,
+            "judgment": judgment,
+            "folio": prop.get("folio") or folio
         }
     )
 

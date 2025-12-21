@@ -52,6 +52,7 @@
     <div class="tabs-container property-tabs">
         <div class="tabs">
             <button class="tab-link active" onclick="openTab(event, 'basic')">Basic</button>
+            <button class="tab-link" onclick="openTab(event, 'judgment')">Judgment</button>
             <button class="tab-link" onclick="openTab(event, 'chain')">Chain of Title</button>
             <button class="tab-link" onclick="openTab(event, 'liens')">Liens & Encumbrances</button>
             <button class="tab-link" onclick="openTab(event, 'permits')">Permits & NOCs</button>
@@ -256,6 +257,15 @@
                     <div class="htmx-loading">Loading sales history...</div>
                 </div>
             </section>
+        </div>
+
+        <!-- Judgment Tab -->
+        <div id="judgment" class="tab-content"
+             hx-get="/property/{{ property.folio }}/judgment"
+             hx-trigger="load"
+             hx-swap="innerHTML"
+             style="display:none;">
+            <div class="htmx-loading">Loading judgment data...</div>
         </div>
 
         <!-- Permits Tab -->

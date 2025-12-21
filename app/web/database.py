@@ -5,12 +5,29 @@ Uses the existing PropertyDB from src/db/operations.py
 import duckdb
 import json
 import os
-from contextlib import suppress
+import time
+from contextlib import suppress, contextmanager
 from datetime import UTC, date, datetime, timedelta
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from loguru import logger
 
+
+# =============================================================================
+# Custom Exceptions
+# =============================================================================
+
+class DatabaseLockedError(Exception):
+    """Raised when database is locked by another process."""
+
+
+class DatabaseUnavailableError(Exception):
+    """Raised when database file is missing or corrupted."""
+
+
+# =============================================================================
+# Database Connection Management
+# =============================================================================
 
 def _resolve_db_path() -> Path:
     """Prefer a web-safe snapshot DB if present, else fall back to the main file."""
@@ -31,9 +48,180 @@ DB_PATH = _resolve_db_path()
 SCRAPER_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "scraper_outputs.db"
 
 
-def get_connection() -> duckdb.DuckDBPyConnection:
-    """Get a database connection."""
-    return duckdb.connect(str(DB_PATH), read_only=True)
+def _is_lock_error(exc: Exception) -> bool:
+    """Check if exception is a database lock error."""
+    error_str = str(exc).lower()
+    return any(phrase in error_str for phrase in [
+        "could not set lock",
+        "database is locked",
+        "conflicting lock",
+        "lock on file",
+        "io error",
+    ])
+
+
+def _is_corruption_error(exc: Exception) -> bool:
+    """Check if exception indicates database corruption."""
+    error_str = str(exc).lower()
+    return any(phrase in error_str for phrase in [
+        "corrupt",
+        "wal file",
+        "invalid",
+        "malformed",
+    ])
+
+
+def get_connection(retries: int = 2, retry_delay: float = 0.5) -> duckdb.DuckDBPyConnection:
+    """
+    Get a database connection with retry logic for transient lock errors.
+
+    Args:
+        retries: Number of retry attempts for lock errors
+        retry_delay: Seconds to wait between retries
+
+    Returns:
+        DuckDB connection
+
+    Raises:
+        DatabaseLockedError: If database is locked after all retries
+        DatabaseUnavailableError: If database file is missing or corrupted
+    """
+    if not Path(DB_PATH).exists():
+        raise DatabaseUnavailableError(f"Database file not found: {DB_PATH}")
+
+    for attempt in range(retries + 1):
+        try:
+            conn = duckdb.connect(str(DB_PATH), read_only=True)
+            # Quick validation query
+            conn.execute("SELECT 1").fetchone()
+            return conn
+        except Exception as e:
+            if _is_corruption_error(e):
+                raise DatabaseUnavailableError(
+                    f"Database appears corrupted: {e}. "
+                    "Try removing the WAL file or restoring from backup."
+                ) from e
+
+            if _is_lock_error(e):
+                if attempt < retries:
+                    logger.debug(f"Database locked, retry {attempt + 1}/{retries} in {retry_delay}s")
+                    time.sleep(retry_delay)
+                    continue
+                raise DatabaseLockedError(
+                    "Database is locked by another process (likely the pipeline). "
+                    "Please wait and try again."
+                ) from e
+
+            # Unknown error - don't retry
+            raise
+
+    # Should not reach here, but satisfy the type checker
+    raise DatabaseUnavailableError("Failed to connect to database")
+
+
+def get_write_connection(retries: int = 3, retry_delay: float = 1.0) -> duckdb.DuckDBPyConnection:
+    """
+    Get a write-enabled database connection.
+
+    Args:
+        retries: Number of retry attempts for lock errors
+        retry_delay: Seconds to wait between retries
+
+    Returns:
+        DuckDB connection (read-write)
+
+    Raises:
+        DatabaseLockedError: If database is locked after all retries
+        DatabaseUnavailableError: If database file is missing or corrupted
+    """
+    if not Path(DB_PATH).exists():
+        raise DatabaseUnavailableError(f"Database file not found: {DB_PATH}")
+
+    for attempt in range(retries + 1):
+        try:
+            return duckdb.connect(str(DB_PATH))  # Not read-only
+        except Exception as e:
+            if _is_corruption_error(e):
+                raise DatabaseUnavailableError(
+                    f"Database appears corrupted: {e}"
+                ) from e
+
+            if _is_lock_error(e):
+                if attempt < retries:
+                    logger.debug(f"Database locked for write, retry {attempt + 1}/{retries} in {retry_delay}s")
+                    time.sleep(retry_delay)
+                    continue
+                raise DatabaseLockedError(
+                    "Cannot write to database - locked by another process."
+                ) from e
+
+            raise
+
+    # Should not reach here, but satisfy the type checker
+    raise DatabaseUnavailableError("Failed to connect to database for write")
+
+
+@contextmanager
+def safe_connection(for_write: bool = False):
+    """
+    Context manager for safe database connections.
+
+    Usage:
+        with safe_connection() as conn:
+            results = conn.execute("SELECT ...").fetchall()
+    """
+    conn = get_write_connection() if for_write else get_connection()
+    try:
+        yield conn
+    finally:
+        with suppress(Exception):
+            conn.close()
+
+
+def check_database_health() -> Dict[str, Any]:
+    """
+    Check database health status.
+
+    Returns:
+        Dict with health info: available, locked, record_count, last_modified
+    """
+    result = {
+        "available": False,
+        "locked": False,
+        "path": str(DB_PATH),
+        "exists": Path(DB_PATH).exists(),
+        "record_count": None,
+        "last_modified": None,
+        "error": None
+    }
+
+    if not result["exists"]:
+        result["error"] = "Database file not found"
+        return result
+
+    try:
+        # Get file modification time
+        stat = Path(DB_PATH).stat()
+        result["last_modified"] = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+
+        # Try to connect and query
+        conn = get_connection(retries=0)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM auctions").fetchone()[0]
+            result["record_count"] = count
+            result["available"] = True
+        finally:
+            conn.close()
+
+    except DatabaseLockedError:
+        result["locked"] = True
+        result["error"] = "Database is locked by another process"
+    except DatabaseUnavailableError as e:
+        result["error"] = str(e)
+    except Exception as e:
+        result["error"] = f"{type(e).__name__}: {e}"
+
+    return result
 
 
 def get_upcoming_auctions(
@@ -777,7 +965,7 @@ def get_tax_status_for_property(folio: str) -> Dict[str, Any]:
             return {"has_tax_liens": False, "total_amount_due": None, "liens": []}
         cols = [desc[0] for desc in conn.description]
         liens = [dict(zip(cols, row, strict=True)) for row in rows]
-        amounts = [_safe_float(l.get("amount")) for l in liens]
+        amounts = [_safe_float(lien.get("amount")) for lien in liens]
         total = sum([a for a in amounts if a is not None]) if any(amounts) else None
         return {"has_tax_liens": True, "total_amount_due": total, "liens": liens}
     except Exception as e:
@@ -1106,11 +1294,12 @@ def get_failed_hcpa_scrapes(
                 a.auction_date,
                 a.auction_type,
                 a.hcpa_scrape_error,
-                p.legal_description,
-                p.raw_legal1,
-                p.raw_legal2
+                COALESCE(p.legal_description, bp.raw_legal1) as legal_description,
+                bp.raw_legal1,
+                bp.raw_legal2
             FROM auctions a
-            LEFT JOIN parcels p ON a.parcel_id = p.folio
+            LEFT JOIN parcels p ON a.folio = p.folio
+            LEFT JOIN bulk_parcels bp ON a.folio = bp.strap
             WHERE a.hcpa_scrape_failed = TRUE
             ORDER BY a.auction_date ASC
             LIMIT ? OFFSET ?
@@ -1152,6 +1341,54 @@ def get_failed_hcpa_count() -> int:
         conn.close()
 
 
+def get_judgment_data(folio: str) -> Optional[Dict[str, Any]]:
+    """
+    Get extracted judgment data for a property.
+
+    Returns the parsed JSON from extracted_judgment_data column.
+    """
+    conn = get_connection()
+    try:
+        query = """
+            SELECT
+                case_number,
+                extracted_judgment_data,
+                raw_judgment_text,
+                judgment_extracted_at,
+                final_judgment_amount,
+                principal_amount,
+                interest_amount,
+                attorney_fees,
+                court_costs,
+                foreclosure_type,
+                lis_pendens_date,
+                plaintiff,
+                defendant
+            FROM auctions
+            WHERE folio = ?
+            ORDER BY auction_date DESC
+            LIMIT 1
+        """
+        result = conn.execute(query, [folio]).fetchone()
+        if not result:
+            return None
+
+        columns = [desc[0] for desc in conn.description]
+        data = dict(zip(columns, result, strict=True))
+
+        # Parse JSON if string
+        if isinstance(data.get("extracted_judgment_data"), str):
+            with suppress(Exception):
+                data["extracted_judgment_data"] = json.loads(data["extracted_judgment_data"])
+
+        return data
+    except Exception as e:
+        logger.error(f"Error fetching judgment data for {folio}: {e}")
+        return None
+    finally:
+        conn.close()
+
+
 def mark_hcpa_reviewed(case_number: str, notes: str | None = None) -> bool:
     """
     Mark an auction as manually reviewed (clears the failed flag).
@@ -1162,18 +1399,22 @@ def mark_hcpa_reviewed(case_number: str, notes: str | None = None) -> bool:
 
     Returns:
         True if successful
+
+    Raises:
+        DatabaseLockedError: If database is locked
+        DatabaseUnavailableError: If database is unavailable
     """
-    # Need write connection for this
+    conn = get_write_connection()
     try:
-        conn = duckdb.connect(str(DB_PATH))  # Not read-only
         conn.execute("""
             UPDATE auctions SET
                 hcpa_scrape_failed = FALSE,
                 hcpa_scrape_error = ?
             WHERE case_number = ?
         """, [f"Reviewed: {notes}" if notes else "Reviewed", case_number])
-        conn.close()
         return True
     except Exception as e:
         logger.error(f"Error marking {case_number} as reviewed: {e}")
-        return False
+        raise
+    finally:
+        conn.close()

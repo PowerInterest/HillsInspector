@@ -5,11 +5,14 @@ from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
+from loguru import logger
 
 from app.web.database import (
     get_failed_hcpa_scrapes,
     get_failed_hcpa_count,
-    mark_hcpa_reviewed
+    mark_hcpa_reviewed,
+    DatabaseLockedError,
+    DatabaseUnavailableError,
 )
 
 router = APIRouter()
@@ -23,7 +26,9 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 async def hcpa_failures(
     request: Request,
     page: int = 1,
-    per_page: int = 25
+    per_page: int = 25,
+    message: str | None = None,
+    error: str | None = None
 ):
     """
     Review queue for auctions where HCPA scrape failed.
@@ -41,6 +46,8 @@ async def hcpa_failures(
             "request": request,
             "auctions": failed_auctions,
             "total": total,
+            "message": message,
+            "error": error,
             "pagination": {
                 "page": page,
                 "per_page": per_page,
@@ -53,9 +60,37 @@ async def hcpa_failures(
 
 @router.post("/hcpa-failures/{case_number}/mark-reviewed")
 async def mark_reviewed(
+    request: Request,
     case_number: str,
     notes: str = Form(default="")
 ):
     """Mark an auction as manually reviewed."""
-    mark_hcpa_reviewed(case_number, notes)
-    return RedirectResponse(url="/review/hcpa-failures", status_code=303)
+    try:
+        success = mark_hcpa_reviewed(case_number, notes)
+        if success:
+            return RedirectResponse(
+                url=f"/review/hcpa-failures?message=Case+{case_number}+marked+as+reviewed",
+                status_code=303
+            )
+        return RedirectResponse(
+            url=f"/review/hcpa-failures?error=Failed+to+update+case+{case_number}",
+            status_code=303
+        )
+    except DatabaseLockedError:
+        logger.warning(f"Database locked when trying to mark {case_number} as reviewed")
+        return RedirectResponse(
+            url="/review/hcpa-failures?error=Database+is+locked.+Please+try+again+later.",
+            status_code=303
+        )
+    except DatabaseUnavailableError as e:
+        logger.error(f"Database unavailable when marking {case_number} as reviewed: {e}")
+        return RedirectResponse(
+            url="/review/hcpa-failures?error=Database+unavailable.+Please+check+the+logs.",
+            status_code=303
+        )
+    except Exception as e:
+        logger.error(f"Error marking {case_number} as reviewed: {e}")
+        return RedirectResponse(
+            url=f"/review/hcpa-failures?error=Error:+{type(e).__name__}",
+            status_code=303
+        )

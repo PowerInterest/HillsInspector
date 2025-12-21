@@ -459,3 +459,57 @@ if not is_valid_folio(parcel_id):
         # Run party-based ingestion
         ingestion_service.ingest_property_by_party(prop, plaintiff, defendant)
 ```
+
+## MERS Handling Strategy
+
+**MERS (Mortgage Electronic Registration Systems)** acts as a "Nominee" for lenders, creating unique challenges because loan transfers happen privately within the MERS database, not in the public County Records.
+
+### The "Black Box" Phenomenon
+- **Scenario:** Mortgage recorded with "MERS as nominee for Lender A".
+- **Reality:** Lender A sells to Lender B, then Lender C.
+- **Public Record:** *No assignments are recorded.* The Mortgage remains with MERS.
+- **Strategy:** Do **NOT** flag "Missing Assignments" as a chain break if MERS is the mortgagee. This is expected behavior for MERS loans.
+
+### The Foreclosure Signal
+- **Event:** `ASSIGNMENT OF MORTGAGE` from **MERS** → **Specific Bank** (e.g., Wells Fargo).
+- **Meaning:** This is a strong **Pre-Foreclosure Signal**. Banks typically "assign out" of MERS immediately before filing a foreclosure lawsuit so they can sue in their own name.
+
+### Matching Satisfactions
+- **Rule:** A Satisfaction/Release from MERS is **valid** and clears the lien, regardless of who the original "Nominee for" lender was.
+- **Logic:** `Creditor(Mortgage) = MERS` matches `Releasor(Satisfaction) = MERS`.
+
+## Partial Releases & Modifications
+
+### Partial Release (The "Blanket" Problem)
+A **Partial Release** clears a lien from *some* land but keeps it active on the rest.
+- **Scenario:** A developer has a mortgage on a 50-lot subdivision. As they sell Lot 1, they record a Partial Release for *only* Lot 1.
+- **Logic:**
+    - **If Legal Description Matches Target:** Treat as **SATISFIED**. (The lien is gone for *this* property).
+    - **If Legal Description Does NOT Match:** Treat as **ACTIVE**. (The lien still exists on other parcels).
+    - *Note:* This requires robust Legal Description parsing. If unsure, flag as **"CHECK PARTIAL"**.
+
+### Modifications
+- **Loan Modification:** Changes terms (rate, maturity) but **preserves** the original lien priority.
+- **Action:** Do **NOT** treat as a new lien or a satisfaction. Link it to the original mortgage.
+
+## Professional Standards Reference
+
+Our automated analysis maps to the standard components of a **Florida Title Commitment (Schedule B-1 & B-2)**:
+
+| Component | Industry Requirement | Our Implementation | Status |
+| :--- | :--- | :--- | :--- |
+| **Chain of Title** | 30-Year History (MRTA) | `TitleChainService` with 30-year lookback | ✅ Implemented |
+| **Ownership** | Verified current owner | Chain building + Gap Analysis | ✅ Implemented |
+| **Mortgages** | Open mortgages identified | `LienSurvivalAnalyzer` | ✅ Implemented |
+| **Judgments** | Court judgments against owner | `FinalJudgmentProcessor` | ⚠️ Partial (FJ only) |
+| **Taxes** | Ad Valorem Taxes Paid | `TaxScraper` (Step 13) | ✅ Implemented |
+| **HOA/COA** | Assessments & Liens | `LienSurvivalAnalyzer` | ⚠️ Liens Only (No Estoppel) |
+| **Municipal** | Utility/Code Liens | Text Search in encumbrances | ⚠️ Limited (No unrecorded) |
+| **Easements** | Recorded Easements | Doc Type detection | ⚠️ Basic Detection |
+| **Surveys** | Encroachments/Boundary | **Out of Scope** | ❌ Requires physical survey |
+| **Zoning** | Land Use Compliance | `HCPAScraper` (Zoning Code) | ✅ Basic Data |
+
+### Known Gaps
+- **Name Search:** We search by *Property*, not *Person*. A true title search also searches the owner's name for judgments that attach to *any* property they own.
+- **Unrecorded Liens:** We cannot find unrecorded municipal liens (water/sewer) without a specific lien search request to the city.
+- **Estoppels:** We cannot get exact HOA payoff amounts (Estoppel Letters) without paying the HOA ~$250. We only see recorded liens.
