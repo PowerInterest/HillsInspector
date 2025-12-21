@@ -416,6 +416,8 @@ class BatchTitleSearch:
             properties = []
             for prop in all_properties:
                 strap = prop.get('strap')
+                if not strap:
+                    continue
                 if self.storage.needs_refresh(strap, self.SCRAPER_NAME, max_age_days=self.max_age_days):
                     properties.append(prop)
                 else:
@@ -444,13 +446,13 @@ class BatchTitleSearch:
         seen_instruments: Set[str] = set()
         search_urls = []
 
-        strap = prop.get('strap')
-        legal1 = prop.get('raw_legal1')
-        legal2 = prop.get('raw_legal2')
-        owner_name = prop.get('owner_name')
+        strap = prop.get('strap') or ""
+        legal1 = prop.get('raw_legal1') or ""
+        legal2 = prop.get('raw_legal2') or ""
+        owner_name = prop.get('owner_name') or ""
 
         # Method 1: Legal Description Search
-        search_term = self.build_legal_search_term(legal1, legal2)
+        search_term = self.build_legal_search_term(legal1, legal2) if legal1 else None
         if search_term:
             search_url = self.build_search_url(search_term, cqid=321)
             search_urls.append(search_url)
@@ -498,7 +500,7 @@ class BatchTitleSearch:
                     logger.error(f"  Name search error: {e}")
 
         # Method 3: Book/Page Search from sales history
-        sales = self.get_sales_history(strap)
+        sales = self.get_sales_history(strap) if strap else []
         if sales:
             logger.info(f"Searching {len(sales)} sales records by book/page...")
             for sale in sales:
@@ -610,9 +612,13 @@ class BatchTitleSearch:
         Returns:
             Number of documents saved
         """
-        strap = prop.get('strap')
+        strap = prop.get('strap') or ""
         folio = prop.get('folio') or strap
-        address = prop.get('address', 'Unknown')
+        address = prop.get('address') or 'Unknown'
+
+        if not strap:
+            logger.warning(f"Skipping property with no strap: {address}")
+            return 0
 
         logger.info(f"\n{'='*60}")
         logger.info(f"Processing: {address}")
@@ -632,7 +638,7 @@ class BatchTitleSearch:
                 "owner": prop.get('owner_name'),
             },
             "search_urls": search_urls,
-            "search_term": self.build_legal_search_term(prop.get('raw_legal1'), prop.get('raw_legal2')),
+            "search_term": self.build_legal_search_term(prop.get('raw_legal1') or "", prop.get('raw_legal2') or ""),
             "total_rows": len(results),
             "unique_instruments": len(instruments),
             "results": results,

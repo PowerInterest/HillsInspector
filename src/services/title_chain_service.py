@@ -1,6 +1,7 @@
 from typing import List, Dict, Optional, Tuple, Any
 from datetime import UTC, datetime, date
 from dataclasses import dataclass
+from loguru import logger
 import re
 import json
 
@@ -637,7 +638,7 @@ class TitleChainService:
                             ext_data.get('sales_price')
                         )
                 except Exception as exc:
-                    logger.debug("Failed to parse encumbrance amount: {}", exc)
+                    logger.debug(f"Failed to parse encumbrance amount: {exc}")
 
             instrument = str(enc.get('instrument_number', '')).strip()
             book = str(enc.get('book', '')).strip()

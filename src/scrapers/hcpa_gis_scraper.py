@@ -178,7 +178,7 @@ async def _scrape_hcpa_property_impl(
         screenshot_bytes = await page.screenshot(full_page=True)
 
         # Use folio if available, else parcel_id as property_id
-        prop_id = folio if folio else parcel_id
+        prop_id = folio or parcel_id or "unknown"
 
         screenshot_path = storage.save_screenshot(
             property_id=prop_id,
@@ -200,7 +200,9 @@ async def _scrape_hcpa_property_impl(
                 if await result_container.count() > 0:
                     try:
                         card_text = await result_container.inner_text(timeout=5000)
-                        result["property_info"]["card_text"] = card_text[:2000]
+                        prop_info = result.get("property_info")
+                        if isinstance(prop_info, dict):
+                            prop_info["card_text"] = card_text[:2000]
                     except Exception:
                         logger.warning("Could not extract inner text from parcel result container")
 
@@ -222,7 +224,9 @@ async def _scrape_hcpa_property_impl(
                     addr_text = await parent.inner_text()
                     lines = addr_text.strip().split('\n')
                     if len(lines) > 1:
-                        result["property_info"]["site_address"] = lines[1].strip()
+                        prop_info = result.get("property_info")
+                        if isinstance(prop_info, dict):
+                            prop_info["site_address"] = lines[1].strip()
 
         except Exception as e:
             logger.error(f"Error extracting property info: {e}")
