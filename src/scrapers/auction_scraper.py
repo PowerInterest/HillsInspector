@@ -334,6 +334,18 @@ class AuctionScraper:
         # We use instrument number as doc_id if available, else case number
         doc_id = instrument_number if instrument_number else case_number
 
+        existing_path = self.storage.document_exists(
+            property_id=storage_id,
+            doc_type="final_judgment",
+            doc_id=doc_id,
+            extension="pdf"
+        )
+        if existing_path:
+            logger.debug(f"PDF already exists for {case_number}: {existing_path}")
+            result["pdf_path"] = str(existing_path)
+            # Note: We don't have party info cached, but Step 2 will extract from PDF
+            return result
+
         new_context = None
         new_page = None
         try:

@@ -408,10 +408,11 @@ def handle_web(port: int, use_ngrok: bool = False):
         )
     finally:
         # Clean up ngrok tunnel on shutdown
-        if ngrok_tunnel and ngrok_tunnel.public_url:
+        public_url = ngrok_tunnel.public_url if ngrok_tunnel else None
+        if public_url:
             logger.info("Closing ngrok tunnel...")
             from pyngrok import ngrok
-            ngrok.disconnect(ngrok_tunnel.public_url)
+            ngrok.disconnect(public_url)
 
 def main():
     parser = argparse.ArgumentParser(description="HillsInspector Main Controller")

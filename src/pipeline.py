@@ -368,8 +368,13 @@ async def _download_single_judgment_pdf(
     """Download a single Final Judgment PDF from OnBase."""
     # Check if PDF already exists
     doc_id = instrument_number if instrument_number else case_number
-    existing_path = storage.get_full_path(parcel_id, f"documents/final_judgment_{doc_id}.pdf")
-    if existing_path.exists():
+    existing_path = storage.document_exists(
+        property_id=parcel_id,
+        doc_type="final_judgment",
+        doc_id=doc_id,
+        extension="pdf"
+    )
+    if existing_path:
         logger.debug(f"PDF already exists for {case_number}: {existing_path}")
         return existing_path
 

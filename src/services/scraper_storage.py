@@ -374,6 +374,48 @@ class ScraperStorage:
 
         return f"raw/{filename}"
 
+    def document_exists(
+        self,
+        property_id: str,
+        doc_type: str,
+        doc_id: str = "",
+        extension: str = "pdf"
+    ) -> Optional[Path]:
+        """
+        Check if a document already exists on disk.
+
+        Args:
+            property_id: Property identifier
+            doc_type: Type (final_judgment, deed, mortgage, photo, etc.)
+            doc_id: Optional document ID (for uniqueness)
+            extension: File extension (pdf, jpg, docx, etc.)
+
+        Returns:
+            Path to existing file if found, None otherwise
+        """
+        safe_id = self._sanitize_filename(property_id)
+        prop_dir = self.BASE_DIR / safe_id
+        docs_dir = prop_dir / "documents"
+
+        if not docs_dir.exists():
+            return None
+
+        extension = extension.lstrip(".").lower()
+
+        if doc_id:
+            # Exact match with doc_id
+            filename = f"{doc_type}_{doc_id}.{extension}"
+            filepath = docs_dir / filename
+            if filepath.exists():
+                return filepath
+        else:
+            # Glob for any file matching the doc_type pattern
+            matches = list(docs_dir.glob(f"{doc_type}*.{extension}"))
+            if matches:
+                return matches[0]
+
+        return None
+
     def save_document(
         self,
         property_id: str,

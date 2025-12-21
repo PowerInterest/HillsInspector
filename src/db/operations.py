@@ -1398,31 +1398,37 @@ class PropertyDB:
     def create_sources_table(self):
         """Create table for tracking data sources."""
         conn = self.connect()
+        conn.execute("CREATE SEQUENCE IF NOT EXISTS property_sources_id_seq")
+        with suppress(Exception):
+            conn.execute("SELECT nextval('property_sources_id_seq')")
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS property_sources (
-                id INTEGER PRIMARY KEY DEFAULT nextval('seq_analysis_id'), -- Reuse existing seq or make new one
+                id INTEGER PRIMARY KEY DEFAULT nextval('property_sources_id_seq'),
                 folio VARCHAR,
-                source_type VARCHAR,
+                source_name VARCHAR,
                 url VARCHAR,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                description VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(folio, url)
             )
         """)
 
-    def save_source(self, folio: str, source_type: str, url: str):
-        """Save a source URL for a property."""
-        self.create_sources_table()
-        conn = self.connect()
-        # Check duplicate
-        exists = conn.execute("""
-            SELECT 1 FROM property_sources 
-            WHERE folio = ? AND source_type = ? AND url = ?
-        """, [folio, source_type, url]).fetchone()
-        
-        if not exists:
-            conn.execute("""
-                INSERT INTO property_sources (folio, source_type, url)
-                VALUES (?, ?, ?)
-            """, [folio, source_type, url])
+        with suppress(Exception):
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info('property_sources')").fetchall()
+            }
+            if "source_name" not in columns:
+                conn.execute("ALTER TABLE property_sources ADD COLUMN source_name VARCHAR")
+                if "source_type" in columns:
+                    conn.execute("""
+                        UPDATE property_sources
+                        SET source_name = source_type
+                        WHERE source_name IS NULL
+                    """)
+            if "description" not in columns:
+                conn.execute("ALTER TABLE property_sources ADD COLUMN description VARCHAR")
 
     def save_market_data(self, folio: str, source: str, data: Dict[str, Any],
                          screenshot_path: Optional[str] = None):
@@ -1546,29 +1552,6 @@ class PropertyDB:
         columns = [desc[0] for desc in conn.description]
         return dict(zip(columns, row, strict=True))
 
-    def create_property_sources_table(self):
-        """Create table for tracking data sources."""
-        conn = self.connect()
-        
-        conn.execute("CREATE SEQUENCE IF NOT EXISTS property_sources_id_seq")
-        
-        # Check if table exists and recreate if needed (for dev)
-        # In prod we'd migrate, but here we just want it to work
-        with suppress(Exception):
-            conn.execute("SELECT nextval('property_sources_id_seq')")
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS property_sources (
-                id INTEGER PRIMARY KEY DEFAULT nextval('property_sources_id_seq'),
-                folio VARCHAR,
-                source_name VARCHAR,
-                url VARCHAR,
-                description VARCHAR,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(folio, url)
-            )
-        """)
-        
     def save_source(self, folio: str, source_name: str, url: str, description: str = ""):
         """
         Save a data source URL for a property.
@@ -1584,14 +1567,30 @@ class PropertyDB:
         # Ensure table exists
         self.create_sources_table()
         
-        conn.execute("""
-            INSERT INTO property_sources (folio, source_name, url, description, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (folio, url) DO UPDATE SET
-                source_name = excluded.source_name,
-                description = excluded.description,
-                created_at = excluded.created_at
-        """, [folio, source_name, url, description, datetime.now()])
+        exists = conn.execute(
+            """
+            SELECT 1 FROM property_sources
+            WHERE folio = ? AND url = ?
+            """,
+            [folio, url],
+        ).fetchone()
+        if exists:
+            conn.execute(
+                """
+                UPDATE property_sources
+                SET source_name = ?, description = ?, created_at = ?
+                WHERE folio = ? AND url = ?
+                """,
+                [source_name, description, datetime.now(), folio, url],
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO property_sources (folio, source_name, url, description, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                [folio, source_name, url, description, datetime.now()],
+            )
         
     def get_sources(self, folio: str) -> List[Dict[str, Any]]:
         """Get all sources for a property."""

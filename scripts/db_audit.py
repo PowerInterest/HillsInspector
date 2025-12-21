@@ -10,6 +10,16 @@ from datetime import date, timedelta
 DB_PATH = "data/property_master.db"
 
 
+def _fetchone_value(conn, query: str, params: list | None = None, default: int = 0) -> int:
+    row = conn.execute(query, params or []).fetchone()
+    return row[0] if row else default
+
+
+def _fetchone_row(conn, query: str, params: list | None = None, default=None):
+    row = conn.execute(query, params or []).fetchone()
+    return row if row is not None else default
+
+
 def audit_database():
     if not Path(DB_PATH).exists():
         print(f"Database not found at {DB_PATH}")
@@ -27,7 +37,7 @@ def audit_database():
     print("\n[STEP 1 & 1.5] AUCTIONS")
     print("-" * 40)
     try:
-        total_auctions = conn.execute("SELECT COUNT(*) FROM auctions").fetchone()[0]
+        total_auctions = _fetchone_value(conn, "SELECT COUNT(*) FROM auctions")
         print(f"Total Auctions: {total_auctions}")
 
         # Breakdown by type
@@ -40,29 +50,36 @@ def audit_database():
             print(f"  - {atype or 'UNKNOWN'}: {cnt}")
 
         # Date range
-        date_range = conn.execute("""
+        date_range = _fetchone_row(
+            conn,
+            """
             SELECT MIN(auction_date), MAX(auction_date) FROM auctions
-        """).fetchone()
+            """,
+            default=(None, None),
+        )
         print(f"Date Range: {date_range[0]} to {date_range[1]}")
 
         # Upcoming vs past
         today = date.today()
-        upcoming = conn.execute(
-            "SELECT COUNT(*) FROM auctions WHERE auction_date >= ?", [today]
-        ).fetchone()[0]
-        past = conn.execute(
-            "SELECT COUNT(*) FROM auctions WHERE auction_date < ?", [today]
-        ).fetchone()[0]
+        upcoming = _fetchone_value(
+            conn, "SELECT COUNT(*) FROM auctions WHERE auction_date >= ?", [today]
+        )
+        past = _fetchone_value(
+            conn, "SELECT COUNT(*) FROM auctions WHERE auction_date < ?", [today]
+        )
         print(f"Upcoming: {upcoming} | Past: {past}")
 
         # Valid parcel IDs
-        valid_parcels = conn.execute("""
+        valid_parcels = _fetchone_value(
+            conn,
+            """
             SELECT COUNT(*) FROM auctions
             WHERE parcel_id IS NOT NULL
               AND parcel_id != ''
               AND LOWER(parcel_id) NOT IN ('n/a', 'none', 'unknown', 'property appraiser')
               AND LENGTH(parcel_id) >= 6
-        """).fetchone()[0]
+            """,
+        )
         print(f"With Valid Parcel ID: {valid_parcels} ({total_auctions - valid_parcels} invalid/missing)")
 
     except Exception as e:
@@ -74,15 +91,18 @@ def audit_database():
     print("\n[STEP 2] FINAL JUDGMENT EXTRACTION")
     print("-" * 40)
     try:
-        needs_extraction = conn.execute(
-            "SELECT COUNT(*) FROM auctions WHERE needs_judgment_extraction = TRUE"
-        ).fetchone()[0]
-        extracted = conn.execute(
-            "SELECT COUNT(*) FROM auctions WHERE extracted_judgment_data IS NOT NULL"
-        ).fetchone()[0]
-        has_amounts = conn.execute(
-            "SELECT COUNT(*) FROM auctions WHERE total_judgment_amount IS NOT NULL AND total_judgment_amount > 0"
-        ).fetchone()[0]
+        needs_extraction = _fetchone_value(
+            conn,
+            "SELECT COUNT(*) FROM auctions WHERE needs_judgment_extraction = TRUE",
+        )
+        extracted = _fetchone_value(
+            conn,
+            "SELECT COUNT(*) FROM auctions WHERE extracted_judgment_data IS NOT NULL",
+        )
+        has_amounts = _fetchone_value(
+            conn,
+            "SELECT COUNT(*) FROM auctions WHERE total_judgment_amount IS NOT NULL AND total_judgment_amount > 0",
+        )
         print(f"Needs Extraction: {needs_extraction}")
         print(f"Has Extracted Data: {extracted}")
         print(f"Has Judgment Amount: {has_amounts}")
@@ -108,25 +128,30 @@ def audit_database():
     print("\n[STEP 3] BULK ENRICHMENT (PARCELS)")
     print("-" * 40)
     try:
-        total_parcels = conn.execute("SELECT COUNT(*) FROM parcels").fetchone()[0]
+        total_parcels = _fetchone_value(conn, "SELECT COUNT(*) FROM parcels")
         print(f"Total Parcels: {total_parcels}")
 
         # Key fields
-        has_owner = conn.execute(
-            "SELECT COUNT(*) FROM parcels WHERE owner_name IS NOT NULL AND owner_name != ''"
-        ).fetchone()[0]
-        has_address = conn.execute(
-            "SELECT COUNT(*) FROM parcels WHERE property_address IS NOT NULL AND property_address != ''"
-        ).fetchone()[0]
-        has_value = conn.execute(
-            "SELECT COUNT(*) FROM parcels WHERE assessed_value IS NOT NULL AND assessed_value > 0"
-        ).fetchone()[0]
-        has_coords = conn.execute(
-            "SELECT COUNT(*) FROM parcels WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
-        ).fetchone()[0]
-        has_legal = conn.execute(
-            "SELECT COUNT(*) FROM parcels WHERE legal_description IS NOT NULL AND legal_description != ''"
-        ).fetchone()[0]
+        has_owner = _fetchone_value(
+            conn,
+            "SELECT COUNT(*) FROM parcels WHERE owner_name IS NOT NULL AND owner_name != ''",
+        )
+        has_address = _fetchone_value(
+            conn,
+            "SELECT COUNT(*) FROM parcels WHERE property_address IS NOT NULL AND property_address != ''",
+        )
+        has_value = _fetchone_value(
+            conn,
+            "SELECT COUNT(*) FROM parcels WHERE assessed_value IS NOT NULL AND assessed_value > 0",
+        )
+        has_coords = _fetchone_value(
+            conn,
+            "SELECT COUNT(*) FROM parcels WHERE latitude IS NOT NULL AND longitude IS NOT NULL",
+        )
+        has_legal = _fetchone_value(
+            conn,
+            "SELECT COUNT(*) FROM parcels WHERE legal_description IS NOT NULL AND legal_description != ''",
+        )
 
         print(f"With Owner Name: {has_owner} ({total_parcels - has_owner} missing)")
         print(f"With Address: {has_address} ({total_parcels - has_address} missing)")
@@ -135,11 +160,12 @@ def audit_database():
         print(f"With Legal Description: {has_legal} ({total_parcels - has_legal} missing)")
 
         # Check bulk_parcels table if exists
-        has_bulk = conn.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'bulk_parcels'"
-        ).fetchone()[0]
+        has_bulk = _fetchone_value(
+            conn,
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'bulk_parcels'",
+        )
         if has_bulk:
-            bulk_count = conn.execute("SELECT COUNT(*) FROM bulk_parcels").fetchone()[0]
+            bulk_count = _fetchone_value(conn, "SELECT COUNT(*) FROM bulk_parcels")
             print(f"Bulk Parcels Table: {bulk_count:,} records")
 
     except Exception as e:
@@ -151,21 +177,27 @@ def audit_database():
     print("\n[STEP 3.5] HOMEHARVEST (MLS DATA & PHOTOS)")
     print("-" * 40)
     try:
-        has_hh = conn.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'home_harvest'"
-        ).fetchone()[0]
+        has_hh = _fetchone_value(
+            conn,
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'home_harvest'",
+        )
         if has_hh:
-            total_hh = conn.execute("SELECT COUNT(*) FROM home_harvest").fetchone()[0]
-            with_photos = conn.execute("""
+            total_hh = _fetchone_value(conn, "SELECT COUNT(*) FROM home_harvest")
+            with_photos = _fetchone_value(
+                conn,
+                """
                 SELECT COUNT(*) FROM home_harvest
                 WHERE primary_photo IS NOT NULL OR photos IS NOT NULL OR alt_photos IS NOT NULL
-            """).fetchone()[0]
-            with_price = conn.execute("""
-                SELECT COUNT(*) FROM home_harvest WHERE list_price IS NOT NULL
-            """).fetchone()[0]
-            with_hoa = conn.execute("""
-                SELECT COUNT(*) FROM home_harvest WHERE hoa_fee IS NOT NULL AND hoa_fee > 0
-            """).fetchone()[0]
+                """,
+            )
+            with_price = _fetchone_value(
+                conn,
+                "SELECT COUNT(*) FROM home_harvest WHERE list_price IS NOT NULL",
+            )
+            with_hoa = _fetchone_value(
+                conn,
+                "SELECT COUNT(*) FROM home_harvest WHERE hoa_fee IS NOT NULL AND hoa_fee > 0",
+            )
 
             print(f"Total HomeHarvest Records: {total_hh}")
             print(f"With Photos: {with_photos}")
@@ -173,9 +205,10 @@ def audit_database():
             print(f"With HOA Fee: {with_hoa}")
 
             # Check pipeline flag
-            needs_hh = conn.execute(
-                "SELECT COUNT(*) FROM auctions WHERE needs_homeharvest_enrichment = TRUE"
-            ).fetchone()[0]
+            needs_hh = _fetchone_value(
+                conn,
+                "SELECT COUNT(*) FROM auctions WHERE needs_homeharvest_enrichment = TRUE",
+            )
             print(f"Auctions Needing HomeHarvest: {needs_hh}")
         else:
             print("HomeHarvest table not found")
@@ -192,9 +225,10 @@ def audit_database():
     # Tax Status
     try:
         print("\nTax Status:")
-        needs_tax = conn.execute(
-            "SELECT COUNT(*) FROM auctions WHERE needs_tax_check = TRUE"
-        ).fetchone()[0]
+        needs_tax = _fetchone_value(
+            conn,
+            "SELECT COUNT(*) FROM auctions WHERE needs_tax_check = TRUE",
+        )
         print(f"  Auctions Needing Tax Check: {needs_tax}")
 
         # Check parcels for tax_status column
@@ -215,9 +249,10 @@ def audit_database():
     # Market Data (Zillow + Realtor)
     try:
         print("\nMarket Data:")
-        has_market = conn.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'market_data'"
-        ).fetchone()[0]
+        has_market = _fetchone_value(
+            conn,
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'market_data'",
+        )
         if has_market:
             by_source = conn.execute("""
                 SELECT source, COUNT(*) FROM market_data GROUP BY source
@@ -225,14 +260,16 @@ def audit_database():
             for source, cnt in by_source:
                 print(f"  - {source}: {cnt} records")
 
-            unique_parcels = conn.execute(
-                "SELECT COUNT(DISTINCT folio) FROM market_data"
-            ).fetchone()[0]
+            unique_parcels = _fetchone_value(
+                conn,
+                "SELECT COUNT(DISTINCT folio) FROM market_data",
+            )
             print(f"  Unique Parcels with Market Data: {unique_parcels}")
 
-            needs_market = conn.execute(
-                "SELECT COUNT(*) FROM auctions WHERE needs_market_data = TRUE"
-            ).fetchone()[0]
+            needs_market = _fetchone_value(
+                conn,
+                "SELECT COUNT(*) FROM auctions WHERE needs_market_data = TRUE",
+            )
             print(f"  Auctions Needing Market Data: {needs_market}")
         else:
             print("  Market Data table not found")
@@ -243,12 +280,14 @@ def audit_database():
     # FEMA Flood
     try:
         print("\nFEMA Flood:")
-        needs_flood = conn.execute(
-            "SELECT COUNT(*) FROM auctions WHERE needs_flood_check = TRUE"
-        ).fetchone()[0]
-        completed_flood = conn.execute(
-            "SELECT COUNT(*) FROM auctions WHERE needs_flood_check = FALSE"
-        ).fetchone()[0]
+        needs_flood = _fetchone_value(
+            conn,
+            "SELECT COUNT(*) FROM auctions WHERE needs_flood_check = TRUE",
+        )
+        completed_flood = _fetchone_value(
+            conn,
+            "SELECT COUNT(*) FROM auctions WHERE needs_flood_check = FALSE",
+        )
         print(f"  Completed Flood Checks: {completed_flood}")
         print(f"  Auctions Needing Flood Check: {needs_flood}")
 
@@ -258,20 +297,23 @@ def audit_database():
     # Permits
     try:
         print("\nBuilding Permits:")
-        has_permits = conn.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'permits'"
-        ).fetchone()[0]
+        has_permits = _fetchone_value(
+            conn,
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'permits'",
+        )
         if has_permits:
-            total_permits = conn.execute("SELECT COUNT(*) FROM permits").fetchone()[0]
-            unique_parcels = conn.execute(
-                "SELECT COUNT(DISTINCT folio) FROM permits"
-            ).fetchone()[0]
+            total_permits = _fetchone_value(conn, "SELECT COUNT(*) FROM permits")
+            unique_parcels = _fetchone_value(
+                conn,
+                "SELECT COUNT(DISTINCT folio) FROM permits",
+            )
             print(f"  Total Permit Records: {total_permits}")
             print(f"  Parcels with Permits: {unique_parcels}")
 
-            needs_permits = conn.execute(
-                "SELECT COUNT(*) FROM auctions WHERE needs_permit_check = TRUE"
-            ).fetchone()[0]
+            needs_permits = _fetchone_value(
+                conn,
+                "SELECT COUNT(*) FROM auctions WHERE needs_permit_check = TRUE",
+            )
             print(f"  Auctions Needing Permit Check: {needs_permits}")
         else:
             print("  Permits table not found")
@@ -288,14 +330,16 @@ def audit_database():
     # Documents
     try:
         print("\nDocuments:")
-        has_docs = conn.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'documents'"
-        ).fetchone()[0]
+        has_docs = _fetchone_value(
+            conn,
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'documents'",
+        )
         if has_docs:
-            total_docs = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-            unique_parcels = conn.execute(
-                "SELECT COUNT(DISTINCT folio) FROM documents WHERE folio IS NOT NULL"
-            ).fetchone()[0]
+            total_docs = _fetchone_value(conn, "SELECT COUNT(*) FROM documents")
+            unique_parcels = _fetchone_value(
+                conn,
+                "SELECT COUNT(DISTINCT folio) FROM documents WHERE folio IS NOT NULL",
+            )
             print(f"  Total Document Records: {total_docs}")
             print(f"  Parcels with Documents: {unique_parcels}")
 
@@ -312,9 +356,10 @@ def audit_database():
                 for dtype, cnt in doc_types:
                     print(f"    - {dtype}: {cnt}")
 
-            needs_ori = conn.execute(
-                "SELECT COUNT(*) FROM auctions WHERE needs_ori_ingestion = TRUE"
-            ).fetchone()[0]
+            needs_ori = _fetchone_value(
+                conn,
+                "SELECT COUNT(*) FROM auctions WHERE needs_ori_ingestion = TRUE",
+            )
             print(f"  Auctions Needing ORI Ingestion: {needs_ori}")
         else:
             print("  Documents table not found")
@@ -325,19 +370,23 @@ def audit_database():
     # Chain of Title
     try:
         print("\nChain of Title:")
-        has_chain = conn.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'chain_of_title'"
-        ).fetchone()[0]
+        has_chain = _fetchone_value(
+            conn,
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'chain_of_title'",
+        )
         if has_chain:
-            total_entries = conn.execute("SELECT COUNT(*) FROM chain_of_title").fetchone()[0]
-            unique_parcels = conn.execute(
-                "SELECT COUNT(DISTINCT folio) FROM chain_of_title"
-            ).fetchone()[0]
+            total_entries = _fetchone_value(conn, "SELECT COUNT(*) FROM chain_of_title")
+            unique_parcels = _fetchone_value(
+                conn,
+                "SELECT COUNT(DISTINCT folio) FROM chain_of_title",
+            )
             print(f"  Total Chain Entries: {total_entries}")
             print(f"  Parcels with Chain: {unique_parcels}")
 
             # Chain depth stats
-            chain_depth = conn.execute("""
+            chain_depth = _fetchone_row(
+                conn,
+                """
                 SELECT
                     MIN(cnt) as min_depth,
                     AVG(cnt) as avg_depth,
@@ -345,15 +394,21 @@ def audit_database():
                 FROM (
                     SELECT folio, COUNT(*) as cnt FROM chain_of_title GROUP BY folio
                 )
-            """).fetchone()
-            print(f"  Chain Depth: Min={chain_depth[0]}, Avg={chain_depth[1]:.1f}, Max={chain_depth[2]}")
+                """,
+                default=(0, 0.0, 0),
+            )
+            min_depth, avg_depth, max_depth = chain_depth
+            print(f"  Chain Depth: Min={min_depth}, Avg={avg_depth:.1f}, Max={max_depth}")
 
             # Shallow chains (potential gaps)
-            shallow = conn.execute("""
+            shallow = _fetchone_value(
+                conn,
+                """
                 SELECT COUNT(*) FROM (
                     SELECT folio FROM chain_of_title GROUP BY folio HAVING COUNT(*) < 2
                 )
-            """).fetchone()[0]
+                """,
+            )
             print(f"  Shallow Chains (<2 entries): {shallow}")
 
     except Exception as e:
@@ -362,14 +417,16 @@ def audit_database():
     # Sales History
     try:
         print("\nSales History (HCPA GIS):")
-        has_sales = conn.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'sales_history'"
-        ).fetchone()[0]
+        has_sales = _fetchone_value(
+            conn,
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'sales_history'",
+        )
         if has_sales:
-            total_sales = conn.execute("SELECT COUNT(*) FROM sales_history").fetchone()[0]
-            unique_parcels = conn.execute(
-                "SELECT COUNT(DISTINCT folio) FROM sales_history"
-            ).fetchone()[0]
+            total_sales = _fetchone_value(conn, "SELECT COUNT(*) FROM sales_history")
+            unique_parcels = _fetchone_value(
+                conn,
+                "SELECT COUNT(DISTINCT folio) FROM sales_history",
+            )
             print(f"  Total Sales Records: {total_sales}")
             print(f"  Parcels with Sales History: {unique_parcels}")
         else:
@@ -384,14 +441,16 @@ def audit_database():
     print("\n[PHASE 3] ENCUMBRANCES & LIEN SURVIVAL")
     print("-" * 40)
     try:
-        has_enc = conn.execute(
-            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'encumbrances'"
-        ).fetchone()[0]
+        has_enc = _fetchone_value(
+            conn,
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'encumbrances'",
+        )
         if has_enc:
-            total_enc = conn.execute("SELECT COUNT(*) FROM encumbrances").fetchone()[0]
-            unique_parcels = conn.execute(
-                "SELECT COUNT(DISTINCT folio) FROM encumbrances"
-            ).fetchone()[0]
+            total_enc = _fetchone_value(conn, "SELECT COUNT(*) FROM encumbrances")
+            unique_parcels = _fetchone_value(
+                conn,
+                "SELECT COUNT(DISTINCT folio) FROM encumbrances",
+            )
             print(f"Total Encumbrances: {total_enc}")
             print(f"Parcels with Encumbrances: {unique_parcels}")
 
@@ -419,17 +478,20 @@ def audit_database():
                     print(f"  - {status}: {cnt}")
 
             # Satisfied vs Open
-            satisfied = conn.execute(
-                "SELECT COUNT(*) FROM encumbrances WHERE is_satisfied = TRUE"
-            ).fetchone()[0]
-            open_enc = conn.execute(
-                "SELECT COUNT(*) FROM encumbrances WHERE is_satisfied = FALSE OR is_satisfied IS NULL"
-            ).fetchone()[0]
+            satisfied = _fetchone_value(
+                conn,
+                "SELECT COUNT(*) FROM encumbrances WHERE is_satisfied = TRUE",
+            )
+            open_enc = _fetchone_value(
+                conn,
+                "SELECT COUNT(*) FROM encumbrances WHERE is_satisfied = FALSE OR is_satisfied IS NULL",
+            )
             print(f"Satisfied: {satisfied} | Open: {open_enc}")
 
-            needs_survival = conn.execute(
-                "SELECT COUNT(*) FROM auctions WHERE needs_lien_survival = TRUE"
-            ).fetchone()[0]
+            needs_survival = _fetchone_value(
+                conn,
+                "SELECT COUNT(*) FROM auctions WHERE needs_lien_survival = TRUE",
+            )
             print(f"Auctions Needing Survival Analysis: {needs_survival}")
 
         else:
@@ -458,15 +520,16 @@ def audit_database():
             ("needs_homeharvest_enrichment", "HomeHarvest"),
         ]
 
-        total = conn.execute("SELECT COUNT(*) FROM auctions").fetchone()[0]
+        total = _fetchone_value(conn, "SELECT COUNT(*) FROM auctions")
         print(f"\n{'Step':<25} {'Pending':>10} {'Complete':>10} {'% Done':>10}")
         print("-" * 55)
 
         for col, name in steps:
             try:
-                pending = conn.execute(
-                    f"SELECT COUNT(*) FROM auctions WHERE {col} = TRUE"
-                ).fetchone()[0]
+                pending = _fetchone_value(
+                    conn,
+                    f"SELECT COUNT(*) FROM auctions WHERE {col} = TRUE",
+                )
                 complete = total - pending
                 pct = (complete / total * 100) if total > 0 else 0
                 print(f"{name:<25} {pending:>10} {complete:>10} {pct:>9.1f}%")
@@ -484,36 +547,46 @@ def audit_database():
     print("=" * 60)
     try:
         # Auctions without parcels
-        orphan_auctions = conn.execute("""
+        orphan_auctions = _fetchone_value(
+            conn,
+            """
             SELECT COUNT(*) FROM auctions a
             LEFT JOIN parcels p ON a.parcel_id = p.folio OR a.folio = p.folio
             WHERE p.folio IS NULL AND a.parcel_id IS NOT NULL
-        """).fetchone()[0]
+            """,
+        )
         print(f"Auctions without matching Parcel: {orphan_auctions}")
 
         # HCPA scrape failures
-        hcpa_failed = conn.execute(
-            "SELECT COUNT(*) FROM auctions WHERE hcpa_scrape_failed = TRUE"
-        ).fetchone()[0]
+        hcpa_failed = _fetchone_value(
+            conn,
+            "SELECT COUNT(*) FROM auctions WHERE hcpa_scrape_failed = TRUE",
+        )
         print(f"HCPA Scrape Failures: {hcpa_failed}")
 
         # Invalid parcel IDs (calculated based on validation rules)
-        invalid_parcels = conn.execute("""
+        invalid_parcels = _fetchone_value(
+            conn,
+            """
             SELECT COUNT(*) FROM auctions
             WHERE parcel_id IS NULL
                OR parcel_id = ''
                OR LOWER(parcel_id) IN ('n/a', 'none', 'unknown', 'property appraiser')
                OR LENGTH(parcel_id) < 6
-        """).fetchone()[0]
+            """,
+        )
         print(f"Auctions with Invalid Parcel ID: {invalid_parcels}")
 
         # Missing critical data for analysis
-        missing_for_analysis = conn.execute("""
+        missing_for_analysis = _fetchone_value(
+            conn,
+            """
             SELECT COUNT(*) FROM auctions a
             LEFT JOIN parcels p ON a.parcel_id = p.folio OR a.folio = p.folio
             WHERE (p.assessed_value IS NULL OR p.assessed_value = 0)
               AND a.auction_date >= CURRENT_DATE
-        """).fetchone()[0]
+            """,
+        )
         print(f"Upcoming Auctions Missing Assessed Value: {missing_for_analysis}")
 
     except Exception as e:

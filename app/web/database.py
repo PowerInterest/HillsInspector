@@ -207,7 +207,8 @@ def check_database_health() -> Dict[str, Any]:
         # Try to connect and query
         conn = get_connection(retries=0)
         try:
-            count = conn.execute("SELECT COUNT(*) FROM auctions").fetchone()[0]
+            row = conn.execute("SELECT COUNT(*) FROM auctions").fetchone()
+            count = row[0] if row else 0
             result["record_count"] = count
             result["available"] = True
         finally:

@@ -127,11 +127,29 @@ class HoverScraper:
                                 
                                 # Check if it's a PDF or a viewer
                                 if new_page.url.lower().endswith('.pdf'):
+                                    # Check if already downloaded
+                                    existing_path = self.storage.document_exists(
+                                        property_id=case_number,
+                                        doc_type="final_judgment",
+                                        doc_id=case_number,
+                                        extension="pdf"
+                                    )
+                                    if existing_path:
+                                        logger.debug(f"PDF already exists for {case_number}: {existing_path}")
+                                        documents.append({
+                                            "title": "Final Judgment",
+                                            "url": new_page.url,
+                                            "local_path": str(existing_path),
+                                            "doc_type": "Final Judgment"
+                                        })
+                                        await new_page.close()
+                                        break
+
                                     logger.info(f"Downloading PDF from {new_page.url}...")
                                     response = await new_page.request.get(new_page.url)
                                     if response.status == 200:
                                         pdf_bytes = await response.body()
-                                        
+
                                         # Save using ScraperStorage
                                         saved_path = self.storage.save_document(
                                             property_id=case_number,

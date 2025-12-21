@@ -82,7 +82,7 @@ class Party2ResolutionService:
         doc_type_upper = doc_type.upper()
         is_deed = any(dt.upper() in doc_type_upper for dt in self.DEED_TYPES)
 
-        return is_deed and party1 and not party2
+        return bool(is_deed and party1 and not party2)
 
     def resolve_party2(self, doc: Dict[str, Any], output_dir: Optional[Path] = None) -> Party2Resolution:
         """

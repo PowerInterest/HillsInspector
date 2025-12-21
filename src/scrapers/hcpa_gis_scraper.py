@@ -636,20 +636,32 @@ async def fetch_sales_documents(hcpa_result: dict, storage: ScraperStorage) -> d
                                     timeout=60,
                                 )
 
-                                if response.status_code == 200 and len(response.content) > 1000:
-                                    # Save using ScraperStorage
+                                if response.status_code == 200 and len(response.content) > 1000 and prop_id:
+                                    # Check if already downloaded
                                     doc_id = instrument or f"{book}_{page_num}"
-                                    saved_path = storage.save_document(
+                                    existing_path = storage.document_exists(
                                         property_id=prop_id,
-                                        file_data=response.content,
                                         doc_type="deed",
                                         doc_id=doc_id,
                                         extension="pdf"
                                     )
+                                    if existing_path:
+                                        logger.debug(f"Document already exists: {existing_path}")
+                                        sale_result["downloaded_file"] = str(existing_path)
+                                        sale_result["download_success"] = True
+                                    else:
+                                        # Save using ScraperStorage
+                                        saved_path = storage.save_document(
+                                            property_id=prop_id,
+                                            file_data=response.content,
+                                            doc_type="deed",
+                                            doc_id=doc_id,
+                                            extension="pdf"
+                                        )
 
-                                    sale_result["downloaded_file"] = saved_path
-                                    sale_result["download_success"] = True
-                                    logger.info(f"  Downloaded {len(response.content)} bytes to {saved_path}")
+                                        sale_result["downloaded_file"] = saved_path
+                                        sale_result["download_success"] = True
+                                        logger.info(f"  Downloaded {len(response.content)} bytes to {saved_path}")
 
                                     # Also capture the legal description from the page
                                     legal_cell = page.locator("td:has-text('L ')").first

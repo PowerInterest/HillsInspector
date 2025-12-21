@@ -229,7 +229,7 @@ class IngestionService:
                 if owner_name and not is_institutional_name(owner_name):
                     owner_search = self._normalize_party_name_for_search(owner_name)
 
-                if owner_search:
+                if owner_search and owner_name:
                     owner_terms = self._generate_owner_party_search_terms(owner_name)
                     logger.info(f"No legal results; trying ORI party search by owner: {owner_terms}")
                     try:
@@ -644,7 +644,7 @@ class IngestionService:
                 if owner_name and not is_institutional_name(owner_name):
                     owner_search = self._normalize_party_name_for_search(owner_name)
                 
-                if owner_search:
+                if owner_search and owner_name:
                      owner_terms = self._generate_owner_party_search_terms(owner_name)
                      logger.info(f"No legal results; trying ORI party search by owner: {owner_terms}")
                      for term in owner_terms:
@@ -1115,7 +1115,7 @@ class IngestionService:
         except ValueError:
             return 0.0
 
-    def _clean_legal_description(self, legal: str) -> Optional[str]:
+    def _clean_legal_description(self, legal: str | None) -> Optional[str]:
         if not legal:
             return None
         # Remove common prefixes/suffixes or noise
