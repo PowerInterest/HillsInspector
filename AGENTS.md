@@ -24,6 +24,7 @@
 - Use pytest; name files `test_*.py` mirroring module paths.
 - Prefer schema/column presence checks and aggregate assertions for pipelines; include fixture HTML/PDF snippets for scrapers in `tests/fixtures/`.
 - Run `uv run pytest` plus `uv run main.py --test` before PRs.
+- After every change, run `uv run ruff check .` and `uv run ty check`.
 
 ## Commit & Pull Request Guidelines
 - Commits: short, present-tense verbs (e.g., `Add lien summary parser`); keep scope focused.

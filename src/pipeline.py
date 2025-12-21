@@ -63,6 +63,11 @@ INVALID_FOLIO_VALUES = {
     'see document', 'multiple', 'various', 'tbd', 'na'
 }
 
+def _normalize_case_number(case_number: str | None) -> str:
+    if not case_number:
+        return ""
+    return re.sub(r"[^A-Za-z0-9]", "", case_number).upper()
+
 
 def is_valid_folio(folio: str) -> bool:
     """
@@ -312,7 +317,7 @@ async def _download_missing_judgment_pdfs(
                 items = page.locator("div.AUCTION_ITEM")
                 item_count = await items.count()
 
-                # Build a map of case_number -> href from the page
+                # Build a map of normalized case_number -> href from the page
                 case_hrefs = {}
                 for i in range(item_count):
                     item = items.nth(i)
@@ -323,18 +328,20 @@ async def _download_missing_judgment_pdfs(
                         case_text = (await case_link.inner_text()).strip()
                         case_href = await case_link.get_attribute("href")
                         if case_href and "CQID=320" in case_href:
-                            case_hrefs[case_text] = case_href
+                            normalized = _normalize_case_number(case_text)
+                            if normalized and normalized not in case_hrefs:
+                                case_hrefs[normalized] = case_href
 
                 # Download PDFs for each auction
                 for auction in date_auctions:
                     case_number = auction["case_number"]
                     parcel_id = auction.get("parcel_id") or auction.get("folio")
 
-                    if case_number not in case_hrefs:
+                    normalized_case = _normalize_case_number(case_number)
+                    case_href = case_hrefs.get(normalized_case)
+                    if not case_href:
                         logger.warning(f"Case {case_number} not found on page for {date_str}")
                         continue
-
-                    case_href = case_hrefs[case_number]
                     instrument_number = None
                     if "OBKey__1006_1=" in case_href:
                         instrument_number = case_href.split("OBKey__1006_1=")[-1]
@@ -609,7 +616,6 @@ async def run_full_pipeline(
             # Skip invalid parcel IDs
             if parcel_id.lower() in INVALID_PARCEL_IDS:
                 logger.debug(f"Skipping {case_number}: invalid parcel_id '{parcel_id}'")
-                db.mark_step_complete(case_number, "needs_judgment_extraction") # Skip future runs
                 continue
 
             # Check if PDF exists

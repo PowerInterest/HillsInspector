@@ -319,6 +319,24 @@ class PropertyDB:
             WHERE parcel_id = ?
         """, [folio])
 
+    def mark_hcpa_scrape_failed(self, case_number: str, error: str) -> None:
+        """Record an HCPA scrape failure on the auction row."""
+        conn = self.connect()
+        conn.execute(
+            "ALTER TABLE auctions ADD COLUMN IF NOT EXISTS hcpa_scrape_failed BOOLEAN DEFAULT FALSE"
+        )
+        conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS hcpa_scrape_error VARCHAR")
+        conn.execute(
+            """
+            UPDATE auctions
+            SET hcpa_scrape_failed = TRUE,
+                hcpa_scrape_error = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE case_number = ?
+            """,
+            [error, case_number],
+        )
+
     def upsert_auction(self, prop: Property) -> int:
         """
         Insert or update an auction property.
@@ -1823,12 +1841,14 @@ class PropertyDB:
         
         query = """
             SELECT 
-                case_number,
-                parcel_id,
-                property_address as address,
-                auction_date
-            FROM auctions 
-            WHERE auction_date BETWEEN ? AND ?
+                a.case_number,
+                a.parcel_id,
+                COALESCE(a.property_address, p.property_address) as address,
+                a.auction_date
+            FROM auctions a
+            LEFT JOIN parcels p
+                ON p.folio = COALESCE(a.parcel_id, a.folio)
+            WHERE a.auction_date BETWEEN ? AND ?
         """
         results = conn.execute(query, [start_date, end_date]).fetchall()
         

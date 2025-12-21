@@ -428,16 +428,10 @@ class PipelineOrchestrator:
             if not primary_legal:
                 # No legal description available - mark for manual review (matches old pipeline)
                 logger.warning(f"No usable legal description for {parcel_id} (case {case_number}), marking for manual review")
-                try:
-                    conn = self.db.connect()
-                    conn.execute(
-                        """UPDATE auctions SET
-                            hcpa_scrape_failed = TRUE,
-                            hcpa_scrape_error = 'No usable legal description (HCPA/judgment/bulk)'
-                           WHERE case_number = ?""", [case_number]
-                    )
-                except Exception as e:
-                    logger.debug(f"Failed to mark missing legal for {case_number}: {e}")
+                await self.db_writer.enqueue("generic_call", {
+                    "func": self.db.mark_hcpa_scrape_failed,
+                    "args": [case_number, "No usable legal description (HCPA/judgment/bulk)"],
+                })
                 # Mark complete so we don't loop forever
                 await self.db_writer.enqueue("generic_call", {
                     "func": self.db.mark_step_complete,
@@ -706,5 +700,4 @@ class PipelineOrchestrator:
 
          except Exception as e:
              logger.exception(f"Survival analysis failed for {prop.parcel_id}: {e}")
-
 
