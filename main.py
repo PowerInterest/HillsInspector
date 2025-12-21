@@ -8,13 +8,18 @@ Supports modes:
 """
 import argparse
 import asyncio
-import sys
+import logging
 import os
 import shutil
-import logging
-from datetime import datetime, date
+import sys
+from datetime import UTC, date, datetime
 from pathlib import Path
+
 from loguru import logger
+
+from src.db.new import create_database
+from src.ingest.bulk_parcel_ingest import download_and_ingest
+from src.pipeline import run_full_pipeline
 
 
 class InterceptHandler(logging.Handler):
@@ -36,11 +41,6 @@ class InterceptHandler(logging.Handler):
         logger.opt(depth=depth, exception=record.exc_info).log(
             level, record.getMessage()
         )
-
-# Import modules
-from src.db.new import create_database
-from src.pipeline import run_full_pipeline
-from src.ingest.bulk_parcel_ingest import download_and_ingest
 
 # Configure logging - both console and file
 logger.remove()
@@ -126,7 +126,7 @@ async def handle_update(
 
     # Defaults
     if not start_date:
-        start_date = date.today()
+        start_date = datetime.now(tz=UTC).date()
     if not end_date:
         end_date = start_date + timedelta(days=60)
 
@@ -264,8 +264,8 @@ async def handle_update(
                                 updated_at = CURRENT_TIMESTAMP
                             WHERE folio = ?
                         """, [legal_desc, folio])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(f"Could not update judgment legal for {folio}: {exc}")
         except Exception as e:
             logger.warning(f"Could not update judgment legal descriptions: {e}")
 
@@ -290,7 +290,7 @@ async def handle_update(
                 location = prop_data["location"]
 
                 try:
-                    success = hh_service._process_single_property(folio, location)
+                    success = hh_service.process_single_property(folio, location)
                     if success:
                         db.mark_step_complete(case_number, "needs_homeharvest_enrichment")
                         logger.success(f"HomeHarvest enriched: {folio}")
@@ -304,9 +304,9 @@ async def handle_update(
                     logger.warning(f"HomeHarvest error for {folio}: {e}")
 
                 # Rate limiting delay
-                import time
-                import random
-                time.sleep(random.uniform(15.0, 30.0))
+                import secrets
+                delay = 15.0 + (secrets.randbelow(1501) / 100.0)
+                await asyncio.sleep(delay)
 
             logger.success("HomeHarvest enrichment complete")
         else:
@@ -422,7 +422,7 @@ def main():
     group.add_argument("--new", action="store_true", help="Create new database (renaming old one)")
     group.add_argument("--update", action="store_true", help="Run full update for next 60 days")
     group.add_argument("--web", action="store_true", help="Start web server")
-    parser.add_argument("--port", type=int, default=int(os.getenv("WEB_PORT", 8080)),
+    parser.add_argument("--port", type=int, default=int(os.getenv("WEB_PORT", "8080")),
                         help="Port for web server (default 8080 or WEB_PORT env var)")
     parser.add_argument("--ngrok", action="store_true",
                         help="Start ngrok tunnel for remote access (requires ngrok auth token)")

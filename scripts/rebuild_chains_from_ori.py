@@ -12,9 +12,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.models.property import Property
-from src.services.ingestion_service import IngestionService
-from src.utils.legal_description import generate_search_permutations, parse_legal_description
+from src.models.property import Property  # noqa: E402
+from src.services.ingestion_service import IngestionService  # noqa: E402
+from src.utils.legal_description import generate_search_permutations, parse_legal_description  # noqa: E402
 
 
 def _is_valid_folio(folio: str | None) -> bool:

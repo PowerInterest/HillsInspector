@@ -277,10 +277,14 @@ class HomeHarvestService:
             
             # Close DB connection to flush WAL
             self.db.close()
-                
+
         except Exception as e:
             logger.error(f"HomeHarvest batch error: {e}")
             self.db.close()
+
+    def process_single_property(self, folio: str, location: str) -> bool:
+        """Public wrapper for single-property processing."""
+        return self._process_single_property(folio, location)
 
     def _process_single_property(
         self, folio: str, location: str, proxy: str | None = None, is_first: bool = False

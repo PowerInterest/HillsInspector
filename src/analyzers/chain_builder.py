@@ -1,7 +1,7 @@
 """
 Chain of Title Builder - Creates ownership timeline with encumbrances.
 """
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 
@@ -276,12 +276,12 @@ def build_chain_of_title(documents: List[Dict]) -> Dict:
     current_owner = ownership_periods[-1].owner if ownership_periods else "Unknown"
     
     # Check for MRTA 30-year standard
-    current_year = date.today().year
+    today = datetime.now(tz=UTC).date()
     oldest_deed_date = parse_date(deeds[0].get("recording_date")) if deeds else None
     
     mrta_status = "INSUFFICIENT"
     if oldest_deed_date:
-        years_covered = (date.today() - oldest_deed_date).days / 365.25
+        years_covered = (today - oldest_deed_date).days / 365.25
         if years_covered >= 30:
             mrta_status = "SATISFIED"
         else:
@@ -293,7 +293,7 @@ def build_chain_of_title(documents: List[Dict]) -> Dict:
         "total_transfers": len(deeds),
         "all_encumbrances": all_encumbrances,
         "mrta_status": mrta_status,
-        "years_covered": (date.today() - oldest_deed_date).days / 365.25 if oldest_deed_date else 0
+        "years_covered": (today - oldest_deed_date).days / 365.25 if oldest_deed_date else 0
     }
 
 

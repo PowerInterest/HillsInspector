@@ -1288,7 +1288,13 @@ class PropertyDB:
         except Exception as exc:
             logger.warning(f"Failed to mark needs_lien_survival for {folio}: {exc}")
 
-    def update_encumbrance_survival(self, encumbrance_id: int, status: str, is_joined: bool = None, is_inferred: bool = None):
+    def update_encumbrance_survival(
+        self,
+        encumbrance_id: int,
+        status: str,
+        is_joined: bool | None = None,
+        is_inferred: bool | None = None,
+    ):
         """Update survival status of an encumbrance."""
         conn = self.connect()
         updates = ["survival_status = ?"]
