@@ -672,6 +672,8 @@ Extract the itemized breakdown exactly as shown. Include cents. "$123,456.78" no
 ### LEGAL DESCRIPTION
 Transcribe the ENTIRE legal description verbatim - every word, number, abbreviation. This includes subdivision name, Lot, Block, Unit, Plat Book/Page references, Section-Township-Range.
 
+**CRITICAL**: The legal description is often attached as "Exhibit A", "Schedule A", or "Attachment 1" on the final pages of the document. If a short legal description is on page 1 but a full one is on a later page (Exhibit A), ALWAYS prioritize the full verbatim text from the Exhibit. If it spans multiple pages, join them into one continuous string.
+
 ### RECORDING REFERENCES
 Capture all Book/Page or Instrument Number references for the mortgage being foreclosed, assignments, and lis pendens.
 

@@ -7,7 +7,7 @@ bot detection on real estate sites. Uses playwright-stealth for better success r
 import asyncio
 import json
 import random
-from typing import Optional
+from typing import Optional, Dict
 from loguru import logger
 
 from playwright.async_api import async_playwright
@@ -72,14 +72,14 @@ class MarketScraper:
         property_id: Optional[str] = None
     ) -> Optional[ListingDetails]:
         """
-        Scrape listing details from Zillow using Screenshot + VisionService.
+        Scrape listing details from Zillow and Realtor.com using Screenshot + VisionService.
 
         Args:
             address: Street address
             city: City name
             state: State abbreviation
             zip_code: ZIP code
-            output_dir: Directory to save screenshots (optional)
+            property_id: Optional property identifier
 
         Returns:
             ListingDetails object or None if failed
@@ -89,8 +89,7 @@ class MarketScraper:
         realtor_url = f"https://www.realtor.com/realestateandhomes-search/{city}_{state}/{address.replace(' ', '-')}"
 
         logger.info(f"Searching Market Data for: {address}")
-        logger.debug(f"  Zillow Link: {zillow_url}")
-
+        
         details = ListingDetails(
             price=None,
             status="Unknown",
@@ -104,107 +103,121 @@ class MarketScraper:
             browser, _context, page = await self._setup_stealth_context(p)
 
             try:
-                logger.info(f"Zillow GET: {zillow_url}")
-                await self._human_like_delay(1.0, 2.0)
-
-                # Navigate with extended timeout
-                await page.goto(zillow_url, timeout=90000)
-
-                # Wait for page and simulate human behavior
-                logger.info("Waiting for page load and simulating human behavior...")
-                await self._human_like_delay(2.0, 4.0)
-
-                # Scroll to simulate reading
-                await page.evaluate('window.scrollBy(0, 300)')
-                await self._human_like_delay(0.5, 1.5)
-                await page.evaluate('window.scrollBy(0, 200)')
-                await self._human_like_delay(0.5, 1.0)
-
-                # Random mouse movements
-                for _ in range(random.randint(2, 4)):  # noqa: S311
-                    await page.mouse.move(
-                        random.randint(100, 800),  # noqa: S311
-                        random.randint(100, 600)  # noqa: S311
-                    )
-                    await self._human_like_delay(0.2, 0.5)
-
-                # Wait for content
-                await page.wait_for_load_state("domcontentloaded")
-                await self._human_like_delay(1.0, 2.0)
-
-                # Take screenshot
-                screenshot_bytes = await page.screenshot()
-                
-                # Save using ScraperStorage
-                screenshot_path = self.storage.save_screenshot(
-                    property_id=prop_id,
-                    scraper="market_zillow",
-                    image_data=screenshot_bytes,
-                    context="listing"
+                # 1. Try Zillow
+                logger.info(f"Attempting Zillow: {zillow_url}")
+                zillow_data = await self._scrape_source(
+                    page, zillow_url, "zillow", prop_id, self.vision.extract_market_listing
                 )
-                logger.info(f"Screenshot saved to {screenshot_path}")
-                details.screenshot_path = screenshot_path
-
-                # Use VisionService to analyze
-                logger.info("Analyzing screenshot with VisionService (Qwen3-VL)...")
                 
-                # We need absolute path for VisionService currently? 
-                # VisionService takes path string. ScraperStorage returns relative path.
-                abs_path = self.storage.get_full_path(prop_id, screenshot_path)
+                if zillow_data:
+                    self._update_details_from_data(details, zillow_data, "Zillow")
+                    logger.success(f"Successfully scraped Zillow for {address}")
                 
-                data = await self.vision.process_async(self.vision.extract_market_listing, str(abs_path))
-
-                if data:
-                    logger.debug(f"VisionService Results: {json.dumps(data, indent=2)}")
-                    details.text_content = json.dumps(data, indent=2)
-                    
-                    # Save vision output
-                    self.storage.save_vision_output(
-                        property_id=prop_id,
-                        scraper="market_zillow",
-                        vision_data=data,
-                        screenshot_path=screenshot_path
+                # 2. Try Realtor.com if Zillow failed or if we want secondary confirmation
+                # For now, let's try Realtor if Zillow price is missing
+                if not details.price or details.status == "Unknown":
+                    logger.info(f"Zillow data incomplete, attempting Realtor.com: {realtor_url}")
+                    realtor_data = await self._scrape_source(
+                        page, realtor_url, "realtor", prop_id, self.vision.extract_realtor_listing
                     )
-
-                    # Update details from Vision data
-                    if data.get('price'):
-                        try:
-                            price_str = str(data['price']).replace(',', '').replace('$', '')
-                            details.price = float(price_str)
-                        except (ValueError, TypeError):
-                            pass
-
-                    if data.get('zestimate'):
-                        try:
-                            val_str = str(data['zestimate']).replace(',', '').replace('$', '')
-                            details.estimates['Zillow'] = float(val_str)
-                        except (ValueError, TypeError):
-                            pass
-
-                    if data.get('rent_zestimate'):
-                        try:
-                            val_str = str(data['rent_zestimate']).replace(',', '').replace('$', '')
-                            details.estimates['Rent Zestimate'] = float(val_str)
-                        except (ValueError, TypeError):
-                            pass
-
-                    if data.get('description'):
-                        details.description = data['description']
-
-                    if data.get('listing_status'):
-                        details.status = data['listing_status']
-
-                else:
-                    logger.warning("VisionService failed to extract data.")
+                    if realtor_data:
+                        self._update_details_from_data(details, realtor_data, "Realtor")
+                        logger.success(f"Successfully scraped Realtor.com for {address}")
 
             except Exception as e:
-                logger.error(f"Zillow scraping failed: {e}")
+                logger.error(f"Market scraping failed: {e}")
 
             finally:
-                # Don't close browser immediately to allow inspection
-                logger.info("Browser left open for inspection. Will close in 5 seconds...")
-                await asyncio.sleep(5)
                 await browser.close()
+
+        return details
+
+    async def _scrape_source(self, page, url, source_node, prop_id, vision_func) -> Optional[Dict]:
+        """Generic source scraper helper."""
+        try:
+            await self._human_like_delay(1.0, 2.0)
+            await page.goto(url, timeout=60000)
+            
+            # Simulate human behavior
+            await self._human_like_delay(2.0, 4.0)
+            await page.evaluate('window.scrollBy(0, 300)')
+            await self._human_like_delay(0.5, 1.5)
+            
+            # Check for generic block/captcha text if not handled by dedicated handler
+            content = await page.content()
+            if "captcha" in content.lower() or "blocked" in content.lower() or "security check" in content.lower():
+                logger.warning(f"Detection triggered on {url}")
+                return None
+
+            # Take screenshot
+            screenshot_bytes = await page.screenshot()
+            
+            # Save using ScraperStorage
+            screenshot_path = self.storage.save_screenshot(
+                property_id=prop_id,
+                scraper=f"market_{source_node}",
+                image_data=screenshot_bytes,
+                context="listing"
+            )
+            
+            abs_path = self.storage.get_full_path(prop_id, screenshot_path)
+            data = await self.vision.process_async(vision_func, str(abs_path))
+            
+            if data:
+                # Save vision output
+                self.storage.save_vision_output(
+                    property_id=prop_id,
+                    scraper=f"market_{source_node}",
+                    vision_data=data,
+                    screenshot_path=screenshot_path
+                )
+                return data
+        except Exception as e:
+            logger.warning(f"Failed to scrape {url}: {e}")
+        return None
+
+    def _update_details_from_data(self, details: ListingDetails, data: Dict, source: str):
+        """Update ListingDetails object from vision data."""
+        # Update price (prefer highest confidence/most recent)
+        if data.get('price'):
+            try:
+                price_str = str(data['price']).replace(',', '').replace('$', '')
+                details.price = float(price_str)
+            except (ValueError, TypeError):
+                pass
+        elif source == "Realtor" and data.get('list_price'): # Realtor specific key
+            try:
+                price_str = str(data['list_price']).replace(',', '').replace('$', '')
+                details.price = float(price_str)
+            except (ValueError, TypeError):
+                pass
+
+        # Update estimates
+        if data.get('zestimate'):
+            try:
+                val_str = str(data['zestimate']).replace(',', '').replace('$', '')
+                details.estimates['Zillow'] = float(val_str)
+            except (ValueError, TypeError):
+                pass
+
+        if data.get('rent_zestimate'):
+            try:
+                val_str = str(data['rent_zestimate']).replace(',', '').replace('$', '')
+                details.estimates['Rent Zestimate'] = float(val_str)
+            except (ValueError, TypeError):
+                pass
+
+        # Update other fields
+        if data.get('description') and len(data['description']) > len(details.description or ""):
+            details.description = data['description']
+
+        if data.get('listing_status'):
+            details.status = data['listing_status']
+        elif source == "Realtor" and data.get('status'):
+            details.status = data['status']
+            
+        # Store raw text if needed
+        details.text_content = (details.text_content or "") + f"\n--- {source} Results ---\n" + json.dumps(data, indent=2)
 
         return details
 

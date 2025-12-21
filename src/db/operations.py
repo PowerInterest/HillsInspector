@@ -51,6 +51,38 @@ class PropertyDB:
                 return row is not None
             return False
 
+        if not table_exists("parcels"):
+            conn.execute("""
+                CREATE TABLE parcels (
+                    folio VARCHAR PRIMARY KEY,
+                    parcel_id VARCHAR,
+                    owner_name VARCHAR,
+                    property_address VARCHAR,
+                    city VARCHAR,
+                    zip_code VARCHAR,
+                    land_use VARCHAR,
+                    year_built INTEGER,
+                    beds FLOAT,
+                    baths FLOAT,
+                    heated_area FLOAT,
+                    lot_size FLOAT,
+                    assessed_value FLOAT,
+                    market_value FLOAT,
+                    last_sale_date DATE,
+                    last_sale_price FLOAT,
+                    image_url VARCHAR,
+                    market_analysis_content VARCHAR,
+                    latitude DOUBLE,
+                    longitude DOUBLE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+        if table_exists("parcels"):
+            conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS tax_status VARCHAR")
+            conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS tax_warrant BOOLEAN")
+
         if table_exists("encumbrances"):
             conn.execute(
                 "ALTER TABLE encumbrances ADD COLUMN IF NOT EXISTS is_joined BOOLEAN DEFAULT FALSE"
@@ -58,6 +90,29 @@ class PropertyDB:
             conn.execute(
                 "ALTER TABLE encumbrances ADD COLUMN IF NOT EXISTS is_inferred BOOLEAN DEFAULT FALSE"
             )
+
+        if not table_exists("market_data"):
+            conn.execute("CREATE SEQUENCE IF NOT EXISTS market_data_seq START 1")
+            # Drop if exists (in case it was created incorrectly without data)
+            conn.execute("DROP TABLE IF EXISTS market_data") 
+            conn.execute("""
+                CREATE TABLE market_data (
+                    id INTEGER PRIMARY KEY DEFAULT nextval('market_data_seq'),
+                    folio VARCHAR,
+                    source VARCHAR,
+                    capture_date DATE,
+                    listing_status VARCHAR,
+                    list_price FLOAT,
+                    zestimate FLOAT,
+                    rent_estimate FLOAT,
+                    hoa_monthly FLOAT,
+                    days_on_market INTEGER,
+                    price_history VARCHAR,
+                    raw_json VARCHAR,
+                    screenshot_path VARCHAR,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
         if table_exists("chain_of_title"):
             conn.execute(
@@ -106,7 +161,8 @@ class PropertyDB:
             "needs_flood_check",
             "needs_market_data",
             "needs_tax_check",
-            "needs_homeharvest_enrichment" # New flag
+            "needs_homeharvest_enrichment",
+            "has_valid_parcel_id"
         ]
         
         for flag in flags:
@@ -347,6 +403,15 @@ class PropertyDB:
 
         return result[0] if result else 0
     
+    def update_parcel_tax_status(self, folio: str, tax_status: str, tax_warrant: bool):
+        """Update tax status and warrant info for a parcel."""
+        conn = self.connect()
+        conn.execute("""
+            UPDATE parcels 
+            SET tax_status = ?, tax_warrant = ?
+            WHERE parcel_id = ?
+        """, [tax_status, tax_warrant, folio])
+
     def upsert_parcel(self, prop: Property) -> str:
         """
         Insert or update parcel data from enriched property.
@@ -915,7 +980,6 @@ class PropertyDB:
                 is_satisfied BOOLEAN DEFAULT FALSE,
                 satisfaction_instrument VARCHAR,
                 satisfaction_date DATE,
-                satisfaction_date DATE,
                 survival_status VARCHAR,
                 
                 -- Party 2 Resolution Fields
@@ -1273,6 +1337,16 @@ class PropertyDB:
         ])
         return result.fetchone()[0]
 
+    def get_legal_description(self, parcel_id: str) -> Optional[str]:
+        """Get legal description for a parcel."""
+        conn = self.connect()
+        # Try parcels table first, then auctions as fallback (though auctions usually stores it in parcels table during ingest)
+        row = conn.execute(
+            "SELECT legal_description FROM parcels WHERE parcel_id = ?",
+            [parcel_id]
+        ).fetchone()
+        return row[0] if row else None
+
     def get_chain_of_title(self, folio: str) -> Dict[str, Any]:
         """
         Get chain of title for a property.
@@ -1317,6 +1391,35 @@ class PropertyDB:
             "current_owner": ownership_timeline[-1]["owner_name"] if ownership_timeline else None,
             "total_transfers": len(ownership_timeline)
         }
+
+    def create_sources_table(self):
+        """Create table for tracking data sources."""
+        conn = self.connect()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS property_sources (
+                id INTEGER PRIMARY KEY DEFAULT nextval('seq_analysis_id'), -- Reuse existing seq or make new one
+                folio VARCHAR,
+                source_type VARCHAR,
+                url VARCHAR,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+    def save_source(self, folio: str, source_type: str, url: str):
+        """Save a source URL for a property."""
+        self.create_sources_table()
+        conn = self.connect()
+        # Check duplicate
+        exists = conn.execute("""
+            SELECT 1 FROM property_sources 
+            WHERE folio = ? AND source_type = ? AND url = ?
+        """, [folio, source_type, url]).fetchone()
+        
+        if not exists:
+            conn.execute("""
+                INSERT INTO property_sources (folio, source_type, url)
+                VALUES (?, ?, ?)
+            """, [folio, source_type, url])
 
     def save_market_data(self, folio: str, source: str, data: Dict[str, Any],
                          screenshot_path: Optional[str] = None):
@@ -1383,6 +1486,36 @@ class PropertyDB:
         """)
 
         print("sales_history table created successfully")
+
+    def get_property(self, folio: str) -> Optional[Dict[str, Any]]:
+        """Retrieve parcel data by folio as a dict.
+
+        Returns dict instead of Property because parcels table doesn't have
+        case_number which is required for Property model.
+        """
+        conn = self.connect()
+        row = conn.execute(
+            "SELECT * FROM parcels WHERE folio = ?", [folio]
+        ).fetchone()
+
+        if not row:
+            return None
+
+        cols = [desc[0] for desc in conn.description]
+        data = dict(zip(cols, row))
+
+        return {
+            "parcel_id": data.get("folio"),
+            "address": data.get("address"),
+            "owner_name": data.get("owner_name"),
+            "legal_description": data.get("legal_description"),
+            "latitude": data.get("latitude"),
+            "longitude": data.get("longitude"),
+            "year_built": data.get("year_built"),
+            "beds": data.get("beds"),
+            "baths": data.get("baths"),
+            "heated_area": data.get("heated_area"),
+        }
 
     def get_encumbrances_by_folio(self, folio: str) -> List[Dict[str, Any]]:
         """Get all encumbrances for a folio."""
@@ -1887,6 +2020,19 @@ class PropertyDB:
              return result[0] > 0 if result else False
         except Exception:
              return False
+
+    def folio_has_homeharvest_data(self, folio: str) -> bool:
+        """Check if folio has recent HomeHarvest data (7-day cache)."""
+        conn = self.connect()
+        try:
+            # Match 7-day logic from HomeHarvestService
+            result = conn.execute(
+                "SELECT COUNT(*) FROM home_harvest WHERE folio = ? AND created_at > CURRENT_DATE - INTERVAL 7 DAY",
+                [folio]
+            ).fetchone()
+            return result[0] > 0 if result else False
+        except Exception:
+            return False
 
 
 

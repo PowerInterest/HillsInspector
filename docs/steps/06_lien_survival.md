@@ -217,6 +217,76 @@ INPUT: Foreclosing Lien Type, Target Lien Type, Recording Dates
     Earlier recording date = higher priority = survives
 ```
 
+## Orchestrator Integration (Parallel Pipeline)
+
+### Phase 3: Survival Analysis
+Lien survival analysis runs as Phase 3 in the orchestrator, after ORI ingestion completes:
+
+```python
+# PHASE 3: Lien Survival Analysis (Depends on encumbrances from Phase 2)
+logger.info(f"Phase 3: Lien Survival Analysis for {parcel_id}")
+
+# Skip logic: already analyzed for this case
+last_case = db.get_last_analyzed_case(parcel_id)
+if db.folio_has_survival_analysis(parcel_id) and last_case == case_number:
+    logger.debug(f"Skipping survival for {parcel_id} - already analyzed")
+    db.mark_step_complete(case_number, "needs_lien_survival")
+else:
+    await self._analyze_survival(parcel_id, case_number)
+```
+
+### Survival Analysis Flow
+```python
+async def _analyze_survival(self, parcel_id: str, case_number: str):
+    """Analyze lien survival for a property."""
+    # Get auction data for foreclosure type
+    auction = self.db.get_auction_by_case(case_number)
+    foreclosure_type = auction.get("foreclosure_type", "MORTGAGE")
+
+    # Get all encumbrances for this property
+    encumbrances = self.db.get_encumbrances_for_folio(parcel_id)
+
+    # Get lis pendens date (critical for priority)
+    lis_pendens_date = auction.get("lis_pendens_date")
+
+    # Analyze each encumbrance
+    for enc in encumbrances:
+        result = self.survival_analyzer.analyze(
+            encumbrance=enc,
+            foreclosure_type=foreclosure_type,
+            lis_pendens_date=lis_pendens_date
+        )
+
+        # Update encumbrance with survival status
+        await self.db_writer.enqueue("update_encumbrance_survival", {
+            "id": enc["id"],
+            "survival_status": result.status,
+            "survival_reason": result.reason,
+            "surviving_amount": result.amount
+        })
+
+    # Mark analysis complete
+    db.mark_step_complete(case_number, "needs_lien_survival")
+    db.mark_as_analyzed(parcel_id)
+    db.set_last_analyzed_case(parcel_id, case_number)
+```
+
+### Defendant Names Extraction
+The orchestrator extracts defendant names for party matching:
+
+```python
+# Get defendant names from auction data
+defendant = auction_dict.get('defendant')
+defendant_names = []
+
+if defendant:
+    if isinstance(defendant, list):
+        defendant_names = defendant
+    else:
+        # Single defendant string
+        defendant_names = [defendant]
+```
+
 ### Implementation Code Structure
 
 ```python
@@ -267,6 +337,129 @@ class LienSurvivalAnalyzer:
         # Junior liens get wiped out
         return False, "Junior lien - extinguished by foreclosure"
 ```
+
+## Encumbrance Analysis (TitleChainService)
+
+The `TitleChainService._analyze_encumbrances()` method determines which encumbrances are open vs. satisfied, tracking assignments.
+
+### Document Classification
+
+```python
+# Encumbrance document types
+encumbrance_keywords = ['MORTGAGE', 'LIEN', 'JUDGMENT', 'LIS PENDENS', 'TAX']
+
+# Satisfaction types (NOT partial releases)
+satisfaction_keywords = ['SATISFACTION', 'RELEASE', 'RECONVEYANCE', 'DISCHARGE']
+partial_keywords = ['PARTIAL']  # Partial releases don't satisfy fully
+
+# Modifications (change creditor, not satisfaction)
+modification_keywords = ['MODIFICATION', 'ASSIGNMENT', 'AMENDMENT']
+
+# Restrictions (don't affect survival)
+restriction_keywords = ['EASEMENT', 'RESTRICTION', 'COVENANT', 'DECLARATION', 'PLAT']
+```
+
+### Encumbrance Object Structure
+
+```python
+enc_obj = {
+    'type': 'MORTGAGE',
+    'date': '2020-01-15',
+    'amount': 250000.00,
+    'original_creditor': 'BANK OF AMERICA, N.A.',
+    'current_creditor': 'NATIONSTAR MORTGAGE LLC',  # Updated by assignments
+    'debtor': 'JOHN SMITH',
+    'book_page': '12345/678',
+    'instrument': '2020012345',
+    'status': 'OPEN',  # or 'SATISFIED'
+    'satisfaction_ref': None,  # Instrument # of satisfaction
+    'match_method': None,  # 'REF_MATCH' or 'NAME_MATCH'
+    'assignments': [
+        {
+            'date': '2021-06-01',
+            'assignee': 'NATIONSTAR MORTGAGE LLC',
+            'instrument': '2021067890'
+        }
+    ]
+}
+```
+
+### Satisfaction Matching Algorithm
+
+Events (assignments and satisfactions) are processed chronologically:
+
+```python
+for event in sorted(events, key=lambda x: parse_date(x['recording_date'])):
+
+    # 1. Try to match by instrument/book-page reference
+    target_enc = None
+    ref_bk_pgs, ref_insts = extract_refs(event.get('legal_description', ''))
+
+    # Check instrument match
+    for ref_inst in ref_insts:
+        if ref_inst in active_map:
+            target_enc = active_map[ref_inst]
+            break
+
+    # Check book/page match
+    if not target_enc:
+        for ref_bk, ref_pg in ref_bk_pgs:
+            if f"{ref_bk}/{ref_pg}" in active_map:
+                target_enc = active_map[f"{ref_bk}/{ref_pg}"]
+                break
+
+    # 2. Fallback: Name match for satisfactions only
+    if not target_enc and event_type == 'SATISFACTION':
+        releasor = event.get('party1', '')
+        for enc in open_encumbrances:
+            if NameMatcher.are_linked(enc['current_creditor'], releasor, threshold=0.85):
+                target_enc = enc
+                enc['match_method'] = 'NAME_MATCH'
+                break
+
+    # 3. Apply event (only if recorded AFTER the encumbrance)
+    if target_enc and event_date > enc_date:
+        if event_type == 'ASSIGNMENT':
+            # Update creditor
+            target_enc['current_creditor'] = event.get('party2')
+            target_enc['assignments'].append({...})
+        elif event_type == 'SATISFACTION':
+            target_enc['status'] = 'SATISFIED'
+            target_enc['satisfaction_ref'] = event.get('instrument_number')
+```
+
+### Assignment Tracking
+
+Mortgages are frequently assigned between servicers. The system tracks the current creditor:
+
+```python
+# Original: Bank of America
+# Assignment 1: Bank of America → Nationstar
+# Assignment 2: Nationstar → Mr. Cooper
+
+# Final current_creditor: "MR. COOPER"
+# original_creditor still: "BANK OF AMERICA, N.A."
+```
+
+This is critical because satisfactions name the **current** creditor, not the original lender.
+
+### Name Match Fallback
+
+When satisfactions don't include explicit book/page references, we match by party name:
+
+```python
+# Satisfaction: "NATIONSTAR MORTGAGE LLC releases..."
+# Find OPEN encumbrance where current_creditor matches
+
+if NameMatcher.are_linked(
+    "NATIONSTAR MORTGAGE LLC",   # Releasor in satisfaction
+    "NATIONSTAR MORTGAGE, LLC",  # Current creditor in encumbrance
+    threshold=0.85
+):
+    # Match found - mark as satisfied
+```
+
+This uses the same NameMatcher logic as chain of title linking (stopword removal, fuzzy matching, alias resolution).
 
 **Sources:**
 - [ProTitleUSA: What Liens Survive Foreclosure?](https://protitleusa.com/lienssurvivefc)

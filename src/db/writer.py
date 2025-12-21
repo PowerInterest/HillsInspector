@@ -115,15 +115,22 @@ class DatabaseWriter:
         
         if operation == "generic_call":
             func = data["func"]
-            args = data["args"]
-            kwargs = data["kwargs"]
+            args = data.get("args", [])
+            kwargs = data.get("kwargs", {})
             return func(*args, **kwargs)
 
         if operation == "upsert_auction":
             self.db.upsert_auction(data)
             
         elif operation == "upsert_parcel":
-            self.db.upsert_parcel(data)
+            # Fix: upsert_parcel expects Property object, but enqueue sends dict
+            from src.models.property import Property
+            if isinstance(data, dict):
+                # Ensure fields match model
+                prop = Property(**data)
+            else:
+                prop = data
+            self.db.upsert_parcel(prop)
             
         elif operation == "save_market_data":
             # Expects dict with: folio, source, data, screenshot_path
@@ -155,6 +162,9 @@ class DatabaseWriter:
         elif operation == "update_step_status":
              # Generic step completion mark
              self.db.mark_step_complete(data["case_number"], data["step_column"])
+
+        elif operation == "update_tax_status":
+             self.db.update_parcel_tax_status(data["folio"], data["tax_status"], data["tax_warrant"])
              
         else:
             logger.warning(f"Unknown DB operation: {operation}")

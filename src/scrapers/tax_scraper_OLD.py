@@ -9,7 +9,6 @@ from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 from src.services.scraper_storage import ScraperStorage
 from src.services.vision_service import VisionService
-from src.models.property import TaxStatus, Lien, TaxCertificate
 
 
 @dataclass
@@ -40,17 +39,23 @@ class TaxScraper:
         self.storage = storage or ScraperStorage()
         self.vision = VisionService()
 
-    async def scrape_tax_status(self, parcel_id: str, property_address: Optional[str] = None) -> TaxStatus:
+    async def get_tax_liens(self, parcel_id: str, property_address: Optional[str] = None) -> List[dict]:
         """
-        Scrape tax status including liens, amount due, and payment history.
-        Returns a TaxStatus Pydantic model.
+        Searches for unpaid property taxes by address.
+
+        Args:
+            parcel_id: The folio/parcel ID (used for logging and storage)
+            property_address: The property address to search for
+
+        Returns:
+            List of lien-like dicts (document_type='TAX').
         """
         if not property_address:
             logger.warning(f"No property address provided for {parcel_id}, cannot search taxes")
-            return TaxStatus()
+            return []
 
         logger.info(f"Searching Tax Collector for: {property_address} (Parcel: {parcel_id})")
-        tax_status = TaxStatus(situs=property_address)
+        liens = []
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
@@ -63,6 +68,7 @@ class TaxScraper:
 
             try:
                 # Build search URL - use street address without city/zip for better matching
+                # Extract just the street number and name
                 search_address = self._normalize_address(property_address)
                 encoded_address = urllib.parse.quote(search_address)
                 search_url = f"{self.BASE_URL}?search_query={encoded_address}"
@@ -71,172 +77,252 @@ class TaxScraper:
                 await page.goto(search_url, timeout=60000)
                 await page.wait_for_load_state("domcontentloaded")
 
-                # Wait for search results
+                # Wait for search results to load (Angular app fetches data async)
+                # Look for either results (View button) or "No bills" message or Page indicator
                 try:
                     await page.wait_for_selector("button:has-text('View'), text=No bills or accounts matched, text=Page", timeout=15000)
                 except Exception:
                     logger.debug("Timeout waiting for search results selector, using fallback wait")
-                    await asyncio.sleep(8)
+                    await asyncio.sleep(8)  # Fallback wait for slow loads
 
-                # Check for "No results"
+                # Check for "No results" message
                 text = await page.inner_text("body")
                 if "No bills or accounts matched your search" in text:
                     logger.info(f"No tax records found for {property_address}")
-                    return tax_status
+                    return []
 
-                # Check if already on detail page
+                # Check if we're already on the detail page (site auto-navigates for single results)
+                # The detail page URL contains a base64 encoded account ID, not "search_query"
                 page_url = page.url
                 is_search_page = "search_query=" in page_url
-                
-                # Broaden detection of detail page
-                has_detail_markers = any(marker in text for marker in ["Account Summary", "Real Estate Account", "Property Information", "Amount Due", "Assessed Value"])
                 already_on_detail = (
-                    has_detail_markers and
-                    (not is_search_page or "/property-tax/" in page_url and len(page_url.split("/")[-1]) > 15)
+                    "Account Summary" in text or
+                    "Real Estate Account" in text or
+                    "Amount Due" in text or
+                    (not is_search_page and "/property-tax/" in page_url and len(page_url.split("/")[-1]) > 20)  # Long base64 ID
                 )
-
-                view_links = []
-                if not already_on_detail:
-                    # Broaden selectors: look for "View" buttons, "View" links, or account numbers in the results list
-                    view_selectors = [
-                        'button:has-text("View")',
-                        'a:has-text("View")',
-                        '.btn-primary:has-text("View")',
-                        'tr.search-result a',
-                        '.account-link'
-                    ]
-                    
-                    for selector in view_selectors:
-                        try:
-                            view_buttons = await page.query_selector_all(selector)
-                            if len(view_buttons) > 0:
-                                view_links = view_buttons
-                                break
-                        except Exception:
-                            continue
-
-                    if len(view_links) == 0:
-                        await asyncio.sleep(5)
-                        for selector in view_selectors:
-                            try:
-                                view_buttons = await page.query_selector_all(selector)
-                                if len(view_buttons) > 0:
-                                    view_links = view_buttons
-                                    break
-                            except Exception:
-                                continue
-
-                if len(view_links) == 0 and not already_on_detail:
-                    # Final fallback: Look for ANY button or link that might be the view button in a results table
-                    try:
-                        results_table_links = await page.query_selector_all('table tr td a')
-                        if len(results_table_links) > 0:
-                             view_links = results_table_links
-                        else:
-                            logger.warning(f"No View buttons or result links found for {property_address}")
-                            return tax_status
-                    except Exception:
-                        logger.warning(f"No View buttons found for {property_address}")
-                        return tax_status
-
-                # Navigate to detail page if needed
-                if not already_on_detail and len(view_links) > 0:
-                    try:
-                        async with page.expect_navigation(timeout=30000):
-                            await view_links[0].click()
-                        
-                        # Wait for content
-                        try:
-                            await page.wait_for_selector("h2:has-text('Amount Due'), h3:has-text('Amount Due'), text=Your account is", timeout=20000)
-                        except Exception:
-                            await asyncio.sleep(5)
-                            
-                        await asyncio.sleep(3)
-                        already_on_detail = True
-                    except Exception as e:
-                        logger.warning(f"Navigation to detail failed: {e}")
-                        # Fallback parsing of search results logic inside 'finally' or here?
-                        # Using search result parsing fallback
-                        amount_due = self._parse_amount_due(text)
-                        if amount_due is not None:
-                             tax_status.amount_due = amount_due
-                             if amount_due == 0:
-                                 tax_status.paid_in_full = True
+                logger.info(f"Page URL: {page_url}, Is search page: {is_search_page}, Already on detail: {already_on_detail}")
 
                 if already_on_detail:
-                     # Scroll to top
-                     await page.evaluate("window.scrollTo(0, 0)")
-                     await asyncio.sleep(1)
+                    logger.info("Already on account detail page - extracting data directly")
+                    # Skip looking for View buttons, we're already on the detail page
+                    view_links = []
+                else:
+                    # Look for View buttons - they appear in search results as dark blue buttons
+                    view_buttons = await page.query_selector_all('button:has-text("View")')
+                    logger.info(f"Found {len(view_buttons)} View buttons")
 
-                     # Screenshot
-                     screenshot_bytes = await page.screenshot(full_page=True)
-                     screenshot_path = self.storage.save_screenshot(
-                         property_id=parcel_id,
-                         scraper="tax_collector",
-                         image_data=screenshot_bytes,
-                         context="detail_page"
-                     )
-                     full_screenshot_path = self.storage.get_full_path(parcel_id, screenshot_path)
+                    if len(view_buttons) == 0:
+                        # Wait a bit more and retry
+                        await asyncio.sleep(5)
+                        view_buttons = await page.query_selector_all('button:has-text("View")')
+                        logger.info(f"After retry: Found {len(view_buttons)} View buttons")
 
-                     # Extract Data
-                     tax_data = await self._extract_tax_from_aria(page)
-                     
-                     # Vision Fallback
-                     if not tax_data.get("account_number") and not tax_data.get("paid_in_full"):
-                         vision_data = await self._extract_tax_from_screenshot(str(full_screenshot_path))
-                         if vision_data.get("account_number") or vision_data.get("paid_in_full"):
-                             tax_data = vision_data
-                     
-                     # Populate Model
-                     tax_status.account_number = tax_data.get("account_number")
-                     tax_status.owner = tax_data.get("owner")
-                     tax_status.situs = tax_data.get("situs")
-                     tax_status.amount_due = tax_data.get("amount_due", 0.0)
-                     tax_status.paid_in_full = tax_data.get("paid_in_full", False)
-                     tax_status.last_payment = tax_data.get("last_payment")
-                     
-                     if tax_data.get("certificates"):
-                         for cert in tax_data["certificates"]:
-                             tax_status.certificates.append(TaxCertificate(
-                                 certificate_number=str(cert.get("certificate_number")),
-                                 face_value=float(cert.get("face_value", 0.0))
-                             ))
-                     
+                    view_links = view_buttons
+
+                if len(view_links) == 0 and not already_on_detail:
+                    logger.warning(f"No View buttons found on tax search page for {property_address}")
+                    # Save screenshot for debugging
+                    screenshot_bytes = await page.screenshot()
+                    self.storage.save_screenshot(
+                        property_id=parcel_id,
+                        scraper="tax_collector",
+                        image_data=screenshot_bytes,
+                        context="no_results"
+                    )
+                    return []
+
+                # Handle detail page data extraction
+                if already_on_detail:
+                    # We're already on the detail page - extract data directly
+                    logger.info("Already on detail page - extracting tax data...")
+                    # Wait briefly for any remaining content to load
+                    await asyncio.sleep(3)
+
+                    # Save screenshot for records
+                    screenshot_bytes = await page.screenshot(full_page=True)
+                    screenshot_path = self.storage.save_screenshot(
+                        property_id=parcel_id,
+                        scraper="tax_collector",
+                        image_data=screenshot_bytes,
+                        context="detail_page"
+                    )
+                    # Convert to full path for VisionService
+                    full_screenshot_path = self.storage.get_full_path(parcel_id, screenshot_path)
+                    logger.info(f"Saved screenshot to {full_screenshot_path}")
+
+                    # Try accessibility tree first (faster, no network needed)
+                    tax_data = await self._extract_tax_from_aria(page)
+                    logger.info(f"Accessibility extracted tax data: {tax_data}")
+
+                    # If accessibility extraction didn't find key data, try vision extraction
+                    if not tax_data.get("account_number") and not tax_data.get("paid_in_full"):
+                        logger.info(f"Text extraction incomplete, trying vision extraction...")
+                        vision_data = self._extract_tax_from_screenshot(str(full_screenshot_path))
+                        if vision_data.get("account_number") or vision_data.get("paid_in_full"):
+                            logger.info(f"Vision extracted tax data: {vision_data}")
+                            tax_data = vision_data
+                        else:
+                            logger.info(f"Vision extraction also incomplete, screenshot saved to {full_screenshot_path}")
+
+                    # Always return tax status data (not just liens)
+                    tax_record = {
+                        "document_type": "TAX",
+                        "recording_date": None,
+                        "amount": tax_data.get("amount_due", 0),
+                        "grantor": parcel_id,
+                        "grantee": "Hillsborough County Tax Collector",
+                        "tax_account": tax_data.get("account_number"),
+                        "owner": tax_data.get("owner"),
+                        "situs": tax_data.get("situs"),
+                        "paid_in_full": tax_data.get("paid_in_full", False),
+                        "last_payment": tax_data.get("last_payment"),
+                        "certificates": tax_data.get("certificates", []),
+                    }
+
+                    if tax_data.get("amount_due", 0) > 0:
+                        tax_record["description"] = f"Unpaid property taxes: ${tax_data['amount_due']:,.2f}"
+                        logger.success(f"Detected unpaid taxes for {parcel_id}: ${tax_data['amount_due']:,.2f}")
+                    elif tax_data.get("paid_in_full"):
+                        tax_record["description"] = "Taxes paid in full"
+                        logger.info(f"Taxes PAID IN FULL for {property_address}")
+                        if tax_data.get("last_payment"):
+                            logger.info(f"  Last payment: {tax_data['last_payment']}")
+                    else:
+                        tax_record["description"] = "Tax status unknown"
+                        logger.info(f"Tax status unknown for {property_address}, screenshot saved at {screenshot_path}")
+
+                    # Log certificates if any exist (historical tax liens that were sold)
+                    if tax_data.get("certificates"):
+                        logger.info(f"  Found {len(tax_data['certificates'])} historical tax certificates")
+
+                    liens.append(tax_record)
+
+                elif len(view_links) > 0:
+                    try:
+                        logger.info("Clicking View to get tax details...")
+
+                        # Click and wait for navigation
+                        async with page.expect_navigation(timeout=30000):
+                            await view_links[0].click()
+
+                        # Wait for Angular app to finish loading - look for "paid in full" or "Amount Due" heading
+                        # The page shows loading spinners initially, then content
+                        try:
+                            # Wait for the "Amount Due" section header which appears on all accounts
+                            await page.wait_for_selector("h2:has-text('Amount Due'), h3:has-text('Amount Due'), text=Your account is", timeout=20000)
+                        except Exception as wait_err:
+                            logger.debug(f"Wait for Amount Due failed: {wait_err}")
+                            # Last resort - longer wait for slow loads
+                            await asyncio.sleep(10)
+
+                        await asyncio.sleep(3)  # Additional safety buffer for rendering
+
+                        # Scroll to top to ensure content is visible
+                        await page.evaluate("window.scrollTo(0, 0)")
+                        await asyncio.sleep(1)
+
+                        # Save screenshot for records
+                        screenshot_bytes = await page.screenshot(full_page=True)
+                        screenshot_path = self.storage.save_screenshot(
+                            property_id=parcel_id,
+                            scraper="tax_collector",
+                            image_data=screenshot_bytes,
+                            context="detail_page"
+                        )
+                        # Convert to full path for VisionService
+                        full_screenshot_path = self.storage.get_full_path(parcel_id, screenshot_path)
+                        logger.info(f"Saved screenshot to {full_screenshot_path}")
+
+                        # Try accessibility tree first (faster, no network needed)
+                        tax_data = await self._extract_tax_from_aria(page)
+                        logger.info(f"Accessibility extracted tax data: {tax_data}")
+
+                        # If accessibility extraction didn't find key data, try vision extraction
+                        if not tax_data.get("account_number") and not tax_data.get("paid_in_full"):
+                            logger.info(f"Text extraction incomplete, trying vision extraction...")
+                            vision_data = self._extract_tax_from_screenshot(str(full_screenshot_path))
+                            if vision_data.get("account_number") or vision_data.get("paid_in_full"):
+                                logger.info(f"Vision extracted tax data: {vision_data}")
+                                tax_data = vision_data
+                            else:
+                                logger.info(f"Vision extraction also incomplete, screenshot saved to {full_screenshot_path}")
+
+                        # Always return tax status data (not just liens)
+                        tax_record = {
+                            "document_type": "TAX",
+                            "recording_date": None,
+                            "amount": tax_data.get("amount_due", 0),
+                            "grantor": parcel_id,
+                            "grantee": "Hillsborough County Tax Collector",
+                            "tax_account": tax_data.get("account_number"),
+                            "owner": tax_data.get("owner"),
+                            "situs": tax_data.get("situs"),
+                            "paid_in_full": tax_data.get("paid_in_full", False),
+                            "last_payment": tax_data.get("last_payment"),
+                            "certificates": tax_data.get("certificates", []),
+                        }
+
+                        if tax_data.get("amount_due", 0) > 0:
+                            tax_record["description"] = f"Unpaid property taxes: ${tax_data['amount_due']:,.2f}"
+                            logger.success(f"Detected unpaid taxes for {parcel_id}: ${tax_data['amount_due']:,.2f}")
+                        elif tax_data.get("paid_in_full"):
+                            tax_record["description"] = "Taxes paid in full"
+                            logger.info(f"Taxes PAID IN FULL for {property_address}")
+                            if tax_data.get("last_payment"):
+                                logger.info(f"  Last payment: {tax_data['last_payment']}")
+                        else:
+                            tax_record["description"] = "Tax status unknown"
+                            logger.info(f"Tax status unknown for {property_address}, screenshot saved at {screenshot_path}")
+
+                        # Log certificates if any exist (historical tax liens that were sold)
+                        if tax_data.get("certificates"):
+                            logger.info(f"  Found {len(tax_data['certificates'])} historical tax certificates")
+
+                        liens.append(tax_record)
+
+                    except Exception as e:
+                        logger.warning(f"Could not get tax details: {e}")
+                        # Fall back to search results parsing
+                        amount_due = self._parse_amount_due(text)
+                        if amount_due is not None and amount_due > 0:
+                            liens.append({
+                                "document_type": "TAX",
+                                "recording_date": None,
+                                "amount": amount_due,
+                                "grantor": parcel_id,
+                                "grantee": "Hillsborough County Tax Collector",
+                                "description": f"Unpaid property taxes: ${amount_due:,.2f}",
+                            })
+                else:
+                    # No view links - parse search results
+                    amount_due = self._parse_amount_due(text)
+                    if amount_due is not None and amount_due > 0:
+                        liens.append({
+                            "document_type": "TAX",
+                            "recording_date": None,
+                            "amount": amount_due,
+                            "grantor": parcel_id,
+                            "grantee": "Hillsborough County Tax Collector",
+                            "description": f"Unpaid property taxes: ${amount_due:,.2f}",
+                        })
+
+                # Save screenshot for records
+                screenshot_bytes = await page.screenshot()
+                screenshot_path = self.storage.save_screenshot(
+                    property_id=parcel_id,
+                    scraper="tax_collector",
+                    image_data=screenshot_bytes,
+                    context="search_results"
+                )
+                logger.debug(f"Screenshot saved to {screenshot_path}")
+
             except Exception as e:
                 logger.error(f"Error scraping Tax site: {e}")
             finally:
                 await browser.close()
 
-        return tax_status
-
-    async def get_tax_liens(self, parcel_id: str, property_address: Optional[str] = None) -> List[dict]:
-        """Legacy wrapper for backward compatibility."""
-        status = await self.scrape_tax_status(parcel_id, property_address)
-        # Convert TaxStatus to list of lien dicts as expected by legacy pipeline
-        results = []
-        # Add basic tax lien info if amount due > 0
-        if status.amount_due > 0:
-            results.append({
-                 "document_type": "TAX",
-                 "recording_date": None,
-                 "amount": status.amount_due,
-                 "grantor": parcel_id,
-                 "grantee": "Hillsborough County Tax Collector",
-                 "description": f"Unpaid property taxes: ${status.amount_due:,.2f}",
-                 "tax_account": status.account_number
-            })
-        # Add historic certificates
-        for cert in status.certificates:
-            results.append({
-                "document_type": "TAX_CERTIFICATE",
-                "recording_date": None,
-                "amount": cert.face_value,
-                "grantor": parcel_id,
-                "grantee": "Tax Certificate Holder",
-                "description": f"Tax Certificate #{cert.certificate_number}",
-                "certificate_number": cert.certificate_number
-            })
-        return results
+        return liens
 
     async def check_lienhub(self, parcel_id: str, property_address: Optional[str] = None) -> List[dict]:
         """
@@ -413,8 +499,6 @@ class TaxScraper:
 
         return result
 
-
-
     def _normalize_address(self, address: str) -> str:
         """
         Normalize address for search.
@@ -506,7 +590,7 @@ class TaxScraper:
                 "certificates": [],
             }
 
-    async def _extract_tax_from_screenshot(self, screenshot_path: str) -> dict:
+    def _extract_tax_from_screenshot(self, screenshot_path: str) -> dict:
         """
         Use vision model to extract tax data from screenshot.
 
@@ -541,7 +625,7 @@ If the page shows "paid in full" or "nothing due", set paid_in_full to true and 
 If there's an amount due, set paid_in_full to false and provide the amount.
 """
         try:
-            result = await self.vision.process_async(self.vision.analyze_image, screenshot_path, prompt)
+            result = self.vision.analyze_image(screenshot_path, prompt)
             logger.info(f"Vision extraction result: {result}")
 
             # Parse the JSON response

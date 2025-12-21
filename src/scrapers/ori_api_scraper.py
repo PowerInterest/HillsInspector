@@ -939,7 +939,7 @@ asyncio.run(main())
         import urllib.parse
 
         # Clean up doc type for filename
-        doc_type_clean = doc_type.replace("(", "").replace(")", "").replace(" ", "_")
+        doc_type_clean = doc_type.replace("(", "").replace(")", "").replace(" ", "_").replace("/", "_").replace("\\", "_")
         date_prefix = record_date if record_date else "unknown"
         filename = f"{date_prefix}_{doc_type_clean}_{instrument}.pdf"
         filepath = output_dir / filename

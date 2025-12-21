@@ -4,9 +4,9 @@ Service for linking related data entities, e.g. Permits to NOCs.
 from datetime import date
 from typing import List, Dict
 from loguru import logger
-from src.scrapers.permit_scraper import PermitDetail
+from src.models.property import Permit
 
-def link_permits_to_nocs(permits: List[PermitDetail], ori_docs: List[Dict]) -> List[PermitDetail]:
+def link_permits_to_nocs(permits: List[Permit], ori_docs: List[Dict]) -> List[Permit]:
     """
     Link Permits to Notices of Commencement (NOCs) based on matching logic.
     
@@ -18,11 +18,11 @@ def link_permits_to_nocs(permits: List[PermitDetail], ori_docs: List[Dict]) -> L
        c. If match found, link the NOC Instrument Number to the Permit.
     
     Args:
-        permits: List of PermitDetail objects
+        permits: List of Permit objects
         ori_docs: List of ORI document dictionaries (normalized)
         
     Returns:
-        List of updated PermitDetail objects (modified in-place)
+        List of updated Permit objects (modified in-place)
     """
     if not permits or not ori_docs:
         return permits

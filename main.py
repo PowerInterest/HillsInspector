@@ -106,18 +106,230 @@ async def handle_update(
     geocode_missing_parcels: bool = True,
     geocode_limit: int | None = 25,
 ):
-    """Run full update for next 60 days."""
-    logger.info(f"Running FULL UPDATE pipeline (from step {start_step})...")
+    """Run full update for next 60 days using PipelineOrchestrator.
 
-    # 1. Run main pipeline (Scrape -> Extract -> Ingest -> Analyze -> Enrich)
-    await run_full_pipeline(
-        max_auctions=1000,
-        start_date=start_date,
-        end_date=end_date,
-        start_step=start_step,
-        geocode_missing_parcels=geocode_missing_parcels,
-        geocode_limit=geocode_limit,
-    )
+    Runs pre-processing steps (auction scrape, judgment extraction, bulk enrichment)
+    before calling the orchestrator for parallel property enrichment.
+    """
+    from datetime import timedelta
+    from src.orchestrator import PipelineOrchestrator
+    from src.db.writer import DatabaseWriter
+    from src.db.operations import PropertyDB
+    from src.scrapers.auction_scraper import AuctionScraper
+    from src.scrapers.tax_deed_scraper import TaxDeedScraper
+    from src.services.final_judgment_processor import FinalJudgmentProcessor
+    from src.services.scraper_storage import ScraperStorage
+    from src.ingest.bulk_parcel_ingest import enrich_auctions_from_bulk
+    import json
+
+    logger.info(f"Running FULL UPDATE pipeline (Optimized)...")
+
+    # Defaults
+    if not start_date:
+        start_date = date.today()
+    if not end_date:
+        end_date = start_date + timedelta(days=60)
+
+    logger.info(f"Date Range: {start_date} to {end_date}")
+
+    # Initialize Components
+    db = PropertyDB()
+    storage = ScraperStorage()
+
+    # =========================================================================
+    # STEP 1 & 1.5: Scrape Auctions (if start_step <= 1)
+    # =========================================================================
+    if start_step <= 1:
+        logger.info("=" * 60)
+        logger.info("STEP 1: SCRAPING FORECLOSURE AUCTIONS")
+        logger.info("=" * 60)
+
+        try:
+            foreclosure_scraper = AuctionScraper()
+            # Check which dates need scraping
+            from datetime import timedelta as td
+            current = start_date
+            while current <= end_date:
+                if current.weekday() < 5:  # Skip weekends
+                    count = db.get_auction_count_by_date(current)
+                    if count == 0:
+                        logger.info(f"Scraping foreclosures for {current}...")
+                        props = await foreclosure_scraper.scrape_date(current, fast_fail=True)
+                        for p in props:
+                            db.upsert_auction(p)
+                        logger.success(f"Scraped {len(props)} auctions for {current}")
+                    else:
+                        logger.debug(f"Skipping {current}: {count} auctions already in DB")
+                current += td(days=1)
+        except Exception as e:
+            logger.error(f"Foreclosure scrape failed: {e}")
+
+        logger.info("=" * 60)
+        logger.info("STEP 1.5: SCRAPING TAX DEED AUCTIONS")
+        logger.info("=" * 60)
+
+        try:
+            tax_deed_scraper = TaxDeedScraper()
+            tax_props = await tax_deed_scraper.scrape_all(start_date, end_date)
+            for p in tax_props:
+                db.upsert_auction(p)
+            logger.success(f"Scraped {len(tax_props)} tax deed auctions")
+        except Exception as e:
+            logger.error(f"Tax deed scrape failed: {e}")
+
+    # =========================================================================
+    # STEP 2: Judgment Extraction (if start_step <= 2)
+    # =========================================================================
+    if start_step <= 2:
+        logger.info("=" * 60)
+        logger.info("STEP 2: DOWNLOADING & EXTRACTING FINAL JUDGMENT DATA")
+        logger.info("=" * 60)
+
+        try:
+            judgment_processor = FinalJudgmentProcessor()
+            auctions = db.execute_query(
+                "SELECT * FROM auctions WHERE needs_judgment_extraction = TRUE AND parcel_id IS NOT NULL"
+            )
+            logger.info(f"Found {len(auctions)} auctions needing judgment extraction")
+
+            extracted_count = 0
+            for auction in auctions:
+                case_number = auction["case_number"]
+                parcel_id = auction.get("parcel_id", "")
+
+                # Check if PDF exists
+                sanitized_folio = parcel_id.replace("/", "_").replace("\\", "_").replace(":", "_")
+                base_dir = Path("data/properties") / sanitized_folio / "documents"
+                pdf_paths = list(base_dir.glob("final_judgment*.pdf")) if base_dir.exists() else []
+
+                if not pdf_paths:
+                    # Try legacy path
+                    legacy_path = Path(f"data/pdfs/final_judgments/{case_number}_final_judgment.pdf")
+                    if legacy_path.exists():
+                        pdf_paths = [legacy_path]
+
+                if pdf_paths:
+                    pdf_path = pdf_paths[0]
+                    logger.info(f"Processing judgment from {pdf_path.name}...")
+                    try:
+                        result = judgment_processor.process_pdf(str(pdf_path), case_number)
+                        if result:
+                            amounts = judgment_processor.extract_key_amounts(result)
+                            payload = {
+                                **result,
+                                **amounts,
+                                "extracted_judgment_data": json.dumps(result),
+                                "raw_judgment_text": result.get("raw_text", ""),
+                            }
+                            db.update_judgment_data(case_number, payload)
+                            db.mark_step_complete(case_number, "needs_judgment_extraction")
+                            extracted_count += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to process judgment for {case_number}: {e}")
+
+            logger.success(f"Extracted data from {extracted_count} Final Judgments")
+        except Exception as e:
+            logger.error(f"Judgment extraction failed: {e}")
+
+    # =========================================================================
+    # STEP 3: Bulk Data Enrichment (if start_step <= 3)
+    # =========================================================================
+    if start_step <= 3:
+        logger.info("=" * 60)
+        logger.info("STEP 3: BULK DATA ENRICHMENT")
+        logger.info("=" * 60)
+
+        try:
+            enrichment_stats = enrich_auctions_from_bulk()
+            logger.success(f"Bulk enrichment: {enrichment_stats}")
+        except Exception as e:
+            logger.error(f"Bulk enrichment failed: {e}")
+
+        # Update legal descriptions from judgment extractions
+        try:
+            auctions_with_judgment = db.execute_query(
+                """SELECT parcel_id, extracted_judgment_data FROM auctions
+                   WHERE parcel_id IS NOT NULL AND extracted_judgment_data IS NOT NULL"""
+            )
+            for row in auctions_with_judgment:
+                folio = row["parcel_id"]
+                try:
+                    judgment_data = json.loads(row["extracted_judgment_data"])
+                    legal_desc = judgment_data.get("legal_description")
+                    if legal_desc:
+                        conn = db.connect()
+                        conn.execute("""
+                            UPDATE parcels SET
+                                judgment_legal_description = ?,
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE folio = ?
+                        """, [legal_desc, folio])
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"Could not update judgment legal descriptions: {e}")
+
+    # =========================================================================
+    # STEP 3.5: HomeHarvest Enrichment (Property Photos & MLS Data)
+    # =========================================================================
+    logger.info("=" * 60)
+    logger.info("STEP 3.5: HOMEHARVEST ENRICHMENT (Photos & MLS Data)")
+    logger.info("=" * 60)
+
+    try:
+        from src.services.homeharvest_service import HomeHarvestService
+
+        hh_service = HomeHarvestService()
+        hh_props = hh_service.get_pending_properties(limit=100, auction_date=start_date)
+        logger.info(f"Found {len(hh_props)} properties needing HomeHarvest enrichment")
+
+        if hh_props:
+            for prop_data in hh_props:
+                folio = prop_data["folio"]
+                case_number = prop_data["case_number"]
+                location = prop_data["location"]
+
+                try:
+                    success = hh_service._process_single_property(folio, location)
+                    if success:
+                        db.mark_step_complete(case_number, "needs_homeharvest_enrichment")
+                        logger.success(f"HomeHarvest enriched: {folio}")
+                    else:
+                        logger.warning(f"HomeHarvest failed for {folio}")
+                except SystemExit:
+                    # HomeHarvest upgraded and spawned subprocess
+                    logger.info("HomeHarvest upgraded - subprocess will continue enrichment")
+                    break
+                except Exception as e:
+                    logger.warning(f"HomeHarvest error for {folio}: {e}")
+
+                # Rate limiting delay
+                import time
+                import random
+                time.sleep(random.uniform(15.0, 30.0))
+
+            logger.success("HomeHarvest enrichment complete")
+        else:
+            logger.info("No properties need HomeHarvest enrichment")
+
+    except Exception as e:
+        logger.error(f"HomeHarvest enrichment failed: {e}")
+
+    # =========================================================================
+    # STEPS 4+: Parallel Property Enrichment via Orchestrator
+    # =========================================================================
+    logger.info("=" * 60)
+    logger.info("STEPS 4+: PARALLEL PROPERTY ENRICHMENT (Orchestrator)")
+    logger.info("=" * 60)
+
+    writer = DatabaseWriter(Path(db.db_path))
+    orchestrator = PipelineOrchestrator(db_writer=writer, db=db, storage=storage)
+
+    await writer.start()
+    try:
+        await orchestrator.process_auctions(start_date, end_date)
+    finally:
+        await writer.stop()
 
     logger.success("Full update complete.")
 

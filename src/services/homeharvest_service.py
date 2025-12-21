@@ -419,6 +419,7 @@ class HomeHarvestService:
             'fips_code': val('fips_code'),
             
             'nearby_schools': val('nearby_schools', 'json'),
+            'photos': val('photos', 'json'),
             'primary_photo': val('primary_photo'),
             'alt_photos': val('alt_photos', 'json'),
         }

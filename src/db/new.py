@@ -314,9 +314,10 @@ def create_database(db_path: str = "data/property_master.db"):
     """)
 
     # Create market_data table
+    conn.execute("CREATE SEQUENCE IF NOT EXISTS market_data_id_seq START 1")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS market_data (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY DEFAULT nextval('market_data_id_seq'),
             folio VARCHAR,
             source VARCHAR,
             capture_date DATE,

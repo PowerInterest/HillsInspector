@@ -292,15 +292,61 @@ async def _scrape_hcpa_property_impl(
 
         # Extract Legal Description from Legal Lines section
         try:
-            legal_header = page.locator("text=Legal Lines").first
-            if await legal_header.count() > 0:
-                # Find the table after Legal Lines
-                legal_table = page.locator("table").filter(has_text="Legal Description").first
-                if await legal_table.count() > 0:
-                    legal_cells = await legal_table.locator("td").all()
-                    if len(legal_cells) >= 2:
-                        result["legal_description"] = (await legal_cells[1].inner_text()).strip()
-                        print(f"Legal Description: {result['legal_description']}")
+            # Check for various possible headers or containers for legal description
+            legal_selectors = [
+                "text=Legal Lines",
+                "text=Legal Description",
+                ".legal-lines",
+                "#legal-lines"
+            ]
+            
+            legal_text = None
+            for selector in legal_selectors:
+                header = page.locator(selector).first
+                if await header.count() > 0:
+                    # Look for the table or div following the header
+                    # The GIS portal often uses a table with "Legal Description" in the first row/cell
+                    container = page.locator("table, .property-card, .parcel-result").filter(has_text="Legal Description").first
+                    if await container.count() > 0:
+                        # Extract all text from the container and find the part after "Legal Description"
+                        full_text = await container.inner_text()
+                        if "Legal Description" in full_text:
+                            # Split by newline and find the line after "Legal Description" or join subsequent lines
+                            lines = [line.strip() for line in full_text.split('\n') if line.strip()]
+                            for i, line in enumerate(lines):
+                                if "Legal Description" in line:
+                                    # Collect all lines until the next header or end of lines
+                                    legal_description_parts = lines[i+1:]
+                                    if legal_description_parts:
+                                        # Stop if we hit another standard header
+                                        description = []
+                                        for p in legal_description_parts:
+                                            if any(h in p for h in ["Year Built", "Construction Type", "Sale History", "Tax Collector"]):
+                                                break
+                                            description.append(p)
+                                        legal_text = " ".join(description).strip()
+                                        break
+                    
+                    # If table-based extraction failed, try finding td cells
+                    if not legal_text:
+                        legal_table = page.locator("table").filter(has_text="Legal Description").first
+                        if await legal_table.count() > 0:
+                            cells = await legal_table.locator("td").all()
+                            # Often the first cell is "Legal Description" and the second is the value
+                            for i, cell in enumerate(cells):
+                                cell_text = await cell.inner_text()
+                                if "Legal Description" in cell_text and i + 1 < len(cells):
+                                    legal_text = (await cells[i+1].inner_text()).strip()
+                                    break
+                if legal_text:
+                    break
+            
+            if legal_text:
+                result["legal_description"] = legal_text
+                logger.info(f"Extracted Legal Description: {legal_text[:100]}...")
+            else:
+                logger.warning("Could not extract legal description from HCPA GIS")
+
         except Exception as e:
             logger.error(f"Error extracting legal description: {e}")
 

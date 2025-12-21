@@ -10,9 +10,6 @@ from src.scrapers.ori_api_scraper import ORIApiScraper
 from src.services.title_chain_service import TitleChainService
 from src.services.party2_resolution_service import Party2ResolutionService
 from src.services.document_analyzer import DocumentAnalyzer
-from src.services.vision_service import VisionService
-import asyncio
-import functools
 
 from src.services.scraper_storage import ScraperStorage
 from src.services.institutional_names import is_institutional_name, get_searchable_party_name
@@ -35,9 +32,8 @@ ANALYZABLE_DOC_TYPES = {
 
 
 class IngestionService:
-    def __init__(self, ori_scraper: ORIApiScraper = None, analyze_pdfs: bool = True, db_writer: Any = None):
+    def __init__(self, ori_scraper: ORIApiScraper = None, analyze_pdfs: bool = True):
         self.db = PropertyDB()
-        self.db_writer = db_writer
         # Share ORI scraper across services to avoid multiple browser sessions
         self.ori_scraper = ori_scraper or ORIApiScraper()
         self.chain_service = TitleChainService()
@@ -584,7 +580,6 @@ class IngestionService:
         docs = raw_docs or []
         # Async version always uses browser search, so prefer_browser is always True
         docs_from_browser = True
-        filter_info = None
 
         if not docs:
             # Get search terms from Property (set by pipeline) or fall back to legal description
@@ -600,76 +595,24 @@ class IngestionService:
                 logger.warning(f"No valid legal description for {prop.case_number}")
                 return
 
-            # Extract filter info and actual search terms (matches sync version)
-            actual_search_terms = []
-            for term in search_terms:
-                if isinstance(term, tuple) and term[0] == "__filter__":
-                    filter_info = term[1]
-                else:
-                    actual_search_terms.append(term)
-
-            # Try each search term until we get results with filtering
+            # Try each search term until we get results
             successful_term = None
-            for search_term in actual_search_terms:
+            for search_term in search_terms:
                 logger.info(f"Searching ORI for: {search_term}")
                 try:
                     # Use browser-based search (async) to avoid API blocking
-                    candidate_docs = await self.ori_scraper.search_by_legal_browser(search_term, headless=True)
-                    if not candidate_docs:
-                        logger.debug(f"No results for: {search_term}")
-                        continue
-
-                    # Apply filtering (matches sync version logic)
-                    if filter_info:
-                        candidate_docs = self._filter_docs_by_lot_block(candidate_docs, filter_info)
-                    elif prop.legal_description:
-                        candidate_docs = self._filter_docs_by_relevance(candidate_docs, prop)
-
-                    if not candidate_docs:
-                        logger.info(f"All results filtered out for term: {search_term}, trying next term")
-                        continue
-
-                    docs = candidate_docs
-                    successful_term = search_term
-                    logger.info(f"Found {len(docs)} documents with term: {search_term}")
-                    break
+                    docs = await self.ori_scraper.search_by_legal_browser(search_term, headless=True)
+                    if docs:
+                        successful_term = search_term
+                        logger.info(f"Found {len(docs)} documents with term: {search_term}")
+                        break
+                    logger.debug(f"No results for: {search_term}")
                 except Exception as e:
                     logger.warning(f"Search failed for '{search_term}': {e}")
                     continue
 
-            # Fallback: try party search by current owner name (matches sync version)
             if not docs:
-                owner_name = getattr(prop, "owner_name", None)
-                owner_search = None
-                if owner_name and not is_institutional_name(owner_name):
-                    owner_search = self._normalize_party_name_for_search(owner_name)
-                
-                if owner_search:
-                     owner_terms = self._generate_owner_party_search_terms(owner_name)
-                     logger.info(f"No legal results; trying ORI party search by owner: {owner_terms}")
-                     for term in owner_terms:
-                         try:
-                             # Use browser party search async (if available, otherwise wrap sync)
-                             loop = asyncio.get_running_loop()
-                             # Note: ORI Scraper needs search_by_party_browser_async ideally, but we wrap sync
-                             candidate_docs = await loop.run_in_executor(
-                                 None, 
-                                 functools.partial(self.ori_scraper.search_by_party_browser_sync, term, headless=True)
-                             )
-                             
-                             if candidate_docs:
-                                 candidate_docs = self._filter_docs_by_relevance(candidate_docs, prop)
-                                 if candidate_docs:
-                                      docs = candidate_docs
-                                      successful_term = f"OWNER_PARTY:{term}"
-                                      logger.info(f"Owner party search yielded {len(docs)} relevant documents")
-                                      break
-                         except Exception as e:
-                             logger.warning(f"Owner party search failed: {e}")
-
-
-            if not docs:
-                logger.warning(f"No documents found after trying {len(actual_search_terms)} search terms.")
+                logger.warning(f"No documents found after trying {len(search_terms)} search terms.")
                 return
 
             # Log successful search term for future reference
@@ -694,14 +637,7 @@ class IngestionService:
             # Download and analyze PDF for ALL document types
             # This extracts party data from the PDF which is more reliable than ORI indexing
             if self.analyze_pdfs:
-                loop = asyncio.get_running_loop()
-                # Run sync download/analysis in thread pool, guarded by semaphore
-                async with VisionService._global_semaphore:
-                    download_result = await loop.run_in_executor(
-                        None,
-                        functools.partial(self._download_and_analyze_document, doc, prop.parcel_id, prefer_browser=docs_from_browser)
-                    )
-
+                download_result = self._download_and_analyze_document(doc, prop.parcel_id, prefer_browser=docs_from_browser)
                 if download_result:
                     # Always set file_path if download succeeded
                     mapped_doc['file_path'] = download_result.get('file_path')
@@ -712,144 +648,25 @@ class IngestionService:
                         mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
 
             # Save to DB (after party updates)
-            # Save to DB (via Writer if available)
-            if self.db_writer:
-                doc_id = await self.db_writer.execute_with_result(
-                    self.db.save_document, prop.parcel_id, mapped_doc
-                )
-            else:
-                doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
+            doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
             mapped_doc['id'] = doc_id
 
             # Update extracted data in DB if we have it
             if mapped_doc.get('vision_extracted_data'):
-                if self.db_writer:
-                    await self.db_writer.execute_with_result(
-                        self._update_document_with_extracted_data, doc_id, mapped_doc['vision_extracted_data']
-                    )
-                else:
-                    self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+                self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
 
             processed_docs.append(mapped_doc)
 
-        # Track instruments we've found so far (for gap-filling deduplication)
-        existing_instruments = {
-            str(doc.get('instrument_number', '')) for doc in processed_docs
-            if doc.get('instrument_number')
-        }
-
         # 2. Build Chain
         logger.info("Building Chain of Title...")
-        loop = asyncio.get_running_loop()
-        analysis = await loop.run_in_executor(None, self.chain_service.build_chain_and_analyze, processed_docs)
-
-        # 3. Gap-filling: If chain has gaps, search by party name (matches sync version)
-        gaps = analysis.get('gaps', [])
-        if gaps:
-            logger.info(f"Chain has {len(gaps)} gaps, attempting gap-fill...")
-            gap_docs = await loop.run_in_executor(
-                None, self._fill_chain_gaps, gaps, existing_instruments, filter_info, prop
-            )
-
-            if gap_docs:
-                # Process new documents
-                new_grouped = self._group_ori_records_by_instrument(gap_docs)
-                for doc in new_grouped:
-                    mapped_doc = self._map_grouped_ori_doc(doc, prop)
-
-                    if self.analyze_pdfs:
-                        async with VisionService._global_semaphore:
-                            download_result = await loop.run_in_executor(
-                                None,
-                                functools.partial(self._download_and_analyze_document, doc, prop.parcel_id, prefer_browser=docs_from_browser)
-                            )
-                        if download_result:
-                            mapped_doc['file_path'] = download_result.get('file_path')
-                            if download_result.get('extracted_data'):
-                                mapped_doc['vision_extracted_data'] = download_result['extracted_data']
-                                mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
-
-                    if self.db_writer:
-                        doc_id = await self.db_writer.execute_with_result(
-                            self.db.save_document, prop.parcel_id, mapped_doc
-                        )
-                    else:
-                        doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
-                    mapped_doc['id'] = doc_id
-
-                    if mapped_doc.get('vision_extracted_data'):
-                        if self.db_writer:
-                            await self.db_writer.execute_with_result(
-                                self._update_document_with_extracted_data, doc_id, mapped_doc['vision_extracted_data']
-                            )
-                        else:
-                            self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
-
-                    processed_docs.append(mapped_doc)
-                    existing_instruments.add(str(mapped_doc.get('instrument_number', '')))
-
-                # Rebuild chain with new documents
-                logger.info("Rebuilding chain with gap-fill documents...")
-                analysis = await loop.run_in_executor(None, self.chain_service.build_chain_and_analyze, processed_docs)
-
-        # 4. Verify current owner against HCPA (matches sync version)
-        chain_owner = analysis.get('summary', {}).get('current_owner', '')
-        hcpa_owner = getattr(prop, 'owner_name', None)
-
-        if chain_owner and chain_owner != "Unknown":
-            owner_docs = await loop.run_in_executor(
-                None, self._verify_current_owner, chain_owner, hcpa_owner, filter_info, existing_instruments
-            )
-
-            if owner_docs:
-                # Process new owner documents
-                new_grouped = self._group_ori_records_by_instrument(owner_docs)
-                for doc in new_grouped:
-                    mapped_doc = self._map_grouped_ori_doc(doc, prop)
-
-                    if self.analyze_pdfs:
-                        async with VisionService._global_semaphore:
-                            download_result = await loop.run_in_executor(
-                                None,
-                                functools.partial(self._download_and_analyze_document, doc, prop.parcel_id, prefer_browser=docs_from_browser)
-                            )
-                        if download_result:
-                            mapped_doc['file_path'] = download_result.get('file_path')
-                            if download_result.get('extracted_data'):
-                                mapped_doc['vision_extracted_data'] = download_result['extracted_data']
-                                mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
-
-                    if self.db_writer:
-                        doc_id = await self.db_writer.execute_with_result(
-                            self.db.save_document, prop.parcel_id, mapped_doc
-                        )
-                    else:
-                        doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
-                    mapped_doc['id'] = doc_id
-
-                    if mapped_doc.get('vision_extracted_data'):
-                        if self.db_writer:
-                            await self.db_writer.execute_with_result(
-                                self._update_document_with_extracted_data, doc_id, mapped_doc['vision_extracted_data']
-                            )
-                        else:
-                            self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
-
-                    processed_docs.append(mapped_doc)
-
-                # Rebuild chain with owner verification documents
-                logger.info("Rebuilding chain with owner verification documents...")
-                analysis = await loop.run_in_executor(None, self.chain_service.build_chain_and_analyze, processed_docs)
+        analysis = self.chain_service.build_chain_and_analyze(processed_docs)
 
         # Transform for DB
         db_data = self._transform_analysis_for_db(analysis)
 
-        # 5. Save Analysis
-        if self.db_writer:
-             await self.db_writer.execute_with_result(self.db.save_chain_of_title, prop.parcel_id, db_data)
-        else:
-             self.db.save_chain_of_title(prop.parcel_id, db_data)
-        logger.success(f"Ingestion complete for {prop.case_number} ({len(processed_docs)} total docs)")
+        # 3. Save Analysis
+        self.db.save_chain_of_title(prop.parcel_id, db_data)
+        logger.success(f"Ingestion complete for {prop.case_number}")
 
     def _should_analyze_document(self, doc: dict) -> bool:
         """Check if document type is worth downloading and analyzing."""
