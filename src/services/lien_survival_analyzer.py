@@ -459,22 +459,21 @@ class LienSurvivalAnalyzer:
                         # Conservative: assume it survives if we can't determine
                         entry["status"] = "SURVIVED"
                         entry["reason"] = "Unable to determine priority - assuming survives"
-                else:
+                elif lis_pendens_date and enc_date:
                     # Default: use lis pendens as a coarse proxy when foreclosure type is unknown.
-                    if lis_pendens_date and enc_date:
-                        if enc_date < lis_pendens_date:
-                            entry["status"] = "SURVIVED"
-                            entry["reason"] = (
-                                f"Recorded before lis pendens ({lis_pendens_date})"
-                            )
-                        else:
-                            entry["status"] = "EXTINGUISHED"
-                            entry["reason"] = (
-                                f"Recorded after lis pendens ({lis_pendens_date})"
-                            )
-                    else:
+                    if enc_date < lis_pendens_date:
                         entry["status"] = "SURVIVED"
-                        entry["reason"] = "Unable to determine priority - assuming survives"
+                        entry["reason"] = (
+                            f"Recorded before lis pendens ({lis_pendens_date})"
+                        )
+                    else:
+                        entry["status"] = "EXTINGUISHED"
+                        entry["reason"] = (
+                            f"Recorded after lis pendens ({lis_pendens_date})"
+                        )
+                else:
+                    entry["status"] = "SURVIVED"
+                    entry["reason"] = "Unable to determine priority - assuming survives"
 
                 # Add to appropriate list
                 results[entry["status"].lower()].append(entry)

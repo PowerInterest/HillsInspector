@@ -3,7 +3,6 @@ from datetime import UTC, datetime, date
 from dataclasses import dataclass
 import re
 import json
-from difflib import SequenceMatcher
 
 from src.services.institutional_names import get_searchable_party_name
 from src.utils.name_matcher import NameMatcher
