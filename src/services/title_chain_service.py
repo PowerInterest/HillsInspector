@@ -150,7 +150,7 @@ class TitleChainService:
             return True
 
         # Non-standard transfers / equitable title signals
-        if "CONTRACT FOR DEED" in dt or "AGREEMENT" in dt and "DEED" in dt:
+        if "CONTRACT FOR DEED" in dt or ("AGREEMENT" in dt and "DEED" in dt):
             return True
         if "AGREEMENT FOR DEED" in dt or "AGD" in dt:
             return True
@@ -158,13 +158,10 @@ class TitleChainService:
             return True
         
         # Probate transfers
-        if (
+        return (
             ("PROBATE" in dt or "SUMMARY ADMINISTRATION" in dt or "ORDER OF SUMMARY" in dt)
             and ("DEED" in dt or "ORDER" in dt or "ADMINISTRATION" in dt)
-        ):
-            return True
-
-        return False
+        )
 
     def _build_title_chain(
         self, transfer_docs: List[Dict], support_docs: List[Dict]
@@ -500,7 +497,7 @@ class TitleChainService:
                     "book_page": f"{d.get('book')}/{d.get('page')}",
                     "instrument": d.get("instrument_number"),
                     "sales_price": None,
-                    "link_status": "IMPLIED" if last_owner else "IMPLIED",
+                    "link_status": "IMPLIED",
                     "confidence_score": 0.55 if last_owner else 0.6,
                     "notes": [
                         f"Inferred owner from support doc: {(d.get('doc_type') or d.get('document_type') or '').strip()}"
@@ -599,10 +596,10 @@ class TitleChainService:
         return bk_pgs, insts
 
     def _analyze_encumbrances(
-        self, 
-        encumbrances: List[Dict], 
+        self,
+        encumbrances: List[Dict],
         satisfactions: List[Dict],
-        assignments: List[Dict] = None
+        assignments: List[Dict] | None = None,
     ) -> List[Dict]:
         """
         Determine which encumbrances are still active, tracking assignments.
@@ -615,7 +612,6 @@ class TitleChainService:
         active_map = {} # Key: Instrument -> Encumbrance Obj
         
         for enc in encumbrances:
-            enc_date = self._parse_date(enc.get('recording_date'))
             enc_type = enc.get('doc_type') or enc.get('document_type', '')
             
             # Determine initial Creditor/Debtor
@@ -640,8 +636,8 @@ class TitleChainService:
                             ext_data.get('principal_amount') or 
                             ext_data.get('sales_price')
                         )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to parse encumbrance amount: {}", exc)
 
             instrument = str(enc.get('instrument_number', '')).strip()
             book = str(enc.get('book', '')).strip()
@@ -712,12 +708,14 @@ class TitleChainService:
                 # Iterate all OPEN encumbrances to find a match
                 # This is O(N*M) but N is small
                 for enc in results:
-                    if enc['status'] == 'OPEN':
-                        # Compare Releasor vs Current Creditor
-                        if NameMatcher.are_linked(enc['current_creditor'], releasor, threshold=0.85):
-                            target_enc = enc
-                            enc['match_method'] = 'NAME_MATCH'
-                            break
+                    if enc['status'] == 'OPEN' and NameMatcher.are_linked(
+                        enc['current_creditor'],
+                        releasor,
+                        threshold=0.85,
+                    ):
+                        target_enc = enc
+                        enc['match_method'] = 'NAME_MATCH'
+                        break
 
             # Apply Event
             if target_enc:

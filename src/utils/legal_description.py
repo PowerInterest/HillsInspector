@@ -78,9 +78,9 @@ def combine_legal_fields(legal1: str, legal2: str | None = None,
         Combined legal description string
     """
     parts = []
-    for field in [legal1, legal2, legal3, legal4]:
-        if field and field.strip():
-            parts.append(field.strip())
+    for legal_field in [legal1, legal2, legal3, legal4]:
+        if legal_field and legal_field.strip():
+            parts.append(legal_field.strip())
     return " ".join(parts)
 
 
@@ -527,13 +527,13 @@ def build_ori_search_terms(folio: str, legal1: str | None, legal2: str | None = 
                 search_terms.append(term)
 
     # Priority 3: Try each legal field individually
-    for field in [legal1, legal2, legal3, legal4]:
-        if not field or not field.strip():
+    for legal_field in [legal1, legal2, legal3, legal4]:
+        if not legal_field or not legal_field.strip():
             continue
 
-        parsed = parse_legal_description(field)
+        parsed = parse_legal_description(legal_field)
 
-        words = field.strip().upper().split()
+        words = legal_field.strip().upper().split()
         first_significant = None
         for word in words:
             if word not in [

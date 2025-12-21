@@ -98,9 +98,7 @@ class NameMatcher:
 
         # Remove stopwords and single-character tokens (initials).
         # For title chains, initials add noise and create false matches.
-        significant_tokens = {t for t in tokens if t not in cls.STOPWORDS and len(t) > 1}
-
-        return significant_tokens
+        return {t for t in tokens if t not in cls.STOPWORDS and len(t) > 1}
 
     @classmethod
     def match(cls, name1: str, name2: str) -> Tuple[str, float]:
@@ -175,10 +173,7 @@ class NameMatcher:
 
         valid_types = {"EXACT", "SUPERSET", "SUBSET", "ALIAS", "FUZZY_JACCARD", "FUZZY_STRING"}
 
-        if match_type in valid_types and score >= threshold:
-            return True
-
-        return False
+        return match_type in valid_types and score >= threshold
 
 if __name__ == "__main__":
     # Test cases
