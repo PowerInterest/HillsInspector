@@ -378,7 +378,7 @@ def handle_web(port: int, use_ngrok: bool = False):
             logger.info("Starting ngrok tunnel...")
 
             # Create tunnel
-            ngrok_tunnel = ngrok.connect(port, "http")
+            ngrok_tunnel = ngrok.connect(str(port), "http")
             public_url = ngrok_tunnel.public_url
 
             logger.success(f"ngrok tunnel established!")
@@ -408,7 +408,7 @@ def handle_web(port: int, use_ngrok: bool = False):
         )
     finally:
         # Clean up ngrok tunnel on shutdown
-        if ngrok_tunnel:
+        if ngrok_tunnel and ngrok_tunnel.public_url:
             logger.info("Closing ngrok tunnel...")
             from pyngrok import ngrok
             ngrok.disconnect(ngrok_tunnel.public_url)

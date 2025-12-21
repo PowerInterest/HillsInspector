@@ -394,7 +394,11 @@ def ingest_dbf_file(dbf_path: Path, db_path: str = str(DB_PATH), ingest_to_db: b
     return stats
 
 
-def ingest_from_zip(zip_path: Path, db_path: str = str(DB_PATH)) -> dict:
+def ingest_from_zip(
+    zip_path: Path,
+    db_path: str = str(DB_PATH),
+    ingest_to_db: bool = True,
+) -> dict:
     """
     Extract and ingest parcel.dbf from a HCPA zip file.
     """
@@ -415,7 +419,8 @@ def ingest_from_zip(zip_path: Path, db_path: str = str(DB_PATH)) -> dict:
             logger.info(f"Found DBF file: {dbf_name}")
 
             zf.extract(dbf_name, tmpdir)
-    return ingest_dbf_file(dbf_path, db_path, ingest_to_db=ingest_to_db)
+            dbf_path = Path(tmpdir) / dbf_name
+            return ingest_dbf_file(dbf_path, db_path, ingest_to_db=ingest_to_db)
 
 
 def download_and_ingest(db_path: str = str(DB_PATH), force: bool = False, ingest_to_db: bool = False) -> dict:
