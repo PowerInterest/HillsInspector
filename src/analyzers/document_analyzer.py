@@ -28,10 +28,9 @@ class DocumentAnalyzer:
 
         try:
             doc = fitz.open(pdf_path)
-            
-            for i, page in enumerate(doc):
-                if i >= max_pages:
-                    break
+
+            for i in range(min(len(doc), max_pages)):
+                page = doc[i]
                     
                 # Render page to image (pixmap)
                 # Zoom = 2 for better resolution

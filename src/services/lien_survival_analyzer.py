@@ -310,9 +310,9 @@ class LienSurvivalAnalyzer:
                 if best_date and (best_instr or (best_book and best_page)):
                     foreclosing_priority_date = best_date
                     foreclosing_refs = {
-                        "instrument": best_instr or None,
-                        "book": best_book or None,
-                        "page": best_page or None,
+                        "instrument": best_instr,
+                        "book": best_book,
+                        "page": best_page,
                     }
                     foreclosing_is_inferred = True
 
@@ -383,7 +383,7 @@ class LienSurvivalAnalyzer:
 
                 # 4. Check if this is the foreclosing party's lien
                 if self._is_foreclosing_party_lien(
-                    creditor, plaintiff, enc_type, fc_type,
+                    creditor, plaintiff or "", enc_type, fc_type,
                     lien_instr, lien_book, lien_page, foreclosing_refs
                 ):
                     entry["status"] = "FORECLOSING"

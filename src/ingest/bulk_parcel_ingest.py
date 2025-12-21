@@ -32,8 +32,10 @@ from src.ingest.bulk_downloader import download_latest_bulk_data
 # For reading DBF files (shapefile attribute table)
 try:
     from dbfread import DBF
+    DBF_AVAILABLE = True
 except ImportError:
-    DBF = None
+    DBF = None  # type: ignore[assignment,misc]
+    DBF_AVAILABLE = False
     logger.warning("dbfread not installed. Run: uv add dbfread")
 
 
@@ -315,7 +317,8 @@ def ingest_to_duckdb(df: pl.DataFrame, db_path: str = str(DB_PATH)) -> dict:
 
     # Get count before
     try:
-        before_count = conn.execute("SELECT COUNT(*) FROM bulk_parcels").fetchone()[0]
+        result = conn.execute("SELECT COUNT(*) FROM bulk_parcels").fetchone()
+        before_count = result[0] if result else 0
     except Exception:
         before_count = 0
 
@@ -349,7 +352,8 @@ def ingest_to_duckdb(df: pl.DataFrame, db_path: str = str(DB_PATH)) -> dict:
     """)
 
     # Get count after
-    after_count = conn.execute("SELECT COUNT(*) FROM bulk_parcels").fetchone()[0]
+    result = conn.execute("SELECT COUNT(*) FROM bulk_parcels").fetchone()
+    after_count = result[0] if result else 0
 
     conn.close()
 
@@ -502,7 +506,8 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
 
     # Check if bulk_parcels table exists, if not try to load from parquet
     try:
-        count = conn.execute("SELECT COUNT(*) FROM bulk_parcels").fetchone()[0]
+        result = conn.execute("SELECT COUNT(*) FROM bulk_parcels").fetchone()
+        count = result[0] if result else 0
         if count == 0:
             raise Exception("Empty table")
         logger.info(f"bulk_parcels table has {count:,} records")
@@ -547,11 +552,12 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
 
     # Count auctions without parcel data
     # NOTE: auctions.folio is actually STRAP format, bulk_parcels.strap matches it
-    before = conn.execute("""
+    result = conn.execute("""
         SELECT COUNT(*) FROM auctions a
         LEFT JOIN parcels p ON a.folio = p.folio
         WHERE p.folio IS NULL
-    """).fetchone()[0]
+    """).fetchone()
+    before = result[0] if result else 0
 
     # Insert parcels for all auctions that don't have them yet
     # Join auctions.folio (which is STRAP) to bulk_parcels.strap
@@ -611,17 +617,19 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
     """)
 
     # Count after
-    after = conn.execute("""
+    result = conn.execute("""
         SELECT COUNT(*) FROM auctions a
         LEFT JOIN parcels p ON a.folio = p.folio
         WHERE p.folio IS NULL
-    """).fetchone()[0]
+    """).fetchone()
+    after = result[0] if result else 0
 
     # Count parcels with legal descriptions now
-    with_legal = conn.execute("""
+    result = conn.execute("""
         SELECT COUNT(*) FROM parcels
         WHERE legal_description IS NOT NULL AND legal_description != ''
-    """).fetchone()[0]
+    """).fetchone()
+    with_legal = result[0] if result else 0
 
     enriched = before - after
     conn.close()
@@ -705,7 +713,8 @@ def ingest_dor_codes(dbf_path: Path, db_path: str = str(DB_PATH)) -> dict:
         SELECT dor_code, description FROM df_temp
     """)
 
-    count = conn.execute("SELECT COUNT(*) FROM dor_codes").fetchone()[0]
+    result = conn.execute("SELECT COUNT(*) FROM dor_codes").fetchone()
+    count = result[0] if result else 0
     conn.close()
 
     logger.info(f"Ingested {count} DOR codes to DuckDB")
@@ -827,7 +836,8 @@ def ingest_subdivisions(dbf_path: Path, db_path: str = str(DB_PATH)) -> dict:
         SELECT sub_code, sub_name, plat_book, plat_page FROM df_temp
     """)
 
-    count = conn.execute("SELECT COUNT(*) FROM subdivisions").fetchone()[0]
+    result = conn.execute("SELECT COUNT(*) FROM subdivisions").fetchone()
+    count = result[0] if result else 0
     conn.close()
 
     logger.info(f"Ingested {count} subdivisions to DuckDB")
@@ -865,25 +875,29 @@ def validate_bulk_data(db_path: str = str(DB_PATH)) -> dict:
 
     stats = {}
 
-    stats["total_records"] = conn.execute(
+    def get_count(query: str) -> int:
+        result = conn.execute(query).fetchone()
+        return result[0] if result else 0
+
+    stats["total_records"] = get_count(
         "SELECT COUNT(*) FROM bulk_parcels"
-    ).fetchone()[0]
+    )
 
-    stats["has_address"] = conn.execute(
+    stats["has_address"] = get_count(
         "SELECT COUNT(*) FROM bulk_parcels WHERE property_address IS NOT NULL AND property_address != ''"
-    ).fetchone()[0]
+    )
 
-    stats["has_year_built"] = conn.execute(
+    stats["has_year_built"] = get_count(
         "SELECT COUNT(*) FROM bulk_parcels WHERE year_built IS NOT NULL AND year_built > 0"
-    ).fetchone()[0]
+    )
 
-    stats["has_beds_baths"] = conn.execute(
+    stats["has_beds_baths"] = get_count(
         "SELECT COUNT(*) FROM bulk_parcels WHERE beds IS NOT NULL AND baths IS NOT NULL"
-    ).fetchone()[0]
+    )
 
-    stats["has_market_value"] = conn.execute(
+    stats["has_market_value"] = get_count(
         "SELECT COUNT(*) FROM bulk_parcels WHERE market_value IS NOT NULL AND market_value > 0"
-    ).fetchone()[0]
+    )
 
     stats["land_use_distribution"] = conn.execute("""
         SELECT land_use, COUNT(*) as cnt

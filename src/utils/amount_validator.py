@@ -126,9 +126,10 @@ def validate_amount(
         result["flags"].append("VERIFY_LARGE_AMOUNT")
 
     # Downgrade confidence based on flags
-    if len(result["flags"]) >= 3:
+    flags = result["flags"]
+    if isinstance(flags, list) and len(flags) >= 3:
         result["confidence"] = "LOW"
-    elif len(result["flags"]) >= 1 and result["confidence"] == "HIGH":
+    elif isinstance(flags, list) and len(flags) >= 1 and result["confidence"] == "HIGH":
         result["confidence"] = "MEDIUM"
 
     return result

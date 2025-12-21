@@ -255,7 +255,8 @@ class RedfinScraper:
             if status_elem:
                 result["status"] = await status_elem.inner_text()
 
-            logger.success(f"Extracted {len(result['photos'])} photos from Redfin")
+            photos = result.get('photos', [])
+            logger.success(f"Extracted {len(photos) if isinstance(photos, list) else 0} photos from Redfin")
 
         except Exception as e:
             logger.warning(f"Error extracting property data: {e}")

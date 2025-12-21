@@ -1831,7 +1831,8 @@ class PropertyDB:
         """Get count of auctions we have for a specific date."""
         conn = self.connect()
         result = conn.execute(
-            "SELECT COUNT(*) FROM auctions WHERE auction_date = ?", [auction_date]
+            "SELECT COUNT(*) FROM auctions WHERE TRY_CAST(auction_date AS DATE) = ?",
+            [auction_date],
         ).fetchone()
         return result[0] if result else 0
 
@@ -1854,7 +1855,7 @@ class PropertyDB:
             FROM auctions a
             LEFT JOIN parcels p
                 ON p.folio = COALESCE(a.parcel_id, a.folio)
-            WHERE a.auction_date BETWEEN ? AND ?
+            WHERE TRY_CAST(a.auction_date AS DATE) BETWEEN ? AND ?
         """
         results = conn.execute(query, [start_date, end_date]).fetchall()
         

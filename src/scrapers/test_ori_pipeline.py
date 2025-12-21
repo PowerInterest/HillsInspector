@@ -133,7 +133,8 @@ def extract_text_from_pdf(pdf_path: Path, vision_service: VisionService, output_
         doc = fitz.open(str(pdf_path))
         print(f"   Converting {len(doc)} page(s) to images...")
 
-        for i, page in enumerate(doc):
+        for i in range(len(doc)):
+            page = doc[i]
             # Render page to image (150 DPI)
             mat = fitz.Matrix(150 / 72, 150 / 72)
             pix = page.get_pixmap(matrix=mat)

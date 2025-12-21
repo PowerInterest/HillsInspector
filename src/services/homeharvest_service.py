@@ -312,13 +312,15 @@ class HomeHarvestService:
             # We search for "sold" to get history/metadata.
             # Use parallel=False for single property lookups - it's slower but more reliable
             # to avoid triggering rate limits from multiple concurrent requests.
-            df = scrape_property(
-                location=location,
-                listing_type="sold",
-                past_days=3650,  # 10 years
-                parallel=False,  # Sequential requests to reduce rate limiting
-                proxy=proxy,
-            )
+            kwargs: dict = {
+                "location": location,
+                "listing_type": "sold",
+                "past_days": 3650,  # 10 years
+                "parallel": False,  # Sequential requests to reduce rate limiting
+            }
+            if proxy:
+                kwargs["proxy"] = proxy
+            df = scrape_property(**kwargs)
 
             if df is None or df.empty:
                 logger.warning(f"No data found for {location}")

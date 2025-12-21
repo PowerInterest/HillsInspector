@@ -35,7 +35,7 @@ ANALYZABLE_DOC_TYPES = {
 
 
 class IngestionService:
-    def __init__(self, ori_scraper: ORIApiScraper = None, analyze_pdfs: bool = True, db_writer: Any = None):
+    def __init__(self, ori_scraper: ORIApiScraper | None = None, analyze_pdfs: bool = True, db_writer: Any = None):
         self.db = PropertyDB()
         self.db_writer = db_writer
         # Share ORI scraper across services to avoid multiple browser sessions

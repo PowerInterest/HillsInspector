@@ -264,9 +264,9 @@ class TitleChainService:
                         }
                         chain.append(implied_entry)
 
-                        match2, score2 = NameMatcher.match(
-                            implied_entry.get("grantee") or "", curr_grantor
-                        )
+                        grantee_val = implied_entry.get("grantee")
+                        grantee_str = grantee_val if isinstance(grantee_val, str) else ""
+                        match2, score2 = NameMatcher.match(grantee_str, curr_grantor)
                         if match2 != "NONE" and score2 >= 0.8:
                             entry["link_status"] = "VERIFIED" if score2 >= 0.95 else "FUZZY"
                             entry["confidence_score"] = score2
@@ -307,8 +307,8 @@ class TitleChainService:
             if tail_implied:
                 new_owner = tail_implied.get("owner")
                 # Only add if it's actually a NEW owner
-                match_type, score = NameMatcher.match(last_owner, new_owner)
-                if match_type == "NONE" and score < 0.8:
+                match_type, score = NameMatcher.match(last_owner, new_owner or "")
+                if match_type == "NONE" and score < 0.8 and new_owner:
                     implied_entry = {
                         "date": tail_implied.get("date"),
                         "grantor": last_owner,
@@ -324,7 +324,7 @@ class TitleChainService:
                         ],
                     }
                     chain.append(implied_entry)
-                    
+
                     # Add gap tracking
                     self._append_gap(gaps, len(chain), last_owner, new_owner, last_entry, implied_entry)
 

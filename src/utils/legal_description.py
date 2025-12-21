@@ -519,7 +519,7 @@ def build_ori_search_terms(folio: str, legal1: str | None, legal2: str | None = 
         search_terms.extend(generate_search_permutations(parsed))
 
     # Priority 2: Combined bulk data legal description
-    bulk_legal = combine_legal_fields(legal1, legal2, legal3, legal4)
+    bulk_legal = combine_legal_fields(legal1 or "", legal2, legal3, legal4)
     if bulk_legal:
         parsed = parse_legal_description(bulk_legal)
         for term in generate_search_permutations(parsed):

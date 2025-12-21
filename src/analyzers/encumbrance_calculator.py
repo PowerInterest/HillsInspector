@@ -14,7 +14,7 @@ class SurvivalAnalysis:
     instrument: str
     encumbrance_type: str
     amount: Optional[float]
-    recording_date: date
+    recording_date: Optional[date]
     survival_status: str  # ACTIVE, SURVIVES_FORECLOSURE, WIPED_BY_FORECLOSURE, SATISFIED
     reason: str
     creditor: str

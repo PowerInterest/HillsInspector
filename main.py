@@ -93,11 +93,15 @@ def handle_new():
         logger.error(f"Failed during initial bulk data ingestion: {e}")
         logger.warning("Database created but bulk data missing. Run: uv run python -m src.ingest.bulk_parcel_ingest --download")
 
-async def handle_test():
+async def handle_test(skip_tax_deeds: bool = False):
     """Run pipeline for next auction data (small set)."""
     logger.info("Running TEST pipeline (small batch)...")
     # Run full pipeline with limited auctions
-    await run_full_pipeline(max_auctions=5, geocode_missing_parcels=False)
+    await run_full_pipeline(
+        max_auctions=5,
+        geocode_missing_parcels=False,
+        skip_tax_deeds=skip_tax_deeds,
+    )
 
 async def handle_update(
     start_date: date | None = None,
@@ -105,6 +109,7 @@ async def handle_update(
     start_step: int = 1,
     geocode_missing_parcels: bool = True,
     geocode_limit: int | None = 25,
+    skip_tax_deeds: bool = False,
 ):
     """Run full update for next 60 days using PipelineOrchestrator.
 
@@ -168,14 +173,17 @@ async def handle_update(
         logger.info("STEP 1.5: SCRAPING TAX DEED AUCTIONS")
         logger.info("=" * 60)
 
-        try:
-            tax_deed_scraper = TaxDeedScraper()
-            tax_props = await tax_deed_scraper.scrape_all(start_date, end_date)
-            for p in tax_props:
-                db.upsert_auction(p)
-            logger.success(f"Scraped {len(tax_props)} tax deed auctions")
-        except Exception as e:
-            logger.error(f"Tax deed scrape failed: {e}")
+        if skip_tax_deeds:
+            logger.info("Skipping tax deed scrape (skip_tax_deeds=True)")
+        else:
+            try:
+                tax_deed_scraper = TaxDeedScraper()
+                tax_props = await tax_deed_scraper.scrape_all(start_date, end_date)
+                for p in tax_props:
+                    db.upsert_auction(p)
+                logger.success(f"Scraped {len(tax_props)} tax deed auctions")
+            except Exception as e:
+                logger.error(f"Tax deed scrape failed: {e}")
 
     # =========================================================================
     # STEP 2: Judgment Extraction (if start_step <= 2)
@@ -333,7 +341,7 @@ async def handle_update(
 
     logger.success("Full update complete.")
 
-async def handle_debug():
+async def handle_debug(skip_tax_deeds: bool = False):
     """Debug run: process a single auction property end-to-end."""
     logger.info("Running DEBUG pipeline (single property)...")
     # Isolate to a clean debug database
@@ -341,7 +349,12 @@ async def handle_debug():
     DEBUG_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     os.environ["HILLS_DB_PATH"] = str(DEBUG_DB_PATH)
     create_database(str(DEBUG_DB_PATH))
-    await run_full_pipeline(max_auctions=1, property_limit=1, geocode_missing_parcels=False)
+    await run_full_pipeline(
+        max_auctions=1,
+        property_limit=1,
+        geocode_missing_parcels=False,
+        skip_tax_deeds=skip_tax_deeds,
+    )
     logger.success("Debug run complete.")
 
 def handle_web(port: int, use_ngrok: bool = False):
@@ -443,6 +456,16 @@ def main():
         default=25,
         help="Max parcels to geocode at pipeline end (default 25, use 0 for no geocoding).",
     )
+    parser.add_argument(
+        "--skip-tax-deeds",
+        action="store_true",
+        help="Skip tax deed auction scraping (default behavior).",
+    )
+    parser.add_argument(
+        "--include-tax-deeds",
+        action="store_true",
+        help="Include tax deed auction scraping.",
+    )
 
     args = parser.parse_args()
 
@@ -464,12 +487,27 @@ def main():
             logger.error(f"Invalid date format: {args.end_date}. Use YYYY-MM-DD.")
             sys.exit(1)
 
+    skip_tax_deeds = True
+    env_skip_tax_deeds = os.getenv("SKIP_TAX_DEEDS")
+    if env_skip_tax_deeds is not None:
+        skip_tax_deeds = env_skip_tax_deeds.strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
+    if args.include_tax_deeds:
+        skip_tax_deeds = False
+    if args.skip_tax_deeds:
+        skip_tax_deeds = True
+
     if args.new:
         handle_new()
     elif args.test:
-        asyncio.run(handle_test())
+        asyncio.run(handle_test(skip_tax_deeds=skip_tax_deeds))
     elif args.debug:
-        asyncio.run(handle_debug())
+        asyncio.run(handle_debug(skip_tax_deeds=skip_tax_deeds))
     elif args.update:
         geocode_missing = not args.no_geocode and args.geocode_limit != 0
         geocode_limit = None if args.geocode_limit == 0 else args.geocode_limit
@@ -480,6 +518,7 @@ def main():
                 start_step=args.start_step,
                 geocode_missing_parcels=geocode_missing,
                 geocode_limit=geocode_limit,
+                skip_tax_deeds=skip_tax_deeds,
             )
         )
     elif args.web:

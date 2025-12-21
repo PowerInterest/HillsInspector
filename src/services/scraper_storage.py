@@ -473,7 +473,7 @@ class ScraperStorage:
         success: bool = True,
         error: Optional[str] = None,
         source_url: Optional[str] = None
-    ) -> int:
+    ) -> Optional[int]:
         """
         Record a scraper run in the database.
 
@@ -532,7 +532,7 @@ class ScraperStorage:
         """, [property_id, scraper]).fetchone()
 
         conn.close()
-        return result[0]
+        return result[0] if result else None
 
     def _extract_summary(self, scraper: str, vision_data: Dict) -> Dict:
         """Extract key summary fields from vision data."""
@@ -723,6 +723,8 @@ def reprocess_screenshots(scraper: str, prompt_version: str = "v2", limit: int =
 
     for record in unprocessed:
         if not record.screenshot_path:
+            continue
+        if record.id is None:
             continue
 
         screenshot_path = storage.get_full_path(record.property_id, record.screenshot_path)

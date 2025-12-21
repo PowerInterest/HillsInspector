@@ -365,7 +365,9 @@ async def _scrape_hcpa_property_impl(
                     text = await parent.inner_text()
                     match = re.search(r'Year Built\s+(\d+)', text)
                     if match:
-                        result["building_info"]["year_built"] = match.group(1)
+                        building_info = result.get("building_info")
+                        if isinstance(building_info, dict):
+                            building_info["year_built"] = match.group(1)
 
                 # Get building type
                 type_elem = page.locator("text=Type:").first
@@ -374,7 +376,9 @@ async def _scrape_hcpa_property_impl(
                     text = await parent.inner_text()
                     match = re.search(r'Type:\s+(.+)', text)
                     if match:
-                        result["building_info"]["type"] = match.group(1).strip()
+                        building_info = result.get("building_info")
+                        if isinstance(building_info, dict):
+                            building_info["type"] = match.group(1).strip()
         except Exception as e:
             logger.error(f"Error extracting building info: {e}")
 
@@ -427,7 +431,8 @@ async def _scrape_hcpa_property_impl(
 
             # Also look for permits in a table
             permit_table = page.locator("table").filter(has_text="Permit").first
-            if await permit_table.count() > 0 and len(result["permits"]) == 0:
+            permits_list = result.get("permits", [])
+            if await permit_table.count() > 0 and isinstance(permits_list, list) and len(permits_list) == 0:
                 permit_rows = await permit_table.locator("tr").all()
                 for row in permit_rows[1:]:  # Skip header
                     cells = await row.locator("td").all()
@@ -462,7 +467,7 @@ async def _scrape_hcpa_property_impl(
             logger.debug(f"Error stopping playwright: {e}")
 
     # Save raw data
-    prop_id = folio if folio else parcel_id
+    prop_id = folio or parcel_id or "unknown"
     raw_path = storage.save_raw_data(
         property_id=prop_id,
         scraper="hcpa_gis",

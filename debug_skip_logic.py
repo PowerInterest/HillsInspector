@@ -1,6 +1,6 @@
 
 import duckdb
-from datetime import datetime, date, timedelta, UTC
+from datetime import UTC, date, datetime
 from src.db.operations import PropertyDB
 
 db = PropertyDB()

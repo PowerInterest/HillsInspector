@@ -42,7 +42,7 @@ def extract_lot_block(legal_description: str) -> Optional[Tuple[str, str]]:
     return None
 
 
-def extract_unit_condo(legal_description: str) -> Optional[Tuple[str, str]]:
+def extract_unit_condo(legal_description: str) -> Optional[Tuple[str, str | None]]:
     """
     Extract UNIT and CONDO/BUILDING info from a legal description.
 

@@ -389,7 +389,7 @@ class PermitScraper:
                 for p in data["permits"]:
                     permit = Permit(
                         permit_number=p.get("permit_number", "Unknown"),
-                        permit_type=p.get("permit_type", "Unknown"),
+                        type=p.get("permit_type", "Unknown"),
                         status=p.get("status", "Unknown"),
                         description=p.get("description"),
                     )
@@ -533,7 +533,7 @@ class PermitScraper:
 
                     permit = Permit(
                         permit_number=permit_num,
-                        permit_type=permit_type,
+                        type=permit_type,
                         status=status,
                         module=module,
                         description=desc,

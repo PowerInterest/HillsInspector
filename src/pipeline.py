@@ -336,6 +336,9 @@ async def _download_missing_judgment_pdfs(
                 for auction in date_auctions:
                     case_number = auction["case_number"]
                     parcel_id = auction.get("parcel_id") or auction.get("folio")
+                    if not parcel_id:
+                        logger.warning(f"No parcel_id for case {case_number}, skipping PDF download")
+                        continue
 
                     normalized_case = _normalize_case_number(case_number)
                     case_href = case_hrefs.get(normalized_case)
@@ -467,6 +470,7 @@ async def run_full_pipeline(
     end_date: Optional[date] = None,
     geocode_missing_parcels: bool = False,
     geocode_limit: int | None = 25,
+    skip_tax_deeds: bool = False,
 ):
     """Run the complete property analysis pipeline with smart skip logic.
 
@@ -478,6 +482,7 @@ async def run_full_pipeline(
         end_date: Date to stop scraping (inclusive). Defaults to 30 days after start_date.
         geocode_missing_parcels: Whether to geocode parcels missing latitude/longitude.
         geocode_limit: Maximum number of parcels to geocode per run (None = no limit).
+        skip_tax_deeds: Whether to skip tax deed auction scraping.
     """
 
     logger.info("=" * 60)
@@ -559,7 +564,9 @@ async def run_full_pipeline(
     logger.info("=" * 60)
 
     tax_properties: list[Property] = []
-    if start_step > 1:
+    if skip_tax_deeds:
+        logger.info("Skipping step 1.5 (skip_tax_deeds=True)")
+    elif start_step > 1:
         logger.info("Skipping step 1.5 (start_step > 1)")
     elif property_limit and len(properties) >= property_limit:
         logger.info("Property limit reached; skipping tax deed scrape")
@@ -961,7 +968,7 @@ async def run_full_pipeline(
         from src.utils.legal_description import parse_legal_description, generate_search_permutations
 
         parsed_legal = parse_legal_description(primary_legal)
-        search_terms = generate_search_permutations(parsed_legal)
+        search_terms: list[str | tuple] = list(generate_search_permutations(parsed_legal))
 
         # Add filter info for post-search filtering (for browser-based searches
         # that might return broader results)
@@ -1206,8 +1213,9 @@ async def run_full_pipeline(
                     defendant_names = [d.get("name") for d in defs if d.get("name")]
                 
                 # Fallback to single string split if list missing
-                if not defendant_names and judgment_data.get("defendant"):
-                    defendant_names = [judgment_data.get("defendant")]
+                defendant = judgment_data.get("defendant")
+                if not defendant_names and defendant:
+                    defendant_names = [defendant]
 
             # Run the new analyzer
             survival_result = survival_analyzer.analyze(
@@ -1364,8 +1372,8 @@ async def run_full_pipeline(
                 # Fetch ORI docs for NOC linking
                 try:
                     ori_docs = db.execute_query(
-                        "SELECT document_type as doc_type, recording_date as record_date, instrument_number as instrument FROM documents WHERE folio = ?", 
-                        [folio]
+                        "SELECT document_type as doc_type, recording_date as record_date, instrument_number as instrument FROM documents WHERE folio = ?",
+                        (folio,)
                     )
                     # Helper to format date for linker if needed
                     for d in ori_docs:
@@ -1752,7 +1760,7 @@ async def run_full_pipeline(
             params.append(geocode_limit)
 
         try:
-            rows = db.execute_query(query, params)
+            rows = db.execute_query(query, tuple(params))
         except Exception as exc:
             logger.error(f"Failed to query parcels needing geocode: {exc}")
             rows = []

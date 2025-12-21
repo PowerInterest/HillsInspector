@@ -1,5 +1,5 @@
 from datetime import date
-from typing import List, Optional
+from typing import Any, List, Optional
 from pydantic import BaseModel, Field
 
 class Lien(BaseModel):
@@ -100,4 +100,5 @@ class Property(BaseModel):
     market_analysis_content: Optional[str] = None # Stored OCR text
 
     # ORI search terms (built from legal description permutations)
-    legal_search_terms: List[str] = Field(default_factory=list)
+    # Can include tuples with filter metadata for post-search filtering
+    legal_search_terms: List[Any] = Field(default_factory=list)

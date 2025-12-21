@@ -223,8 +223,9 @@ class PipelineOrchestrator:
                 def_names = [d.get("name") for d in defs if d.get("name")]
 
         # Fallback to single string if list missing (matches old pipeline)
-        if not def_names and judgment_data.get("defendant"):
-            def_names = [judgment_data.get("defendant")]
+        defendant = judgment_data.get("defendant")
+        if not def_names and defendant:
+            def_names = [defendant]
 
         survival_result = self.survival_analyzer.analyze(
             encumbrances=encumbrances,
@@ -310,7 +311,11 @@ class PipelineOrchestrator:
         """
         parcel_id = auction_dict.get('parcel_id')
         case_number = auction_dict.get('case_number')
-        
+
+        if not case_number:
+            logger.warning(f"Skipping enrichment: No case_number for parcel {parcel_id}")
+            return
+
         # Determine address early
         address = auction_dict.get('address') or auction_dict.get('location_address') or auction_dict.get('property_address') or "Unknown"
 
@@ -369,7 +374,7 @@ class PipelineOrchestrator:
             tg.create_task(self._run_market_scraper(parcel_id, prop.address))
             tg.create_task(self._run_homeharvest(prop))
             tg.create_task(self._run_fema_checker(parcel_id, prop.address))
-            tg.create_task(self._run_sunbiz_scraper(parcel_id, prop.owner_name))
+            tg.create_task(self._run_sunbiz_scraper(parcel_id, prop.owner_name or ""))
             tg.create_task(self._run_hcpa_gis(parcel_id))
 
         # PHASE 2: ORI Ingestion (Depends on Legal Description from HCPA/Bulk)
@@ -441,7 +446,7 @@ class PipelineOrchestrator:
                 # Build search terms (matches old pipeline logic exactly)
                 prop.legal_description = primary_legal
                 parsed = parse_legal_description(primary_legal)
-                terms = generate_search_permutations(parsed)
+                terms: list[str | tuple] = list(generate_search_permutations(parsed))
 
                 # Add filter info for post-search filtering
                 lot_filter = parsed.lots or ([parsed.lot] if parsed.lot else None)

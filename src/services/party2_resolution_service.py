@@ -292,7 +292,7 @@ class Party2ResolutionService:
 
             if party2:
                 logger.info(f"Extracted Party 2 via OCR: {party2}")
-                is_self_transfer, transfer_type = self._detect_self_transfer(party1, party2)
+                is_self_transfer, transfer_type = self._detect_self_transfer(party1 or "", party2)
                 return Party2Resolution(
                     party2=party2,
                     method="ocr_extraction",
