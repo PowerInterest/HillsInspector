@@ -2,6 +2,7 @@ from typing import List, Dict, Optional, Tuple, Any
 from datetime import UTC, datetime, date
 from dataclasses import dataclass
 from loguru import logger
+from src.utils.time import now_utc
 import re
 import json
 
@@ -94,7 +95,7 @@ class TitleChainService:
         if chain:
             oldest_date = self._parse_date(chain[0].get("date"))
             if oldest_date != datetime.min.replace(tzinfo=UTC):
-                years_covered = (datetime.now(tz=UTC) - oldest_date).days / 365.25
+                years_covered = (now_utc() - oldest_date).days / 365.25
                 if years_covered >= 30:
                     mrta_status = "SATISFIED"
                 else:

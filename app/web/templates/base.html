@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,6 +10,7 @@
     <script src="/static/leaflet/leaflet.js"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
 </head>
+
 <body>
     <header class="header">
         <div class="header-content">
@@ -17,16 +19,12 @@
                 <a href="/" class="nav-link">Dashboard</a>
                 <a href="/auctions" class="nav-link">Auctions</a>
                 <a href="/review/hcpa-failures" class="nav-link">Review Queue</a>
+                <a href="/history" class="nav-link">History</a>
             </nav>
             <div class="search-box">
-                <input type="text"
-                       name="q"
-                       placeholder="Search address, folio, or owner..."
-                       hx-get="/api/search"
-                       hx-trigger="keyup changed delay:500ms"
-                       hx-target="#search-results"
-                       hx-indicator="#search-spinner"
-                       autocomplete="off">
+                <input type="text" name="q" placeholder="Search address, folio, or owner..." hx-get="/api/search"
+                    hx-trigger="keyup changed delay:500ms" hx-target="#search-results" hx-indicator="#search-spinner"
+                    autocomplete="off">
                 <span id="search-spinner" class="htmx-indicator">...</span>
                 <div id="search-results" class="search-results"></div>
             </div>
@@ -57,7 +55,7 @@
         }
 
         // Ensure first tab is active on load if it exists
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', function () {
             const firstTab = document.querySelector('.tab-link');
             if (firstTab) {
                 firstTab.click();
@@ -65,4 +63,5 @@
         });
     </script>
 </body>
+
 </html>

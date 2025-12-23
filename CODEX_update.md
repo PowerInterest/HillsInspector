@@ -55,7 +55,7 @@ This note documents the changes made in this workspace around:
   - Users asked: “Which lien is foreclosing?” — if judgment parsing misses book/page/instrument, we need a clearly-labeled inference path rather than showing nothing.
 
 ### 5) Pipeline writes richer survival metadata to DB
-- File: `src/pipeline.py`
+- File: `src/orchestrator.py`
 - Changes:
   - Passes `defendants=None` when we have no extracted list (so the analyzer can treat “joined” as unknown instead of false).
   - When analyzer returns `is_inferred=True` for the foreclosing lien, pipeline persists it via `update_encumbrance_survival(..., is_inferred=True)`.
@@ -133,4 +133,3 @@ This note documents the changes made in this workspace around:
 - Add a “foreclosing match confidence” and (optionally) show top 2–3 candidate mortgages when inferred.
 - Improve defendant/joinder extraction reliability (and/or cross-check against docket party lists).
 - Add a small “re-run lien survival” control in the UI for a folio to make recomputation explicit when documents are updated.
-

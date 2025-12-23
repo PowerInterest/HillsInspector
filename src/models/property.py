@@ -30,6 +30,7 @@ class TaxStatus(BaseModel):
     last_payment: Optional[str] = None
     certificates: List[TaxCertificate] = Field(default_factory=list)
     liens: List[Lien] = Field(default_factory=list)
+    screenshot_path: Optional[str] = None
 
 
 class Permit(BaseModel):
@@ -41,6 +42,7 @@ class Permit(BaseModel):
     description: Optional[str] = None
     work_description: Optional[str] = None
     type: str
+    address: Optional[str] = None
     contractor: Optional[str] = None
     contractor_license: Optional[str] = None
     estimated_cost: Optional[float] = None
@@ -48,6 +50,14 @@ class Permit(BaseModel):
     url: Optional[str] = None
     noc_instrument: Optional[str] = None
     module: Optional[str] = None
+
+    @property
+    def permit_type(self) -> str:
+        return self.type
+
+    @permit_type.setter
+    def permit_type(self, value: str) -> None:
+        self.type = value
 
 class ListingDetails(BaseModel):
     price: Optional[float] = None
@@ -57,6 +67,9 @@ class ListingDetails(BaseModel):
     photos: List[str] = Field(default_factory=list)
     estimates: dict = Field(default_factory=dict)  # source -> amount
     screenshot_path: Optional[str] = None
+    days_on_market: Optional[int] = None
+    hoa_monthly: Optional[float] = None
+    price_history: List[dict] = Field(default_factory=list)
 
 class Property(BaseModel):
     case_number: str
@@ -102,3 +115,10 @@ class Property(BaseModel):
     # ORI search terms (built from legal description permutations)
     # Can include tuples with filter metadata for post-search filtering
     legal_search_terms: List[Any] = Field(default_factory=list)
+
+    # Judgment extraction data (populated by scraper, written by orchestrator)
+    judgment_payload: Optional[dict] = None
+
+    # HCPA scrape status (populated by scraper, written by orchestrator)
+    hcpa_scrape_failed: bool = False
+    hcpa_scrape_error: Optional[str] = None

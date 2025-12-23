@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from loguru import logger
+from src.utils.time import ensure_duckdb_utc, today_local
 
 
 # =============================================================================
@@ -92,6 +93,7 @@ def get_connection(retries: int = 2, retry_delay: float = 0.5) -> duckdb.DuckDBP
     for attempt in range(retries + 1):
         try:
             conn = duckdb.connect(str(DB_PATH), read_only=True)
+            ensure_duckdb_utc(conn)
             # Quick validation query
             conn.execute("SELECT 1").fetchone()
             return conn
@@ -139,7 +141,9 @@ def get_write_connection(retries: int = 3, retry_delay: float = 1.0) -> duckdb.D
 
     for attempt in range(retries + 1):
         try:
-            return duckdb.connect(str(DB_PATH))  # Not read-only
+            conn = duckdb.connect(str(DB_PATH))  # Not read-only
+            ensure_duckdb_utc(conn)
+            return conn
         except Exception as e:
             if _is_corruption_error(e):
                 raise DatabaseUnavailableError(
@@ -249,7 +253,7 @@ def get_upcoming_auctions(
     """
     conn = get_connection()
 
-    today = datetime.now(tz=UTC).date()
+    today = today_local()
     end_date = today + timedelta(days=days_ahead)
 
     # Build query with optional joins to bulk_parcels
@@ -406,7 +410,7 @@ def get_auction_count(
     """Get total count of upcoming auctions."""
     conn = get_connection()
 
-    today = datetime.now(tz=UTC).date()
+    today = today_local()
     end_date = today + timedelta(days=days_ahead)
 
     query = """
@@ -834,7 +838,7 @@ def get_dashboard_stats() -> Dict[str, Any]:
     """Get summary statistics for the dashboard."""
     conn = get_connection()
 
-    today = datetime.now(tz=UTC).date()
+    today = today_local()
 
     try:
         stats = {}
@@ -1136,6 +1140,7 @@ def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
     if SCRAPER_DB_PATH.exists() and folios_unique:
         try:
             conn = duckdb.connect(str(SCRAPER_DB_PATH), read_only=True)
+            ensure_duckdb_utc(conn)
             placeholders = ",".join(["?"] * len(folios_unique))
 
             for scraper in ["fema", "permits", "sunbiz", "realtor"]:

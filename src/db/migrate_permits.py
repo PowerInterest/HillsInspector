@@ -1,10 +1,12 @@
 import duckdb
 from contextlib import suppress
 from loguru import logger
+from src.utils.time import ensure_duckdb_utc
 
 def migrate():
     db_path = "data/property_master.db"
     conn = duckdb.connect(db_path)
+    ensure_duckdb_utc(conn)
     
     try:
         # Create table if not exists

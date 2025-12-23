@@ -20,10 +20,10 @@ A data ingestion and analysis pipeline for Hillsborough County real estate, focu
 
 **All operations are handled via the `main.py` entry point.**
 
-### 1. Run a Quick Test
-Runs the pipeline for the next 5 auctions to verify functionality.
+### 1. Run a Quick Sanity Update
+Runs the pipeline for a single day with a small auction cap to verify functionality.
 ```powershell
-uv run main.py --test
+uv run main.py --update --start-date YYYY-MM-DD --end-date YYYY-MM-DD --auction-limit 5
 ```
 
 ### 2. Run Full Update

@@ -139,10 +139,8 @@ uv run main.py --update --start-date 2025-01-15 --end-date 2025-02-15
 uv run main.py --update --start-step 3
 
 # Small test run (5 auctions)
-uv run main.py --test
+uv run main.py --update --start-date YYYY-MM-DD --end-date YYYY-MM-DD --auction-limit 5
 
-# Single property debug
-uv run main.py --debug
 ```
 
 ## Files

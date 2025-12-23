@@ -1,7 +1,6 @@
 import asyncio
 import random
 import time
-from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -10,6 +9,7 @@ from urllib.parse import quote
 import requests
 from loguru import logger
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from src.utils.time import now_utc, today_local
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 
@@ -161,7 +161,7 @@ class ORIApiScraper:
         payload = {
             "DocType": self.TITLE_DOC_TYPES,
             "RecordDateBegin": start_date,
-            "RecordDateEnd": datetime.now().strftime("%m/%d/%Y"),
+            "RecordDateEnd": today_local().strftime("%m/%d/%Y"),
             "Legal": ["CONTAINS", clean_legal],
         }
         return self._execute_search(payload)
@@ -177,7 +177,7 @@ class ORIApiScraper:
         payload = {
             "DocType": self.TITLE_DOC_TYPES,
             "RecordDateBegin": start_date,
-            "RecordDateEnd": datetime.now().strftime("%m/%d/%Y"),
+            "RecordDateEnd": today_local().strftime("%m/%d/%Y"),
             "Party": party_name,
         }
         return self._execute_search(payload)
@@ -195,7 +195,7 @@ class ORIApiScraper:
         """
         payload = {
             "RecordDateBegin": "01/01/1900",
-            "RecordDateEnd": datetime.now().strftime("%m/%d/%Y"),
+            "RecordDateEnd": today_local().strftime("%m/%d/%Y"),
             "Instrument": instrument,
         }
         # Only add doc type filter if requested (can cause 400 errors on some searches)
@@ -424,12 +424,14 @@ class ORIApiScraper:
             logger.debug(f"Error fetching document ID for {instrument}: {e}")
             return None
 
-    async def _ensure_browser(self, headless: bool = True, force_new_context: bool = False):
+    async def _ensure_browser(self, headless: bool = True):
         """Ensure browser is initialized and running.
+
+        Only ensures the browser process is started. Contexts are created
+        per-search via _create_isolated_context() for thread safety.
 
         Args:
             headless: Run in headless mode
-            force_new_context: If True, create a new context with fresh fingerprint
         """
         if self.browser is None:
             self.playwright = await async_playwright().start()
@@ -444,23 +446,33 @@ class ORIApiScraper:
                     '--disable-features=IsolateOrigins,site-per-process'
                 ]
             )
+            logger.info("Browser launched")
 
-        if self.context is None or force_new_context:
-            # Close existing context if forcing new one
-            if self.context is not None:
-                await self.context.close()
+    async def _create_isolated_context(self):
+        """Create an isolated browser context for a single search operation.
 
-            # Get randomized browser fingerprint
-            config = get_random_browser_config()
-            logger.debug(f"Browser config: UA={config['user_agent'][:50]}..., viewport={config['viewport']}, tz={config['timezone_id']}")
+        Each concurrent search gets its own context, preventing race conditions
+        where one search's timeout/retry would invalidate another's pages.
 
-            self.context = await self.browser.new_context(
-                user_agent=config['user_agent'],
-                viewport=config['viewport'],
-                locale=config['locale'],
-                timezone_id=config['timezone_id']
-            )
-            logger.info("Browser context initialized with randomized fingerprint")
+        Returns:
+            A new BrowserContext with randomized fingerprint
+
+        Raises:
+            RuntimeError: If browser is not initialized
+        """
+        if self.browser is None:
+            raise RuntimeError("Browser not initialized. Call _ensure_browser first.")
+
+        # Get randomized browser fingerprint for this context
+        config = get_random_browser_config()
+        logger.debug(f"Creating isolated context: UA={config['user_agent'][:50]}..., viewport={config['viewport']}")
+
+        return await self.browser.new_context(
+            user_agent=config['user_agent'],
+            viewport=config['viewport'],
+            locale=config['locale'],
+            timezone_id=config['timezone_id']
+        )
 
     async def close_browser(self):
         """Close the persistent browser."""
@@ -481,6 +493,7 @@ class ORIApiScraper:
         Args:
             legal_desc: Legal description to search (e.g., "L 198 TUSCANY*" with wildcard)
             headless: Run browser in headless mode
+            force_new_context: Deprecated, ignored (each search now uses isolated context)
 
         Returns:
             List of document records with full metadata
@@ -489,74 +502,104 @@ class ORIApiScraper:
         url = f"https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=321&OBKey__1011_1={quote(legal_desc)}"
         logger.info(f"Searching ORI by legal: {legal_desc}")
 
-        # Ensure browser is running
-        await self._ensure_browser(headless, force_new_context=force_new_context)
+        # Ensure browser is running (shared across searches)
+        await self._ensure_browser(headless)
 
-        # Create new page for this search with stealth
-        page = await self.context.new_page()
-        await apply_stealth(page)
-        debug_dir = Path("logs/ori_browser_debug")
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        safe_term = "".join(ch if ch.isalnum() else "_" for ch in legal_desc)[:50]
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        screenshot_path = debug_dir / f"legal_{safe_term}_{timestamp}.png"
+        max_attempts = 2
+        for attempt in range(1, max_attempts + 1):
+            # Create isolated context for this search attempt
+            context = await self._create_isolated_context()
+            page = None
 
-        try:
-            logger.info(f"ORI Browser GET: {url}")
-            await page.goto(url, timeout=60000)
-            # Use domcontentloaded instead of networkidle (faster, less prone to hanging)
-            await page.wait_for_load_state("domcontentloaded", timeout=30000)
-            await page.wait_for_selector("table tbody tr", timeout=30000)
-            await asyncio.sleep(2)  # Give table time to render fully
+            debug_dir = Path("logs/ori_browser_debug")
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            safe_term = "".join(ch if ch.isalnum() else "_" for ch in legal_desc)[:50]
+            timestamp = now_utc().strftime("%Y%m%d_%H%M%S")
+            screenshot_path = debug_dir / f"legal_{safe_term}_{timestamp}.png"
 
-            # Get column headers
-            headers = await page.query_selector_all("table thead th")
-            header_names = [await h.inner_text() for h in headers]
+            try:
+                # Create new page for this search with stealth
+                page = await context.new_page()
+                await apply_stealth(page)
 
-            # Get all data rows
-            rows = await page.query_selector_all("table tbody tr")
+                logger.info(f"ORI Browser GET: {url}")
+                await page.goto(url, timeout=60000)
+                # Use domcontentloaded instead of networkidle (faster, less prone to hanging)
+                await page.wait_for_load_state("domcontentloaded", timeout=30000)
+                await page.wait_for_selector("table tbody tr", timeout=30000)
+                await asyncio.sleep(2)  # Give table time to render fully
 
-            if not rows:
-                await page.screenshot(path=str(screenshot_path), full_page=True)
-                logger.warning(f"No table rows found for legal '{legal_desc}'. Screenshot saved to {screenshot_path}")
+                # Get column headers
+                headers = await page.query_selector_all("table thead th")
+                header_names = [await h.inner_text() for h in headers]
+
+                # Get all data rows
+                rows = await page.query_selector_all("table tbody tr")
+
+                if not rows:
+                    await page.screenshot(path=str(screenshot_path), full_page=True)
+                    logger.warning(f"No table rows found for legal '{legal_desc}'. Screenshot saved to {screenshot_path}")
+                    return []
+
+                results = []
+                for row in rows:
+                    cells = await row.query_selector_all("td")
+                    if len(cells) >= 4:
+                        data = {}
+                        for i, cell in enumerate(cells):
+                            if i < len(header_names):
+                                data[header_names[i]] = (await cell.inner_text()).strip()
+
+                        # Normalize to standard field names
+                        normalized = {
+                            "person_type": data.get("ORI - Person Type", ""),
+                            "name": data.get("Name", ""),
+                            "record_date": data.get("Recording Date Time", ""),
+                            "doc_type": data.get("ORI - Doc Type", ""),
+                            "book_type": data.get("Book Type", ""),
+                            "book_num": data.get("Book #", ""),
+                            "page_num": data.get("Page #", ""),
+                            "legal": data.get("Legal Description", ""),
+                            "instrument": data.get("Instrument #", ""),
+                        }
+                        results.append(normalized)
+
+                logger.info(f"Found {len(results)} records for legal: {legal_desc}")
+                return results
+
+            except PlaywrightTimeoutError as e:
+                if page:
+                    await page.screenshot(path=str(screenshot_path), full_page=True)
+                logger.warning(
+                    f"Timeout while searching ORI by legal '{legal_desc}' (attempt {attempt}/{max_attempts}): "
+                    f"{e}. Screenshot: {screenshot_path}"
+                )
+                if attempt < max_attempts:
+                    continue
+                # Fallback to API search (limited results but better than none)
+                try:
+                    fallback = self.search_by_legal(legal_desc)
+                    if fallback:
+                        logger.warning(
+                            f"ORI browser timed out; fallback API returned {len(fallback)} results for {legal_desc}"
+                        )
+                    return fallback or []
+                except Exception as api_exc:
+                    logger.warning(f"ORI API fallback failed for {legal_desc}: {api_exc}")
+                    return []
+            except Exception as e:
+                if page:
+                    await page.screenshot(path=str(screenshot_path), full_page=True)
+                logger.warning(f"Error searching ORI by legal '{legal_desc}': {e}. Screenshot: {screenshot_path}")
+                if attempt < max_attempts:
+                    continue
                 return []
+            finally:
+                # Close the isolated context (and its page) - won't affect other concurrent searches
+                await context.close()
 
-            results = []
-            for row in rows:
-                cells = await row.query_selector_all("td")
-                if len(cells) >= 4:
-                    data = {}
-                    for i, cell in enumerate(cells):
-                        if i < len(header_names):
-                            data[header_names[i]] = (await cell.inner_text()).strip()
-
-                    # Normalize to standard field names
-                    normalized = {
-                        "person_type": data.get("ORI - Person Type", ""),
-                        "name": data.get("Name", ""),
-                        "record_date": data.get("Recording Date Time", ""),
-                        "doc_type": data.get("ORI - Doc Type", ""),
-                        "book_type": data.get("Book Type", ""),
-                        "book_num": data.get("Book #", ""),
-                        "page_num": data.get("Page #", ""),
-                        "legal": data.get("Legal Description", ""),
-                        "instrument": data.get("Instrument #", ""),
-                    }
-                    results.append(normalized)
-
-            logger.info(f"Found {len(results)} records for legal: {legal_desc}")
-            return results
-
-        except PlaywrightTimeoutError as e:
-            await page.screenshot(path=str(screenshot_path), full_page=True)
-            logger.error(f"Timeout while searching ORI by legal '{legal_desc}': {e}. Screenshot: {screenshot_path}")
-            return []
-        except Exception as e:
-            await page.screenshot(path=str(screenshot_path), full_page=True)
-            logger.error(f"Error searching ORI by legal '{legal_desc}': {e}. Screenshot: {screenshot_path}")
-            return []
-        finally:
-            await page.close()  # Close the page, but keep browser alive
+        # Should not reach here, but satisfy type checker
+        return []
 
     def search_by_legal_sync(self, legal_desc: str, headless: bool = True, timeout: int = 60) -> List[Dict[str, Any]]:
         """Synchronous wrapper for search_by_legal_browser with timeout protection.
@@ -629,14 +672,17 @@ asyncio.run(main())
         url = f"https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=326&OBKey__486_1={quote(party_name)}"
         logger.info(f"Searching ORI by party name: {party_name}")
 
-        # Ensure browser is running
+        # Ensure browser is running (shared across searches)
         await self._ensure_browser(headless)
 
-        # Create new page for this search with stealth
-        page = await self.context.new_page()
-        await apply_stealth(page)
+        # Create isolated context for this search
+        context = await self._create_isolated_context()
 
         try:
+            # Create new page for this search with stealth
+            page = await context.new_page()
+            await apply_stealth(page)
+
             logger.info(f"ORI Browser GET: {url}")
             await page.goto(url, timeout=60000)
             # Use domcontentloaded instead of networkidle (faster, less prone to hanging)
@@ -680,7 +726,8 @@ asyncio.run(main())
             logger.error(f"Error searching ORI by party: {e}")
             return []
         finally:
-            await page.close()  # Close the page, but keep browser alive
+            # Close the isolated context - won't affect other concurrent searches
+            await context.close()
 
     def search_by_party_browser_sync(self, party_name: str, headless: bool = True, timeout: int = 60) -> List[Dict[str, Any]]:
         """Synchronous wrapper for search_by_party_browser with timeout protection.
@@ -761,14 +808,17 @@ asyncio.run(main())
                f"?CQID=326&OBKey__486_1={quote(party_name)}&OBKey__1006_1={quote(instrument)}")
         logger.info(f"Searching ORI by party+instrument: {party_name} / {instrument}")
 
-        # Ensure browser is running
+        # Ensure browser is running (shared across searches)
         await self._ensure_browser(headless)
 
-        # Create new page for this search with stealth
-        page = await self.context.new_page()
-        await apply_stealth(page)
+        # Create isolated context for this search
+        context = await self._create_isolated_context()
 
         try:
+            # Create new page for this search with stealth
+            page = await context.new_page()
+            await apply_stealth(page)
+
             logger.info(f"ORI Browser GET: {url}")
             await page.goto(url, timeout=60000)
             await page.wait_for_load_state("domcontentloaded", timeout=30000)
@@ -810,7 +860,8 @@ asyncio.run(main())
             logger.error(f"Error searching ORI by party+instrument: {e}")
             return []
         finally:
-            await page.close()
+            # Close the isolated context - won't affect other concurrent searches
+            await context.close()
 
     async def find_party2_for_instrument_async(self, grantor_name: str, instrument: str) -> Optional[str]:
         """
@@ -930,7 +981,7 @@ asyncio.run(main())
             output_dir: Directory to save PDF
             doc_type: Document type for filename
             headless: Run browser in headless mode
-            fresh_context: If True, create new browser context with fresh fingerprint
+            fresh_context: Deprecated, ignored (each download now uses isolated context)
             record_date: Recording date for filename (YYYYMMDD format)
 
         Returns:
@@ -955,17 +1006,20 @@ asyncio.run(main())
         # Anti-detection: Random delay before request
         await random_delay_async(2.0, 5.0)
 
-        # Ensure browser is running (with optional fresh fingerprint)
-        await self._ensure_browser(headless, force_new_context=fresh_context)
+        # Ensure browser is running (shared across downloads)
+        await self._ensure_browser(headless)
+
+        # Create isolated context for this download
+        context = await self._create_isolated_context()
 
         # Use CQID=320 for instrument search (OBKey__1006_1 is the instrument number parameter)
         url = f"https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=320&OBKey__1006_1={instrument}"
         logger.info(f"Downloading PDF for instrument {instrument}...")
 
-        page = await self.context.new_page()
-        await apply_stealth(page)
-
         try:
+            page = await context.new_page()
+            await apply_stealth(page)
+
             # Set up response listener to capture document ID
             doc_id_future = asyncio.get_event_loop().create_future()
 
@@ -992,7 +1046,6 @@ asyncio.run(main())
                 doc_id = await asyncio.wait_for(doc_id_future, timeout=10.0)
             except TimeoutError:
                 logger.warning(f"Could not find Document ID for instrument {instrument}")
-                await page.close()
                 return None
 
             logger.debug(f"Found document ID: {doc_id}")
@@ -1015,14 +1068,12 @@ asyncio.run(main())
             # Verify it's a valid PDF
             if pdf_bytes[:4] != b"%PDF":
                 logger.warning(f"Downloaded file is not a valid PDF for {instrument}")
-                await page.close()
                 return None
 
             with open(filepath, "wb") as f:
                 f.write(pdf_bytes)
 
             logger.success(f"Downloaded PDF: {filepath.name} ({len(pdf_bytes)} bytes)")
-            await page.close()
 
             # Anti-detection: Random delay after successful download
             await random_delay_async(1.0, 3.0)
@@ -1031,9 +1082,10 @@ asyncio.run(main())
 
         except Exception as e:
             logger.error(f"Error downloading PDF for {instrument}: {e}")
-            with suppress(Exception):
-                await page.close()
             return None
+        finally:
+            # Close the isolated context - won't affect other concurrent operations
+            await context.close()
 
     def download_pdf_browser_sync(self, instrument: str, output_dir: Path, doc_type: str = "UNKNOWN", headless: bool = True, fresh_context: bool = False, timeout: int = 90, record_date: str = "") -> Optional[Path]:
         """Synchronous wrapper for download_pdf_browser with timeout protection.

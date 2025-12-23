@@ -5,18 +5,19 @@ import re
 from contextlib import suppress
 from datetime import date, timedelta
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
 import urllib.parse
 from loguru import logger
 from playwright.async_api import async_playwright, Page, TimeoutError as PlaywrightTimeoutError
 from playwright_stealth import Stealth
 
 from src.models.property import Property
-from src.db.operations import PropertyDB
-
 
 from src.services.final_judgment_processor import FinalJudgmentProcessor
 from src.scrapers.hcpa_gis_scraper import scrape_hcpa_property
+
+if TYPE_CHECKING:
+    from src.services.scraper_storage import ScraperStorage
 
 
 async def apply_stealth(page):
@@ -30,11 +31,23 @@ USER_AGENT_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.
 class AuctionScraper:
     BASE_URL = "https://hillsborough.realforeclose.com"
 
-    def __init__(self):
-        self.db = PropertyDB()
-        self.judgment_processor = FinalJudgmentProcessor()
+    def __init__(
+        self,
+        storage: "ScraperStorage | None" = None,
+        judgment_processor: FinalJudgmentProcessor | None = None,
+        process_final_judgments: bool = False,
+    ):
+        """
+        Initialize AuctionScraper.
+
+        Note: This scraper returns data only. All DB writes are handled by the orchestrator.
+        """
+        self.process_final_judgments = process_final_judgments
+        self.judgment_processor = None
+        if self.process_final_judgments:
+            self.judgment_processor = judgment_processor or FinalJudgmentProcessor()
         from src.services.scraper_storage import ScraperStorage
-        self.storage = ScraperStorage()
+        self.storage = storage or ScraperStorage()
 
     async def scrape_next_available(self, start_date: date, max_days_ahead: int = 14) -> List[Property]:
         """Try current date, then walk forward until auctions are found or limit reached."""
@@ -141,9 +154,10 @@ class AuctionScraper:
                         logger.info("Reached property limit for {date}", date=date_str)
                         break
                     logger.info("Found {count} auction entries on page {page_num}", count=len(page_props), page_num=page_num)
-                    # Process Final Judgment PDFs if already downloaded
-                    for prop in page_props:
-                        await self._process_final_judgment(prop)
+                    # Process Final Judgment PDFs if enabled
+                    if self.process_final_judgments:
+                        for prop in page_props:
+                            await self._process_final_judgment(prop)
                     
                     if page_num >= 10:
                         logger.info("Reached max auction page limit (10) for {date}", date=date_str)
@@ -271,15 +285,7 @@ class AuctionScraper:
                 hcpa_error = None
                 if hcpa_url:
                     hcpa_result = await self._enrich_with_hcpa(prop)
-                    if hcpa_result.get("success"):
-                        # Log comparison between parcel_id from auction and folio from HCPA
-                        hcpa_folio = hcpa_result.get("hcpa_folio")
-                        if hcpa_folio and hcpa_folio != parcel_id_text:
-                            logger.warning(
-                                f"Folio mismatch for {case_number}: "
-                                f"auction={parcel_id_text}, HCPA={hcpa_folio}"
-                            )
-                    else:
+                    if not hcpa_result.get("success"):
                         # HCPA scrape failed - mark for manual review
                         hcpa_failed = True
                         hcpa_error = hcpa_result.get("error", "Unknown HCPA scrape error")
@@ -289,14 +295,10 @@ class AuctionScraper:
                     hcpa_failed = True
                     hcpa_error = "No HCPA URL available on auction page"
 
-                # Store HCPA failure status in database for manual review
+                # Store HCPA failure status on Property (orchestrator writes to DB)
                 if hcpa_failed:
-                    try:
-                        conn = self.db.connect()
-                        conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS hcpa_scrape_failed BOOLEAN DEFAULT FALSE")
-                        conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS hcpa_scrape_error VARCHAR")
-                    except Exception as exc:
-                        logger.debug("HCPA flags exist; skipping add: {}", exc)
+                    prop.hcpa_scrape_failed = True
+                    prop.hcpa_scrape_error = hcpa_error
 
                 properties.append(prop)
 
@@ -455,6 +457,8 @@ class AuctionScraper:
         If a Final Judgment PDF exists for this case, extract structured data
         and store it in the auctions table.
         """
+        if not self.judgment_processor:
+            return
         # We need to find the PDF. Since we don't have the path explicitly stored in a simple way
         # (it's in the property object if we just scraped it, but if we're re-processing...)
         # We'll check the property object first.
@@ -533,11 +537,9 @@ class AuctionScraper:
                 success=True
             )
 
-            updated = self.db.update_judgment_data(prop.case_number, payload)
-            if updated:
-                logger.success("Stored Final Judgment data for case {case}", case=prop.case_number)
-            else:
-                logger.warning("No fields updated for case {case} (empty payload)", case=prop.case_number)
+            # Store payload on Property object (orchestrator writes to DB)
+            prop.judgment_payload = payload
+            logger.success("Extracted Final Judgment data for case {case}", case=prop.case_number)
 
         except Exception as exc:
             logger.error("Error processing Final Judgment for case {case}: {err}", case=prop.case_number, err=exc)
@@ -615,14 +617,7 @@ class AuctionScraper:
                 if hcpa_data.get("sales_history"):
                     prop.sales_history = hcpa_data["sales_history"]
 
-                # Save the enriched parcel data to database immediately
-                # This ensures legal_description is available for ORI search in Step 5
-                try:
-                    self.db.upsert_parcel(prop)
-                    logger.debug(f"Saved parcel data for {prop.parcel_id}")
-                except Exception as db_err:
-                    logger.warning(f"Failed to save parcel data for {prop.parcel_id}: {db_err}")
-
+                # Property object is now enriched (orchestrator writes to DB)
                 logger.success(f"HCPA enrichment successful for {prop.case_number}: legal='{prop.legal_description[:50] if prop.legal_description else 'N/A'}...'")
 
         except Exception as e:

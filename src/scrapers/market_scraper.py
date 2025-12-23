@@ -7,6 +7,7 @@ bot detection on real estate sites. Uses playwright-stealth for better success r
 import asyncio
 import json
 import random
+import re
 from typing import Optional, Dict
 from loguru import logger
 
@@ -37,6 +38,10 @@ class MarketScraper:
         self.headless = headless
         self.vision = VisionService()
         self.storage = storage or ScraperStorage()
+
+    def _slugify(self, value: str) -> str:
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", (value or "").strip())
+        return slug.strip("-")
 
     async def _human_like_delay(self, min_sec: float = 0.5, max_sec: float = 4.0):
         """Add random human-like delay."""
@@ -85,8 +90,13 @@ class MarketScraper:
             ListingDetails object or None if failed
         """
         # Construct URLs
-        zillow_url = f"https://www.zillow.com/homes/{address.replace(' ', '-')}-{city}-{state}-{zip_code}_rb/"
-        realtor_url = f"https://www.realtor.com/realestateandhomes-search/{city}_{state}/{address.replace(' ', '-')}"
+        address_slug = self._slugify(address) or address.replace(" ", "-")
+        city_slug = self._slugify(city) or city.replace(" ", "-")
+        state_slug = (state or "").strip().upper()
+        zip_slug = re.sub(r"[^0-9]", "", zip_code or "")
+        zillow_parts = [part for part in [address_slug, city_slug, state_slug, zip_slug] if part]
+        zillow_url = f"https://www.zillow.com/homes/{'-'.join(zillow_parts)}_rb/"
+        realtor_url = f"https://www.realtor.com/realestateandhomes-search/{city_slug}_{state_slug}/{address_slug}"
 
         logger.info(f"Searching Market Data for: {address}")
         
@@ -99,82 +109,116 @@ class MarketScraper:
         # Use property_id or sanitize address as ID
         prop_id = property_id or self.storage._sanitize_filename(f"{address}_{city}")  # noqa: SLF001
 
+        zillow_error = None
+        realtor_error = None
+
         async with async_playwright() as p:
             browser, _context, page = await self._setup_stealth_context(p)
 
             try:
                 # 1. Try Zillow
                 logger.info(f"Attempting Zillow: {zillow_url}")
-                zillow_data = await self._scrape_source(
-                    page, zillow_url, "zillow", prop_id, self.vision.extract_market_listing
-                )
-                
-                if zillow_data:
-                    self._update_details_from_data(details, zillow_data, "Zillow")
-                    logger.success(f"Successfully scraped Zillow for {address}")
-                
+                try:
+                    zillow_data, zillow_shot, _ = await self._scrape_source(
+                        page, zillow_url, "zillow", prop_id, self.vision.extract_market_listing
+                    )
+                    if zillow_data:
+                        self._update_details_from_data(details, zillow_data, "Zillow")
+                        if zillow_shot and not details.screenshot_path:
+                            details.screenshot_path = zillow_shot
+                        logger.success(f"Successfully scraped Zillow for {address}")
+                except Exception as e:
+                    logger.warning(f"Zillow scrape failed: {e}")
+                    zillow_error = e
+
                 # 2. Try Realtor.com if Zillow failed or if we want secondary confirmation
                 # For now, let's try Realtor if Zillow price is missing
                 if not details.price or details.status == "Unknown":
                     logger.info(f"Zillow data incomplete, attempting Realtor.com: {realtor_url}")
-                    realtor_data = await self._scrape_source(
-                        page, realtor_url, "realtor", prop_id, self.vision.extract_realtor_listing
-                    )
-                    if realtor_data:
-                        self._update_details_from_data(details, realtor_data, "Realtor")
-                        logger.success(f"Successfully scraped Realtor.com for {address}")
-
-            except Exception as e:
-                logger.error(f"Market scraping failed: {e}")
+                    try:
+                        realtor_data, realtor_shot, _ = await self._scrape_source(
+                            page, realtor_url, "realtor", prop_id, self.vision.extract_realtor_listing
+                        )
+                        if realtor_data:
+                            self._update_details_from_data(details, realtor_data, "Realtor")
+                            if realtor_shot and (not details.screenshot_path or not details.price):
+                                details.screenshot_path = realtor_shot
+                            logger.success(f"Successfully scraped Realtor.com for {address}")
+                    except Exception as e:
+                        logger.warning(f"Realtor scrape failed: {e}")
+                        realtor_error = e
 
             finally:
                 await browser.close()
 
+        # If both sources failed with errors, raise to signal retry needed
+        if zillow_error and realtor_error:
+            raise RuntimeError(f"Both market sources failed - Zillow: {zillow_error}, Realtor: {realtor_error}")
+
+        # If we tried both and got no useful data (but no hard errors), that's also a failure
+        if not details.price and details.status == "Unknown" and (zillow_error or realtor_error):
+            raise RuntimeError(f"Market scrape failed with partial errors - Zillow: {zillow_error}, Realtor: {realtor_error}")
+
         return details
 
-    async def _scrape_source(self, page, url, source_node, prop_id, vision_func) -> Optional[Dict]:
-        """Generic source scraper helper."""
-        try:
-            await self._human_like_delay(1.0, 2.0)
-            await page.goto(url, timeout=60000)
-            
-            # Simulate human behavior
-            await self._human_like_delay(2.0, 4.0)
-            await page.evaluate('window.scrollBy(0, 300)')
-            await self._human_like_delay(0.5, 1.5)
-            
-            # Check for generic block/captcha text if not handled by dedicated handler
-            content = await page.content()
-            if "captcha" in content.lower() or "blocked" in content.lower() or "security check" in content.lower():
-                logger.warning(f"Detection triggered on {url}")
-                return None
+    async def _scrape_source(self, page, url, source_node, prop_id, vision_func) -> tuple[Optional[Dict], Optional[str], Optional[str]]:
+        """Generic source scraper helper. Raises on bot detection."""
+        await self._human_like_delay(1.0, 2.0)
+        await page.goto(url, timeout=60000)
 
-            # Take screenshot
-            screenshot_bytes = await page.screenshot()
-            
-            # Save using ScraperStorage
-            screenshot_path = self.storage.save_screenshot(
+        # Simulate human behavior
+        await self._human_like_delay(2.0, 4.0)
+        await page.evaluate('window.scrollBy(0, 300)')
+        await self._human_like_delay(0.5, 1.5)
+
+        # Check for generic block/captcha text - raise exception to signal retry needed
+        content = await page.content()
+        if "captcha" in content.lower() or "blocked" in content.lower() or "security check" in content.lower():
+            raise RuntimeError(f"Bot detection triggered on {source_node}: CAPTCHA/block detected")
+
+        # Take screenshot
+        screenshot_bytes = await page.screenshot()
+
+        # Save using ScraperStorage
+        screenshot_path = self.storage.save_screenshot(
+            property_id=prop_id,
+            scraper=f"market_{source_node}",
+            image_data=screenshot_bytes,
+            context="listing"
+        )
+
+        abs_path = self.storage.get_full_path(prop_id, screenshot_path)
+        data = await self.vision.process_async(vision_func, str(abs_path))
+
+        if data:
+            # Save vision output
+            vision_path = self.storage.save_vision_output(
                 property_id=prop_id,
                 scraper=f"market_{source_node}",
-                image_data=screenshot_bytes,
-                context="listing"
+                vision_data=data,
+                screenshot_path=screenshot_path
             )
-            
-            abs_path = self.storage.get_full_path(prop_id, screenshot_path)
-            data = await self.vision.process_async(vision_func, str(abs_path))
-            
-            if data:
-                # Save vision output
-                self.storage.save_vision_output(
-                    property_id=prop_id,
-                    scraper=f"market_{source_node}",
-                    vision_data=data,
-                    screenshot_path=screenshot_path
-                )
-                return data
-        except Exception as e:
-            logger.warning(f"Failed to scrape {url}: {e}")
-        return None
+            self.storage.record_scrape(
+                property_id=prop_id,
+                scraper=f"market_{source_node}",
+                screenshot_path=screenshot_path,
+                vision_output_path=vision_path,
+                vision_data=data,
+                prompt_version="v1",
+                success=True,
+                source_url=url,
+            )
+            return data, screenshot_path, vision_path
+
+        self.storage.record_scrape(
+            property_id=prop_id,
+            scraper=f"market_{source_node}",
+            screenshot_path=screenshot_path,
+            error="No data extracted",
+            success=False,
+            source_url=url,
+        )
+        return None, screenshot_path, None
 
     def _update_details_from_data(self, details: ListingDetails, data: Dict, source: str):
         """Update ListingDetails object from vision data."""
@@ -206,6 +250,31 @@ class MarketScraper:
                 details.estimates['Rent Zestimate'] = float(val_str)
             except (ValueError, TypeError):
                 pass
+        elif data.get('rent_estimate'):
+            try:
+                val_str = str(data['rent_estimate']).replace(',', '').replace('$', '')
+                details.estimates['Rent Estimate'] = float(val_str)
+            except (ValueError, TypeError):
+                pass
+
+        hoa_val = data.get('hoa_fee') or data.get('hoa_monthly')
+        if hoa_val:
+            try:
+                hoa_str = str(hoa_val).replace(',', '').replace('$', '')
+                details.hoa_monthly = float(hoa_str)
+            except (ValueError, TypeError):
+                pass
+
+        dom = data.get('days_on_market')
+        if dom is not None:
+            try:
+                details.days_on_market = int(str(dom).replace(',', '').strip())
+            except (ValueError, TypeError):
+                pass
+
+        price_history = data.get("price_history")
+        if isinstance(price_history, list) and len(price_history) > len(details.price_history):
+            details.price_history = price_history
 
         # Update other fields
         if data.get('description') and len(data['description']) > len(details.description or ""):

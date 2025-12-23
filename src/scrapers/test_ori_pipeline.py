@@ -23,6 +23,7 @@ import requests
 import fitz  # PyMuPDF
 
 from src.services.vision_service import VisionService
+from src.utils.time import today_local
 
 
 # Configuration
@@ -69,7 +70,7 @@ def search_ori_by_legal(legal_description: str, session: requests.Session) -> li
     payload = {
         "DocType": TITLE_DOC_TYPES,
         "RecordDateBegin": "01/01/1900",
-        "RecordDateEnd": datetime.now().strftime("%m/%d/%Y"),
+        "RecordDateEnd": today_local().strftime("%m/%d/%Y"),
         "Legal": ["CONTAINS", legal_description],
     }
 

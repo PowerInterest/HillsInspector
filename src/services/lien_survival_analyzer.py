@@ -17,10 +17,11 @@ Survival Status Values:
 """
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
+from src.utils.time import now_utc
 from src.utils.name_matcher import NameMatcher
 
 
@@ -98,7 +99,7 @@ class LienSurvivalAnalyzer:
         if not recording_date:
             return False, None
 
-        age_years = (datetime.now(tz=UTC).date() - recording_date).days / 365.25
+        age_years = (now_utc().date() - recording_date).days / 365.25
         doc_type = (lien_type or "").upper()
 
         # Mechanic's Liens (Construction Liens) - 1 year to file suit
@@ -337,6 +338,7 @@ class LienSurvivalAnalyzer:
 
                 # Create result entry
                 entry = {
+                    "encumbrance_id": enc.get("id"),
                     "type": enc_type,
                     "recording_date": str(enc_date) if enc_date else None,
                     "creditor": creditor,

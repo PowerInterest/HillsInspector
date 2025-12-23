@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import List, Optional, Dict, Any
 from loguru import logger
+from src.utils.time import now_utc
 from playwright.async_api import async_playwright, Page
 
 from src.services.scraper_storage import ScraperStorage
@@ -70,6 +71,13 @@ class SunbizScraper:
         self.headless = headless
         self.storage = storage or ScraperStorage()
 
+    async def _launch_browser(self, playwright):
+        """Launch Chromium with flags that work in restricted environments."""
+        return await playwright.chromium.launch(
+            headless=self.headless,
+            args=["--no-sandbox", "--disable-setuid-sandbox"],
+        )
+
     async def search_entity(self, name: str, max_results: int = 5) -> List[BusinessEntity]:
         """
         Search for business entities by name.
@@ -85,7 +93,11 @@ class SunbizScraper:
         entities = []
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=self.headless)
+            try:
+                browser = await self._launch_browser(p)
+            except Exception as e:
+                logger.warning(f"Sunbiz browser launch failed: {e}")
+                return []
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             )
@@ -193,7 +205,11 @@ class SunbizScraper:
         entities = []
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=self.headless)
+            try:
+                browser = await self._launch_browser(p)
+            except Exception as e:
+                logger.warning(f"Sunbiz browser launch failed: {e}")
+                return []
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             )
@@ -281,7 +297,11 @@ class SunbizScraper:
         logger.info(f"Fetching Sunbiz entity: {doc_number}")
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=self.headless)
+            try:
+                browser = await self._launch_browser(p)
+            except Exception as e:
+                logger.warning(f"Sunbiz browser launch failed: {e}")
+                return None
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             )
@@ -481,7 +501,7 @@ class SunbizScraper:
             scraper="sunbiz",
             data={
                 "owner_name": owner_name,
-                "search_date": datetime.now().isoformat(),
+                "search_date": now_utc().isoformat(),
                 "entities": entities_data
             },
             context="officer_search"

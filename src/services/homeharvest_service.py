@@ -159,7 +159,12 @@ class HomeHarvestService:
     MIN_DELAY = 15.0  # Minimum delay between requests
     MAX_DELAY = 30.0  # Maximum delay (randomized for human-like behavior)
 
-    def __init__(self, proxy: str | None = None, auto_upgrade: bool = True):
+    def __init__(
+        self,
+        proxy: str | None = None,
+        auto_upgrade: bool = True,
+        db: PropertyDB | None = None,
+    ):
         """
         Initialize HomeHarvest service.
 
@@ -167,12 +172,17 @@ class HomeHarvestService:
             proxy: Optional proxy URL in format 'http://user:pass@host:port'
             auto_upgrade: If True, automatically upgrade homeharvest on first blocking error
         """
-        self.db = PropertyDB()
+        self.db = db or PropertyDB()
         self.proxy = proxy
         self.auto_upgrade = auto_upgrade
         self._upgrade_attempted = False  # Track if we've already tried upgrading this session
 
-    def get_pending_properties(self, limit: int = 100, auction_date: Optional[date] = None) -> List[Dict[str, Any]]:
+    def get_pending_properties(
+        self,
+        limit: int = 100,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Get properties that need HomeHarvest enrichment.
         Criteria: Has address, is not marked as needing HCPA review, and no recent HomeHarvest record.
@@ -181,25 +191,31 @@ class HomeHarvestService:
         
         query = """
             SELECT DISTINCT
-                a.folio, 
-                p.property_address, 
+                COALESCE(a.parcel_id, a.folio) AS folio, 
+                COALESCE(a.property_address, p.property_address) AS property_address, 
                 p.city, 
                 p.zip_code,
                 a.case_number
             FROM auctions a
-            INNER JOIN parcels p ON a.folio = p.folio
-            LEFT JOIN home_harvest h ON a.folio = h.folio
-            WHERE a.property_address IS NOT NULL 
-              AND a.property_address != ''
+            INNER JOIN parcels p ON COALESCE(a.parcel_id, a.folio) = p.folio
+            LEFT JOIN home_harvest h ON COALESCE(a.parcel_id, a.folio) = h.folio
+            WHERE COALESCE(a.property_address, p.property_address) IS NOT NULL 
+              AND COALESCE(a.property_address, p.property_address) != ''
               AND (a.hcpa_scrape_failed IS NULL OR a.hcpa_scrape_failed = FALSE) -- Only good properties
               AND (h.folio IS NULL OR h.created_at < CURRENT_DATE - INTERVAL 7 DAY) -- No recent data
               AND a.needs_homeharvest_enrichment = TRUE -- Flag to be enriched
         """
         params = []
 
-        if auction_date:
-            query += " AND a.auction_date = ?"
-            params.append(auction_date)
+        if start_date and end_date:
+            query += " AND a.auction_date >= ? AND a.auction_date <= ?"
+            params.extend([start_date, end_date])
+        elif start_date:
+            query += " AND a.auction_date >= ?"
+            params.append(start_date)
+        elif end_date:
+            query += " AND a.auction_date <= ?"
+            params.append(end_date)
 
         query += " LIMIT ?"
         params.append(limit)
@@ -329,7 +345,8 @@ class HomeHarvestService:
             # Take the most recent relevant record (usually the first one)
             # HomeHarvest returns a DataFrame.
             row = df.iloc[0]
-            self._save_record(folio, row)
+            data = self._build_record_data(folio, row)
+            self.insert_record_data(data)
             logger.success(f"Saved data for {folio}")
             return True
 
@@ -359,9 +376,55 @@ class HomeHarvestService:
             logger.error(f"Error processing {location}: {e}")
             return False
 
-    def _save_record(self, folio: str, row: pd.Series):
-        conn = self.db.connect()
-        
+    def fetch_record_data(
+        self,
+        folio: str,
+        location: str,
+        proxy: str | None = None,
+        is_first: bool = False,
+    ) -> tuple[Dict[str, Any] | None, str]:
+        """Fetch HomeHarvest data and return (record dict, status)."""
+        try:
+            logger.info(f"Scraping: {location}")
+            kwargs: dict = {
+                "location": location,
+                "listing_type": "sold",
+                "past_days": 3650,
+                "parallel": False,
+            }
+            if proxy:
+                kwargs["proxy"] = proxy
+            df = scrape_property(**kwargs)
+
+            if df is None or df.empty:
+                logger.warning(f"No data found for {location}")
+                return None, "no_data"
+
+            row = df.iloc[0]
+            return self._build_record_data(folio, row), "ok"
+        except Exception as e:
+            if _is_blocking_error(e):
+                logger.warning(f"Blocking error detected: {type(e).__name__}")
+
+                if is_first and self.auto_upgrade and not self._upgrade_attempted:
+                    self._upgrade_attempted = True
+                    logger.info("First request blocked - attempting to upgrade homeharvest...")
+
+                    if upgrade_homeharvest():
+                        logger.success("Upgrade successful! Spawning subprocess with new version...")
+                        run_homeharvest_subprocess(limit=100)
+                        raise SystemExit(
+                            "HomeHarvest upgraded and subprocess spawned. "
+                            "Exiting current process - the subprocess will continue."
+                        ) from None
+                    logger.warning("No upgrade available or upgrade failed")
+
+                return None, "blocked"
+
+            logger.error(f"Error processing {location}: {e}")
+            return None, "error"
+
+    def _build_record_data(self, folio: str, row: pd.Series) -> Dict[str, Any]:
         # Helper to get value safely
         def val(col, dtype=str):
             if col not in row: return None
@@ -387,7 +450,7 @@ class HomeHarvestService:
                 return str(v)
 
         # Map fields
-        data = {
+        return {
             'folio': folio,
             'property_url': val('property_url'),
             'property_id': val('property_id'),
@@ -435,6 +498,9 @@ class HomeHarvestService:
             'primary_photo': val('primary_photo'),
             'alt_photos': val('alt_photos', 'json'),
         }
+
+    def insert_record_data(self, data: Dict[str, Any]) -> None:
+        conn = self.db.connect()
 
         # Insert SQL
         columns = list(data.keys())

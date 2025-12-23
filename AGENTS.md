@@ -1,15 +1,16 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- Entry point: `main.py` (flags: `--test`, `--update`, `--web`, `--new`); orchestration in `src/pipeline.py`.
+- Entry point: `main.py` (flags: `--update`, `--web`, `--new`); orchestration in `src/orchestrator.py`.
 - Scrapers in `src/scrapers/`; ingest helpers in `src/ingest/`; transforms/enrichment in `src/services/`; shared utilities in `src/utils/`.
 - DuckDB schema and scripts in `src/db/`; FastAPI + Jinja app in `app/web/` with API helpers in `app/services/` and DB wiring in `app/web/database.py`.
+- Databases: main DB `data/property_master.db`; web snapshot DB `data/property_master_web.db` (refreshed periodically during `--update` and on `--web` startup; use this for read-only access if the main DB is locked); historical auctions DB `data/history.db`.
 - Raw artifacts live under `data/properties/` (per-folio parquet/json/pdfs/photos); logs in `logs/`; docs in `docs/`; maintenance scripts in `scripts/`.
 - Tests belong in `tests/` mirroring module paths; fixtures in `tests/fixtures/`.
 
 ## Build, Test, and Development Commands
 - `uv sync` installs locked dependencies; avoid pip/poetry.
-- `uv run main.py --test` runs a quick end-to-end sanity on the next 5 auctions.
+- Quick sanity run: `uv run main.py --update --start-date YYYY-MM-DD --end-date YYYY-MM-DD --auction-limit 5`.
 - `uv run main.py --update` does the full scrape/analysis; `uv run main.py --web` launches the dashboard; `uv run main.py --new` resets the DB (archives old DB first).
 - `uv run ruff check .` (add `--fix` when safe) for linting; `uv run ty check` for typing; `uv run pytest` for unit tests.
 - One-time scraper setup: `uv run playwright install chromium`.
@@ -23,7 +24,7 @@
 ## Testing Guidelines
 - Use pytest; name files `test_*.py` mirroring module paths.
 - Prefer schema/column presence checks and aggregate assertions for pipelines; include fixture HTML/PDF snippets for scrapers in `tests/fixtures/`.
-- Run `uv run pytest` plus `uv run main.py --test` before PRs.
+- Run `uv run pytest` plus a quick `--update` sanity run before PRs.
 - After every change, run `uv run ruff check .` and `uv run ty check`.
 
 ## Commit & Pull Request Guidelines

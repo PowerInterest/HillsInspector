@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
 from loguru import logger
+from src.utils.time import ensure_duckdb_utc
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -16,7 +17,9 @@ from src.services.title_chain_service import TitleChainService  # noqa: E402
 
 
 def _connect_writable(db_path: Path) -> duckdb.DuckDBPyConnection:
-    return duckdb.connect(str(db_path), read_only=False)
+    conn = duckdb.connect(str(db_path), read_only=False)
+    ensure_duckdb_utc(conn)
+    return conn
 
 
 def _ensure_chain_columns(conn: duckdb.DuckDBPyConnection) -> None:

@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any, List
 from loguru import logger
 import fitz  # PyMuPDF
 import duckdb
+from src.utils.time import ensure_duckdb_utc
 
 from src.services.vision_service import VisionService
 from src.scrapers.ori_api_scraper import ORIApiScraper
@@ -37,6 +38,7 @@ class EncumbranceAmountExtractor:
             List of encumbrance records with document info
         """
         conn = duckdb.connect(self.db_path, read_only=True)
+        ensure_duckdb_utc(conn)
 
         query = """
             SELECT DISTINCT
@@ -199,6 +201,7 @@ class EncumbranceAmountExtractor:
         """
         try:
             conn = duckdb.connect(self.db_path)
+            ensure_duckdb_utc(conn)
 
             conn.execute("""
                 UPDATE encumbrances

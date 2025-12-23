@@ -21,10 +21,10 @@ import json
 import random
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from loguru import logger
+from src.utils.time import now_utc
 
 from playwright.async_api import async_playwright, Page
 from playwright_stealth import Stealth
@@ -242,7 +242,7 @@ class RealtorScraper:
                 if is_blocked:
                     logger.warning("Realtor.com blocked the request (bot detection triggered)")
                     # Still capture screenshot for debugging
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    timestamp = now_utc().strftime("%Y%m%d_%H%M%S")
                     safe_addr = re.sub(r'[^\w\s-]', '', address).replace(' ', '_')[:30]
                     screenshot_path = self.output_dir / f"realtor_{safe_addr}_{timestamp}.png"
                     await page.screenshot(path=str(screenshot_path), full_page=True)
@@ -259,7 +259,7 @@ class RealtorScraper:
                 await self._human_delay(1.0, 2.0)
 
                 # Take full-page screenshot
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = now_utc().strftime("%Y%m%d_%H%M%S")
                 safe_addr = re.sub(r'[^\w\s-]', '', address).replace(' ', '_')[:30]
                 screenshot_path = self.output_dir / f"realtor_{safe_addr}_{timestamp}.png"
 

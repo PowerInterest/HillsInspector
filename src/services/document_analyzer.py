@@ -13,6 +13,7 @@ import json
 
 from src.services.vision_service import VisionService
 from src.scrapers.ori_api_scraper import ORIApiScraper
+from src.utils.time import ensure_duckdb_utc
 
 
 class DocumentAnalyzer:
@@ -236,6 +237,7 @@ class DocumentAnalyzer:
         }
 
         conn = duckdb.connect(self.db_path, read_only=True)
+        ensure_duckdb_utc(conn)
 
         # Get documents for this folio
         query = """
@@ -291,6 +293,7 @@ class DocumentAnalyzer:
         """
         try:
             conn = duckdb.connect(self.db_path)
+            ensure_duckdb_utc(conn)
 
             # Extract relevant fields based on document type
             amount = None
@@ -351,6 +354,7 @@ class DocumentAnalyzer:
         """
         try:
             conn = duckdb.connect(self.db_path)
+            ensure_duckdb_utc(conn)
 
             updates = []
             params = []
@@ -397,6 +401,7 @@ def process_missing_amounts(limit: int = 50) -> Dict[str, int]:
     stats = {'processed': 0, 'success': 0, 'failed': 0}
 
     conn = duckdb.connect(analyzer.db_path, read_only=True)
+    ensure_duckdb_utc(conn)
 
     # Get encumbrances missing amounts
     query = """

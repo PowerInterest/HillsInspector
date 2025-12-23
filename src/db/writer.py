@@ -14,14 +14,14 @@ class DatabaseWriter:
     and executes them against the database, preventing concurrent write contention.
     """
     
-    def __init__(self, db_path: Path = Path("data/property_master.db")):
-        self.db_path = db_path
+    def __init__(self, db_path: Path = Path("data/property_master.db"), db: PropertyDB | None = None):
+        self.db_path = Path(db.db_path) if db else db_path
         self.queue = asyncio.Queue()
         self.running = False
         self._worker_task = None
         # We can perform writes via the existing PropertyDB logic
         # Since this worker runs sequentially, we avoid concurrency issues.
-        self.db = PropertyDB(str(db_path))
+        self.db = db or PropertyDB(str(self.db_path))
 
     async def start(self):
         """Start the background writer worker."""
@@ -115,6 +115,13 @@ class DatabaseWriter:
             func = data["func"]
             args = data.get("args", [])
             kwargs = data.get("kwargs", {})
+            # If a PropertyDB method from a different instance was passed in,
+            # rebind to the writer's DB to keep all writes serialized.
+            target = getattr(func, "__self__", None)
+            if isinstance(target, PropertyDB):
+                method_name = getattr(func, "__name__", None)
+                if method_name and hasattr(self.db, method_name):
+                    return getattr(self.db, method_name)(*args, **kwargs)
             return func(*args, **kwargs)
 
         if operation == "upsert_auction":

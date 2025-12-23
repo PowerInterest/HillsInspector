@@ -1,11 +1,13 @@
 import duckdb
 from pathlib import Path
+from src.utils.time import ensure_duckdb_utc
 
 DB_PATH = Path("../../data/property_master.db")
 
 def analyze_missing_data():
     try:
         con = duckdb.connect(str(DB_PATH))
+        ensure_duckdb_utc(con)
         
         print("Analyzing 'auctions' table...")
         auctions_df = con.execute("SELECT * FROM auctions").fetchdf()

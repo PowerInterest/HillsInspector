@@ -13,7 +13,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from loguru import logger
 
-from app.web.routers import dashboard, properties, api, review
+from app.web.routers import dashboard, properties, api, review, history
 from app.web.database import DatabaseLockedError, DatabaseUnavailableError
 
 
@@ -55,6 +55,7 @@ app.include_router(dashboard.router)
 app.include_router(properties.router, prefix="/property")
 app.include_router(api.router, prefix="/api")
 app.include_router(review.router, prefix="/review")
+app.include_router(history.router)
 
 
 # =============================================================================

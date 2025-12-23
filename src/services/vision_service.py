@@ -47,7 +47,12 @@ def robust_json_parse(text: str, context: str = "") -> Optional[Dict[str, Any]]:
     try:
         return json.loads(fixed2)
     except json.JSONDecodeError:
-        print(f"Failed to parse JSON from Vision API response ({context}): {cleaned[:500]}...")
+        snippet = cleaned[:500].replace("\n", " ")
+        logger.warning(
+            "Failed to parse JSON from Vision API response ({}): {}...",
+            context,
+            snippet,
+        )
         return None
 
 
@@ -934,6 +939,10 @@ class VisionService:
     API_URLS = [ep["url"] for ep in API_ENDPOINTS]
     MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 
+    # Class-level storage for healthy endpoints (shared across instances)
+    _healthy_endpoints: list[dict] | None = None
+    _health_check_done: bool = False
+
     def __init__(self):
         """
         Initialize VisionService.
@@ -947,12 +956,77 @@ class VisionService:
         # But if instantiated per scraper, standard asyncio.Semaphore is per instance.
         # If we want GLOBAL limit, we need a shared semaphore.
         # Or make it a class attribute.
-        
+
         # Checking if other instances share state? No.
         # So we should make it a class attribute if we want global limit.
         if not hasattr(VisionService, "_global_semaphore"):
             VisionService._global_semaphore = asyncio.Semaphore(1)
         self._semaphore = VisionService._global_semaphore
+
+    @classmethod
+    def health_check_endpoints(cls, timeout: int = 5) -> list[dict]:
+        """
+        Check all vision endpoints at startup, return only healthy ones.
+
+        This should be called once at pipeline startup. Results are cached
+        at the class level so all VisionService instances share the same
+        list of healthy endpoints.
+
+        Args:
+            timeout: Connection timeout in seconds for health check
+
+        Returns:
+            List of healthy endpoint configs
+
+        Raises:
+            RuntimeError: If no vision endpoints are available
+        """
+        import requests as req
+
+        healthy = []
+        for endpoint in cls.API_ENDPOINTS:
+            try:
+                base_url = endpoint["url"].rsplit('/v1/', 1)[0]
+                response = req.get(f"{base_url}/v1/models", timeout=timeout)
+                if response.ok:
+                    healthy.append(endpoint)
+                    logger.success(f"Vision endpoint healthy: {endpoint['url']}")
+                else:
+                    logger.warning(f"Vision endpoint unhealthy (HTTP {response.status_code}): {endpoint['url']}")
+            except req.exceptions.Timeout:
+                logger.warning(f"Vision endpoint timeout: {endpoint['url']}")
+            except req.exceptions.ConnectionError:
+                logger.warning(f"Vision endpoint connection refused: {endpoint['url']}")
+            except Exception as e:
+                logger.warning(f"Vision endpoint check failed: {endpoint['url']} - {e}")
+
+        if healthy:
+            cls._healthy_endpoints = healthy
+            cls._health_check_done = True
+            logger.info(f"Vision service initialized with {len(healthy)}/{len(cls.API_ENDPOINTS)} healthy endpoints")
+        else:
+            cls._healthy_endpoints = None
+            cls._health_check_done = True
+            logger.error("No vision endpoints available! Vision-dependent features will fail.")
+
+        return healthy
+
+    @classmethod
+    def get_available_endpoints(cls) -> list[dict]:
+        """
+        Get list of available endpoints.
+
+        Returns healthy endpoints if health check was done, otherwise all endpoints.
+        """
+        if cls._health_check_done and cls._healthy_endpoints is not None:
+            return cls._healthy_endpoints
+        return cls.API_ENDPOINTS
+
+    @classmethod
+    def reset_health_check(cls):
+        """Reset health check state to allow re-checking endpoints."""
+        cls._healthy_endpoints = None
+        cls._health_check_done = False
 
     @classmethod
     def global_semaphore(cls) -> asyncio.Semaphore:
@@ -975,8 +1049,13 @@ class VisionService:
         """Get the active endpoint config, checking availability if needed."""
         if self._active_endpoint:
             return self._active_endpoint
-        # Find first available server
-        for endpoint in self.API_ENDPOINTS:
+        # Use pre-filtered healthy endpoints if available
+        available = self.get_available_endpoints()
+        if not available:
+            logger.error("No vision endpoints available")
+            return self.API_ENDPOINTS[0]  # Fallback to first configured
+        # Find first available server from healthy list
+        for endpoint in available:
             try:
                 base_url = endpoint["url"].rsplit('/v1/', 1)[0]
                 response = self.session.get(f"{base_url}/v1/models", timeout=3)
@@ -987,16 +1066,23 @@ class VisionService:
             except Exception as exc:
                 logger.debug("Vision endpoint {} unavailable: {}", endpoint["url"], exc)
                 continue
-        # Default to first endpoint if none available
-        return self.API_ENDPOINTS[0]
+        # Default to first available endpoint
+        return available[0]
 
     def _try_all_endpoints(self, payload: dict, timeout: int = 120) -> Optional[requests.Response]:
         """
-        Try to post to all endpoints until one succeeds.
+        Try to post to all available endpoints until one succeeds.
         On timeout or connection error, try the next endpoint.
+
+        Uses pre-filtered healthy endpoints from startup health check if available.
         """
+        available = self.get_available_endpoints()
+        if not available:
+            logger.error("No vision endpoints available to try")
+            return None
+
         errors = []
-        for endpoint in self.API_ENDPOINTS:
+        for endpoint in available:
             try:
                 logger.info("Trying vision endpoint: {} (model: {})", endpoint["url"], endpoint["model"])
                 # Update model in payload for this endpoint

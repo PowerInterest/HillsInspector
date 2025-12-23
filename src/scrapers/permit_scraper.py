@@ -28,6 +28,7 @@ from typing import List, Optional, Dict, Any
 from loguru import logger
 
 from playwright.async_api import async_playwright, Page
+from src.utils.time import now_utc
 
 # Import VisionService for complex pages
 import sys
@@ -216,8 +217,13 @@ class PermitScraper:
 
         Returns:
             Combined list of permits from both sources
+
+        Raises:
+            Exception: If both city and county scrapes fail
         """
         permits = []
+        city_error = None
+        county_error = None
 
         # Try City of Tampa first
         if city.upper() in ["TAMPA", "TEMPLE TERRACE", "PLANT CITY"]:
@@ -226,6 +232,7 @@ class PermitScraper:
                 permits.extend(city_permits)
             except Exception as e:
                 logger.warning(f"City permit search failed: {e}")
+                city_error = e
 
         # Also try County (some properties may have both)
         try:
@@ -233,6 +240,21 @@ class PermitScraper:
             permits.extend(county_permits)
         except Exception as e:
             logger.warning(f"County permit search failed: {e}")
+            county_error = e
+
+        # If both searches failed, raise to signal retry needed
+        if city_error and county_error:
+            raise RuntimeError(f"Both permit searches failed - City: {city_error}, County: {county_error}")
+
+        if (city_error or county_error) and not permits:
+            raise RuntimeError(
+                f"Permit search failed with no results - City: {city_error}, County: {county_error}"
+            )
+        if city_error or county_error:
+            logger.warning(
+                "Permit search returned results with partial failures "
+                f"(City error={city_error}, County error={county_error})"
+            )
 
         return permits
 
@@ -255,6 +277,7 @@ class PermitScraper:
         addr_parts = AddressParser.parse(address)
         logger.debug(f"Parsed address: {addr_parts}")
 
+        error: Exception | None = None
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=self.headless)
             context = await browser.new_context(
@@ -313,7 +336,7 @@ class PermitScraper:
                         await asyncio.sleep(3)
 
                 # Take screenshot of results
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = now_utc().strftime("%Y%m%d_%H%M%S")
                 safe_addr = re.sub(r'[^\w\s-]', '', address).replace(' ', '_')[:30]
                 screenshot_path = self.output_dir / f"permit_{source.replace(' ', '_')}_{safe_addr}_{timestamp}.png"
                 await page.screenshot(path=str(screenshot_path), full_page=True)
@@ -333,11 +356,18 @@ class PermitScraper:
                 logger.error(f"Error scraping {source}: {e}")
                 # Take error screenshot
                 with suppress(Exception):
-                    await page.screenshot(path=str(self.output_dir / f"error_{source}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"))
+                    await page.screenshot(
+                        path=str(
+                            self.output_dir / f"error_{source}_{now_utc().strftime('%Y%m%d_%H%M%S')}.png"
+                        )
+                    )
+                error = e
 
             finally:
                 await browser.close()
 
+        if error:
+            raise error
         logger.info(f"Found {len(permits)} permits from {source}")
         return permits
 

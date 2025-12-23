@@ -162,6 +162,14 @@ async def _scrape_hcpa_property_impl(
             # Get current URL which should have parcel ID
             url = page.url
             result["navigated_url"] = url
+
+            # Validate that folio search actually navigated to a property page
+            if "/parcel/basic/" not in url and "/parcel/" not in url:
+                logger.warning(f"Folio search did not navigate to property page for {folio}, URL: {url}")
+                result["error"] = f"Folio search failed - no property found for folio {folio}"
+                await browser.close()
+                await playwright.stop()
+                return result
         else:
             await browser.close()
             await playwright.stop()
@@ -173,6 +181,14 @@ async def _scrape_hcpa_property_impl(
 
         # Wait for page to fully load - needs more time for all sections
         await asyncio.sleep(5)
+
+        # Check for error/no results indicators on the page
+        page_text = await page.inner_text("body")
+        no_results_indicators = ["no results", "parcel not found", "invalid parcel", "no parcel"]
+        if any(indicator in page_text.lower() for indicator in no_results_indicators):
+            prop_id = folio or parcel_id or "unknown"
+            logger.warning(f"HCPA GIS page indicates no results for {prop_id}")
+            result["error"] = f"HCPA page shows no results for parcel {prop_id}"
 
         # Take screenshot
         screenshot_bytes = await page.screenshot(full_page=True)

@@ -60,10 +60,14 @@ import os
 from contextlib import suppress
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from dataclasses import dataclass
 import duckdb
 from loguru import logger
+from src.utils.time import ensure_duckdb_utc, now_utc, now_utc_naive
+
+if TYPE_CHECKING:
+    from src.db.operations import PropertyDB
 
 
 @dataclass
@@ -100,7 +104,12 @@ class ScraperStorage:
     BASE_DIR = Path("data/properties")
     DB_PATH = "data/property_master.db"
 
-    def __init__(self, db_path: str | None = None, skip_db_init: bool = False):
+    def __init__(
+        self,
+        db_path: str | None = None,
+        skip_db_init: bool = False,
+        db: "PropertyDB | None" = None,
+    ):
         """
         Initialize storage service.
 
@@ -108,7 +117,13 @@ class ScraperStorage:
             db_path: Optional custom database path
             skip_db_init: Skip database initialization (for read-only or no-DB mode)
         """
-        self.db_path = db_path or os.environ.get("HILLS_DB_PATH", self.DB_PATH)
+        self.db = db
+        if db_path:
+            self.db_path = db_path
+        elif db:
+            self.db_path = db.db_path
+        else:
+            self.db_path = self.DB_PATH
         self.BASE_DIR.mkdir(parents=True, exist_ok=True)
         self._skip_db = skip_db_init or os.environ.get("HILLS_SCRAPER_STORAGE_SKIP_INIT") == "1"
         if not self._skip_db:
@@ -116,7 +131,7 @@ class ScraperStorage:
 
     def _init_database(self):
         """Create the scraper_outputs table if it doesn't exist."""
-        conn = duckdb.connect(self.db_path)
+        conn, should_close = self._get_conn()
 
         # Check if table exists and needs migration
         with suppress(Exception):
@@ -183,8 +198,15 @@ class ScraperStorage:
             CREATE INDEX IF NOT EXISTS idx_scraper_outputs_lookup
             ON scraper_outputs(property_id, scraper)
         """)
+        if should_close:
+            conn.close()
 
-        conn.close()
+    def _get_conn(self):
+        if self.db:
+            return self.db.connect(), False
+        conn = duckdb.connect(self.db_path)
+        ensure_duckdb_utc(conn)
+        return conn, True
 
     def _get_property_dir(self, property_id: str) -> Path:
         """Get or create directory for a property."""
@@ -218,7 +240,7 @@ class ScraperStorage:
     @staticmethod
     def _timestamp() -> str:
         """Generate timestamp string for filenames."""
-        return datetime.now().strftime("%Y%m%d_%H%M%S")
+        return now_utc().strftime("%Y%m%d_%H%M%S")
 
     # -------------------------------------------------------------------------
     # Save Methods
@@ -319,7 +341,7 @@ class ScraperStorage:
 
         output = {
             "scraper": scraper,
-            "extracted_at": datetime.now().isoformat(),
+            "extracted_at": now_utc().isoformat(),
             "prompt_version": prompt_version,
             "context": context or None,
             "screenshot": screenshot_path,
@@ -484,7 +506,7 @@ class ScraperStorage:
             logger.debug(f"Skipping DB record for {scraper} on {property_id} (skip_db=True)")
             return 0
 
-        conn = duckdb.connect(self.db_path)
+        conn, should_close = self._get_conn()
 
         summary = None
         if vision_data:
@@ -501,8 +523,8 @@ class ScraperStorage:
         """, [
             property_id,
             scraper,
-            datetime.now(),
-            datetime.now() if vision_output_path else None,
+            now_utc_naive(),
+            now_utc_naive() if vision_output_path else None,
             screenshot_path,
             vision_output_path,
             raw_data_path,
@@ -517,10 +539,13 @@ class ScraperStorage:
         if source_url:
             logger.info(f"Saving source URL for {property_id}: {source_url}")
             try:
-                from src.db.operations import PropertyDB
-                with PropertyDB(self.db_path) as db:
-                    db.save_source(property_id, scraper, source_url)
-                    logger.info("Source saved successfully")
+                if self.db:
+                    self.db.save_source(property_id, scraper, source_url)
+                else:
+                    from src.db.operations import PropertyDB
+                    with PropertyDB(self.db_path) as db:
+                        db.save_source(property_id, scraper, source_url)
+                logger.info("Source saved successfully")
             except Exception as e:
                 logger.warning(f"Failed to save source to property_sources: {e}")
         else:
@@ -531,7 +556,8 @@ class ScraperStorage:
             WHERE property_id = ? AND scraper = ?
         """, [property_id, scraper]).fetchone()
 
-        conn.close()
+        if should_close:
+            conn.close()
         return result[0] if result else None
 
     def _extract_summary(self, scraper: str, vision_data: Dict) -> Dict:
@@ -573,7 +599,7 @@ class ScraperStorage:
         scraper: str
     ) -> Optional[ScraperRecord]:
         """Get the most recent scraper output for a property/scraper combo."""
-        conn = duckdb.connect(self.db_path)
+        conn, should_close = self._get_conn()
 
         result = conn.execute("""
             SELECT * FROM scraper_outputs
@@ -581,7 +607,8 @@ class ScraperStorage:
             ORDER BY scraped_at DESC LIMIT 1
         """, [property_id, scraper]).fetchone()
 
-        conn.close()
+        if should_close:
+            conn.close()
 
         if not result:
             return None
@@ -590,7 +617,7 @@ class ScraperStorage:
 
     def get_all_for_property(self, property_id: str) -> List[ScraperRecord]:
         """Get all scraper outputs for a property."""
-        conn = duckdb.connect(self.db_path)
+        conn, should_close = self._get_conn()
 
         results = conn.execute("""
             SELECT * FROM scraper_outputs
@@ -598,7 +625,8 @@ class ScraperStorage:
             ORDER BY scraper, scraped_at DESC
         """, [property_id]).fetchall()
 
-        conn.close()
+        if should_close:
+            conn.close()
         return [self._row_to_record(r) for r in results]
 
     def needs_refresh(
@@ -613,12 +641,18 @@ class ScraperStorage:
         if not latest or not latest.scraped_at:
             return True
 
-        age = datetime.now() - latest.scraped_at
+        scraped_at = latest.scraped_at
+        if not scraped_at:
+            return True
+        now = now_utc_naive()
+        if isinstance(scraped_at, datetime) and scraped_at.tzinfo:
+            now = now_utc()
+        age = now - scraped_at
         return age > timedelta(days=max_age_days)
 
     def get_unprocessed(self, scraper: str, limit: int = 100) -> List[ScraperRecord]:
         """Get screenshots that haven't been processed by VisionService."""
-        conn = duckdb.connect(self.db_path)
+        conn, should_close = self._get_conn()
 
         results = conn.execute("""
             SELECT * FROM scraper_outputs
@@ -629,7 +663,8 @@ class ScraperStorage:
             LIMIT ?
         """, [scraper, limit]).fetchall()
 
-        conn.close()
+        if should_close:
+            conn.close()
         return [self._row_to_record(r) for r in results]
 
     def _row_to_record(self, row) -> ScraperRecord:
@@ -667,6 +702,16 @@ class ScraperStorage:
         with open(filepath) as f:
             return json.load(f)
 
+    def load_raw_data(self, property_id: str, relative_path: str) -> Optional[Dict | str]:
+        """Load raw data (JSON preferred, else text)."""
+        filepath = self.get_full_path(property_id, relative_path)
+        if not filepath.exists():
+            return None
+        if filepath.suffix.lower() == ".json":
+            with open(filepath) as f:
+                return json.load(f)
+        return filepath.read_text()
+
     # -------------------------------------------------------------------------
     # Re-processing
     # -------------------------------------------------------------------------
@@ -681,7 +726,7 @@ class ScraperStorage:
         summary: Optional[Dict] = None
     ):
         """Update an existing record with new vision processing results."""
-        conn = duckdb.connect(self.db_path)
+        conn, should_close = self._get_conn()
 
         conn.execute("""
             UPDATE scraper_outputs SET
@@ -702,7 +747,8 @@ class ScraperStorage:
             record_id
         ])
 
-        conn.close()
+        if should_close:
+            conn.close()
 
 
 def reprocess_screenshots(scraper: str, prompt_version: str = "v2", limit: int = 100):

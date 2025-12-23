@@ -182,6 +182,7 @@ class TaxScraper:
                          image_data=screenshot_bytes,
                          context="detail_page"
                      )
+                     tax_status.screenshot_path = screenshot_path
                      full_screenshot_path = self.storage.get_full_path(parcel_id, screenshot_path)
 
                      # Extract Data
@@ -210,6 +211,8 @@ class TaxScraper:
                      
             except Exception as e:
                 logger.error(f"Error scraping Tax site: {e}")
+                # Re-raise so orchestrator can properly mark as failed with actual error
+                raise
             finally:
                 await browser.close()
 
@@ -549,6 +552,18 @@ If there's an amount due, set paid_in_full to false and provide the amount.
         try:
             result = await self.vision.process_async(self.vision.analyze_image, screenshot_path, prompt)
             logger.info(f"Vision extraction result: {result}")
+
+            if not result:
+                logger.warning("Vision returned no data for tax screenshot {}", screenshot_path)
+                return {
+                    "account_number": None,
+                    "owner": None,
+                    "situs": None,
+                    "paid_in_full": False,
+                    "amount_due": 0.0,
+                    "last_payment": None,
+                    "certificates": [],
+                }
 
             # Parse the JSON response
             import json

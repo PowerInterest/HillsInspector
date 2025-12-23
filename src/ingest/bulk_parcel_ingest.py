@@ -23,9 +23,9 @@ import polars as pl
 import tempfile
 import zipfile
 import json
-from datetime import datetime
 from pathlib import Path
 from loguru import logger
+from src.utils.time import coerce_datetime_utc, ensure_duckdb_utc, now_utc
 import asyncio
 from src.ingest.bulk_downloader import download_latest_bulk_data
 
@@ -127,8 +127,11 @@ def should_refresh() -> bool:
         logger.info("No previous ingestion found - will download fresh data")
         return True
 
-    last_date = datetime.fromisoformat(last_ingest)
-    days_since = (datetime.now() - last_date).days
+    last_date = coerce_datetime_utc(last_ingest)
+    if not last_date:
+        logger.info("Invalid last_ingest_date - will download fresh data")
+        return True
+    days_since = (now_utc() - last_date).days
 
     if days_since >= REFRESH_INTERVAL_DAYS:
         logger.info(f"Last ingestion was {days_since} days ago - will refresh")
@@ -234,7 +237,7 @@ def save_to_parquet(df: pl.DataFrame, name: str = "bulk_parcels") -> Path:
     Returns the path to the saved file.
     """
     ensure_directories()
-    timestamp = datetime.now().strftime("%Y%m%d")
+    timestamp = now_utc().strftime("%Y%m%d")
     parquet_path = PARQUET_DIR / f"{name}_{timestamp}.parquet"
 
     logger.info(f"Saving to Parquet: {parquet_path}")
@@ -265,6 +268,14 @@ def ingest_to_duckdb(df: pl.DataFrame, db_path: str = str(DB_PATH)) -> dict:
     logger.info(f"Ingesting {len(df):,} records to DuckDB: {db_path}")
 
     conn = duckdb.connect(db_path)
+    ensure_duckdb_utc(conn)
+
+    # Normalize and de-duplicate folios up front to avoid primary key violations.
+    df = (
+        df.with_columns(pl.col("folio").cast(pl.Utf8).str.strip_chars())
+        .filter(pl.col("folio").is_not_null() & (pl.col("folio") != ""))
+        .unique(subset=["folio"], keep="first")
+    )
 
     # Create table if not exists
     conn.execute("""
@@ -330,6 +341,7 @@ def ingest_to_duckdb(df: pl.DataFrame, db_path: str = str(DB_PATH)) -> dict:
     arrow_table = df.to_arrow()
     conn.register("df_temp", arrow_table)
 
+    # Insert unique rows (folios already de-duplicated in Polars)
     conn.execute("""
         INSERT INTO bulk_parcels (
             folio, pin, strap, owner_name, property_address, city, zip_code,
@@ -389,7 +401,7 @@ def ingest_dbf_file(dbf_path: Path, db_path: str = str(DB_PATH), ingest_to_db: b
 
     # Step 4: Update metadata
     metadata = get_ingest_metadata()
-    metadata["last_ingest_date"] = datetime.now().isoformat()
+    metadata["last_ingest_date"] = now_utc().isoformat()
     metadata["last_source_file"] = str(dbf_path)
     metadata["last_record_count"] = len(df)
     metadata["last_parquet_file"] = str(parquet_path)
@@ -484,7 +496,7 @@ def download_and_ingest(db_path: str = str(DB_PATH), force: bool = False, ingest
 
     # Update metadata
     metadata = get_ingest_metadata()
-    metadata["last_ingest_date"] = datetime.now().isoformat()
+    metadata["last_ingest_date"] = now_utc().isoformat()
     metadata["last_record_count"] = len(df_parcels)
     metadata["last_parquet_file"] = str(parquet_path)
     save_ingest_metadata(metadata)
@@ -492,7 +504,7 @@ def download_and_ingest(db_path: str = str(DB_PATH), force: bool = False, ingest
     return stats
 
 
-def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
+def enrich_auctions_from_bulk(db_path: str = str(DB_PATH), conn=None) -> dict:
     """
     Enrich the parcels table using bulk_parcels data.
 
@@ -501,8 +513,15 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
 
     NOTE: The auctions table uses STRAP (parcel_id column) while bulk_parcels
     uses FOLIO as the primary key. We join on STRAP to match records.
+
+    Args:
+        db_path: Path to database (used if conn not provided)
+        conn: Optional existing DuckDB connection to reuse
     """
-    conn = duckdb.connect(db_path)
+    owns_conn = conn is None
+    if owns_conn:
+        conn = duckdb.connect(db_path)
+        ensure_duckdb_utc(conn)
 
     # Check if bulk_parcels table exists, if not try to load from parquet
     try:
@@ -561,6 +580,7 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
 
     # Insert parcels for all auctions that don't have them yet
     # Join auctions.folio (which is STRAP) to bulk_parcels.strap
+    # Use ON CONFLICT to handle duplicate folios gracefully
     conn.execute("""
         INSERT INTO parcels (
             folio, parcel_id, bulk_folio, owner_name, property_address, city, zip_code,
@@ -569,7 +589,7 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
             strap, raw_legal1, raw_legal2, raw_legal3, raw_legal4,
             legal_description, latitude, longitude
         )
-        SELECT
+        SELECT DISTINCT ON (a.folio)
             a.folio, a.folio, b.folio, b.owner_name, b.property_address, b.city, b.zip_code,
             b.land_use, b.year_built, b.beds, b.baths, b.heated_area, b.lot_size,
             b.assessed_value, b.market_value, b.last_sale_date, b.last_sale_price,
@@ -580,6 +600,7 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
         INNER JOIN bulk_parcels b ON a.folio = b.strap
         LEFT JOIN parcels p ON a.folio = p.folio
         WHERE p.folio IS NULL
+        ON CONFLICT (folio) DO NOTHING
     """)
 
     # Update existing parcels missing data (including legal descriptions)
@@ -632,7 +653,8 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
     with_legal = result[0] if result else 0
 
     enriched = before - after
-    conn.close()
+    if owns_conn:
+        conn.close()
 
     logger.info(f"Enriched {enriched} auction parcels from bulk data")
     logger.info(f"Parcels with legal descriptions: {with_legal}")
@@ -647,6 +669,7 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH)) -> dict:
 def get_parcel_by_folio(folio: str, db_path: str = str(DB_PATH)) -> dict | None:
     """Quick lookup of a parcel by folio number."""
     conn = duckdb.connect(db_path)
+    ensure_duckdb_utc(conn)
 
     result = conn.execute("""
         SELECT * FROM bulk_parcels WHERE folio = ?
@@ -694,6 +717,7 @@ def ingest_dor_codes(dbf_path: Path, db_path: str = str(DB_PATH)) -> dict:
 
     # Ingest to DuckDB
     conn = duckdb.connect(db_path)
+    ensure_duckdb_utc(conn)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS dor_codes (
@@ -815,6 +839,7 @@ def ingest_subdivisions(dbf_path: Path, db_path: str = str(DB_PATH)) -> dict:
 
     # Ingest to DuckDB
     conn = duckdb.connect(db_path)
+    ensure_duckdb_utc(conn)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS subdivisions (
@@ -872,6 +897,7 @@ def ingest_all_lookup_tables(bulk_data_dir: Path = BULK_DATA_DIR, db_path: str =
 def validate_bulk_data(db_path: str = str(DB_PATH)) -> dict:
     """Run validation checks on the bulk_parcels table."""
     conn = duckdb.connect(db_path)
+    ensure_duckdb_utc(conn)
 
     stats = {}
 

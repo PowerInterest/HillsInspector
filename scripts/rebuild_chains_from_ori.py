@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
 import duckdb
 from loguru import logger
+from src.utils.time import ensure_duckdb_utc
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -80,6 +83,7 @@ def _select_broken_folios(conn: duckdb.DuckDBPyConnection) -> list[str]:
 
 def _delete_existing_records(db_path: Path, folio: str) -> None:
     conn = duckdb.connect(str(db_path), read_only=False)
+    ensure_duckdb_utc(conn)
     try:
         conn.execute("DELETE FROM documents WHERE folio = ?", [folio])
         conn.execute("DELETE FROM chain_of_title WHERE folio = ?", [folio])
@@ -106,6 +110,7 @@ def main() -> None:
     db_path = Path(args.db).resolve()
 
     ro = duckdb.connect(str(db_path), read_only=False)
+    ensure_duckdb_utc(ro)
     try:
         targets = args.folios or _select_broken_folios(ro)
     finally:
@@ -122,6 +127,7 @@ def main() -> None:
 
     for folio in targets:
         conn = duckdb.connect(str(db_path), read_only=False)
+        ensure_duckdb_utc(conn)
         try:
             legal, owner = _get_parcel_data(conn, folio)
             case_number, address, auction_date = _get_auction_data(conn, folio)
@@ -133,7 +139,7 @@ def main() -> None:
             continue
 
         parsed = parse_legal_description(legal)
-        search_terms = generate_search_permutations(parsed)
+        search_terms: list[str | tuple] = list(generate_search_permutations(parsed))
         if parsed.lot or parsed.block:
             search_terms.append(
                 (
@@ -160,11 +166,20 @@ def main() -> None:
 
         _delete_existing_records(db_path, folio)
 
+        auction_date_value: date | None = None
+        if isinstance(auction_date, datetime):
+            auction_date_value = auction_date.date()
+        elif isinstance(auction_date, date):
+            auction_date_value = auction_date
+        elif isinstance(auction_date, str):
+            with contextlib.suppress(ValueError):
+                auction_date_value = date.fromisoformat(auction_date)
+
         prop = Property(
             case_number=case_number or folio,
             parcel_id=folio,
             address=address or "",
-            auction_date=auction_date,
+            auction_date=auction_date_value,
             legal_description=legal,
         )
         prop.owner_name = owner
@@ -177,10 +192,12 @@ def main() -> None:
 
     # Report remaining BROKEN links
     conn = duckdb.connect(str(db_path), read_only=False)
+    ensure_duckdb_utc(conn)
     try:
-        remaining = conn.execute(
+        row = conn.execute(
             "SELECT COUNT(*) FROM chain_of_title WHERE upper(coalesce(link_status,''))='BROKEN'"
-        ).fetchone()[0]
+        ).fetchone()
+        remaining = row[0] if row else 0
     finally:
         conn.close()
     logger.success("Remaining BROKEN chain rows: {n}", n=remaining)

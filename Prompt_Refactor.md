@@ -4,7 +4,7 @@ To prevent an agent (including me) from making these kinds of "simplification er
 A. The "Golden Master" Constraint
 
 "Refactor X to use async/await, but treat the logic in 
-pipeline.py
+pipeline_OLD.py
  as a Golden Master. Every logical branch, fallback, and retry loop in the original code MUST exist in the new code. Do not simplify or optimize the logic, only the execution model."
 
 B. The "Logic Inventory" Request

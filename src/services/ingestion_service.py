@@ -35,15 +35,22 @@ ANALYZABLE_DOC_TYPES = {
 
 
 class IngestionService:
-    def __init__(self, ori_scraper: ORIApiScraper | None = None, analyze_pdfs: bool = True, db_writer: Any = None):
-        self.db = PropertyDB()
+    def __init__(
+        self,
+        ori_scraper: ORIApiScraper | None = None,
+        analyze_pdfs: bool = True,
+        db_writer: Any = None,
+        db: PropertyDB | None = None,
+        storage: ScraperStorage | None = None,
+    ):
+        self.db = db or PropertyDB()
         self.db_writer = db_writer
         # Share ORI scraper across services to avoid multiple browser sessions
         self.ori_scraper = ori_scraper or ORIApiScraper()
         self.chain_service = TitleChainService()
         # Pass shared ORI scraper to Party2ResolutionService
         self.party2_service = Party2ResolutionService(ori_scraper=self.ori_scraper)
-        self.storage = ScraperStorage()
+        self.storage = storage or ScraperStorage(db_path=self.db.db_path, db=self.db)
         # Document analyzer for PDF extraction
         self.analyze_pdfs = analyze_pdfs
         self.doc_analyzer = DocumentAnalyzer() if analyze_pdfs else None
@@ -384,8 +391,9 @@ class IngestionService:
         self,
         prop: Property,
         plaintiff: Optional[str] = None,
-        defendant: Optional[str] = None
-    ):
+        defendant: Optional[str] = None,
+        skip_db_writes: bool = False,
+    ) -> Optional[Dict]:
         """
         Ingest ORI documents for a property by searching by party name.
 
@@ -399,10 +407,15 @@ class IngestionService:
             prop: Property object (parcel_id may be invalid, use case_number as identifier)
             plaintiff: Plaintiff name (Party 1 / foreclosing party)
             defendant: Defendant name (Party 2 / borrower)
+            skip_db_writes: If True, return data instead of writing to DB (for queueing)
+
+        Returns:
+            If skip_db_writes=True: dict with 'documents' and 'chain_data' for queued writes
+            Otherwise: None
         """
         if not plaintiff and not defendant:
             logger.warning(f"No party names provided for {prop.case_number}, cannot search ORI")
-            return
+            return None
 
         logger.info(f"Ingesting ORI by party for case {prop.case_number}")
         if plaintiff:
@@ -413,12 +426,13 @@ class IngestionService:
         all_docs: List[dict] = []
 
         # Search by defendant first (borrower - more likely to have title documents)
+        # Use browser-based search to avoid 25-record API limit
         if defendant:
             search_name = self._normalize_party_name_for_search(defendant)
             if search_name:
-                logger.info(f"Searching ORI by defendant: {search_name}")
+                logger.info(f"Searching ORI by defendant (browser): {search_name}")
                 try:
-                    docs = self.ori_scraper.search_by_party(search_name)
+                    docs = self.ori_scraper.search_by_party_browser_sync(search_name)
                     if docs:
                         logger.info(f"Found {len(docs)} documents for defendant")
                         all_docs.extend(docs)
@@ -429,9 +443,9 @@ class IngestionService:
         if plaintiff:
             search_name = self._normalize_party_name_for_search(plaintiff)
             if search_name:
-                logger.info(f"Searching ORI by plaintiff: {search_name}")
+                logger.info(f"Searching ORI by plaintiff (browser): {search_name}")
                 try:
-                    docs = self.ori_scraper.search_by_party(search_name)
+                    docs = self.ori_scraper.search_by_party_browser_sync(search_name)
                     if docs:
                         logger.info(f"Found {len(docs)} documents for plaintiff")
                         all_docs.extend(docs)
@@ -440,7 +454,7 @@ class IngestionService:
 
         if not all_docs:
             logger.warning(f"No ORI documents found by party search for {prop.case_number}")
-            return
+            return None
 
         # Group by instrument to dedupe
         grouped_docs = self._group_ori_records_by_instrument(all_docs)
@@ -448,23 +462,24 @@ class IngestionService:
 
         # Process documents (same as standard ingestion)
         processed_docs = []
+        property_id = prop.parcel_id or prop.case_number
 
         for doc in grouped_docs:
             mapped_doc = self._map_grouped_ori_doc(doc, prop)
 
             if self.analyze_pdfs:
-                download_result = self._download_and_analyze_document(doc, prop.parcel_id or prop.case_number)
+                download_result = self._download_and_analyze_document(doc, property_id)
                 if download_result:
                     mapped_doc['file_path'] = download_result.get('file_path')
                     if download_result.get('extracted_data'):
                         mapped_doc['vision_extracted_data'] = download_result['extracted_data']
                         mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
 
-            doc_id = self.db.save_document(prop.parcel_id or prop.case_number, mapped_doc)
-            mapped_doc['id'] = doc_id
-
-            if mapped_doc.get('vision_extracted_data'):
-                self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+            if not skip_db_writes:
+                doc_id = self.db.save_document(property_id, mapped_doc)
+                mapped_doc['id'] = doc_id
+                if mapped_doc.get('vision_extracted_data'):
+                    self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
 
             processed_docs.append(mapped_doc)
 
@@ -472,9 +487,23 @@ class IngestionService:
         logger.info("Building Chain of Title from party search results...")
         analysis = self.chain_service.build_chain_and_analyze(processed_docs)
         db_data = self._transform_analysis_for_db(analysis)
-        self.db.save_chain_of_title(prop.parcel_id or prop.case_number, db_data)
 
+        if skip_db_writes:
+            # Return data for caller to queue writes
+            logger.info(f"Party-based ingestion prepared {len(processed_docs)} docs for {prop.case_number} (writes deferred)")
+            return {
+                'property_id': property_id,
+                'documents': processed_docs,
+                'chain_data': db_data,
+            }
+
+        self.db.save_chain_of_title(property_id, db_data)
         logger.success(f"Party-based ingestion complete for {prop.case_number} ({len(processed_docs)} docs)")
+        return {
+            'property_id': property_id,
+            'documents': processed_docs,
+            'chain_data': db_data,
+        }
 
     def _normalize_party_name_for_search(self, name: str) -> Optional[str]:
         """
@@ -1811,3 +1840,12 @@ class IngestionService:
             "legal_description": str(legal),
             "extracted_data": ori_doc  # Store raw data too
         }
+
+    async def shutdown(self) -> None:
+        """Release async resources (Playwright browser context)."""
+        if not self.ori_scraper:
+            return
+        try:
+            await self.ori_scraper.close_browser()
+        except Exception as exc:
+            logger.warning(f"Failed to close ORI browser cleanly: {exc}")

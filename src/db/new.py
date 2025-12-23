@@ -3,6 +3,7 @@ Database initialization and setup.
 """
 import duckdb
 from pathlib import Path
+from src.utils.time import ensure_duckdb_utc
 
 def create_database(db_path: str = "data/property_master.db"):
     """
@@ -12,6 +13,7 @@ def create_database(db_path: str = "data/property_master.db"):
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     
     conn = duckdb.connect(db_path)
+    ensure_duckdb_utc(conn)
     
     # Create sequences
     conn.execute("CREATE SEQUENCE IF NOT EXISTS seq_auctions_id START 1")
@@ -46,6 +48,7 @@ def create_database(db_path: str = "data/property_master.db"):
             last_sale_price FLOAT,
             image_url VARCHAR,
             market_analysis_content VARCHAR,
+            legal_description VARCHAR,
             latitude DOUBLE,
             longitude DOUBLE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -440,7 +443,49 @@ def create_database(db_path: str = "data/property_master.db"):
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_homeharvest_folio ON home_harvest(folio)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_homeharvest_address ON home_harvest(formatted_address)")
-    
+
+    # Create status table (pipeline progress tracking)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS status (
+            -- Primary key
+            case_number VARCHAR PRIMARY KEY,
+            parcel_id VARCHAR,
+            auction_date DATE,
+            auction_type VARCHAR,
+
+            -- Step completion timestamps (NULL = not started, timestamp = completed)
+            step_auction_scraped TIMESTAMP,
+            step_pdf_downloaded TIMESTAMP,
+            step_judgment_extracted TIMESTAMP,
+            step_bulk_enriched TIMESTAMP,
+            step_homeharvest_enriched TIMESTAMP,
+            step_hcpa_enriched TIMESTAMP,
+            step_ori_ingested TIMESTAMP,
+            step_survival_analyzed TIMESTAMP,
+            step_permits_checked TIMESTAMP,
+            step_flood_checked TIMESTAMP,
+            step_market_fetched TIMESTAMP,
+            step_tax_checked TIMESTAMP,
+
+            -- Current state
+            current_step INTEGER DEFAULT 0,
+            pipeline_status VARCHAR DEFAULT 'pending',
+
+            -- Error tracking
+            last_error VARCHAR,
+            error_step INTEGER,
+            retry_count INTEGER DEFAULT 0,
+
+            -- Timestamps
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_status_auction_date ON status(auction_date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_status_pipeline_status ON status(pipeline_status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_status_parcel ON status(parcel_id)")
+
     # Create indices for fast lookups
     print("Creating indices...")
     

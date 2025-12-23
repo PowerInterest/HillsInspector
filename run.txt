@@ -18,3 +18,6 @@
   2. Run: ~/.local/bin/ngrok config add-authtoken YOUR_TOKEN
   3. Start server: uv run main.py --web --ngrok
   4. Share the displayed public URL to access from anywhere
+
+  codex --ask-for-approval never --search true
+  claude --dangerously-skip-permissions

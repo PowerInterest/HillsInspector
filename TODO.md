@@ -1,5 +1,280 @@
 # TODO
 
+## Log Error Triage (Dec 21, 2025)
+- [x] Permit scraper model mismatch (`Permit` missing address/permit_type fields)
+- [x] Vision endpoints unavailable (timeouts/connection errors) causing tax/ocr failures
+- [x] ORI browser timeouts (selector wait) causing ORI ingestion failures
+- [x] FEMA API DNS failures (hazards.fema.gov)
+- [x] Sunbiz/Playwright sandbox launch failures in restricted environment
+- [x] history.db lock contention between web/history pipeline
+- [ ] OnBase "Could not find Document ID" failures (see below)
+
+### OnBase Document ID Not Found (Dec 22, 2025)
+
+**Problem**: Some Final Judgment PDFs fail to download with warning `Could not find Document ID for {case_number}`.
+
+**Root Cause**: The `_download_final_judgment()` method intercepts OnBase's `KeywordSearch` API response to extract the Document ID. The timeout occurs when:
+1. The KeywordSearch API returns empty `Data` array (document not indexed)
+2. The first record has no `ID` field
+3. OnBase rate limiting or bot detection blocks the request
+4. The instrument number search doesn't match (typo, different format)
+
+**Current Behavior**:
+- PDF download fails (`pdf_path=None`)
+- Plaintiff/defendant may still be captured from OnBase response
+- Step 2 (judgment extraction) fails for this case since no PDF exists
+- Step 5 has separate logic for invalid folios that falls back to party-based ORI search
+
+**Impact**: Cases without downloaded PDFs cannot be analyzed. The final judgment contains critical data: legal description, judgment amount, foreclosing mortgage details, lis pendens date.
+
+**Potential Solutions** (not yet implemented):
+
+1. **Try alternate OnBase search methods**:
+   - CQID=320 (Instrument Search) - current method
+   - CQID=326 (Party Name Search) - search by plaintiff/defendant
+   - CQID=321 (Legal Description Search) - if we have legal desc from HCPA
+   - CQID=319 (Book/Page Search) - if we have recording references
+
+2. **Retry with case number fallback**: If instrument number search fails, try searching OnBase by case number pattern (e.g., `2023CA002070`)
+
+3. **Scrape page directly**: Instead of intercepting API, look for embedded PDF viewer iframe or direct download links on the OnBase page
+
+4. **Use ORI to find Lis Pendens**: Search ORI by party name to find the Lis Pendens document, which contains the legal description. Then use legal description to search for related documents.
+
+5. **Queue for manual review**: Flag cases needing manual intervention and surface them in the web UI
+
+**Files Involved**:
+- `src/scrapers/auction_scraper.py:311-454` - `_download_final_judgment()` method
+- `src/orchestrator.py:588-614` - Invalid folio fallback (separate issue)
+
+**Partial Fix Implemented (Dec 22, 2025)**:
+Step 5 now has a party-based ORI search fallback that covers this scenario indirectly:
+- When no legal description is available from HCPA/judgment/bulk, Step 5 now tries party-based search
+- This finds Lis Pendens documents which contain the legal description
+- Cases are flagged with "Processed via party-based ORI (no legal desc); needs review"
+- The browser-based search (`search_by_party_browser_sync`) is used to avoid the 25-record API limit
+
+**Additional Step 5 Bug Fixes (Dec 22, 2025)**:
+1. **Early returns now mark status**: Cases skipped for "no parcel_id" or "no address" are now marked as skipped
+2. **Consistent step_ori_ingested marking**: All code paths now properly mark `step_ori_ingested` for accurate status tracking
+3. **Browser-based party search**: Switched from API (25-record limit) to browser-based search (unlimited)
+
+### ✅ Step 9 (Market Data) Bug Fixes (Dec 22, 2025) — NEEDS CONFIRMATION
+
+**Bug 1: Step marked complete even with no useful data (Critical)**
+- If `listing.price` was None AND `listing.status == "Unknown"`, no data was saved but step was marked complete
+- Properties with failed scrapes were never retried
+
+**Fix**: Only mark step complete when useful data is obtained. Mark as failed otherwise so it can be retried.
+
+**Bug 2: No address validation (Critical)**
+- No check for "Unknown", empty, or invalid addresses
+- Malformed URLs were generated and scrapes failed silently
+
+**Fix**: Added address validation (same pattern as Step 7) - skip with warning for invalid addresses.
+
+**Bug 3: Silent bot detection failures (Medium)**
+- CAPTCHA/block detection returned `None` instead of raising exception
+- Orchestrator marked step complete instead of failed
+
+**Fix**: `_scrape_source()` now raises `RuntimeError` on bot detection. `get_listing_details()` raises when both sources fail.
+
+**Bug 4: Address parsing improvements (Medium)**
+- Added handling for 2-part addresses ("123 Main St, Tampa")
+- Fixed indentation issues in parsing logic
+
+**Bug 5: Pydantic v2 compatibility (Low)**
+- Changed `listing.dict()` to `listing.model_dump()`
+
+**Files Modified**:
+- `src/orchestrator.py:952-1029` - Address validation, conditional step completion, model_dump()
+- `src/scrapers/market_scraper.py:102-149, 151-173` - Error tracking, raise on bot detection
+
+**Status**: Awaiting confirmation after next pipeline run.
+
+### ✅ Step 9/10 (Market Data) Additional Fixes (Dec 23, 2025) — NEEDS CONFIRMATION
+
+**Bug 1: Consolidated rows missing most fields**
+- `ListingDetails` did not map to `save_market_data()` schema (listing_status, zestimate, rent, HOA, DOM)
+- Resulted in NULLs for most columns in `market_data`
+
+**Fix**: Map consolidated payload explicitly to `save_market_data()` fields.
+
+**Bug 2: Screenshot path always NULL**
+- Market scraper saved screenshots but never set `ListingDetails.screenshot_path`
+
+**Fix**: Capture and carry screenshot path from the successful source.
+
+**Bug 3: Skip paths didn’t clear `needs_market_data`**
+- When skipping due to existing data or invalid address, `needs_market_data` flag stayed TRUE
+
+**Fix**: Mark `needs_market_data` false on skip paths.
+
+**Bug 4: Address parsing + URL encoding**
+- Two-part addresses like `"Street, Tampa FL 33602"` were misparsed
+- URLs were built without proper slugging/encoding
+
+**Fix**: Robust 2-part parse and slugified URLs; omit ZIP if missing.
+
+**Files Modified**:
+- `src/orchestrator.py:952-1029` - payload mapping, skip flags, address parsing
+- `src/scrapers/market_scraper.py:70-230` - URL slugging, screenshot capture, record_scrape
+- `src/models/property.py:61-69` - ListingDetails additions
+
+**Status**: Awaiting confirmation after next pipeline run.
+
+### ✅ Step 6 (Survival Analysis) Bug Fix (Dec 22, 2025) — NEEDS CONFIRMATION
+
+**Bug: Encumbrance update key collisions**
+- When multiple encumbrances share the same date+type (e.g., multiple HOA liens) with no instrument or book/page
+- They got the same fallback key `DTYPE:{date}_{type}`
+- Later encumbrance overwrote earlier one in lookup map
+- Updates were applied to wrong record or skipped entirely
+
+**Fix**: Include row ID in fallback key to ensure uniqueness:
+- Map building: `DTYPE:{date}_{type}_{row_id}`
+- Lookup: Use original `id` field if preserved through analysis, else fallback without ID for new encumbrances
+
+**Files Modified**: `src/orchestrator.py:330-339, 497-508`
+
+**Status**: Awaiting confirmation after next pipeline run.
+
+### ✅ Step 7 (Permits) Bug Fixes (Dec 22, 2025) — NEEDS CONFIRMATION
+
+**Bug 1: Silent scrape failures masked as success (Critical)**
+- In `permit_scraper.py` `get_permits()`, exceptions from city/county scrapes were caught internally and swallowed
+- Method returned empty `[]` on failure
+- Orchestrator marked step complete even when scrape actually failed
+- Properties with failed scrapes never got retried
+
+**Fix**: Modified `get_permits()` to raise `RuntimeError` when both city AND county scrapes fail. This propagates to the orchestrator which marks the step as failed (with retry).
+
+**Bug 2: No validation for "Unknown" address**
+- If address was missing, `"Unknown"` was passed to permit scraper
+- Permit search with "Unknown" would fail or return garbage
+- Step still marked complete
+
+**Fix**: Added address validation in `_run_permit_scraper()` - skips permit check for invalid addresses like "Unknown", "N/A", "None".
+
+**Files Modified**:
+- `src/orchestrator.py:1169-1176` - Added address validation
+- `src/scrapers/permit_scraper.py:207-254` - Raise on both-fail scenario
+
+**Status**: Awaiting confirmation after next pipeline run.
+
+### ✅ Step 12/13 (Tax Check) Fixes (Dec 23, 2025) — NEEDS CONFIRMATION
+
+**Bug 1: Tax updates missed parcels**
+- `update_parcel_tax_status()` updated by `parcel_id` only
+- Parcels with only `folio` set never got tax_status/tax_warrant
+
+**Fix**: Update by `parcel_id OR folio` and insert missing parcel row first.
+
+**Bug 2: Missing address silently marked complete**
+- Tax scraper returns empty `TaxStatus` if address missing or search fails
+- Orchestrator marked step complete with UNKNOWN status (no retries)
+
+**Fix**: Validate address and treat empty scrape as failure so it can retry.
+
+**Bug 3: Skip path didn’t clear needs_tax_check**
+- When tax data already existed, status step completed but `needs_tax_check` stayed TRUE
+
+**Fix**: Mark `needs_tax_check` false when skipping due to existing data.
+
+**Bug 4: No tax scrape audit trail**
+- Tax step didn’t write to `scraper_outputs`, so failures weren’t visible in web/status views
+
+**Fix**: Record tax scraper results (success/failure) in `scraper_outputs` and include screenshot path when available.
+
+**Files Modified**:
+- `src/db/operations.py:518-526` - update by folio/parcel_id
+- `src/orchestrator.py:914-948` - address validation + empty-result failure + skip flag
+
+**Status**: Awaiting confirmation after next pipeline run.
+
+### ✅ Step 15 (Geocoding) Fixes (Dec 23, 2025) — NEEDS CONFIRMATION
+
+**Bug 1: Geocode query missed auctions with only `folio` set**
+- Join used `a.parcel_id = p.folio` only
+
+**Fix**: Use `COALESCE(a.parcel_id, a.folio)` and normalize auction_date parsing.
+
+**Bug 2: Invalid/placeholder addresses were geocoded**
+- Rows with `property_address` like "Unknown" were included
+
+**Fix**: Filter out placeholder addresses in geocode query.
+
+**Bug 3: Geocode attempts not logged**
+- Geocode step didn’t write to `scraper_outputs`, making misses invisible
+
+**Fix**: Record geocode success/failure in `scraper_outputs`.
+
+**Files Modified**:
+- `src/orchestrator.py:1804-1849` - normalized geocode query + address filter
+
+**Status**: Awaiting confirmation after next pipeline run.
+
+### ✅ Step 11 (HCPA GIS) Bug Fixes (Dec 22, 2025) — NEEDS CONFIRMATION
+
+**Bug 1: Step marked complete even with no useful data (Critical)**
+- Only mark complete if we got useful data (sales_history OR legal_description)
+- If neither present, mark as failed so it can be retried
+
+**Bug 2: No parcel_id validation (Medium)**
+- Added validation for invalid parcel_id values ("unknown", "property appraiser", "multiple parcel", etc.)
+- Skip with warning and mark step complete for invalid IDs
+
+**Bug 3: Silent failure when folio search doesn't navigate (Medium)**
+- Added URL check after folio search to verify navigation to property page
+- Set error key if URL doesn't contain "/parcel/"
+- Added page content check for "no results" indicators
+
+**Files Modified**:
+- `src/orchestrator.py:1304-1377` - parcel_id validation, conditional step completion
+- `src/scrapers/hcpa_gis_scraper.py:166-172, 185-191` - navigation validation, no-results check
+
+**Status**: Awaiting confirmation after next pipeline run.
+
+### ✅ Step 12 (Tax Scraper) Bug Fixes (Dec 22, 2025) — NEEDS CONFIRMATION
+
+**Bug 1: situs field always making has_data=True (Critical)**
+- The `situs` field was set from input `property_address`, not scraped data
+- `has_data` check always passed because `situs` was always set
+- Removed `situs` from `has_data` check so only actual scraped data counts
+
+**Bug 2: Exceptions silently swallowed in scraper (Medium)**
+- `tax_scraper.py` caught all exceptions and just logged, then returned empty TaxStatus
+- Now re-raises exceptions so orchestrator can properly mark as failed with actual error message
+
+**Files Modified**:
+- `src/orchestrator.py:981-990` - removed situs from has_data check
+- `src/scrapers/tax_scraper.py:212-215` - re-raise exceptions instead of swallowing
+
+**Status**: Awaiting confirmation after next pipeline run.
+
+### ✅ Step 2 Infinite Retry Bug Fix (Dec 22, 2025) — CONFIRMED
+
+**Problem**: Judgment extraction (Step 2) kept re-running the same auctions on every pipeline restart.
+
+**Root Cause**: When `FinalJudgmentProcessor.process_pdf()` returned `None` (vision service returned no structured data), the orchestrator's `if result:` block was skipped silently. No status was marked, so the auction was selected again on the next run, causing an infinite retry loop.
+
+**Symptoms**:
+- Same auctions processed repeatedly across restarts
+- No error messages for these cases (silent failure)
+- Step 2 never completed for affected auctions
+
+**Fix**:
+1. Added `else` branch to mark status as failed when `result` is None:
+   ```python
+   else:
+       db.mark_status_failed(case_number, "Vision service returned no structured data", error_step=2)
+   ```
+2. Added periodic checkpoint every 10 auctions to prevent data loss if process is killed mid-loop
+
+**Files Modified**: `src/orchestrator.py:1488-1505`
+
+**Status**: Fix confirmed and deployed.
+
 ## Completed
 
 ### ✅ Final Judgment PDF Download Fix (Dec 8, 2024)
@@ -11,7 +286,7 @@
 
 **Fixes Applied**:
 - `src/scrapers/auction_scraper.py` (lines 205-214): Enhanced parcel_id parsing to filter out invalid values like "Property Appraiser", "N/A", and "none"
-- `src/pipeline.py` Step 2: Now downloads missing PDFs before extraction instead of just skipping auctions without PDFs
+- `src/orchestrator.py` Step 2: Now downloads missing PDFs before extraction instead of just skipping auctions without PDFs
   - Added `_download_missing_judgment_pdfs()` helper function
   - Added `_download_single_judgment_pdf()` helper function
   - Groups downloads by auction date to minimize page loads
@@ -76,7 +351,7 @@ The current `VisionService` uses synchronous `requests`, blocking the pipeline d
     - Make `analyze_image`, `analyze_images` and all extraction methods `async`.
     - Keep synchronous wrappers for backward compatibility.
 2.  **Update Pipeline Step 2**:
-    - Modify `run_full_pipeline` to use `asyncio.gather` for Final Judgment processing.
+    - Modify `run_full_update` (orchestrator) to use `asyncio.gather` for Final Judgment processing.
     - Implement a `Semaphore` (e.g., limit 5-10) to control load on the vLLM server.
 3.  **Update Consumers**:
     - Update `FinalJudgmentProcessor`, `PermitScraper`, etc., to `await` vision calls.

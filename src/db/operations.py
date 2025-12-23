@@ -2,40 +2,77 @@
 Database operations for property data.
 Provides high-level functions for inserting and querying data.
 """
-import os
 import duckdb
+import threading
 from contextlib import suppress
-from datetime import date, datetime, UTC
+from datetime import date, datetime
 from typing import List, Optional, Dict, Any, Any as AnyType
 import json
 from loguru import logger
 
 from src.models.property import Property, Lien
+from src.utils.time import ensure_duckdb_utc, now_utc_naive, parse_date, today_local
 
 class PropertyDB:
     def __init__(self, db_path: Optional[str] = None):
-        # Allow overriding via env for test/debug runs
-        self.db_path = db_path or os.environ.get("HILLS_DB_PATH", "data/property_master.db")
-        self.conn = None
+        self.db_path = db_path or "data/property_master.db"
+        self._local = threading.local()
+        self._local.conn = None
         self._schema_migrations_applied = False
+
+    def _get_conn(self):
+        return getattr(self._local, "conn", None)
+
+    @property
+    def conn(self):
+        conn = self._get_conn()
+        if conn is None:
+            conn = self.connect()
+        return conn
+
+    @conn.setter
+    def conn(self, value):
+        self._local.conn = value
     
     def connect(self):
         """Open database connection."""
-        if self.conn is None:
-            self.conn = duckdb.connect(self.db_path)
-        self._apply_schema_migrations()
-        return self.conn
+        conn = self._get_conn()
+        if conn is None:
+            conn = duckdb.connect(self.db_path)
+            ensure_duckdb_utc(conn)
+            self._local.conn = conn
+        self._apply_schema_migrations(conn)
+        return conn
 
-    def _apply_schema_migrations(self) -> None:
+    def checkpoint(self) -> None:
+        """
+        Force WAL checkpoint - flushes all pending writes to the main database file.
+
+        This is critical for data durability. Without checkpointing, all changes
+        remain in the WAL file and can be lost if the process crashes or the
+        WAL replay fails on next open.
+
+        Call this after completing each major pipeline step to ensure data is
+        persisted to disk.
+        """
+        conn = self._get_conn()
+        if conn is None:
+            # No existing connection - create one for checkpoint
+            conn = self.connect()
+        try:
+            conn.execute("CHECKPOINT")
+            logger.info("Database checkpoint complete - WAL flushed to disk")
+        except Exception as e:
+            logger.warning(f"Checkpoint failed (non-fatal): {e}")
+
+    def _apply_schema_migrations(self, conn) -> None:
         """
         Apply lightweight, idempotent schema migrations.
 
         Keep this narrow and safe: only `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
         """
-        if self._schema_migrations_applied or self.conn is None:
+        if self._schema_migrations_applied or conn is None:
             return
-
-        conn = self.conn
 
         def table_exists(table_name: str) -> bool:
             with suppress(Exception):
@@ -129,12 +166,49 @@ class PropertyDB:
             )
 
         self._schema_migrations_applied = True
+        # Note: We intentionally do NOT checkpoint here. Checkpointing requires
+        # exclusive access and will spin-wait if another connection has pending
+        # transactions. The orchestrator handles checkpointing after each step.
+
+    @staticmethod
+    def normalize_folio(value: str | None) -> str | None:
+        """Normalize a folio by stripping non-digit characters."""
+        if not value:
+            return None
+        digits = "".join(ch for ch in str(value) if ch.isdigit())
+        return digits or None
+
+    def get_folio_from_strap(self, strap: str) -> str | None:
+        """Lookup numeric folio for a STRAP (parcel_id) using bulk_parcels/parcels."""
+        if not strap:
+            return None
+        conn = self.connect()
+        try:
+            row = conn.execute(
+                "SELECT folio FROM bulk_parcels WHERE strap = ? LIMIT 1",
+                [strap],
+            ).fetchone()
+            if row and row[0]:
+                return str(row[0])
+        except Exception:
+            pass
+        try:
+            row = conn.execute(
+                "SELECT bulk_folio FROM parcels WHERE folio = ? LIMIT 1",
+                [strap],
+            ).fetchone()
+            if row and row[0]:
+                return str(row[0])
+        except Exception:
+            pass
+        return None
     
     def close(self):
         """Close database connection."""
-        if self.conn:
-            self.conn.close()
-            self.conn = None
+        conn = self._get_conn()
+        if conn:
+            conn.close()
+            self._local.conn = None
     
     def __enter__(self):
         self.connect()
@@ -337,6 +411,24 @@ class PropertyDB:
             [error, case_number],
         )
 
+    def mark_ori_party_fallback_used(self, case_number: str, note: str = "") -> None:
+        """Record that ORI party-search fallback was used (for review)."""
+        conn = self.connect()
+        conn.execute(
+            "ALTER TABLE auctions ADD COLUMN IF NOT EXISTS ori_party_fallback_used BOOLEAN DEFAULT FALSE"
+        )
+        conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS ori_party_fallback_note VARCHAR")
+        conn.execute(
+            """
+            UPDATE auctions
+            SET ori_party_fallback_used = TRUE,
+                ori_party_fallback_note = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE case_number = ?
+            """,
+            [note, case_number],
+        )
+
     def upsert_auction(self, prop: Property) -> int:
         """
         Insert or update an auction property.
@@ -427,11 +519,12 @@ class PropertyDB:
     def update_parcel_tax_status(self, folio: str, tax_status: str, tax_warrant: bool):
         """Update tax status and warrant info for a parcel."""
         conn = self.connect()
+        conn.execute("INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio])
         conn.execute("""
             UPDATE parcels 
             SET tax_status = ?, tax_warrant = ?
-            WHERE parcel_id = ?
-        """, [tax_status, tax_warrant, folio])
+            WHERE parcel_id = ? OR folio = ?
+        """, [tax_status, tax_warrant, folio, folio])
 
     def upsert_parcel(self, prop: Property) -> str:
         """
@@ -475,7 +568,7 @@ class PropertyDB:
             prop.image_url,
             prop.market_analysis_content,
             prop.legal_description,
-            datetime.now()
+            now_utc_naive(),
         ])
 
         # 2. Update (in case it already existed and we have new data)
@@ -508,7 +601,7 @@ class PropertyDB:
             prop.image_url,
             prop.market_analysis_content,
             prop.legal_description,
-            datetime.now(),
+            now_utc_naive(),
             folio
         ])
 
@@ -661,44 +754,25 @@ class PropertyDB:
         """Update auction row with extracted Final Judgment data."""
         conn = self.connect()
 
-        def _parse_date(value):
-            """Normalize various date formats to ISO date string."""
-            if value is None:
-                return None
-            if isinstance(value, date):
-                return value.isoformat()
-            if isinstance(value, datetime):
-                return value.date().isoformat()
-            if isinstance(value, str):
-                value = value.strip()
-                if not value:
-                    return None
-                for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
-                    try:
-                        return datetime.strptime(value, fmt).date().isoformat()
-                    except ValueError:
-                        continue
-            return None
-
         fields = {
             "plaintiff": data.get("plaintiff"),
             "defendant": data.get("defendant"),
             "foreclosure_type": data.get("foreclosure_type"),
-            "judgment_date": _parse_date(data.get("judgment_date")),
-            "lis_pendens_date": _parse_date(data.get("lis_pendens_date")),
-            "foreclosure_sale_date": _parse_date(data.get("foreclosure_sale_date")),
+            "judgment_date": parse_date(data.get("judgment_date")),
+            "lis_pendens_date": parse_date(data.get("lis_pendens_date")),
+            "foreclosure_sale_date": parse_date(data.get("foreclosure_sale_date")),
             "total_judgment_amount": data.get("total_judgment_amount"),
             "principal_amount": data.get("principal_amount"),
             "interest_amount": data.get("interest_amount"),
             "attorney_fees": data.get("attorney_fees"),
             "court_costs": data.get("court_costs"),
             "original_mortgage_amount": data.get("original_mortgage_amount"),
-            "original_mortgage_date": _parse_date(data.get("original_mortgage_date")),
+            "original_mortgage_date": parse_date(data.get("original_mortgage_date")),
             "monthly_payment": data.get("monthly_payment"),
-            "default_date": _parse_date(data.get("default_date")),
+            "default_date": parse_date(data.get("default_date")),
             "extracted_judgment_data": data.get("extracted_judgment_data"),
             "raw_judgment_text": data.get("raw_judgment_text"),
-            "judgment_extracted_at": datetime.now(),
+            "judgment_extracted_at": now_utc_naive(),
         }
 
         set_parts = []
@@ -723,20 +797,7 @@ class PropertyDB:
     @staticmethod
     def _parse_recording_date(value: Any) -> Optional[date]:
         """Parse recording_date from various formats."""
-        if value is None:
-            return None
-        if isinstance(value, date):
-            return value
-        if isinstance(value, datetime):
-            return value.date()
-        if isinstance(value, str):
-            value = value.strip()
-            for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
-                try:
-                    return datetime.strptime(value, fmt).date()
-                except ValueError:
-                    continue
-        return None
+        return parse_date(value)
 
     def save_liens(self, folio: str, liens: List[AnyType], case_number: str | None = None):
         """Save identified liens to the database.
@@ -806,7 +867,7 @@ class PropertyDB:
                 existing = conn.execute("""
                     SELECT id FROM liens
                     WHERE folio = ? AND document_type = ? AND
-                          (book = ? AND page = ?) OR instrument_number = ?
+                          ((book = ? AND page = ?) OR instrument_number = ?)
                 """, [folio, document_type, book, page, instrument_number]).fetchone()
 
                 if existing:
@@ -1090,6 +1151,10 @@ class PropertyDB:
             if doc_data.get("ocr_text"):
                 updates.append("ocr_text = ?")
                 params.append(doc_data.get("ocr_text"))
+            extracted_data = doc_data.get("extracted_data") or doc_data.get("vision_extracted_data")
+            if extracted_data is not None:
+                updates.append("extracted_data = ?")
+                params.append(json.dumps(extracted_data))
             # Update Party 2 resolution data if provided
             if doc_data.get("party2") and not existing:  # Only update party2 if not already set
                 updates.append("party2 = ?")
@@ -1123,7 +1188,11 @@ class PropertyDB:
             doc_data.get("document_type"),
             doc_data.get("file_path"),
             doc_data.get("ocr_text"),
-            json.dumps(doc_data.get("extracted_data", {})),
+            json.dumps(
+                doc_data.get("extracted_data")
+                or doc_data.get("vision_extracted_data")
+                or {}
+            ),
             doc_data.get("recording_date"),
             doc_data.get("book"),
             doc_data.get("page"),
@@ -1468,7 +1537,7 @@ class PropertyDB:
         """, [
             folio,
             source,
-            datetime.now(tz=UTC).date(),
+            today_local(),
             data.get("listing_status"),
             data.get("list_price") or data.get("price"),
             data.get("zestimate"),
@@ -1605,7 +1674,7 @@ class PropertyDB:
                 SET source_name = ?, description = ?, created_at = ?
                 WHERE folio = ? AND url = ?
                 """,
-                [source_name, description, datetime.now(), folio, url],
+                [source_name, description, now_utc_naive(), folio, url],
             )
         else:
             conn.execute(
@@ -1613,7 +1682,7 @@ class PropertyDB:
                 INSERT INTO property_sources (folio, source_name, url, description, created_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                [folio, source_name, url, description, datetime.now()],
+                [folio, source_name, url, description, now_utc_naive()],
             )
         
     def get_sources(self, folio: str) -> List[Dict[str, Any]]:
@@ -1831,44 +1900,148 @@ class PropertyDB:
         """Get count of auctions we have for a specific date."""
         conn = self.connect()
         result = conn.execute(
-            "SELECT COUNT(*) FROM auctions WHERE TRY_CAST(auction_date AS DATE) = ?",
+            """
+            SELECT COUNT(*)
+            FROM auctions
+            WHERE COALESCE(
+                TRY_CAST(auction_date AS DATE),
+                CAST(TRY_STRPTIME(CAST(auction_date AS VARCHAR), '%m/%d/%Y') AS DATE),
+                CAST(TRY_STRPTIME(CAST(auction_date AS VARCHAR), '%m/%d/%Y %H:%M:%S') AS DATE)
+            ) = ?
+            """,
             [auction_date],
         ).fetchone()
         return result[0] if result else 0
 
+    def ensure_auction_scrape_log_table(self) -> None:
+        """Ensure auction scrape log table exists."""
+        conn = self.connect()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auction_scrape_log (
+                auction_date DATE,
+                auction_type VARCHAR,
+                auction_count INTEGER,
+                scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (auction_date, auction_type)
+            )
+            """
+        )
+
+    def was_auction_scraped(self, auction_date: date, auction_type: str) -> bool:
+        """Check if a scrape has already been recorded for a date/type."""
+        conn = self.connect()
+        self.ensure_auction_scrape_log_table()
+        result = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM auction_scrape_log
+            WHERE auction_date = ? AND auction_type = ?
+            """,
+            [auction_date, auction_type],
+        ).fetchone()
+        return result[0] > 0 if result else False
+
+    def record_auction_scrape(self, auction_date: date, auction_type: str, auction_count: int) -> None:
+        """Record an auction scrape attempt, even if zero results."""
+        conn = self.connect()
+        self.ensure_auction_scrape_log_table()
+        conn.execute(
+            """
+            INSERT INTO auction_scrape_log (auction_date, auction_type, auction_count, scraped_at)
+            VALUES (?, ?, ?, NOW())
+            ON CONFLICT (auction_date, auction_type)
+            DO UPDATE SET auction_count = excluded.auction_count, scraped_at = NOW()
+            """,
+            [auction_date, auction_type, auction_count],
+        )
+
     def get_auctions_by_date_range(self, start_date: date, end_date: date) -> List[dict]:
         """Fetch auctions within a date range."""
         conn = self.connect()
-        # Join with parcels to get address? Or is it in auctions?
-        # Checking upsert_auction: we store property_address in auctions table as 'address' usually?
-        # Let's check upsert_auction params.
-        # It takes address.
-        # In src/db/new.py: auctions table has (case_number, auction_date, final_judgment_amount, property_address, parcel_id, ...)
-        # So it's 'property_address'.
-        
         query = """
-            SELECT 
+            SELECT
                 a.case_number,
-                a.parcel_id,
-                COALESCE(a.property_address, p.property_address) as address,
+                COALESCE(a.parcel_id, a.folio) AS parcel_id,
+                COALESCE(a.property_address, p.property_address) AS address,
                 a.auction_date
             FROM auctions a
             LEFT JOIN parcels p
                 ON p.folio = COALESCE(a.parcel_id, a.folio)
-            WHERE TRY_CAST(a.auction_date AS DATE) BETWEEN ? AND ?
+            WHERE COALESCE(
+                TRY_CAST(a.auction_date AS DATE),
+                CAST(TRY_STRPTIME(CAST(a.auction_date AS VARCHAR), '%m/%d/%Y') AS DATE),
+                CAST(TRY_STRPTIME(CAST(a.auction_date AS VARCHAR), '%m/%d/%Y %H:%M:%S') AS DATE)
+            ) BETWEEN ? AND ?
         """
         results = conn.execute(query, [start_date, end_date]).fetchall()
-        
-        # Convert to list of dicts
-        auctions = []
-        for row in results:
-            auctions.append({
+        return [
+            {
                 "case_number": row[0],
                 "parcel_id": row[1],
                 "address": row[2],
-                "auction_date": row[3]
-            })
-        return auctions
+                "auction_date": row[3],
+            }
+            for row in results
+        ]
+
+    def get_auctions_for_processing(
+        self,
+        start_date: date,
+        end_date: date,
+        include_failed: bool = False,
+        max_retries: int = 3,
+        skip_tax_deeds: bool = False,
+    ) -> List[dict]:
+        """Return auctions to process based on status table and retry policy."""
+        conn = self.connect()
+        auction_type_filter = ""
+        params: list = [start_date, end_date, include_failed, max_retries]
+        if skip_tax_deeds:
+            auction_type_filter = (
+                "AND COALESCE(UPPER(REPLACE(n.auction_type, ' ', '_')), '') != 'TAX_DEED'"
+            )
+
+        query = f"""
+            WITH normalized AS (
+                SELECT
+                    a.*,
+                    COALESCE(a.parcel_id, a.folio) AS parcel_id_norm,
+                    COALESCE(a.property_address, p.property_address) AS address,
+                    p.owner_name AS owner_name,
+                    p.legal_description AS legal_description,
+                    COALESCE(
+                        TRY_CAST(a.auction_date AS DATE),
+                        CAST(TRY_STRPTIME(CAST(a.auction_date AS VARCHAR), '%m/%d/%Y') AS DATE),
+                        CAST(TRY_STRPTIME(CAST(a.auction_date AS VARCHAR), '%m/%d/%Y %H:%M:%S') AS DATE)
+                    ) AS auction_date_norm
+                FROM auctions a
+                LEFT JOIN parcels p
+                    ON p.folio = COALESCE(a.parcel_id, a.folio)
+            )
+            SELECT
+                n.case_number,
+                n.parcel_id_norm AS parcel_id,
+                n.address,
+                n.auction_date_norm AS auction_date,
+                n.owner_name,
+                n.legal_description,
+                n.plaintiff,
+                n.defendant,
+                n.auction_type,
+                n.property_address
+            FROM normalized n
+            LEFT JOIN status s ON s.case_number = n.case_number
+            WHERE n.auction_date_norm BETWEEN ? AND ?
+              AND COALESCE(s.pipeline_status, 'pending') NOT IN ('completed', 'skipped')
+              AND (COALESCE(s.pipeline_status, 'pending') != 'failed' OR ?)
+              AND COALESCE(s.retry_count, 0) < ?
+              {auction_type_filter}
+            ORDER BY n.auction_date_norm, n.case_number
+        """
+        results = conn.execute(query, params).fetchall()
+        columns = [desc[0] for desc in conn.description]
+        return [dict(zip(columns, row, strict=False)) for row in results]
 
     def folio_has_sales_history(self, folio: str) -> bool:
         """Check if folio has sales history data."""
@@ -1899,6 +2072,20 @@ class PropertyDB:
         conn = self.connect()
         result = conn.execute(
             "SELECT COUNT(*) FROM encumbrances WHERE folio = ? AND survival_status IS NOT NULL AND survival_status != 'UNKNOWN'",
+            [folio],
+        ).fetchone()
+        return result[0] > 0 if result else False
+
+    def folio_has_unanalyzed_encumbrances(self, folio: str) -> bool:
+        """Check if folio has encumbrances missing survival status."""
+        conn = self.connect()
+        result = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM encumbrances
+            WHERE folio = ?
+              AND (survival_status IS NULL OR survival_status = 'UNKNOWN')
+            """,
             [folio],
         ).fetchone()
         return result[0] > 0 if result else False
@@ -1995,15 +2182,16 @@ class PropertyDB:
         conn = self.connect()
         conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_zone VARCHAR")
         conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_risk VARCHAR")
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_risk_level VARCHAR")
         conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_insurance_required BOOLEAN")
-        
+
         conn.execute("INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio])
         conn.execute(
             """UPDATE parcels SET
-               flood_zone = ?, flood_risk = ?, flood_insurance_required = ?,
+               flood_zone = ?, flood_risk = ?, flood_risk_level = ?, flood_insurance_required = ?,
                updated_at = CURRENT_TIMESTAMP
                WHERE folio = ?""",
-            [flood_zone, flood_risk, insurance_required, folio],
+            [flood_zone, flood_risk, flood_risk, insurance_required, folio],
         )
 
     def folio_has_realtor_data(self, folio: str) -> bool:
@@ -2014,6 +2202,28 @@ class PropertyDB:
             [folio],
         ).fetchone()
         return result[0] > 0 if result else False
+
+    def folio_has_zillow_data(self, folio: str) -> bool:
+        """Check if folio has Zillow data."""
+        conn = self.connect()
+        result = conn.execute(
+            "SELECT COUNT(*) FROM market_data WHERE folio = ? AND source = 'Zillow'",
+            [folio],
+        ).fetchone()
+        return result[0] > 0 if result else False
+
+    def folio_has_market_data(self, folio: str) -> bool:
+        """Check if folio has consolidated market data or both Zillow/Realtor."""
+        conn = self.connect()
+        consolidated = conn.execute(
+            "SELECT COUNT(*) FROM market_data WHERE folio = ? AND source = 'Consolidated'",
+            [folio],
+        ).fetchone()
+        if consolidated and consolidated[0] > 0:
+            return True
+        has_realtor = self.folio_has_realtor_data(folio)
+        has_zillow = self.folio_has_zillow_data(folio)
+        return has_realtor and has_zillow
 
     def folio_has_owner_name(self, folio: str) -> bool:
         """Check if folio has owner name in parcels."""
@@ -2063,6 +2273,773 @@ class PropertyDB:
         except Exception:
             return False
 
+    # -------------------------------------------------------------------------
+    # Status Table Methods (Pipeline Progress Tracking)
+    # -------------------------------------------------------------------------
+
+    def _normalize_auction_type(self, auction_type: str | None) -> str | None:
+        if not auction_type:
+            return None
+        normalized = auction_type.strip().upper().replace(" ", "_")
+        if normalized == "TAXDEED":
+            normalized = "TAX_DEED"
+        return normalized
+
+    def ensure_status_table(self) -> None:
+        """Create the status table if it doesn't exist."""
+        conn = self.connect()
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS status (
+                case_number VARCHAR PRIMARY KEY,
+                parcel_id VARCHAR,
+                auction_date DATE,
+                auction_type VARCHAR,
+                step_auction_scraped TIMESTAMP,
+                step_pdf_downloaded TIMESTAMP,
+                step_judgment_extracted TIMESTAMP,
+                step_bulk_enriched TIMESTAMP,
+                step_homeharvest_enriched TIMESTAMP,
+                step_hcpa_enriched TIMESTAMP,
+                step_ori_ingested TIMESTAMP,
+                step_survival_analyzed TIMESTAMP,
+                step_permits_checked TIMESTAMP,
+                step_flood_checked TIMESTAMP,
+                step_market_fetched TIMESTAMP,
+                step_tax_checked TIMESTAMP,
+                current_step INTEGER DEFAULT 0,
+                pipeline_status VARCHAR DEFAULT 'pending',
+                last_error VARCHAR,
+                error_step INTEGER,
+                retry_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP
+            )
+        """)
+        # Legacy migration: rename old `status` column to `pipeline_status` if present.
+        try:
+            cols = [row[1] for row in conn.execute("PRAGMA table_info('status')").fetchall()]
+        except Exception:
+            cols = []
+        if "status" in cols and "pipeline_status" not in cols:
+            conn.execute("ALTER TABLE status RENAME COLUMN status TO pipeline_status")
+            cols = [row[1] for row in conn.execute("PRAGMA table_info('status')").fetchall()]
+        if "status" in cols and "pipeline_status" in cols:
+            conn.execute("UPDATE status SET pipeline_status = COALESCE(pipeline_status, status)")
+            try:
+                conn.execute("ALTER TABLE status DROP COLUMN status")
+            except Exception:
+                pass
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_status_auction_date ON status(auction_date)")
+        if "pipeline_status" in cols:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_status_pipeline_status ON status(pipeline_status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_status_parcel ON status(parcel_id)")
+
+    def upsert_status(
+        self,
+        case_number: str,
+        parcel_id: str | None = None,
+        auction_date: date | None = None,
+        auction_type: str | None = None,
+    ) -> None:
+        """Create or update a status record for a case."""
+        self.ensure_status_table()
+        auction_type = self._normalize_auction_type(auction_type)
+        conn = self.connect()
+        # Column renamed to pipeline_status to avoid DuckDB ambiguity with table name 'status'
+        # Use NOW() instead of CURRENT_TIMESTAMP to avoid DuckDB parsing issues
+        conn.execute(
+            """
+            INSERT INTO status (case_number, parcel_id, auction_date, auction_type, pipeline_status, step_auction_scraped, updated_at)
+            VALUES (?, ?, ?, ?, 'pending', NOW(), NOW())
+            ON CONFLICT (case_number) DO UPDATE SET
+                parcel_id = COALESCE(excluded.parcel_id, parcel_id),
+                auction_date = COALESCE(excluded.auction_date, auction_date),
+                auction_type = COALESCE(excluded.auction_type, auction_type),
+                step_auction_scraped = COALESCE(step_auction_scraped, excluded.step_auction_scraped),
+                updated_at = NOW()
+            """,
+            [case_number, parcel_id, auction_date, auction_type],
+        )
+
+    def mark_status_step_complete(
+        self,
+        case_number: str,
+        step_column: str,
+        step_number: int | None = None,
+    ) -> None:
+        """Mark a specific step as complete for a case."""
+        self.ensure_status_table()
+        conn = self.connect()
+
+        valid_steps = [
+            "step_auction_scraped",
+            "step_pdf_downloaded",
+            "step_judgment_extracted",
+            "step_bulk_enriched",
+            "step_homeharvest_enriched",
+            "step_hcpa_enriched",
+            "step_ori_ingested",
+            "step_survival_analyzed",
+            "step_permits_checked",
+            "step_flood_checked",
+            "step_market_fetched",
+            "step_tax_checked",
+        ]
+
+        if step_column not in valid_steps:
+            raise ValueError(f"Invalid step column: {step_column}")
+
+        # Update the step timestamp and current_step
+        # First get current status to avoid ambiguous column reference in DuckDB
+        current_status = self.get_status_state(case_number)
+        new_status = current_status if current_status in ("completed", "skipped") else "processing"
+
+        if step_number:
+            conn.execute(
+                f"""
+                UPDATE status SET
+                    {step_column} = NOW(),
+                    current_step = CASE WHEN current_step < ? THEN ? ELSE current_step END,
+                    pipeline_status = ?,
+                    last_error = NULL,
+                    error_step = NULL,
+                    updated_at = NOW()
+                WHERE case_number = ?
+                """,
+                [step_number, step_number, new_status, case_number],
+            )
+        else:
+            conn.execute(
+                f"""
+                UPDATE status SET
+                    {step_column} = NOW(),
+                    pipeline_status = ?,
+                    last_error = NULL,
+                    error_step = NULL,
+                    updated_at = NOW()
+                WHERE case_number = ?
+                """,
+                [new_status, case_number],
+            )
+        self._maybe_mark_status_completed(case_number)
+
+    def get_status_state(self, case_number: str) -> str:
+        """Return current status state for a case (defaults to 'pending')."""
+        self.ensure_status_table()
+        conn = self.connect()
+        result = conn.execute(
+            "SELECT pipeline_status FROM status WHERE case_number = ?",
+            [case_number],
+        ).fetchone()
+        if not result or not result[0]:
+            return "pending"
+        return result[0]
+
+    def _get_applicable_steps(self, auction_type: str | None) -> list[str]:
+        """Return status steps required for completion for the given auction type."""
+        steps = [
+            "step_auction_scraped",
+            "step_pdf_downloaded",
+            "step_judgment_extracted",
+            "step_bulk_enriched",
+            "step_homeharvest_enriched",
+            "step_hcpa_enriched",
+            "step_ori_ingested",
+            "step_survival_analyzed",
+            "step_permits_checked",
+            "step_flood_checked",
+            "step_market_fetched",
+            "step_tax_checked",
+        ]
+        normalized = self._normalize_auction_type(auction_type)
+        if normalized == "TAX_DEED":
+            steps = [s for s in steps if s not in {"step_pdf_downloaded", "step_judgment_extracted"}]
+        return steps
+
+    def _maybe_mark_status_completed(self, case_number: str) -> None:
+        """Mark status completed if all applicable steps are done."""
+        self.ensure_status_table()
+        conn = self.connect()
+        row = conn.execute(
+            """
+            SELECT auction_type, pipeline_status,
+                   step_auction_scraped, step_pdf_downloaded, step_judgment_extracted,
+                   step_bulk_enriched, step_homeharvest_enriched, step_hcpa_enriched,
+                   step_ori_ingested, step_survival_analyzed, step_permits_checked,
+                   step_flood_checked, step_market_fetched, step_tax_checked
+            FROM status
+            WHERE case_number = ?
+            """,
+            [case_number],
+        ).fetchone()
+        if not row:
+            return
+        auction_type = row[0]
+        status_state = row[1]
+        if status_state == "skipped":
+            return
+        step_values = {
+            "step_auction_scraped": row[2],
+            "step_pdf_downloaded": row[3],
+            "step_judgment_extracted": row[4],
+            "step_bulk_enriched": row[5],
+            "step_homeharvest_enriched": row[6],
+            "step_hcpa_enriched": row[7],
+            "step_ori_ingested": row[8],
+            "step_survival_analyzed": row[9],
+            "step_permits_checked": row[10],
+            "step_flood_checked": row[11],
+            "step_market_fetched": row[12],
+            "step_tax_checked": row[13],
+        }
+        applicable_steps = self._get_applicable_steps(auction_type)
+        if all(step_values.get(step) is not None for step in applicable_steps):
+            conn.execute(
+                """
+                UPDATE status SET
+                    pipeline_status = 'completed',
+                    completed_at = NOW(),
+                    updated_at = NOW()
+                WHERE case_number = ?
+                """,
+                [case_number],
+            )
+
+    def mark_status_failed(
+        self,
+        case_number: str,
+        error_message: str,
+        error_step: int | None = None,
+    ) -> None:
+        """Mark a case as failed with error details."""
+        self.ensure_status_table()
+        conn = self.connect()
+        conn.execute(
+            """
+            UPDATE status SET
+                pipeline_status = 'failed',
+                last_error = ?,
+                error_step = ?,
+                retry_count = retry_count + 1,
+                updated_at = NOW()
+            WHERE case_number = ?
+            """,
+            [error_message, error_step, case_number],
+        )
+
+    def mark_status_completed(self, case_number: str) -> None:
+        """Mark a case as fully completed."""
+        self.ensure_status_table()
+        conn = self.connect()
+        conn.execute(
+            """
+            UPDATE status SET
+                pipeline_status = 'completed',
+                completed_at = NOW(),
+                updated_at = NOW()
+            WHERE case_number = ?
+            """,
+            [case_number],
+        )
+
+    def mark_status_skipped(self, case_number: str, reason: str = "") -> None:
+        """Mark a case as skipped (e.g., invalid parcel_id)."""
+        self.ensure_status_table()
+        conn = self.connect()
+        conn.execute(
+            """
+            UPDATE status SET
+                pipeline_status = 'skipped',
+                last_error = ?,
+                updated_at = NOW()
+            WHERE case_number = ?
+            """,
+            [reason, case_number],
+        )
+
+    def is_status_step_complete(self, case_number: str, step_column: str) -> bool:
+        """Check if a specific step is complete for a case."""
+        self.ensure_status_table()
+        conn = self.connect()
+        result = conn.execute(
+            f"SELECT {step_column} FROM status WHERE case_number = ?",
+            [case_number],
+        ).fetchone()
+        return result is not None and result[0] is not None
+
+    def get_status_summary(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict:
+        """
+        Get a summary of pipeline status for a date range.
+
+        Returns a dict with counts and percentages for each status and step.
+        """
+        self.ensure_status_table()
+        conn = self.connect()
+
+        # Build date filter
+        date_filter = ""
+        params: list = []
+        if start_date and end_date:
+            date_filter = "WHERE auction_date >= ? AND auction_date <= ?"
+            params = [start_date, end_date]
+        elif start_date:
+            date_filter = "WHERE auction_date >= ?"
+            params = [start_date]
+        elif end_date:
+            date_filter = "WHERE auction_date <= ?"
+            params = [end_date]
+
+        # Get total count
+        total_result = conn.execute(
+            f"SELECT COUNT(*) FROM status {date_filter}", params
+        ).fetchone()
+        total = total_result[0] if total_result else 0
+
+        # Get counts by status
+        status_counts = conn.execute(
+            f"""
+            SELECT pipeline_status, COUNT(*) as count
+            FROM status {date_filter}
+            GROUP BY pipeline_status
+            """,
+            params,
+        ).fetchall()
+
+        # Get counts by auction type
+        type_counts = conn.execute(
+            f"""
+            SELECT auction_type, COUNT(*) as count
+            FROM status {date_filter}
+            GROUP BY auction_type
+            """,
+            params,
+        ).fetchall()
+
+        # Get step completion counts
+        step_columns = [
+            "step_auction_scraped",
+            "step_pdf_downloaded",
+            "step_judgment_extracted",
+            "step_bulk_enriched",
+            "step_homeharvest_enriched",
+            "step_hcpa_enriched",
+            "step_ori_ingested",
+            "step_survival_analyzed",
+            "step_permits_checked",
+            "step_flood_checked",
+            "step_market_fetched",
+            "step_tax_checked",
+        ]
+
+        step_counts = {}
+        for step in step_columns:
+            result = conn.execute(
+                f"""
+                SELECT COUNT(*) FROM status
+                {date_filter}
+                {"AND" if date_filter else "WHERE"} {step} IS NOT NULL
+                """,
+                params,
+            ).fetchone()
+            step_counts[step] = result[0] if result else 0
+
+        # Get recent failures
+        failures = conn.execute(
+            f"""
+            SELECT case_number, error_step, last_error, retry_count
+            FROM status
+            {date_filter}
+            {"AND" if date_filter else "WHERE"} pipeline_status = 'failed'
+            ORDER BY updated_at DESC
+            LIMIT 10
+            """,
+            params,
+        ).fetchall()
+
+        # Get date range from actual data
+        date_range = conn.execute(
+            f"""
+            SELECT MIN(auction_date), MAX(auction_date)
+            FROM status {date_filter}
+            """,
+            params,
+        ).fetchone()
+
+        return {
+            "total": total,
+            "start_date": start_date or (date_range[0] if date_range else None),
+            "end_date": end_date or (date_range[1] if date_range else None),
+            "actual_start_date": date_range[0] if date_range else None,
+            "actual_end_date": date_range[1] if date_range else None,
+            "by_status": {row[0] or "pending": row[1] for row in status_counts},
+            "by_type": {row[0] or "unknown": row[1] for row in type_counts},
+            "step_counts": step_counts,
+            "failures": [
+                {
+                    "case_number": row[0],
+                    "error_step": row[1],
+                    "last_error": row[2],
+                    "retry_count": row[3],
+                }
+                for row in failures
+            ],
+        }
+
+    def get_failed_cases(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        max_retries: int = 3,
+    ) -> list[dict]:
+        """Get failed cases that haven't exceeded max retries."""
+        self.ensure_status_table()
+        conn = self.connect()
+
+        date_filter = ""
+        params: list = [max_retries]
+        if start_date and end_date:
+            date_filter = "AND auction_date >= ? AND auction_date <= ?"
+            params.extend([start_date, end_date])
+
+        results = conn.execute(
+            f"""
+            SELECT case_number, parcel_id, auction_date, error_step, last_error, retry_count
+            FROM status
+            WHERE pipeline_status = 'failed' AND retry_count < ?
+            {date_filter}
+            ORDER BY auction_date
+            """,
+            params,
+        ).fetchall()
+
+        return [
+            {
+                "case_number": row[0],
+                "parcel_id": row[1],
+                "auction_date": row[2],
+                "error_step": row[3],
+                "last_error": row[4],
+                "retry_count": row[5],
+            }
+            for row in results
+        ]
+
+    def backfill_status_steps(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> None:
+        """Backfill status step timestamps based on existing data."""
+        self.ensure_status_table()
+        conn = self.connect()
+
+        def table_exists(table_name: str) -> bool:
+            result = conn.execute(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+                [table_name],
+            ).fetchone()
+            return result[0] > 0 if result else False
+
+        # Ensure columns used for backfill exist when optional migrations haven't run.
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS bulk_folio VARCHAR")
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS raw_legal1 VARCHAR")
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_zone VARCHAR")
+        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS tax_status VARCHAR")
+
+        date_clause = ""
+        params: list = []
+        if start_date:
+            date_clause += " AND s.auction_date >= ?"
+            params.append(start_date)
+        if end_date:
+            date_clause += " AND s.auction_date <= ?"
+            params.append(end_date)
+
+        # Step 1: Auction scraped (default for known cases)
+        conn.execute(
+            f"""
+            UPDATE status s SET step_auction_scraped = COALESCE(s.step_auction_scraped, s.created_at, NOW())
+            WHERE s.step_auction_scraped IS NULL
+            {date_clause}
+            """,
+            params,
+        )
+
+        # Step 2: Judgment extracted
+        conn.execute(
+            f"""
+            UPDATE status s SET step_judgment_extracted = NOW()
+            FROM auctions a
+            WHERE s.case_number = a.case_number
+              AND s.step_judgment_extracted IS NULL
+              AND a.extracted_judgment_data IS NOT NULL
+              {date_clause}
+            """,
+            params,
+        )
+
+        # Step 1 PDF downloaded: if judgment extracted, PDF existed
+        conn.execute(
+            f"""
+            UPDATE status s SET step_pdf_downloaded = NOW()
+            WHERE s.step_pdf_downloaded IS NULL
+              AND s.step_judgment_extracted IS NOT NULL
+              {date_clause}
+            """,
+            params,
+        )
+
+        # Step 3: Bulk enrichment (best-effort using bulk-parcel markers)
+        conn.execute(
+            f"""
+            UPDATE status s SET step_bulk_enriched = NOW()
+            FROM auctions a
+            JOIN parcels p ON COALESCE(a.parcel_id, a.folio) = p.folio
+            WHERE s.case_number = a.case_number
+              AND s.step_bulk_enriched IS NULL
+              AND (p.bulk_folio IS NOT NULL OR p.raw_legal1 IS NOT NULL)
+              {date_clause}
+            """,
+            params,
+        )
+
+        # Step 3.5: HomeHarvest
+        if table_exists("home_harvest"):
+            conn.execute(
+                f"""
+                UPDATE status s SET step_homeharvest_enriched = NOW()
+                WHERE s.step_homeharvest_enriched IS NULL
+                  AND s.case_number IN (
+                    SELECT case_number FROM auctions
+                    WHERE COALESCE(parcel_id, folio) IN (SELECT DISTINCT folio FROM home_harvest)
+                  )
+                  {date_clause}
+                """,
+                params,
+            )
+
+        # Step 4: HCPA enrichment (owner_name or sales_history present)
+        sales_history_filter = ""
+        if table_exists("sales_history"):
+            sales_history_filter = "OR COALESCE(a.parcel_id, a.folio) IN (SELECT DISTINCT folio FROM sales_history)"
+        conn.execute(
+            f"""
+            UPDATE status s SET step_hcpa_enriched = NOW()
+            WHERE s.step_hcpa_enriched IS NULL
+              AND s.case_number IN (
+                SELECT a.case_number
+                FROM auctions a
+                WHERE COALESCE(a.parcel_id, a.folio) IN (
+                    SELECT folio FROM parcels WHERE owner_name IS NOT NULL
+                )
+                {sales_history_filter}
+              )
+              {date_clause}
+            """,
+            params,
+        )
+
+        # Step 5: ORI ingestion (documents table)
+        if table_exists("documents"):
+            conn.execute(
+                f"""
+                UPDATE status s SET step_ori_ingested = NOW()
+                WHERE s.step_ori_ingested IS NULL
+                  AND s.case_number IN (
+                    SELECT case_number FROM auctions
+                    WHERE COALESCE(parcel_id, folio) IN (SELECT DISTINCT folio FROM documents)
+                  )
+                  {date_clause}
+                """,
+                params,
+            )
+
+        # Step 6: Survival analysis (auctions status ANALYZED/FLAGGED)
+        conn.execute(
+            f"""
+            UPDATE status s SET step_survival_analyzed = NOW()
+            FROM auctions a
+            WHERE s.case_number = a.case_number
+              AND s.step_survival_analyzed IS NULL
+              AND a.status IN ('ANALYZED', 'FLAGGED')
+              {date_clause}
+            """,
+            params,
+        )
+
+        # Step 7: Permits
+        if table_exists("permits"):
+            conn.execute(
+                f"""
+                UPDATE status s SET step_permits_checked = NOW()
+                WHERE s.step_permits_checked IS NULL
+                  AND s.case_number IN (
+                    SELECT case_number FROM auctions
+                    WHERE COALESCE(parcel_id, folio) IN (SELECT DISTINCT folio FROM permits)
+                  )
+                  {date_clause}
+                """,
+                params,
+            )
+
+        # Step 8: Flood check
+        conn.execute(
+            f"""
+            UPDATE status s SET step_flood_checked = NOW()
+            WHERE s.step_flood_checked IS NULL
+              AND s.case_number IN (
+                SELECT case_number FROM auctions
+                WHERE COALESCE(parcel_id, folio) IN (
+                    SELECT folio FROM parcels WHERE flood_zone IS NOT NULL
+                )
+              )
+              {date_clause}
+            """,
+            params,
+        )
+
+        # Step 9: Market data
+        if table_exists("market_data"):
+            conn.execute(
+                f"""
+                UPDATE status s SET step_market_fetched = NOW()
+                WHERE s.step_market_fetched IS NULL
+                  AND s.case_number IN (
+                    SELECT case_number FROM auctions
+                    WHERE COALESCE(parcel_id, folio) IN (SELECT DISTINCT folio FROM market_data)
+                  )
+                  {date_clause}
+                """,
+                params,
+            )
+
+        # Step 12: Tax check
+        conn.execute(
+            f"""
+            UPDATE status s SET step_tax_checked = NOW()
+            WHERE s.step_tax_checked IS NULL
+              AND s.case_number IN (
+                SELECT case_number FROM auctions
+                WHERE COALESCE(parcel_id, folio) IN (
+                    SELECT folio FROM parcels WHERE tax_status IS NOT NULL
+                )
+              )
+              {date_clause}
+            """,
+            params,
+        )
+
+        # Backfill from needs_* flags when present
+        step_flag_map = {
+            "needs_judgment_extraction": "step_judgment_extracted",
+            "needs_hcpa_enrichment": "step_hcpa_enriched",
+            "needs_ori_ingestion": "step_ori_ingested",
+            "needs_lien_survival": "step_survival_analyzed",
+            "needs_permit_check": "step_permits_checked",
+            "needs_flood_check": "step_flood_checked",
+            "needs_market_data": "step_market_fetched",
+            "needs_tax_check": "step_tax_checked",
+            "needs_homeharvest_enrichment": "step_homeharvest_enriched",
+        }
+
+        for flag, step in step_flag_map.items():
+            conn.execute(
+                f"""
+                UPDATE status s SET {step} = NOW()
+                FROM auctions a
+                WHERE s.case_number = a.case_number
+                  AND s.{step} IS NULL
+                  AND a.{flag} = FALSE
+                  {date_clause}
+                """,
+                params,
+            )
+
+    def refresh_status_completion_for_range(
+        self,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> None:
+        """Recompute completion state for cases in a date range."""
+        self.ensure_status_table()
+        conn = self.connect()
+        date_filter = ""
+        params: list = []
+        if start_date and end_date:
+            date_filter = "WHERE auction_date >= ? AND auction_date <= ?"
+            params = [start_date, end_date]
+        elif start_date:
+            date_filter = "WHERE auction_date >= ?"
+            params = [start_date]
+        elif end_date:
+            date_filter = "WHERE auction_date <= ?"
+            params = [end_date]
+        rows = conn.execute(
+            f"SELECT case_number FROM status {date_filter}",
+            params,
+        ).fetchall()
+        for row in rows:
+            self._maybe_mark_status_completed(row[0])
+
+    def initialize_status_from_auctions(self) -> int:
+        """
+        Populate status table from existing auctions table.
+        Returns the number of records created.
+        """
+        self.ensure_status_table()
+        conn = self.connect()
+
+        # Insert missing records from auctions
+        conn.execute(
+            """
+            INSERT INTO status (case_number, parcel_id, auction_date, auction_type, step_auction_scraped)
+            SELECT
+                a.case_number,
+                COALESCE(a.parcel_id, a.folio),
+                a.auction_date,
+                a.auction_type,
+                NOW()
+            FROM auctions a
+            WHERE a.case_number IS NOT NULL
+            AND a.case_number NOT IN (SELECT case_number FROM status)
+            """
+        )
+
+        # Normalize auction types and backfill missing fields from auctions
+        conn.execute(
+            """
+            UPDATE status SET
+                parcel_id = COALESCE(status.parcel_id, a.parcel_id, a.folio),
+                auction_date = COALESCE(status.auction_date, a.auction_date),
+                auction_type = COALESCE(status.auction_type, a.auction_type),
+                step_auction_scraped = COALESCE(status.step_auction_scraped, status.created_at, NOW()),
+                updated_at = NOW()
+            FROM auctions a
+            WHERE status.case_number = a.case_number
+            """
+        )
+        conn.execute(
+            """
+            UPDATE status SET auction_type = CASE
+                WHEN auction_type IS NULL THEN NULL
+                WHEN UPPER(REPLACE(auction_type, ' ', '_')) = 'TAXDEED' THEN 'TAX_DEED'
+                ELSE UPPER(REPLACE(auction_type, ' ', '_'))
+            END
+            """
+        )
+
+        # Backfill step completion based on existing data
+        self.backfill_status_steps()
+        self.refresh_status_completion_for_range()
+
+        count_result = conn.execute("SELECT COUNT(*) FROM status").fetchone()
+        return count_result[0] if count_result else 0
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 from loguru import logger
+from src.utils.time import today_local
 
 from src.scrapers.ori_scraper import ORIScraper
 from src.scrapers.ori_api_scraper import ORIApiScraper
@@ -246,7 +247,7 @@ class BatchTitleSearch:
 
         # Parse recording date to narrow search window
         start_date = "01/01/1900"
-        end_date = datetime.now().strftime("%m/%d/%Y")
+        end_date = today_local().strftime("%m/%d/%Y")
         if record_date:
             try:
                 rec_dt = datetime.strptime(record_date.split()[0], "%m/%d/%Y")

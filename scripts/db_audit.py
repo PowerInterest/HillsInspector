@@ -3,10 +3,10 @@ Database Audit Script for HillsInspector Pipeline.
 
 Provides comprehensive statistics on data completeness across all pipeline steps.
 """
-from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
+from src.utils.time import ensure_duckdb_utc, today_local
 
 DB_PATH = "data/property_master.db"
 
@@ -27,6 +27,7 @@ def audit_database():
         return
 
     conn = duckdb.connect(DB_PATH, read_only=True)
+    ensure_duckdb_utc(conn)
 
     print("=" * 60)
     print("         HILLSINSPECTOR DATABASE AUDIT REPORT")
@@ -61,7 +62,7 @@ def audit_database():
         print(f"Date Range: {date_range[0]} to {date_range[1]}")
 
         # Upcoming vs past
-        today = datetime.now(tz=UTC).date()
+        today = today_local()
         upcoming = _fetchone_value(
             conn, "SELECT COUNT(*) FROM auctions WHERE auction_date >= ?", [today]
         )

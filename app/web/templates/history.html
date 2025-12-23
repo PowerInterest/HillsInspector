@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+
+{% block extra_head %}
+<!-- Grid.js CSS -->
+<link href="https://cdn.jsdelivr.net/npm/gridjs/dist/theme/mermaid.min.css" rel="stylesheet" />
+<style>
+    .gridjs-wrapper {
+        border-radius: 12px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+
+    .status-badge {
+        padding: 4px 8px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 0.8rem;
+    }
+
+    .profit {
+        color: #10b981;
+        background: #ecfdf5;
+    }
+
+    .loss {
+        color: #ef4444;
+        background: #fef2f2;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>Historical Auction Analysis</h2>
+        <div>
+            <span class="badge bg-primary fs-6">{{ stats.total_auctions }} Recorded Auctions</span>
+        </div>
+    </div>
+
+    <!-- Stats Cards -->
+    <div class="row mb-5">
+        <div class="col-md-3">
+            <div class="card text-center h-100 shadow-sm border-0">
+                <div class="card-body">
+                    <h6 class="text-uppercase text-muted fw-bold small">Investor Share</h6>
+                    <h2 class="display-5 text-primary fw-bold">{{ stats.tp_share_pct }}%</h2>
+                    <p class="text-muted small mb-0">of auctions sold to 3rd Parties</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center h-100 shadow-sm border-0">
+                <div class="card-body">
+                    <h6 class="text-uppercase text-muted fw-bold small">Flip Success</h6>
+                    <h2 class="display-5 text-success fw-bold">{{ stats.profitable_flips }}</h2>
+                    <p class="text-muted small mb-0">{{ stats.loss_flips }} Flips at Loss</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center h-100 shadow-sm border-0">
+                <div class="card-body">
+                    <h6 class="text-uppercase text-muted fw-bold small">Avg. Hold Time</h6>
+                    <h2 class="display-5 fw-bold">142d</h2>
+                    <p class="text-muted small mb-0">Purchase to Resale</p>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center h-100 shadow-sm border-0">
+                <div class="card-body">
+                    <h6 class="text-uppercase text-muted fw-bold small">Avg ROI</h6>
+                    <h2 class="display-5 fw-bold">{{ stats.avg_roi_mult }}x</h2>
+                    <p class="text-muted small mb-0">Revenue / Acquisition</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Data Grid -->
+    <div class="card shadow-sm border-0 mb-5">
+        <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+            <h5 class="mb-0 fw-bold">📊 Auction & Resale Ledger</h5>
+        </div>
+        <div class="card-body p-0">
+            <div id="history-grid"></div>
+        </div>
+    </div>
+
+    <div class="row">
+        <!-- Top Buyers Table -->
+        <div class="col-md-6">
+            <div class="card shadow-sm border-0 mb-4">
+                <div class="card-header bg-white py-3">
+                    <h5 class="mb-0 fw-bold">🏛️ Top Institutional Buyers</h5>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Buyer Name</th>
+                                <th class="text-end">Units</th>
+                                <th class="text-end">Total Capital</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for buyer in stats.top_buyers %}
+                            <tr>
+                                <td>{{ buyer[0] }}</td>
+                                <td class="text-end">{{ buyer[1] }}</td>
+                                <td class="text-end">${{ "{:,.0f}".format(buyer[2]) }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Grid.js JS -->
+<script src="https://cdn.jsdelivr.net/npm/gridjs/dist/gridjs.umd.js"></script>
+<script>
+    new gridjs.Grid({
+        columns: [
+            { name: "Date", width: "120px" },
+            {
+                name: "Case #",
+                width: "180px",
+                formatter: (cell, row) => {
+                    const url = row.cells[10].data;
+                    return gridjs.html(`<a href="${url}" target="_blank" class="text-decoration-none">${cell}</a>`);
+                }
+            },
+            { name: "Address", width: "300px" },
+            { name: "Buyer", width: "150px" },
+            {
+                name: "Winning Bid",
+                width: "140px",
+                formatter: (cell) => `$${cell?.toLocaleString()}`
+            },
+            {
+                name: "Resale Price",
+                width: "140px",
+                formatter: (cell) => cell ? `$${cell.toLocaleString()}` : '—'
+            },
+            {
+                name: "Profit",
+                width: "140px",
+                formatter: (cell) => {
+                    if (!cell) return '—';
+                    const color = cell > 0 ? 'text-success' : 'text-danger';
+                    return gridjs.html(`<span class="${color} fw-bold">$${cell.toLocaleString()}</span>`);
+                }
+            },
+            {
+                name: "Hold",
+                width: "100px",
+                formatter: (cell) => cell ? `${cell}d` : '—'
+            },
+            { name: "Resale Date", hidden: true },
+            { name: "Debt", hidden: true },
+            { name: "PDF Link", hidden: true }
+        ],
+        server: {
+            url: "/history/data",
+            then: data => data.map(item => [
+                item.auction_date, item.case_number, item.address, item.buyer,
+                item.winning_bid, item.resale_price, item.profit, item.hold_time,
+                item.resale_date, item.debt, item.pdf_url
+            ])
+        },
+        search: true,
+        sort: true,
+        pagination: { limit: 10 },
+        className: {
+            table: 'table mb-0'
+        }
+    }).render(document.getElementById("history-grid"));
+</script>
+{% endblock %}

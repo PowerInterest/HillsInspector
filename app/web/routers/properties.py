@@ -4,7 +4,6 @@ Property detail routes.
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
-from datetime import UTC, datetime
 from pathlib import Path
 import os
 
@@ -21,6 +20,7 @@ from app.web.database import (
     get_nocs_for_property,
     get_judgment_data,
 )
+from src.utils.time import today_local
 
 router = APIRouter()
 
@@ -315,7 +315,7 @@ async def property_title_report(request: Request, folio: str):
         {
             "request": request,
             "property": prop,
-            "generated_date": datetime.now(tz=UTC).strftime("%B %d, %Y")
+            "generated_date": today_local().strftime("%B %d, %Y")
         }
     )
 

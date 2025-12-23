@@ -70,7 +70,13 @@ class FinalJudgmentProcessor:
                     Path(img_path).unlink()
 
             if not merged_json:
-                logger.warning(f"No data extracted from PDF for case {case_number}")
+                pages_with_text = len(all_text)
+                logger.warning(
+                    "No structured data extracted for case {} (OCR text on {}/{} pages)",
+                    case_number,
+                    pages_with_text,
+                    total_pages,
+                )
                 return None
 
             merged_json['raw_text'] = "\n\n".join(all_text)

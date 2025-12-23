@@ -32,6 +32,10 @@ from loguru import logger
 from src.services.scraper_storage import ScraperStorage
 
 
+class FEMARequestError(RuntimeError):
+    """Raised when FEMA API is unreachable (network/DNS)."""
+
+
 @dataclass
 class FloodZoneResult:
     """FEMA flood zone information for a location."""
@@ -130,11 +134,9 @@ class FEMAFloodChecker:
 
             if not features:
                 logger.info(f"No flood zone data found for {lat}, {lon}")
-                # Return minimal risk if no data (likely outside mapped area)
                 return FloodZoneResult(
-                    flood_zone="X",
-                    is_minimal_risk=True,
-                    raw_response=data
+                    flood_zone="UNKNOWN",
+                    raw_response=data,
                 )
 
             # Get the first (most relevant) result
@@ -168,8 +170,7 @@ class FEMAFloodChecker:
             return result
 
         except requests.RequestException as e:
-            logger.error(f"FEMA API request failed: {e}")
-            return None
+            raise FEMARequestError(str(e)) from e
         except (KeyError, ValueError) as e:
             logger.error(f"Error parsing FEMA response: {e}")
             return None
@@ -196,11 +197,18 @@ class FEMAFloodChecker:
         # Check if we have cached data
         if not force_refresh and not self.storage.needs_refresh(property_id, "fema", max_age_days=30):
             cached = self.storage.get_latest(property_id, "fema")
-            if cached and cached.raw_data_path:
-                raw_data = self.storage.load_vision_output(property_id, cached.raw_data_path.replace("raw/", "vision/")) or {}
-                if raw_data.get("data"):
+            if cached:
+                data = None
+                if cached.vision_output_path:
+                    vision = self.storage.load_vision_output(property_id, cached.vision_output_path) or {}
+                    data = vision.get("data")
+                if data is None and cached.raw_data_path:
+                    raw_data = self.storage.load_raw_data(property_id, cached.raw_data_path) or {}
+                    data = raw_data.get("data") if isinstance(raw_data, dict) else None
+                    if data is None and isinstance(raw_data, dict):
+                        data = raw_data
+                if isinstance(data, dict) and data:
                     logger.debug(f"Using cached FEMA data for {property_id}")
-                    data = raw_data.get("data", {})
                     return FloodZoneResult(
                         flood_zone=data.get("flood_zone", "UNKNOWN"),
                         zone_subtype=data.get("zone_subtype"),
@@ -208,7 +216,7 @@ class FEMAFloodChecker:
                         is_high_risk=data.get("is_high_risk", False),
                         is_moderate_risk=data.get("is_moderate_risk", False),
                         is_minimal_risk=data.get("is_minimal_risk", False),
-                        raw_response=data.get("raw_response")
+                        raw_response=data.get("raw_response"),
                     )
 
         # Query FEMA API
@@ -239,11 +247,20 @@ class FEMAFloodChecker:
                 context="flood_zone"
             )
 
+            vision_path = self.storage.save_vision_output(
+                property_id=property_id,
+                scraper="fema",
+                vision_data=result_dict,
+                context="flood_zone",
+                prompt_version="v1"
+            )
+
             # Record in database
             self.storage.record_scrape(
                 property_id=property_id,
                 scraper="fema",
                 raw_data_path=raw_path,
+                vision_output_path=vision_path,
                 vision_data=result_dict,
                 success=True
             )

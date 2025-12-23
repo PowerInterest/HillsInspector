@@ -10,7 +10,7 @@ HillsInspector is a data ingestion and analysis pipeline for Hillsborough County
 
 ```powershell
 # Run quick test (5 auctions)
-uv run main.py --test
+uv run main.py --update --start-date YYYY-MM-DD --end-date YYYY-MM-DD --auction-limit 5
 
 # Full update (scrape, extract, analyze, enrich)
 uv run main.py --update
@@ -78,7 +78,7 @@ conn.execute("INSERT INTO table SELECT * FROM df_temp")
 
 ## Architecture
 
-### Pipeline Flow (`src/pipeline.py`)
+### Pipeline Flow (`src/orchestrator.py` — legacy reference in `src/pipeline_OLD.py`)
 
 | Step | Description | Skip If |
 |------|-------------|---------|
