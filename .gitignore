@@ -138,3 +138,11 @@ data/
 .venv_broken_2/
 Download_log.txt
 debug_*.txt
+
+# Playwright
+node_modules/
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/

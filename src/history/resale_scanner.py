@@ -73,6 +73,7 @@ class ResaleScanner:
         ensure_duckdb_utc(conn)
         try:
             logger.info(f"Writing {len(resales_data)} resales to DB via Polars...")
+            conn.execute("ALTER TABLE resales ADD COLUMN IF NOT EXISTS roi DOUBLE")
             
             # Register the DataFrame as a view
             conn.register('df_batch', df)
@@ -82,15 +83,16 @@ class ResaleScanner:
                 INSERT INTO resales (
                     resale_id, parcel_id, auction_id,
                     sale_date, sale_price, sale_type,
-                    hold_time_days, gross_profit, source
+                    hold_time_days, gross_profit, roi, source
                 ) SELECT 
                     resale_id, parcel_id, auction_id,
                     sale_date, sale_price, sale_type,
-                    hold_time_days, gross_profit, source
+                    hold_time_days, gross_profit, roi, source
                 FROM df_batch
                 ON CONFLICT (resale_id) DO UPDATE SET
                     sale_price = EXCLUDED.sale_price,
-                    gross_profit = EXCLUDED.gross_profit
+                    gross_profit = EXCLUDED.gross_profit,
+                    roi = EXCLUDED.roi
             """)
         except Exception as e:
             logger.error(f"Failed to save batch: {e}")
@@ -161,7 +163,11 @@ class ResaleScanner:
                                     price_val = 0
                             
                             hold_time = (sale_date - auction_date).days
-                            profit = price_val - (winning_bid or 0)
+                            base_bid = winning_bid or 0
+                            profit = price_val - base_bid
+                            roi = None
+                            if base_bid > 0:
+                                roi = profit / base_bid
                             
                             logger.success(f"FOUND FLIP! {auction_id} ({sold_to}) -> Sold on {sale_date} for ${price_val:,.0f} (Profit: ${profit:,.0f})")
                             
@@ -174,6 +180,7 @@ class ResaleScanner:
                                 "sale_type": sale.get('deed_type', 'Unknown'),
                                 "hold_time_days": hold_time,
                                 "gross_profit": profit,
+                                "roi": roi,
                                 "source": "HCPA"
                             }
                             

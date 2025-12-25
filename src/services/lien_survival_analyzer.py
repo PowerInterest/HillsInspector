@@ -2,7 +2,7 @@
 Lien Survival Analyzer that uses extracted Final Judgment metadata.
 
 Determines which liens will survive the UPCOMING foreclosure sale based on:
-- foreclosure_type: HOA, FIRST_MORTGAGE, SECOND_MORTGAGE, TAX_DEED, etc.
+- foreclosure_type: HOA, FIRST_MORTGAGE, SECOND_MORTGAGE, etc.
 - current_owner_acquisition_date: Liens from prior owners are HISTORICAL
 - lis_pendens_date: For priority determination
 - Florida statutes for expiration and safe harbor rules
@@ -199,7 +199,7 @@ class LienSurvivalAnalyzer:
         Args:
             encumbrances: List of encumbrance dicts with keys:
                 - encumbrance_type, recording_date, creditor, debtor, amount, instrument, book, page
-            foreclosure_type: HOA, FIRST_MORTGAGE, SECOND_MORTGAGE, TAX_DEED
+            foreclosure_type: HOA, FIRST_MORTGAGE, SECOND_MORTGAGE
             lis_pendens_date: Date lis pendens was filed (priority cutoff)
             current_owner_acquisition_date: When current owner took title
             plaintiff: Name of the foreclosing party
@@ -222,7 +222,6 @@ class LienSurvivalAnalyzer:
         fc_type = (foreclosure_type or "").upper()
         is_hoa_foreclosure = "HOA" in fc_type or "ASSOCIATION" in fc_type or "CONDO" in fc_type
         is_mortgage_foreclosure = "MORTGAGE" in fc_type and not is_hoa_foreclosure
-        is_tax_deed = "TAX" in fc_type and "DEED" in fc_type
         
         defendants_list = defendants or []
         has_defendants = bool(defendants_list)
@@ -401,17 +400,7 @@ class LienSurvivalAnalyzer:
                     results["survived"].append(entry)
                     continue
 
-                # 6. Apply foreclosure-type-specific rules
-                if is_tax_deed:
-                    # Tax deed sale wipes EVERYTHING except federal tax liens (maybe) and other government liens
-                    if self._is_federal_lien(enc_type, creditor):
-                        entry["status"] = "SURVIVED"
-                        entry["reason"] = "Federal tax lien survives tax deed (often)"
-                    else:
-                        entry["status"] = "EXTINGUISHED"
-                        entry["reason"] = "Tax deed sale extinguishes most non-government liens"
-
-                elif is_hoa_foreclosure:
+                if is_hoa_foreclosure:
                     # HOA foreclosure: First mortgage SURVIVES (Florida Safe Harbor)
                     # And other superpriorities (caught above)
                     if self._is_first_mortgage(enc_type, creditor):

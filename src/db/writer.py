@@ -90,17 +90,32 @@ class DatabaseWriter:
                     continue
 
                 operation, data, future = item
-                
-                try:
-                    result = self._execute_write(operation, data)
+
+                # Retry logic for transient write conflicts
+                max_retries = 3
+                result = None
+                last_error = None
+
+                for attempt in range(max_retries):
+                    try:
+                        result = self._execute_write(operation, data)
+                        last_error = None
+                        break
+                    except Exception as e:
+                        last_error = e
+                        if "write-write conflict" in str(e) and attempt < max_retries - 1:
+                            await asyncio.sleep(0.1 * (attempt + 1))  # Backoff
+                            continue
+                        break
+
+                if last_error:
+                    logger.error(f"DB Write Error ({operation}): {last_error}")
                     if future and not future.done():
-                        future.set_result(result)
-                except Exception as e:
-                    logger.error(f"DB Write Error ({operation}): {e}")
-                    if future and not future.done():
-                        future.set_exception(e)
-                finally:
-                    self.queue.task_done()
+                        future.set_exception(last_error)
+                elif future and not future.done():
+                    future.set_result(result)
+
+                self.queue.task_done()
                     
             except asyncio.CancelledError:
                 break

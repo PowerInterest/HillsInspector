@@ -129,12 +129,13 @@
                 name: "Case #",
                 width: "180px",
                 formatter: (cell, row) => {
-                    const url = row.cells[10].data;
+                    const url = row.cells[12].data;
                     return gridjs.html(`<a href="${url}" target="_blank" class="text-decoration-none">${cell}</a>`);
                 }
             },
             { name: "Address", width: "300px" },
             { name: "Buyer", width: "150px" },
+            { name: "Status", width: "180px" },
             {
                 name: "Winning Bid",
                 width: "140px",
@@ -155,6 +156,11 @@
                 }
             },
             {
+                name: "ROI",
+                width: "110px",
+                formatter: (cell) => cell ? `${cell.toFixed(2)}x` : '—'
+            },
+            {
                 name: "Hold",
                 width: "100px",
                 formatter: (cell) => cell ? `${cell}d` : '—'
@@ -163,14 +169,14 @@
             { name: "Debt", hidden: true },
             { name: "PDF Link", hidden: true }
         ],
-        server: {
-            url: "/history/data",
-            then: data => data.map(item => [
-                item.auction_date, item.case_number, item.address, item.buyer,
-                item.winning_bid, item.resale_price, item.profit, item.hold_time,
-                item.resale_date, item.debt, item.pdf_url
-            ])
-        },
+            server: {
+                url: "/history/data",
+                then: data => data.map(item => [
+                    item.auction_date, item.case_number, item.address, item.buyer,
+                    item.status, item.winning_bid, item.resale_price, item.profit,
+                    item.roi, item.hold_time, item.resale_date, item.debt, item.pdf_url
+                ])
+            },
         search: true,
         sort: true,
         pagination: { limit: 10 },

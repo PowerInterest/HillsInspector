@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import random
 import time
 from datetime import UTC, datetime
@@ -166,6 +167,66 @@ class ORIApiScraper:
         }
         return self._execute_search(payload)
 
+    def search_by_legal_parallel(
+        self,
+        search_terms: List[str],
+        start_date: str = "01/01/1900",
+        max_workers: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for documents using multiple legal description terms in parallel.
+
+        Fires all search terms concurrently and returns the union of all results,
+        deduplicated by instrument number.
+
+        Args:
+            search_terms: List of legal description search terms
+            start_date: Start date for search (MM/DD/YYYY)
+            max_workers: Maximum concurrent API requests (default 5)
+
+        Returns:
+            List of unique document dictionaries (deduplicated by Instrument)
+        """
+        if not search_terms:
+            return []
+
+        def search_single(term: str) -> tuple[str, List[Dict[str, Any]]]:
+            """Search a single term and return (term, results)."""
+            try:
+                results = self.search_by_legal(term, start_date)
+                return (term, results)
+            except Exception as e:
+                logger.debug(f"Parallel search failed for '{term}': {e}")
+                return (term, [])
+
+        logger.info(f"Parallel ORI search: {len(search_terms)} terms with {max_workers} workers")
+
+        all_results: List[Dict[str, Any]] = []
+        successful_terms: List[str] = []
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(search_single, term): term for term in search_terms}
+            for future in concurrent.futures.as_completed(futures):
+                term, results = future.result()
+                if results:
+                    all_results.extend(results)
+                    successful_terms.append(term)
+                    logger.debug(f"  {term}: {len(results)} results")
+
+        # Deduplicate by Instrument number
+        seen_instruments: set[str] = set()
+        unique_results: List[Dict[str, Any]] = []
+        for doc in all_results:
+            instrument = doc.get("Instrument", "")
+            if instrument and instrument not in seen_instruments:
+                seen_instruments.add(instrument)
+                unique_results.append(doc)
+
+        if successful_terms:
+            logger.info(f"Parallel search: {len(unique_results)} unique docs from {len(successful_terms)} successful terms")
+
+        return unique_results
+
     def search_by_party(self, party_name: str, start_date: str = "01/01/1900") -> List[Dict[str, Any]]:
         """
         Search for documents by party name.
@@ -202,6 +263,128 @@ class ORIApiScraper:
         if include_doc_types:
             payload["DocType"] = self.TITLE_DOC_TYPES
         return self._execute_search(payload)
+
+    async def search_by_book_page_browser(
+        self, book: str, page: str, book_type: str = "OR", headless: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Search ORI by book and page number using browser-based CQID=319 endpoint.
+
+        This is the most accurate search method - returns exact document.
+
+        Known OBKey parameters for CQID 319:
+        - OBKey__573_1: Book number
+        - OBKey__1049_1: Page number
+        - OBKey__1530_1: Book type (OR = Official Records)
+
+        Args:
+            book: Book number (e.g., "12345")
+            page: Page number (e.g., "0001")
+            book_type: Book type, usually "OR" for Official Records
+            headless: Run browser in headless mode
+
+        Returns:
+            List of document records (usually 0 or 1)
+        """
+        # Use CQID=319 for book/page search
+        url = (
+            f"https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html"
+            f"?CQID=319&OBKey__573_1={quote(book)}&OBKey__1049_1={quote(page)}"
+            f"&OBKey__1530_1={quote(book_type)}"
+        )
+        logger.info(f"Searching ORI by book/page: Book={book}, Page={page}")
+
+        # Ensure browser is running
+        await self._ensure_browser(headless)
+
+        context = await self._create_isolated_context()
+
+        try:
+            page_obj = await context.new_page()
+            await apply_stealth(page_obj)
+
+            logger.debug(f"ORI Browser GET: {url}")
+            await page_obj.goto(url, timeout=60000)
+            await page_obj.wait_for_load_state("domcontentloaded", timeout=30000)
+            await asyncio.sleep(2)
+
+            # Get column headers
+            headers = await page_obj.query_selector_all("table thead th")
+            header_names = [await h.inner_text() for h in headers]
+
+            # Get all data rows
+            rows = await page_obj.query_selector_all("table tbody tr")
+
+            if not rows:
+                logger.debug(f"No results for book/page: {book}/{page}")
+                return []
+
+            results = []
+            for row in rows:
+                cells = await row.query_selector_all("td")
+                if len(cells) >= 4:
+                    data = {}
+                    for i, cell in enumerate(cells):
+                        if i < len(header_names):
+                            data[header_names[i]] = (await cell.inner_text()).strip()
+
+                    # Normalize to standard field names
+                    normalized = {
+                        "person_type": data.get("ORI - Person Type", ""),
+                        "name": data.get("Name", ""),
+                        "record_date": data.get("Recording Date Time", ""),
+                        "doc_type": data.get("ORI - Doc Type", ""),
+                        "book_type": data.get("Book Type", ""),
+                        "book_num": data.get("Book #", ""),
+                        "page_num": data.get("Page #", ""),
+                        "legal": data.get("Legal Description", ""),
+                        "instrument": data.get("Instrument #", ""),
+                    }
+                    results.append(normalized)
+
+            logger.info(f"Found {len(results)} records for book/page: {book}/{page}")
+            return results
+
+        except Exception as e:
+            logger.error(f"Error searching ORI by book/page {book}/{page}: {e}")
+            return []
+        finally:
+            await context.close()
+
+    def search_by_book_page_sync(
+        self, book: str, page: str, book_type: str = "OR", headless: bool = True, timeout: int = 30
+    ) -> List[Dict[str, Any]]:
+        """
+        Synchronous wrapper for search_by_book_page_browser.
+
+        Args:
+            book: Book number
+            page: Page number
+            book_type: Book type (default "OR")
+            headless: Run browser in headless mode
+            timeout: Timeout in seconds
+
+        Returns:
+            List of document records
+        """
+        import asyncio as aio
+
+        async def _search():
+            return await self.search_by_book_page_browser(book, page, book_type, headless)
+
+        try:
+            loop = aio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # We're in an async context, need to use a thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(lambda: aio.run(_search()))
+                return future.result(timeout=timeout)
+        else:
+            return aio.run(_search())
 
     def _execute_search(self, payload: Dict) -> List[Dict[str, Any]]:
         try:

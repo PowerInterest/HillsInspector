@@ -1,5 +1,7 @@
 import asyncio
 import json
+import duckdb
+import re
 import contextlib
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any
@@ -19,6 +21,10 @@ from src.scrapers.fema_flood_scraper import FEMAFloodChecker, FEMARequestError
 from src.services.ingestion_service import IngestionService
 from src.services.lien_survival_analyzer import LienSurvivalAnalyzer
 from src.services.homeharvest_service import HomeHarvestService
+
+# Step 4v2 - Iterative Discovery
+from config.step4v2 import USE_STEP4_V2, V2_DB_PATH
+from src.services.step4v2 import IterativeDiscovery, ChainBuilder
 
 # Database & Storage
 from src.db.operations import PropertyDB
@@ -271,8 +277,105 @@ class PipelineOrchestrator:
         self.sunbiz_semaphore = asyncio.Semaphore(5)
         self.fema_semaphore = asyncio.Semaphore(10)
         self.homeharvest_semaphore = asyncio.Semaphore(1)
+        self.v2_db_semaphore = asyncio.Semaphore(1)  # Serialize v2 DB writes
 
-    # ... (Previous methods unchanged) ...
+        # V2 database connection (lazy-loaded)
+        self._v2_conn: Optional[duckdb.DuckDBPyConnection] = None
+
+    def _get_v2_conn(self) -> duckdb.DuckDBPyConnection:
+        """Get or create a connection to the v2 database."""
+        if self._v2_conn is None:
+            from src.utils.time import ensure_duckdb_utc
+            self._v2_conn = duckdb.connect(V2_DB_PATH)
+            ensure_duckdb_utc(self._v2_conn)
+        return self._v2_conn
+
+    def _close_v2_conn(self) -> None:
+        """Close the v2 database connection if open."""
+        if self._v2_conn is not None:
+            try:
+                self._v2_conn.close()
+            except Exception:
+                logger.debug("Error while closing v2 connection")
+            self._v2_conn = None
+
+    def folio_has_chain_of_title(self, folio: str) -> bool:
+        """Check if folio has chain of title data (uses v2 when enabled)."""
+        if USE_STEP4_V2:
+            conn = self._get_v2_conn()
+            result = conn.execute(
+                "SELECT COUNT(*) FROM chain_of_title WHERE folio = ?", [folio]
+            ).fetchone()
+            return result[0] > 0 if result else False
+        return self.db.folio_has_chain_of_title(folio)
+
+    def get_chain_of_title(self, folio: str) -> Dict[str, Any]:
+        """Get chain of title records (uses v2 when enabled)."""
+        if USE_STEP4_V2:
+            conn = self._get_v2_conn()
+            # Get ownership periods
+            periods = conn.execute(
+                """SELECT id, folio, owner_name, acquired_from, acquisition_date,
+                          disposition_date, acquisition_instrument, acquisition_doc_type,
+                          acquisition_price, link_status, confidence_score, mrta_status,
+                          years_covered
+                   FROM chain_of_title WHERE folio = ?
+                   ORDER BY acquisition_date""",
+                [folio]
+            ).fetchall()
+            cols = [desc[0] for desc in conn.description]
+            ownership_timeline = []
+
+            for row in periods:
+                period = dict(zip(cols, row, strict=False))
+                period_id = period["id"]
+
+                # Get encumbrances for this period
+                encs = conn.execute(
+                    """SELECT * FROM encumbrances
+                       WHERE chain_period_id = ?
+                       ORDER BY recording_date""",
+                    [period_id]
+                ).fetchall()
+                enc_cols = [desc[0] for desc in conn.description]
+                period["encumbrances"] = [dict(zip(enc_cols, e, strict=False)) for e in encs]
+                ownership_timeline.append(period)
+
+            return {
+                "folio": folio,
+                "ownership_timeline": ownership_timeline,
+                "current_owner": ownership_timeline[-1]["owner_name"] if ownership_timeline else None,
+                "total_transfers": len(ownership_timeline)
+            }
+        return self.db.get_chain_of_title(folio)
+
+    def get_encumbrances_by_folio(self, folio: str) -> List[dict]:
+        """Get encumbrances for folio (uses v2 when enabled)."""
+        if USE_STEP4_V2:
+            conn = self._get_v2_conn()
+            result = conn.execute(
+                """SELECT id, folio, chain_period_id, encumbrance_type, creditor, debtor,
+                          amount, amount_confidence, amount_flags, recording_date, instrument,
+                          book, page, is_satisfied, satisfaction_instrument, satisfaction_date,
+                          survival_status, is_joined, is_inferred
+                   FROM encumbrances WHERE folio = ?
+                   ORDER BY recording_date""",
+                [folio]
+            ).fetchall()
+            cols = [desc[0] for desc in conn.description]
+            return [dict(zip(cols, row, strict=False)) for row in result]
+        return self.db.get_encumbrances_by_folio(folio)
+
+    def encumbrance_exists(self, folio: str, book: str, page: str) -> bool:
+        """Check if encumbrance exists by book/page (uses v2 when enabled)."""
+        if USE_STEP4_V2:
+            conn = self._get_v2_conn()
+            result = conn.execute(
+                "SELECT COUNT(*) FROM encumbrances WHERE folio = ? AND book = ? AND page = ?",
+                [folio, book, page]
+            ).fetchone()
+            return result[0] > 0 if result else False
+        return self.db.encumbrance_exists(folio, book, page)
 
     def _gather_and_analyze_survival(self, prop: Property) -> Dict[str, Any]:
         """
@@ -291,8 +394,8 @@ class PipelineOrchestrator:
                 "case_number": case_number,
             }
         
-        encs_rows = self.db.get_encumbrances_by_folio(folio)
-        chain = self.db.get_chain_of_title(folio)
+        encs_rows = self.get_encumbrances_by_folio(folio)
+        chain = self.get_chain_of_title(folio)
         
         current_owner_acq_date = None
         if chain and chain.get("ownership_timeline"):
@@ -359,7 +462,7 @@ class PipelineOrchestrator:
         
         new_encumbrances = [] # List of dicts to insert
         
-        if mtg_book and mtg_page and not self.db.encumbrance_exists(folio, mtg_book, mtg_page):
+        if mtg_book and mtg_page and not self.encumbrance_exists(folio, mtg_book, mtg_page):
             # Check if this mortgage is already in our list (maybe scraped but missed book match?)
             # Or perform lookup
             mtg_instrument = foreclosed_mtg.get("instrument_number")
@@ -436,10 +539,7 @@ class PipelineOrchestrator:
         defs = judgment_data.get("defendants")
         if isinstance(defs, list):
             for d in defs:
-                if isinstance(d, dict):
-                    name = d.get("name")
-                else:
-                    name = str(d) if d else None
+                name = d.get("name") if isinstance(d, dict) else str(d) if d else None
                 if name:
                     def_names.append(name)
         elif isinstance(defs, dict):
@@ -529,6 +629,110 @@ class PipelineOrchestrator:
             "case_number": case_number
         }
 
+    def _gather_and_analyze_survival_v2(
+        self, prop: Property, auction: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Phase 3: Survival Analysis v2.
+        Uses property_master_v2.db and modular SurvivalService.
+
+        Args:
+            prop: Property object
+            auction: Pre-fetched auction data (to avoid cross-thread DB access)
+        """
+        import duckdb
+        from src.services.lien_survival.survival_service import SurvivalService
+        from src.services.step4v2.chain_builder import ChainBuilder
+
+        folio = prop.parcel_id
+        case_number = prop.case_number
+
+        if not auction:
+            return {"error": "No auction record for case"}
+
+        try:
+            conn = duckdb.connect(V2_DB_PATH)
+
+            # 1. Fetch data from v2 DB
+            builder = ChainBuilder(conn)
+            periods = builder.get_chain(folio)
+            encumbrances = builder.get_encumbrances(folio)
+
+            # Map to dicts for service
+            period_dicts = []
+            for p in periods:
+                d = p.__dict__.copy()
+                if d.get('acquisition_date'):
+                    d['acquisition_date'] = d['acquisition_date']
+                period_dicts.append(d)
+
+            enc_dicts = []
+            for e in encumbrances:
+                d = e.__dict__.copy()
+                enc_dicts.append(d)
+            
+            judgment_data = {}
+            raw_judgment = auction.get("extracted_judgment_data")
+            if isinstance(raw_judgment, dict):
+                judgment_data = raw_judgment
+            elif isinstance(raw_judgment, str) and raw_judgment.strip():
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
+                    judgment_data = json.loads(raw_judgment)
+            
+            # Ensure critical context is present
+            if not judgment_data.get('plaintiff'):
+                judgment_data['plaintiff'] = auction.get('plaintiff')
+            if not judgment_data.get('defendants'):
+                def_name = auction.get('defendant')
+                if def_name:
+                    judgment_data['defendants'] = [def_name]
+            
+            # Current period: Usually the one with disposition_date IS NULL or latest acquisition
+            current_period_id = None
+            if periods:
+                latest = sorted(periods, key=lambda p: p.acquisition_date or date.min, reverse=True)[0]
+                current_period_id = latest.id
+            
+            # 3. Analyze
+            service = SurvivalService(folio)
+            analysis = service.analyze(enc_dicts, judgment_data, period_dicts, current_period_id)
+            
+            # 4. Persistence (Sync to v2 DB)
+            # V2 encumbrances are updated directly - no need to update v1 (IDs don't match)
+            flat_results = []
+            for cat in analysis['results'].values():
+                flat_results.extend(cat)
+
+            for enc in flat_results:
+                if enc.get('id'):
+                    conn.execute(
+                        "UPDATE encumbrances SET survival_status = ?, survival_reason = ? WHERE id = ?",
+                        [enc['survival_status'], enc.get('survival_reason'), enc['id']]
+                    )
+
+            # Don't CHECKPOINT here - causes write conflicts with concurrent operations
+            # DuckDB handles checkpointing automatically
+            conn.close()
+
+            # Return empty updates - v2 is authoritative, v1 encumbrances not updated
+            return {
+                "updates": [],
+                "summary": {
+                    "survived_count": len(analysis['results']['survived']),
+                    "extinguished_count": len(analysis['results']['extinguished']),
+                    "historical_count": len(analysis['results']['historical']),
+                    "foreclosing_count": len(analysis['results']['foreclosing']),
+                },
+                "uncertainty_flags": analysis.get("uncertainty_flags", []),
+                "full_summary": analysis.get("summary", ""),
+                "folio": folio,
+                "case_number": case_number
+            }
+            
+        except Exception as e:
+            logger.exception(f"Survival analysis v2 failed for {folio}: {e}")
+            return {"error": str(e)}
+
     async def process_auctions(
         self,
         start_date: date,
@@ -560,7 +764,10 @@ class PipelineOrchestrator:
         logger.info(f"Found {len(auctions)} auctions to process")
         
         await self._process_batch(auctions)
-        
+
+        # Close v2 connection if used
+        self._close_v2_conn()
+
         logger.success("Orchestration complete")
 
     def _log_resume_stats(
@@ -748,7 +955,7 @@ class PipelineOrchestrator:
 
         # Skip logic: folio has chain AND same case number (matches old pipeline)
         last_case = self.db.get_last_analyzed_case(parcel_id)
-        if self.db.folio_has_chain_of_title(parcel_id) and last_case == case_number:
+        if self.folio_has_chain_of_title(parcel_id) and last_case == case_number:
             logger.info(f"Skipping ORI for {parcel_id} - already analyzed for {case_number}")
             await self.db_writer.enqueue("generic_call", {
                 "func": self.db.mark_step_complete,
@@ -874,7 +1081,7 @@ class PipelineOrchestrator:
                 # Build search terms (matches old pipeline logic exactly)
                 prop.legal_description = primary_legal
                 parsed = parse_legal_description(primary_legal)
-                terms: list[str | tuple] = list(generate_search_permutations(parsed))
+                terms: list[str | tuple] = list(generate_search_permutations(parsed, primary_legal))
 
                 # Add filter info for post-search filtering
                 lot_filter = parsed.lots or ([parsed.lot] if parsed.lot else None)
@@ -889,7 +1096,9 @@ class PipelineOrchestrator:
 
                 # Metes-and-bounds fallback: use 60-char prefix if no search terms (matches old pipeline)
                 if not terms or (len(terms) == 1 and isinstance(terms[0], tuple)):
-                    prefix = primary_legal.upper().strip()[:60]
+                    # Strip leading section numbers (e.g., "1\tBEG..." or "1 BEG...")
+                    clean_legal = re.sub(r'^\d+[\t\s]+', '', primary_legal)
+                    prefix = clean_legal.upper().strip()[:60]
                     if prefix:
                         terms.insert(0, f"{prefix}*")
 
@@ -1477,9 +1686,19 @@ class PipelineOrchestrator:
                 )
 
     async def _run_ori_ingestion(self, case_number: str, prop: Property):
-        # IngestionService manages its own internal semaphores/concurrency via db_writer
+        """Run ORI ingestion - dispatches to v1 or v2 based on config."""
         if self.db.is_status_step_complete(case_number, "step_ori_ingested"):
             return
+
+        if USE_STEP4_V2:
+            async with self.v2_db_semaphore:
+                await self._run_ori_ingestion_v2(case_number, prop)
+        else:
+            await self._run_ori_ingestion_v1(case_number, prop)
+
+    async def _run_ori_ingestion_v1(self, case_number: str, prop: Property):
+        """Run ORI ingestion using v1 (IngestionService)."""
+        # IngestionService manages its own internal semaphores/concurrency via db_writer
         try:
             await self.ingestion_service.ingest_property_async(prop)
             await self.db_writer.enqueue(
@@ -1487,7 +1706,96 @@ class PipelineOrchestrator:
                 {"func": self.db.mark_status_step_complete, "args": [case_number, "step_ori_ingested", 5]},
             )
         except Exception as e:
-            logger.error(f"ORI Ingestion failed: {e}")
+            logger.error(f"ORI Ingestion v1 failed: {e}")
+            await self.db_writer.enqueue(
+                "generic_call",
+                {"func": self.db.mark_status_failed, "args": [case_number, str(e)[:200], 5]},
+            )
+
+    async def _run_ori_ingestion_v2(self, case_number: str, prop: Property):
+        """
+        Run ORI ingestion using Step 4v2 (IterativeDiscovery).
+
+        This uses the v2 database and iterative discovery algorithm.
+        """
+
+        folio = prop.parcel_id
+        if not folio:
+            logger.warning(f"No folio for {case_number}, skipping Step 4v2")
+            await self.db_writer.enqueue(
+                "generic_call",
+                {"func": self.db.mark_status_failed, "args": [case_number, "No folio for ORI ingestion", 5]},
+            )
+            return
+
+        try:
+            # Use shared v2 database connection (semaphore ensures exclusive access)
+            conn = self._get_v2_conn()
+
+            # Get auction data
+            auction = self.db.get_auction_by_case(case_number)
+            if not auction:
+                logger.error(f"No auction record for {case_number}")
+                return
+
+            # Get HCPA data (from parcels table)
+            hcpa_data = None
+            parcel_row = conn.execute(
+                "SELECT * FROM parcels WHERE folio = ? LIMIT 1", [folio]
+            ).fetchone()
+            if parcel_row:
+                cols = [desc[0] for desc in conn.description]
+                hcpa_data = dict(zip(cols, parcel_row, strict=False))
+
+            # Get bulk parcel data
+            bulk_parcel = None
+            bulk_row = conn.execute(
+                "SELECT * FROM bulk_parcels WHERE folio = ? OR strap = ? LIMIT 1", [folio, folio]
+            ).fetchone()
+            if bulk_row:
+                cols = [desc[0] for desc in conn.description]
+                bulk_parcel = dict(zip(cols, bulk_row, strict=False))
+
+            # Get final judgment data
+            final_judgment = auction.get("extracted_judgment_data") or {}
+            if isinstance(final_judgment, str):
+                import json
+                try:
+                    final_judgment = json.loads(final_judgment)
+                except json.JSONDecodeError:
+                    final_judgment = {}
+
+            # Run iterative discovery
+            discovery = IterativeDiscovery(conn)
+            result = discovery.run(
+                folio=folio,
+                auction=auction,
+                hcpa_data=hcpa_data,
+                final_judgment=final_judgment,
+                bulk_parcel=bulk_parcel,
+            )
+
+            # Build chain of title from discovered documents
+            chain_builder = ChainBuilder(conn)
+            chain_result = chain_builder.build(folio)
+
+            # Don't close - using shared connection managed by _get_v2_conn()
+
+            logger.info(
+                f"Step 4v2 complete for {folio}: {result.documents_found} docs, "
+                f"{chain_result.total_years:.1f} years chain, {len(chain_result.encumbrances)} encumbrances"
+            )
+
+            # Mark step complete
+            await self.db_writer.enqueue(
+                "generic_call",
+                {"func": self.db.mark_status_step_complete, "args": [case_number, "step_ori_ingested", 5]},
+            )
+
+        except Exception as e:
+            logger.error(f"ORI Ingestion v2 failed for {case_number}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             await self.db_writer.enqueue(
                 "generic_call",
                 {"func": self.db.mark_status_failed, "args": [case_number, str(e)[:200], 5]},
@@ -1574,7 +1882,19 @@ class PipelineOrchestrator:
 
             # Logic is heavy and synchronous (DB reads, potential ORI lookup). Run in executor.
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(None, self._gather_and_analyze_survival, prop)
+
+            if USE_STEP4_V2:
+                # Pre-fetch auction data in main thread to avoid cross-thread DB access
+                auction = self.db.get_auction_by_case(case_number)
+                # Serialize v2 DB access to prevent write conflicts
+                async with self.v2_db_semaphore:
+                    # Close shared connection before executor thread opens its own
+                    self._close_v2_conn()
+                    result = await loop.run_in_executor(
+                        None, self._gather_and_analyze_survival_v2, prop, auction
+                    )
+            else:
+                result = await loop.run_in_executor(None, self._gather_and_analyze_survival, prop)
 
             if not result:
                 logger.warning(

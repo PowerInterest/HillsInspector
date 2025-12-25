@@ -666,6 +666,77 @@ class IngestionService:
                     logger.warning(f"Search failed for '{search_term}': {e}")
                     continue
 
+            # API fallback: if browser search failed, try API with PARALLEL search
+            if not docs:
+                logger.info("Browser search failed, trying parallel API fallback...")
+                try:
+                    # Strip wildcards from search terms for API
+                    clean_terms = [t.rstrip("*") for t in actual_search_terms if t]
+
+                    # Strategy: Try first 4 terms, then owner name, then remaining terms
+                    first_batch = clean_terms[:4]
+                    remaining_terms = clean_terms[4:]
+
+                    # Step 1: Try first 4 terms in parallel
+                    if first_batch:
+                        candidate_docs = self.ori_scraper.search_by_legal_parallel(first_batch, max_workers=4)
+                        if candidate_docs:
+                            if filter_info:
+                                candidate_docs = self._filter_docs_by_lot_block(candidate_docs, filter_info)
+                            elif prop.legal_description:
+                                candidate_docs = self._filter_docs_by_relevance(candidate_docs, prop)
+
+                            if candidate_docs:
+                                docs = candidate_docs
+                                successful_term = f"API_PARALLEL:first_4_terms"
+                                logger.info(f"Parallel API (first 4) found {len(docs)} documents")
+
+                    # Step 2: If first batch failed, try owner name search to discover ORI legal format
+                    if not docs:
+                        owner_name = getattr(prop, "owner_name", None)
+                        if owner_name and not is_institutional_name(owner_name):
+                            owner_search_name = self._normalize_party_name_for_search(owner_name)
+                            if owner_search_name:
+                                logger.info(f"First 4 terms failed, trying early owner search: {owner_search_name}")
+                                try:
+                                    owner_docs = self.ori_scraper.search_by_party(owner_search_name)
+                                    if owner_docs:
+                                        # Try to find a doc with legal matching our property
+                                        ori_legal = self._find_matching_ori_legal_from_docs(
+                                            owner_docs, prop.legal_description, filter_info
+                                        )
+                                        if ori_legal:
+                                            # Use ORI's indexed legal format for targeted search
+                                            logger.info(f"Using ORI legal from owner search: {ori_legal[:50]}...")
+                                            targeted_docs = self.ori_scraper.search_by_legal(ori_legal)
+                                            if targeted_docs:
+                                                if filter_info:
+                                                    targeted_docs = self._filter_docs_by_lot_block(targeted_docs, filter_info)
+                                                if targeted_docs:
+                                                    docs = targeted_docs
+                                                    successful_term = f"OWNER_ORI_LEGAL:{ori_legal[:30]}"
+                                                    logger.info(f"Owner-discovered ORI legal found {len(docs)} documents")
+                                except Exception as e:
+                                    logger.debug(f"Early owner search failed: {e}")
+
+                    # Step 3: If still no results, try remaining terms
+                    if not docs and remaining_terms:
+                        logger.info(f"Trying remaining {len(remaining_terms)} search terms...")
+                        candidate_docs = self.ori_scraper.search_by_legal_parallel(remaining_terms, max_workers=5)
+                        if candidate_docs:
+                            if filter_info:
+                                candidate_docs = self._filter_docs_by_lot_block(candidate_docs, filter_info)
+                            elif prop.legal_description:
+                                candidate_docs = self._filter_docs_by_relevance(candidate_docs, prop)
+
+                            if candidate_docs:
+                                docs = candidate_docs
+                                successful_term = f"API_PARALLEL:remaining_{len(remaining_terms)}_terms"
+                                logger.info(f"Parallel API (remaining) found {len(docs)} documents")
+
+                except Exception as e:
+                    logger.warning(f"Parallel API search failed: {e}")
+
             # Fallback: try party search by current owner name (matches sync version)
             if not docs:
                 owner_name = getattr(prop, "owner_name", None)
@@ -1155,6 +1226,88 @@ class IngestionService:
         # For now, return the first 60 chars as a heuristic to avoid super long strings
         return legal[:60]
 
+    def _find_matching_ori_legal_from_docs(
+        self,
+        docs: List[Dict],
+        prop_legal: str,
+        filter_info: Optional[Dict] = None
+    ) -> Optional[str]:
+        """
+        Find a document whose ORI-indexed legal matches our property.
+
+        Used after owner name search to discover ORI's indexed legal format,
+        which can then be used for more targeted legal description searches.
+
+        Args:
+            docs: List of ORI documents from owner/party search
+            prop_legal: Our property's legal description from HCPA
+            filter_info: Optional filter info with lot/block/subdivision
+
+        Returns:
+            The ORI-indexed legal description if a match is found, else None
+        """
+        if not docs or not prop_legal:
+            return None
+
+        prop_upper = prop_legal.upper()
+
+        # Extract key tokens from our property's legal description
+        # Focus on subdivision name words (skip common words)
+        skip_words = {
+            "LOT", "LOTS", "BLOCK", "BLK", "UNIT", "PHASE", "SECTION", "MAP", "OF",
+            "THE", "AND", "TO", "IN", "AT", "A", "AN", "ACCORDING", "PLAT", "BOOK",
+            "PAGE", "PAGES", "PUBLIC", "RECORDS", "HILLSBOROUGH", "COUNTY", "FLORIDA",
+            "LESS", "FEET", "FT", "THEREOF", "NORTH", "SOUTH", "EAST", "WEST",
+            "N", "S", "E", "W", "PT", "PART", "PORTION", "NO", "NUMBER"
+        }
+
+        # Get significant words from property legal
+        prop_words = set(re.findall(r'[A-Z]+', prop_upper)) - skip_words
+        # Filter to words with 3+ chars (avoid noise like "II", "1A")
+        prop_words = {w for w in prop_words if len(w) >= 3}
+
+        # Also get lot/block from filter_info if available
+        target_lot = None
+        target_block = None
+        if filter_info:
+            lot_val = filter_info.get("lot")
+            if isinstance(lot_val, list) and lot_val:
+                target_lot = str(lot_val[0])
+            elif lot_val:
+                target_lot = str(lot_val)
+            target_block = filter_info.get("block")
+
+        best_match: Optional[str] = None
+        best_score = 0
+
+        for doc in docs:
+            ori_legal = doc.get("Legal") or doc.get("legal") or ""
+            if not ori_legal:
+                continue
+
+            ori_upper = ori_legal.upper()
+            ori_words = set(re.findall(r'[A-Z]+', ori_upper)) - skip_words
+
+            # Count matching significant words
+            matches = prop_words & ori_words
+            score = len(matches)
+
+            # Bonus for matching lot/block
+            if target_lot and re.search(rf'\bL(?:OT)?\s*{re.escape(target_lot)}\b', ori_upper):
+                score += 3
+            if target_block and re.search(rf'\bB(?:LK|LOCK)?\s*{re.escape(str(target_block))}\b', ori_upper):
+                score += 3
+
+            # Need at least 2 matching words to consider it a match
+            if score > best_score and len(matches) >= 2:
+                best_score = score
+                best_match = ori_legal
+
+        if best_match:
+            logger.info(f"Found matching ORI legal from owner search (score={best_score}): {best_match[:60]}...")
+
+        return best_match
+
     def _filter_docs_by_lot_block(self, docs: List[Dict], filter_info: Dict) -> List[Dict]:
         """
         Filter ORI documents to only those matching the specified lot/block.
@@ -1226,13 +1379,23 @@ class IngestionService:
             legal = doc.get("Legal") or doc.get("legal") or ""
             legal_upper = legal.upper()
 
-            # Check lot match - various formats: "L 1", "L1", "LOT 1"
+            # Check lot match - various formats: "L 1", "L1", "LOT 1", "L 1 AND 2", "L 1-3"
             lot_match = True
             if lots:
                 lot_hits = 0
                 for lot in lots:
+                    # Primary pattern: "L 1" or "LOT 1" at start of lot reference
                     lot_pattern = rf'\bL(?:OT)?\s*{re.escape(lot)}\b'
-                    if re.search(lot_pattern, legal_upper):
+                    # Secondary pattern: "AND 2" or ", 2" for multi-lot (e.g., "L 1 AND 2")
+                    lot_and_pattern = rf'\b(?:AND|,)\s*{re.escape(lot)}\b'
+                    # Range pattern: "L 1-3" covers lots 1, 2, 3 (check if lot is in range)
+                    range_match = False
+                    range_pattern = re.search(r'\bL(?:OT)?\s*(\d+)-(\d+)\b', legal_upper)
+                    if range_pattern and lot.isdigit():
+                        range_start, range_end = int(range_pattern.group(1)), int(range_pattern.group(2))
+                        if range_start <= int(lot) <= range_end:
+                            range_match = True
+                    if re.search(lot_pattern, legal_upper) or re.search(lot_and_pattern, legal_upper) or range_match:
                         lot_hits += 1
                 lot_match = lot_hits == len(lots) if require_all_lots else lot_hits > 0
 

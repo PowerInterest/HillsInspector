@@ -31,7 +31,7 @@
                             {{ permit.status }}
                         </span>
                     </td>
-                    <td class="desc-cell" title="{{ permit.description }}">{{ permit.description[:50] }}{% if permit.description|length > 50 %}...{% endif %}</td>
+                    <td class="desc-cell" title="{{ permit.description or '' }}">{{ (permit.description or '-')[:50] }}{% if permit.description and permit.description|length > 50 %}...{% endif %}</td>
                     <td>{{ permit.contractor or '-' }}</td>
                     <td class="text-right">{{ "${:,.0f}".format(permit.estimated_cost) if permit.estimated_cost else '-' }}</td>
                 </tr>

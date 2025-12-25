@@ -8,6 +8,7 @@ from datetime import date, timedelta
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from src.history.scrape_history import run_scrape
+from src.history.buyer_enricher import BuyerNameEnricher
 from src.history.resale_scanner import ResaleScanner
 from src.history.judgment_pipeline import JudgmentPipeline
 from src.utils.time import today_local
@@ -23,6 +24,11 @@ async def run_history_pipeline():
     # Phase 2: Skeleton Scrape
     logger.info("Phase 2: Running Skeleton Scrape...")
     await run_scrape()
+
+    # Phase 3: Buyer Name Enrichment (HCPA Sales History)
+    logger.info("Phase 3: Enriching buyer names from HCPA sales history...")
+    buyer_enricher = BuyerNameEnricher(headless=True)
+    await buyer_enricher.enrich_batch(25)
     
     # Phase 4: Final Judgment processing (SKIPPED for speed)
     # logger.info("Phase 4: Running Judgment Pipeline...")

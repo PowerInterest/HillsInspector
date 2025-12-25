@@ -66,7 +66,7 @@ def get_history_stats():
                 COUNT(*) FILTER (WHERE gross_profit > 0) as profitable,
                 COUNT(*) FILTER (WHERE gross_profit <= 0) as loss,
                 AVG(gross_profit) as avg_profit,
-                AVG(sale_price / NULLIF(winning_bid, 0)) as avg_roi
+                AVG(r.roi) as avg_roi
             FROM resales r
             JOIN auctions a ON r.auction_id = a.auction_id
         """).fetchone()
@@ -128,7 +128,8 @@ async def history_data(limit: int = 100):
             SELECT 
                 a.auction_date, a.case_number, a.property_address, a.sold_to, 
                 a.winning_bid, a.final_judgment_amount,
-                r.sale_date, r.sale_price, r.gross_profit, r.hold_time_days,
+                r.sale_date, r.sale_price, r.gross_profit, r.roi, r.hold_time_days,
+                a.status,
                 a.pdf_url
             FROM auctions a
             LEFT JOIN resales r ON a.auction_id = r.auction_id
@@ -149,8 +150,10 @@ async def history_data(limit: int = 100):
                 "resale_date": str(r[6]) if r[6] else None,
                 "resale_price": r[7],
                 "profit": r[8],
-                "hold_time": r[9],
-                "pdf_url": r[10]
+                "roi": r[9],
+                "hold_time": r[10],
+                "status": r[11],
+                "pdf_url": r[12]
             })
         return data
     except Exception as e:

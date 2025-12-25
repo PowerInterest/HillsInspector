@@ -12,6 +12,7 @@
 - `uv sync` installs locked dependencies; avoid pip/poetry.
 - Quick sanity run: `uv run main.py --update --start-date YYYY-MM-DD --end-date YYYY-MM-DD --auction-limit 5`.
 - `uv run main.py --update` does the full scrape/analysis; `uv run main.py --web` launches the dashboard; `uv run main.py --new` resets the DB (archives old DB first).
+- **When developing/testing**: Use `--start-step <step #>` to limit `--update` to the step you're working on (e.g., `--start-step 5` for ORI ingestion). Only run a full update when explicitly requested by the user.
 - `uv run ruff check .` (add `--fix` when safe) for linting; `uv run ty check` for typing; `uv run pytest` for unit tests.
 - One-time scraper setup: `uv run playwright install chromium`.
 

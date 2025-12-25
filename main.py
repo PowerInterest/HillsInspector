@@ -1,7 +1,7 @@
 """
 Main entry point for HillsInspector.
 Supports modes:
-  --new: Create new database (renaming old one)
+  --new: Create new databases (v1 and v2), archiving old ones
   --update: Run full pipeline for next 40 days
   --status: Show pipeline status summary
   --verify: Verify status against stored data
@@ -20,6 +20,8 @@ from pathlib import Path
 import duckdb
 from loguru import logger
 
+from config.step4v2 import V2_DB_PATH
+from src.db.migrations.create_v2_database import create_v2_database
 from src.db.new import create_database
 from src.ingest.bulk_parcel_ingest import download_and_ingest
 from src.utils.db_lock import DatabaseLockError, exclusive_db_lock
@@ -135,17 +137,30 @@ def _cleanup_wal_files(db_path: Path) -> None:
             logger.info(f"WAL cleanup skipped for {wal_path}: {exc}")
 
 def handle_new():
-    """Create a new database, archiving the old one."""
+    """Create new databases (v1 and v2), archiving the old ones."""
+    timestamp = now_utc().strftime("%Y%m%d_%H%M%S")
+
+    # Archive and create v1 database
     if DB_PATH.exists():
-        timestamp = now_utc().strftime("%Y%m%d_%H%M%S")
         archive_path = DB_PATH.parent / f"property_master_{timestamp}.db"
-        logger.info(f"Archiving existing database to {archive_path}")
+        logger.info(f"Archiving existing v1 database to {archive_path}")
         shutil.move(str(DB_PATH), str(archive_path))
-    
-    logger.info("Creating new database...")
+
+    logger.info("Creating new v1 database...")
     create_database(str(DB_PATH))
-    logger.success("New database created successfully.")
-    
+    logger.success("New v1 database created successfully.")
+
+    # Archive and create v2 database
+    v2_path = Path(V2_DB_PATH)
+    if v2_path.exists():
+        archive_path = v2_path.parent / f"property_master_v2_{timestamp}.db"
+        logger.info(f"Archiving existing v2 database to {archive_path}")
+        shutil.move(str(v2_path), str(archive_path))
+
+    logger.info("Creating new v2 database...")
+    create_v2_database()
+    logger.success("New v2 database created successfully.")
+
     # Auto-download and ingest bulk data
     try:
         logger.info("Starting initial bulk data ingestion...")
@@ -353,7 +368,7 @@ def main():
     _cleanup_wal_files(DB_PATH)
     parser = argparse.ArgumentParser(description="HillsInspector Main Controller")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--new", action="store_true", help="Create new database (renaming old one)")
+    group.add_argument("--new", action="store_true", help="Create new databases (v1 and v2), archiving old ones")
     group.add_argument("--update", action="store_true", help="Run full update for next 40 days")
     group.add_argument("--status", action="store_true", help="Show pipeline status summary")
     group.add_argument("--verify", action="store_true", help="Verify pipeline status against data")

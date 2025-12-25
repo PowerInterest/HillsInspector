@@ -10,6 +10,7 @@ from typing import List, Optional, Dict, Any, Any as AnyType
 import json
 from loguru import logger
 
+from config.step4v2 import USE_STEP4_V2, V2_DB_PATH
 from src.models.property import Property, Lien
 from src.utils.time import ensure_duckdb_utc, now_utc_naive, parse_date, today_local
 
@@ -2845,8 +2846,32 @@ class PropertyDB:
             params,
         )
 
-        # Step 5: ORI ingestion (documents table)
-        if table_exists("documents"):
+        # Step 5: ORI ingestion (documents table - check v2 if enabled)
+        if USE_STEP4_V2:
+            # Check v2 database for documents
+            try:
+                v2_conn = duckdb.connect(V2_DB_PATH, read_only=True)
+                folios_with_docs = v2_conn.execute(
+                    "SELECT DISTINCT folio FROM documents"
+                ).fetchall()
+                v2_conn.close()
+                if folios_with_docs:
+                    folio_list = [f[0] for f in folios_with_docs]
+                    conn.execute(
+                        f"""
+                        UPDATE status s SET step_ori_ingested = NOW()
+                        WHERE s.step_ori_ingested IS NULL
+                          AND s.case_number IN (
+                            SELECT case_number FROM auctions
+                            WHERE COALESCE(parcel_id, folio) IN (SELECT * FROM UNNEST(?::VARCHAR[]))
+                          )
+                          {date_clause}
+                        """,
+                        [folio_list] + params,
+                    )
+            except Exception as e:
+                logger.debug(f"V2 backfill check failed: {e}")
+        elif table_exists("documents"):
             conn.execute(
                 f"""
                 UPDATE status s SET step_ori_ingested = NOW()

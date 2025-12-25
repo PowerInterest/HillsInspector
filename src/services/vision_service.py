@@ -1266,7 +1266,7 @@ class VisionService:
                         "content": content_blocks
                     }
                 ],
-                "max_tokens": 2000,
+                "max_tokens": max_tokens,  # Use parameter (default 4000) - multi-page docs need more
                 "temperature": 0.1
             }
 
@@ -1333,7 +1333,8 @@ class VisionService:
 
     def extract_final_judgment_multi(self, image_paths: list[str]) -> Optional[Dict[str, Any]]:
         """Extract structured data from a multi-page Final Judgment (batch images)."""
-        result = self.analyze_images(image_paths, FINAL_JUDGMENT_PROMPT)
+        # Final judgments need more tokens - many defendants, legal description, financial breakdown
+        result = self.analyze_images(image_paths, FINAL_JUDGMENT_PROMPT, max_tokens=6000)
         return robust_json_parse(result, "final_judgment_multi") if result else None
 
     def extract_encumbrance_amount(self, image_path: str) -> Optional[Dict[str, Any]]:

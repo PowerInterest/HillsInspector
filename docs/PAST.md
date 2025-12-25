@@ -23,6 +23,10 @@
     *   `final_judgment_amount` (as reported on the summary card)
     *   `property_address`
     *   `parcel_id`
+*   **Observations/Fixes (2025-12)**:
+    *   List view shows the winning bid under the label **"Amount"** inside `AUCTION_STATS` for sold auctions (not always "Winning Bid").
+    *   Direct PREVIEW URLs can land on the calendar/login; loading the calendar and clicking the date reliably yields the list view.
+    *   Upserts should not overwrite existing `sold_to`/`winning_bid` with NULL from a failed re-scrape (fixed in code).
 
 ## Phase 3: Identification of Third-Party Sales
 *   **Goal**: Filter the dataset to finding "True Sales" (investor purchases).
@@ -31,15 +35,22 @@
     *   **Exclude**: Rows where `status` is "Cancelled" or "Redeemed".
     *   **Include**: Rows where `winning_bid` > `100` (nominal bids often indicate admin transfers).
 
-## Phase 4: Final Judgment & Depth Processing
-*   **Goal**: For the filtered "Third-Party" subset, extract deep financial details.
-*   **Action**:
-    1.  **Download PDF**: Fetch the Final Judgment PDF for these specific case numbers.
-    2.  **Vision Analysis**: Use the `FinalJudgmentProcessor` to extract the *true* total breakdown (Principal, Interest, Fees).
-    3.  **Comparison**: Validate if the "Summary Card" judgment amount matches the PDF amount.
+## Phase 4: Final Judgment & Depth Processing (Paused)
+*   **Goal**: The nominal path would be to fetch PDFs and confirm the debt load, but we are temporarily pausing this for now.
+*   **Approach**:
+    *   Skip the Vision/PDF download step and instead focus on the resale lifecycle data we can gather more reliably.
+    *   Judgment recovery checks (`Winning Bid / Final Judgment Amount`) remain a future enhancement once the PDFs are back on the roadmap.
 
-    *   **Judgment Recovery**: `Winning Bid / Final Judgment Amount`
-    *   **Competitive Heat**: Analyze days with high volumes of 3rd party sales.
+## Phase 5: Flip Analysis (Investor Performance)
+*   **Goal**: Track the full lifecycle of a 3rd party purchase with concrete ROI metrics.
+*   **Metrics**:
+    *   **Hold Time**: Days between `Auction Date` and `Resale Date`.
+    *   **Gross Profit**: `Resale Price` - `Auction Winning Bid`.
+    *   **ROI**: `Gross Profit / Winning Bid` (when the winning bid is available).
+*   **Method**:
+    1.  Identify 3rd party winner.
+    2.  Monitor Property Appraiser / MLS data for a *subsequent* sale after the auction date.
+    3.  Link the "Sold To" entity from auction to the "Grantor" in the resale deed (to confirm it's the same investor selling).
 
     ### [New] Flip Analysis (Investor Performance)
     *   **Goal**: Track the full lifecycle of a 3rd party purchase.
@@ -108,6 +119,7 @@ CREATE TABLE resales (
     -- Performance Metrics
     hold_time_days INTEGER,
     gross_profit DOUBLE,
+    roi DOUBLE,
     
     -- Validation
     source VARCHAR                  -- 'MLS', 'Deed'

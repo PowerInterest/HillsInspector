@@ -64,6 +64,7 @@ def init_history_db():
             -- Performance Metrics
             hold_time_days INTEGER,
             gross_profit DOUBLE,
+            roi DOUBLE,
             
             -- Validation
             source VARCHAR,

@@ -4,6 +4,7 @@ from contextlib import suppress
 from loguru import logger
 from playwright.async_api import async_playwright
 from pathlib import Path
+from bs4 import BeautifulSoup
 
 from src.models.property import Property
 from src.utils.time import now_utc
@@ -22,6 +23,71 @@ class HistoricalHCPAScraper:
         self.headless = headless
         self.temp_dir = Path("data/history_scrapes")
         self.temp_dir.mkdir(parents=True, exist_ok=True)
+
+    def _parse_sales_history_html(self, html: str) -> list[dict]:
+        if not html:
+            return []
+        soup = BeautifulSoup(html, "lxml")
+
+        def normalize(text: str) -> str:
+            return " ".join(text.lower().strip().split())
+
+        sales_header = soup.find(
+            lambda tag: tag.name
+            and tag.get_text(strip=True)
+            and "sales history" in tag.get_text(strip=True).lower()
+        )
+        table = sales_header.find_next("table") if sales_header else None
+        if not table:
+            # fallback: look for tables with likely header columns
+            for candidate in soup.find_all("table"):
+                header_text = " ".join(th.get_text(" ", strip=True) for th in candidate.find_all(["th", "td"]))
+                if "grantor" in header_text.lower() or "grantee" in header_text.lower():
+                    table = candidate
+                    break
+                if "sale date" in header_text.lower() and "price" in header_text.lower():
+                    table = candidate
+                    break
+
+        if not table:
+            return []
+
+        rows = table.find_all("tr")
+        if not rows:
+            return []
+
+        headers = [normalize(cell.get_text(" ", strip=True)) for cell in rows[0].find_all(["th", "td"])]
+        records: list[dict] = []
+
+        for row in rows[1:]:
+            cells = [cell.get_text(" ", strip=True) for cell in row.find_all(["th", "td"])]
+            if not cells:
+                continue
+            record: dict = {}
+            for i, header in enumerate(headers):
+                if i >= len(cells):
+                    continue
+                value = cells[i].strip()
+                if not value:
+                    continue
+                if "date" in header:
+                    record["date"] = value
+                elif "price" in header or "amount" in header or "sale" in header and "$" in value:
+                    record["price"] = value
+                elif "instrument" in header:
+                    record["instrument"] = value
+                elif "book" in header and "page" in header:
+                    record["book_page"] = value
+                elif "deed" in header or "doc" in header or "type" in header:
+                    record["deed_type"] = value
+                elif "grantor" in header or "seller" in header:
+                    record["grantor"] = value
+                elif "grantee" in header or "buyer" in header:
+                    record["grantee"] = value
+            if record:
+                records.append(record)
+
+        return records
     
     async def enrich_property(self, prop: Property) -> Property:
         if not prop.parcel_id:
@@ -34,9 +100,10 @@ class HistoricalHCPAScraper:
             page = await context.new_page()
             
             try:
-                # logger.info("Visiting {url} for {parcel}", url=self.BASE_URL, parcel=prop.parcel_id)
+                logger.info("HCPA GET {url} for parcel {parcel}", url=self.BASE_URL, parcel=prop.parcel_id)
                 await page.goto(self.BASE_URL, timeout=60000)
                 await page.wait_for_load_state("networkidle")
+                logger.info("HCPA landing URL: {url}", url=page.url)
                 
                 # Parcel ID Search
                 await page.click("#basic input[name='basicPinGroup'][value='pin']")
@@ -62,6 +129,7 @@ class HistoricalHCPAScraper:
                     await address_box.fill(prop.address)
                     await page.click("#basic button[data-bind*='click: search']")
                     await page.wait_for_timeout(3000)
+                    logger.info("HCPA search by address for {parcel} -> {url}", parcel=prop.parcel_id, url=page.url)
                 
                 if await results_table.is_visible():
                     # Click first result
@@ -69,6 +137,7 @@ class HistoricalHCPAScraper:
                     
                     details_container = page.locator("#details")
                     await details_container.wait_for(state="visible", timeout=15000)
+                    logger.info("HCPA details URL for {parcel}: {url}", parcel=prop.parcel_id, url=page.url)
                     
                     with suppress(Exception):
                         await details_container.locator(
@@ -77,6 +146,22 @@ class HistoricalHCPAScraper:
                         ).wait_for(state="visible", timeout=10000)
                     
                     await asyncio.sleep(2.0)
+
+                    # Try HTML parsing for sales history before Vision.
+                    with suppress(Exception):
+                        details_html = await details_container.inner_html()
+                        sales_history = self._parse_sales_history_html(details_html)
+                        if sales_history:
+                            prop.sales_history = sales_history
+                            logger.info(
+                                "Extracted {count} sales history records via HTML for {parcel}",
+                                count=len(prop.sales_history),
+                                parcel=prop.parcel_id,
+                            )
+
+                    if prop.sales_history:
+                        await browser.close()
+                        return prop
 
                     # Screenshot for Vision
                     screenshot_bytes = None
@@ -111,7 +196,12 @@ class HistoricalHCPAScraper:
                     logger.warning("No results for {parcel}", parcel=prop.parcel_id)
                     
             except Exception as e:
-                logger.error("Error scraping history for {parcel}: {e}", parcel=prop.parcel_id, e=e)
+                logger.error(
+                    "Error scraping HCPA history for {parcel} at {url}: {e}",
+                    parcel=prop.parcel_id,
+                    url=page.url,
+                    e=e,
+                )
             finally:
                 await browser.close()
                 

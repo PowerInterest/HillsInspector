@@ -121,14 +121,36 @@ conn.execute("INSERT INTO table SELECT * FROM df_temp")
 ### Data Flow
 Scrapers -> IngestionService -> PropertyDB (DuckDB) -> Analyzers -> Web UI
 
-### Database
-Single DuckDB file at `data/property_master.db`. Key tables:
+### Database Architecture
+
+**Dual Database System** (when `USE_STEP4_V2=True` in `config/step4v2.py`):
+
+| Database | Path | Purpose |
+|----------|------|---------|
+| V1 | `data/property_master.db` | Auctions, status tracking, HCPA, permits, market data |
+| V2 | `data/property_master_v2.db` | ORI documents, chain of title, encumbrances (Step 4-6) |
+
+The orchestrator automatically routes reads/writes to the appropriate database based on `USE_STEP4_V2`.
+
+**V1 Tables** (auctions & enrichment):
 - `auctions` - Foreclosure/tax deed auction listings
+- `status` - Pipeline step completion tracking
 - `parcels` - Property details (owner, specs, coords)
-- `encumbrances` - Liens, mortgages with survival status
-- `chain_of_title` - Ownership history
-- `documents` - ORI document metadata
+- `permits` - Building permit data
 - `market_data` - Zillow/listing data
+- `sales_history` - HCPA sales history
+
+**V2 Tables** (ORI & title chain):
+- `documents` - ORI document metadata
+- `chain_of_title` - Ownership history periods
+- `encumbrances` - Liens, mortgages with survival status
+- `ori_search_queue` - Search queue for iterative discovery
+- `linked_identities` - Name change/trust transfer mappings
+
+**Creating New Databases:**
+```bash
+uv run main.py --new  # Archives old v1 & v2, creates fresh databases
+```
 
 ## Logging
 

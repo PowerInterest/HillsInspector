@@ -486,4 +486,8 @@ The backend is **Hyland OnBase**. Leverage [OnBase Documentation](https://suppor
   - [x] Implement concurrent work pool logic.
 - [x] **Step 4: Vision Batching**
   - [x] Implement bounded semaphore for Vision Service.
+
+If you want to pull all data, a url like this is the way to go: THis searches for addresses starting with "10111" (https://gis.hcpafl.org/arcgis/rest/services/Webmaps/HillsboroughFL_WebParcels/MapServer/0/query?f=json&returnIdsOnly=false&returnCountOnly=false&where=FullAddress%20LIKE%20%27%2510111%25%27&returnGeometry=false&spatialRel=esriSpatialRelIntersects&outFields=*&orderByFields=strap%20asc)
+
+I don't think there is a restriction on an address like (all)
 ```
