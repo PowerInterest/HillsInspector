@@ -257,12 +257,15 @@ class AuctionScraper:
                 pdf_path = None
                 plaintiff = None
                 defendant = None
-                if case_href and "CQID=320" in case_href:
+                # Only attempt download if we have a valid instrument number (not empty after =)
+                if case_href and "CQID=320" in case_href and instrument_number:
                     # Pass parcel_id (folio) to download method
                     judgment_result = await self._download_final_judgment(page, case_href, case_number, parcel_id_text, instrument_number)
                     pdf_path = judgment_result.get("pdf_path")
                     plaintiff = judgment_result.get("plaintiff")
                     defendant = judgment_result.get("defendant")
+                elif case_href and "CQID=320" in case_href and not instrument_number:
+                    logger.warning(f"No instrument number for {case_number} - judgment PDF not yet available")
 
                 prop = Property(
                     case_number=case_number,

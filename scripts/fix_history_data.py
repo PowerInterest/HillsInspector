@@ -15,6 +15,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from src.history.scrape_history import HistoricalScraper
+from src.history.db_init import ensure_history_schema
 from src.utils.time import ensure_duckdb_utc
 
 
@@ -85,6 +86,7 @@ async def _scrape_and_save(scraper: HistoricalScraper, target_date: date, dry_ru
 
 
 async def main() -> None:
+    ensure_history_schema(DB_PATH)
     parser = ArgumentParser(description="Re-scrape history dates to fix missing fields.")
     parser.add_argument("--date", default="", help="YYYY-MM-DD (single date)")
     parser.add_argument("--dates", default="", help="Comma-separated list of YYYY-MM-DD dates")

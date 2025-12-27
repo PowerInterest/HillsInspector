@@ -133,7 +133,10 @@ async def history_data(limit: int = 100):
                 a.pdf_url
             FROM auctions a
             LEFT JOIN resales r ON a.auction_id = r.auction_id
-            ORDER BY a.auction_date DESC
+            ORDER BY
+                CASE WHEN r.sale_date IS NULL THEN 1 ELSE 0 END,
+                r.sale_date DESC NULLS LAST,
+                a.auction_date DESC
             LIMIT ?
         """
         rows = conn.execute(query, [limit]).fetchall()

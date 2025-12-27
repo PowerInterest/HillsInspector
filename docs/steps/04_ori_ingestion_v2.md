@@ -979,6 +979,48 @@ UNIQUE(folio, search_type, search_term, search_operator)
 
 ---
 
+### Issue 6: Document Lot/Block Filtering Too Permissive (FIXED)
+
+**Error:** Properties with >300 chain periods due to cross-lot contamination
+
+**Cause:** The `_document_matches_lot_block` function in `discovery.py` was too permissive. When a document had a legal description that could be parsed but didn't contain a specific lot number, the function returned `True` (allowed the document).
+
+**Example:**
+- Searching for: TOUCHSTONE PHASE 2 LOT 4 BLOCK 8
+- Document legal: "TOUCHSTONE PHASE 2" (no lot specified)
+- Old behavior: Document was **allowed** (wrong!)
+- New behavior: Document is **rejected**
+
+**Evidence (before fix):**
+- Folio 192935B6Y000008000040U (TOUCHSTONE LOT 4): 1,542 chain periods
+- Folio 2228285BZ000020000030P (LINCOLN PARK SOUTH LOT 3): 925 chain periods
+
+**Rule:** If a document's legal description mentions the same subdivision but we cannot parse a specific lot from it, the document is **rejected** rather than allowed. This prevents documents for other lots in the same subdivision from contaminating the chain of title.
+
+**Fix Applied (2025-12-25):**
+```python
+# discovery.py:106-116
+if not doc_lots:
+    # Document has no lot info - check if it mentions our subdivision
+    # If it does, this is likely a subdivision-wide document (HOA, plat, etc.)
+    # that applies to ALL lots, not specifically to our lot - REJECT it
+    if expected_subdivision and expected_subdivision.upper() in (doc_legal or "").upper():
+        # Document mentions our subdivision but has no specific lot
+        # This could be for ANY lot in the subdivision - reject it
+        return False
+    # Document doesn't mention our subdivision at all
+    # Could be a general lien/mortgage - allow with caution
+    return True
+```
+
+**File:** `src/services/step4v2/discovery.py:65-131`
+
+**Status:** ✅ FIXED - Implemented 2025-12-25
+
+**Note:** Properties with existing contaminated data need to be reset and reprocessed using `scripts/reset_problematic_properties.py`.
+
+---
+
 ## Files Created/Modified
 
 | File | Status | Lines | Description |

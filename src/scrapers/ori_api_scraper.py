@@ -145,13 +145,19 @@ class ORIApiScraper:
         self.API_COOLDOWN_THRESHOLD = 5  # After 5 consecutive 400s, cool down
         self.API_COOLDOWN_DURATION = 300  # 5 minutes cool-down
 
-    def search_by_legal(self, legal_description: str, start_date: str = "01/01/1900") -> List[Dict[str, Any]]:
+    def search_by_legal(
+        self,
+        legal_description: str,
+        start_date: str = "01/01/1900",
+        end_date: str | None = None,
+    ) -> List[Dict[str, Any]]:
         """
         Search for documents by legal description.
 
         Args:
             legal_description: Text to search in legal description (e.g. subdivision name)
             start_date: Start date for search (MM/DD/YYYY)
+            end_date: End date for search (MM/DD/YYYY), defaults to today
 
         Returns:
             List of document dictionaries
@@ -162,7 +168,7 @@ class ORIApiScraper:
         payload = {
             "DocType": self.TITLE_DOC_TYPES,
             "RecordDateBegin": start_date,
-            "RecordDateEnd": today_local().strftime("%m/%d/%Y"),
+            "RecordDateEnd": end_date or today_local().strftime("%m/%d/%Y"),
             "Legal": ["CONTAINS", clean_legal],
         }
         return self._execute_search(payload)
@@ -227,18 +233,24 @@ class ORIApiScraper:
 
         return unique_results
 
-    def search_by_party(self, party_name: str, start_date: str = "01/01/1900") -> List[Dict[str, Any]]:
+    def search_by_party(
+        self,
+        party_name: str,
+        start_date: str = "01/01/1900",
+        end_date: str | None = None,
+    ) -> List[Dict[str, Any]]:
         """
         Search for documents by party name.
 
         Args:
             party_name: Name of party (Last First Middle or Company Name)
             start_date: Start date for search (MM/DD/YYYY)
+            end_date: End date for search (MM/DD/YYYY), defaults to today
         """
         payload = {
             "DocType": self.TITLE_DOC_TYPES,
             "RecordDateBegin": start_date,
-            "RecordDateEnd": today_local().strftime("%m/%d/%Y"),
+            "RecordDateEnd": end_date or today_local().strftime("%m/%d/%Y"),
             "Party": party_name,
         }
         return self._execute_search(payload)

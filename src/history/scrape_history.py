@@ -14,6 +14,7 @@ from playwright_stealth import Stealth
 from src.utils.time import today_local
 from src.utils.time import ensure_duckdb_utc, now_utc_naive
 from src.utils.logging_config import configure_logger
+from src.history.db_init import ensure_history_schema
 
 configure_logger(log_file="history_pipeline.log")
 
@@ -67,6 +68,17 @@ def _extract_text_field(patterns: tuple[str, ...], text: str) -> str | None:
 
 class BlockedError(RuntimeError):
     pass
+
+
+def _is_forbidden(content: str) -> bool:
+    if not content:
+        return False
+    lower = content.lower()
+    return (
+        "<title>403 forbidden</title>" in lower
+        or "403 forbidden" in lower
+        or "access denied" in lower
+    )
 
 class HistoricalScraper:
     def __init__(
@@ -145,6 +157,12 @@ class HistoricalScraper:
         self.session_initialized = True
         logger.success("Session established.")
 
+    async def _new_page(self):
+        page = await self.context.new_page()
+        await Stealth().apply_stealth_async(page)
+        await page.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
+        return page
+
     async def _launch_browser(self, headless: bool) -> None:
         if self.playwright is None:
             self.playwright = await async_playwright().start()
@@ -179,12 +197,15 @@ class HistoricalScraper:
 
     async def close_browser(self, force_flush: bool = True):
         """Close playwright resources."""
-        if self.context:
-            await self.context.close()
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+        with suppress(Exception):
+            if self.context:
+                await self.context.close()
+        with suppress(Exception):
+            if self.browser:
+                await self.browser.close()
+        with suppress(Exception):
+            if self.playwright:
+                await self.playwright.stop()
         self.context = None
         self.browser = None
         self.playwright = None
@@ -316,7 +337,7 @@ class HistoricalScraper:
             return {}
 
         labels = stats.locator(".ASTAT_LBL")
-        data = stats.locator(".Astat_DATA")
+        data = stats.locator(".Astat_DATA, .ASTAT_DATA")
         label_count = await labels.count()
         data_count = await data.count()
         stats_map: dict[str, str] = {}
@@ -475,13 +496,13 @@ class HistoricalScraper:
         url = f"{BASE_URL}/index.cfm?zaction=AUCTION&zmethod=PREVIEW&AuctionDate={date_str}"
         
         auctions = []
-        page = await self.context.new_page()
-        await Stealth().apply_stealth_async(page)
-        await page.set_extra_http_headers({"Accept-Language": "en-US,en;q=0.9"})
+        page = await self._new_page()
         
         try:
             max_retries = 2
             for attempt in range(max_retries + 1):
+                if page.is_closed():
+                    page = await self._new_page()
                 try:
                     logger.info(f"Scraping {date_str} (Attempt {attempt+1})...")
                     await page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -491,11 +512,31 @@ class HistoricalScraper:
 
                     # Capture early failure (Forbidden)
                     content = await page.content()
-                    if "Forbidden" in content or "403" in content:
-                        logger.error(f"Access Denied (Forbidden) for {date_str}.")
-                        await self._backoff_and_maybe_stop("403 Forbidden", attempt)
-                        await self._rotate_browser_profile()
-                        continue
+                    if _is_forbidden(content):
+                        logger.warning(f"Access Denied (Forbidden) for {date_str}; trying calendar flow.")
+                        if await self._navigate_calendar_to_date(page, target_date):
+                            with suppress(Exception):
+                                await page.wait_for_selector(
+                                    "div.AUCTION_ITEM, #Area_C div.AUCTION_ITEM, div.AUCTION_DETAILS, div.AUCTION_STATS",
+                                    timeout=15000,
+                                )
+                            content = await page.content()
+                            if not _is_forbidden(content):
+                                logger.info(f"Calendar flow bypassed 403 for {date_str}.")
+                            else:
+                                await self._backoff_and_maybe_stop("403 Forbidden", attempt)
+                                await self._rotate_browser_profile()
+                                if not page.is_closed():
+                                    with suppress(Exception):
+                                        await page.close()
+                                continue
+                        else:
+                            await self._backoff_and_maybe_stop("403 Forbidden", attempt)
+                            await self._rotate_browser_profile()
+                            if not page.is_closed():
+                                with suppress(Exception):
+                                    await page.close()
+                            continue
                     if "Splash Page" in content or "splashContainer" in content:
                         await self._bypass_splash(page)
                         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -519,7 +560,7 @@ class HistoricalScraper:
                     if "Auction Calendar" in content or "CALDAYBOX" in content:
                         if not await self._navigate_calendar_to_date(page, target_date):
                             content = await page.content()
-                            if "Forbidden" in content or "403" in content:
+                            if _is_forbidden(content):
                                 await self._backoff_and_maybe_stop("403 Forbidden (calendar)", attempt)
                                 await self._rotate_browser_profile()
                                 continue
@@ -753,6 +794,91 @@ class HistoricalScraper:
             self._append_history(auctions)
         return auctions
 
+    def _load_missing_winning_bid_targets(self) -> dict[date, set[str]]:
+        """Return missing winning_bid auction_ids grouped by auction_date."""
+        targets: dict[date, set[str]] = {}
+        conn = None
+        try:
+            conn = duckdb.connect(str(self.db_path))
+            rows = conn.execute("""
+                SELECT auction_date, auction_id
+                FROM auctions
+                WHERE status = 'Sold' AND winning_bid IS NULL
+                ORDER BY auction_date
+            """).fetchall()
+            for auction_date, auction_id in rows:
+                if not auction_date or not auction_id:
+                    continue
+                targets.setdefault(auction_date, set()).add(auction_id)
+        except Exception as exc:
+            logger.error(f"Failed to load missing winning bid targets: {exc}")
+        finally:
+            if conn:
+                conn.close()
+        return targets
+
+    async def backfill_missing_winning_bids(self, limit_dates: int | None = None) -> int:
+        """Re-scrape dates with missing winning_bid and update the DB once."""
+        targets_by_date = self._load_missing_winning_bid_targets()
+        if not targets_by_date:
+            logger.info("No missing winning bids detected.")
+            return 0
+
+        await self.setup_browser(headless=self.headless)
+        updated = 0
+        scanned = 0
+        conn = None
+        try:
+            conn = duckdb.connect(str(self.db_path))
+            ensure_duckdb_utc(conn)
+            for target_date, auction_ids in targets_by_date.items():
+                if limit_dates is not None and scanned >= limit_dates:
+                    break
+                scanned += 1
+                logger.info(
+                    "Backfilling winning bids for %s (%d auctions)",
+                    target_date,
+                    len(auction_ids),
+                )
+                auctions = await self.scrape_single_date(target_date)
+                if auctions is None:
+                    logger.warning("Skipping %s due to load failure.", target_date)
+                    continue
+
+                bids_by_id = {
+                    a["auction_id"]: a["winning_bid"]
+                    for a in auctions
+                    if a.get("auction_id") and a.get("winning_bid") is not None
+                }
+                updates = [
+                    (bids_by_id[auction_id], auction_id)
+                    for auction_id in auction_ids
+                    if auction_id in bids_by_id
+                ]
+                if not updates:
+                    logger.info(
+                        "Backfill for %s: 0/%d updated (no bids found).",
+                        target_date,
+                        len(auction_ids),
+                    )
+                    continue
+                conn.executemany(
+                    "UPDATE auctions SET winning_bid = ? WHERE auction_id = ? AND winning_bid IS NULL",
+                    updates,
+                )
+                updated += len(updates)
+                logger.info(
+                    "Backfill for %s: %d/%d updated.",
+                    target_date,
+                    len(updates),
+                    len(auction_ids),
+                )
+        finally:
+            if conn:
+                conn.close()
+        logger.success("Backfill complete. Updated %d winning bids.", updated)
+        return updated
+
     def _parse_money(self, text: str) -> float | None:
         if not text:
             return None
@@ -768,6 +894,8 @@ async def run_scrape():
     # Full Phase 2 Range: June 2023 to Present
     start = date(2023, 6, 1)
     end = today_local()
+
+    ensure_history_schema(DB_PATH)
     
     scraper = HistoricalScraper(
         max_concurrent=1,

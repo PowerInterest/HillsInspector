@@ -73,7 +73,26 @@ class SurvivalService:
                 enc['survival_reason'] = f"Plaintiff's foreclosing lien ({reason})"
                 results['foreclosing'].append(enc)
                 break
-        
+
+        # Fallback: if foreclosure_type is "FIRST MORTGAGE" and no match, use most recent unsatisfied mortgage
+        if not foreclosing_doc:
+            fc_type = judgment_data.get('foreclosure_type', '').upper()
+            if 'FIRST' in fc_type or 'MORTGAGE' in fc_type:
+                # Find the most recent unsatisfied mortgage (likely the foreclosing one)
+                mortgages = [e for e in encumbrances
+                             if e.get('encumbrance_type', '').lower() == 'mortgage'
+                             and not e.get('is_satisfied')
+                             and e.get('survival_status') not in ('SATISFIED', 'EXPIRED', 'HISTORICAL')]
+                if mortgages:
+                    # Sort by recording date descending
+                    mortgages.sort(key=lambda x: x.get('recording_date') or '', reverse=True)
+                    foreclosing_doc = mortgages[0]
+                    foreclosing_doc['survival_status'] = 'FORECLOSING'
+                    foreclosing_doc['survival_reason'] = "Inferred foreclosing lien (most recent mortgage, no exact match)"
+                    results['foreclosing'].append(foreclosing_doc)
+                    self.uncertainty_flags.append("FORECLOSING_LIEN_INFERRED")
+                    logger.info(f"Inferred foreclosing lien for {self.property_id}: {foreclosing_doc.get('creditor')}")
+
         if not foreclosing_doc:
             self.uncertainty_flags.append("FORECLOSING_LIEN_NOT_FOUND")
             logger.warning(f"Could not identify foreclosing lien for {self.property_id}")
@@ -150,9 +169,14 @@ class SurvivalService:
         }
 
     def _check_data_quality(self, judgment_data: Dict[str, Any]) -> bool:
-        """Verify presence of critical fields for analysis."""
-        critical_fields = ['plaintiff', 'foreclosure_type', 'lis_pendens_date']
-        return all(judgment_data.get(field) for field in critical_fields)
+        """Verify presence of critical fields for analysis.
+
+        Only plaintiff is strictly required - foreclosure_type can be inferred,
+        and lis_pendens_date is often missing from final judgment PDFs.
+        """
+        # Plaintiff is the only strictly critical field
+        # foreclosure_type and lis_pendens_date are helpful but not required
+        return bool(judgment_data.get('plaintiff'))
 
     def _generate_summary(self, results: Dict[str, Any]) -> str:
         """Create a human-readable summary of the survival analysis."""

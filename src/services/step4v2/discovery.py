@@ -8,6 +8,7 @@ This module provides:
 - Progress tracking and statistics
 """
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Optional
@@ -16,16 +17,35 @@ import duckdb
 from loguru import logger
 
 from config.step4v2 import (
+    ADJACENT_INSTRUMENT_RANGE,
+    DEED_TYPES,
+    ENCUMBRANCE_TYPES,
+    MAX_ANCHOR_GAP_DAYS,
     MAX_DOCUMENTS_PER_FOLIO,
     MAX_ITERATIONS_PER_FOLIO,
+    MAX_OWNERSHIP_GAP_DAYS,
     MRTA_YEARS_REQUIRED,
+    PRIORITY_INSTRUMENT,
     PRIORITY_LEGAL_BEGINS,
     PRIORITY_NAME_CHAIN,
 )
 from src.scrapers.ori_api_scraper import ORIApiScraper
 from src.services.step4v2.name_matcher import NameMatcher
 from src.services.step4v2.search_queue import SearchItem, SearchQueue
+from src.utils.legal_description import parse_legal_description
 from src.utils.time import parse_date
+
+
+@dataclass
+class ChainGap:
+    """Represents a gap in the chain of title."""
+
+    start_date: date
+    end_date: date
+    gap_type: str  # 'anchor_to_first_deed', 'ownership_gap', 'to_current_owner'
+    expected_grantor: Optional[str] = None  # Who should be selling
+    expected_grantee: Optional[str] = None  # Who should be buying
+    days: int = 0  # Number of days in the gap
 
 
 @dataclass
@@ -38,6 +58,177 @@ class DiscoveryResult:
     chain_years: float
     is_complete: bool
     stopped_reason: str  # 'complete', 'exhausted', 'max_iterations', 'max_documents', 'error'
+
+
+def _extract_lot_block_from_search(search_term: str) -> tuple[str | None, str | None]:
+    """
+    Extract lot and block from a search term like "L 4 B 8 TOUCHSTONE*".
+
+    Returns (lot, block) tuple where either can be None.
+
+    For multi-lot search terms like "L 1 AND 2 B 3" or "L 1, 2, 3 B 4",
+    returns (None, block) to disable lot filtering - we intentionally
+    searched for multiple lots so shouldn't filter by a single lot.
+    """
+    import re
+    term = search_term.upper().rstrip("*").strip()
+
+    # Detect multi-lot patterns that indicate we shouldn't filter by single lot
+    # Patterns: "L 1 AND 2", "L 1, 2", "L 1 & 2", "L 1-5", "LOTS 1 AND 2"
+    multi_lot_pattern = r'\bL(?:OT)?S?\s*\d+\s*(?:AND|&|,|-|THRU|THROUGH)\s*\d+'
+    if re.search(multi_lot_pattern, term):
+        # Multi-lot search - don't filter by specific lot
+        # Still extract block for filtering
+        block_match = re.search(r'\bB(?:LK|LOCK)?\s*([A-Z]?\d*[A-Z]?)\b', term)
+        block = block_match.group(1) if block_match and block_match.group(1) else None
+        return (None, block)
+
+    # Match patterns like "L 4 B 8", "L4 B8", "L 40 B 1", etc.
+    # Lot pattern: L/LOT followed by number/alphanumeric
+    lot_match = re.search(r'\bL(?:OT)?\s*([A-Z]?\d+[A-Z]?)\b', term)
+    lot = lot_match.group(1) if lot_match else None
+
+    # Block pattern: B/BLK/BLOCK followed by number/alphanumeric
+    block_match = re.search(r'\bB(?:LK|LOCK)?\s*([A-Z]?\d*[A-Z]?)\b', term)
+    block = block_match.group(1) if block_match and block_match.group(1) else None
+
+    return (lot, block)
+
+
+def _normalize_subdivision(subdiv: str | None) -> str:
+    """Normalize subdivision name for comparison (PH → PHASE, etc.)."""
+    if not subdiv:
+        return ""
+    result = subdiv.upper()
+    # Normalize common abbreviations
+    result = re.sub(r'\bPH\s*(\d)', r'PHASE \1', result)  # "PH 2" → "PHASE 2"
+    result = re.sub(r'\bPH\b', 'PHASE', result)  # "PH" alone → "PHASE"
+    result = re.sub(r'\s+', ' ', result).strip()  # Normalize whitespace
+    return result
+
+
+def _subdivisions_match(expected: str | None, actual: str | None) -> bool:
+    """
+    Check if two subdivision names refer to the same subdivision.
+
+    Handles cases like:
+    - "TOUCHSTONE PHASE 2" vs "TOUCHSTONE PH 2" → True
+    - "TOUCHSTONE PHASE 2" vs "TOUCHSTONE PHASE 7" → False
+    - "TOUCHSTONE PHASE 2" vs "TOUCHSTONE" → True (actual is less specific)
+    """
+    if not expected:
+        return True  # No expected subdivision, any matches
+    if not actual:
+        return True  # Document has no subdivision info, allow (may be general doc)
+
+    norm_expected = _normalize_subdivision(expected)
+    norm_actual = _normalize_subdivision(actual)
+
+    # Exact match after normalization
+    if norm_expected == norm_actual:
+        return True
+
+    # Check if one is a prefix of the other (less specific → more specific is OK)
+    # e.g., "TOUCHSTONE" matches "TOUCHSTONE PHASE 2"
+    if norm_actual.startswith(norm_expected) or norm_expected.startswith(norm_actual):
+        # But reject if phase numbers differ
+        # Extract phase numbers from both
+        expected_phase = re.search(r'PHASE\s*(\d+)', norm_expected)
+        actual_phase = re.search(r'PHASE\s*(\d+)', norm_actual)
+
+        if expected_phase and actual_phase:
+            # Both have phase numbers - they must match
+            return expected_phase.group(1) == actual_phase.group(1)
+
+        # Only one has a phase number, or neither - allow the match
+        return True
+
+    return False
+
+
+def _document_matches_lot_block(
+    doc_legal: str | None,
+    expected_lot: str | None,
+    expected_block: str | None,
+    expected_subdivision: str | None = None,
+) -> bool:
+    """
+    Check if a document's legal description matches the expected lot/block.
+
+    This prevents saving documents for Lot 40, 41 when searching for Lot 4.
+
+    IMPORTANT: If a document's legal description mentions the same subdivision
+    but we cannot parse a specific lot from it, the document is REJECTED rather
+    than allowed. This prevents cross-property contamination from documents that
+    apply to "any lot in the subdivision" (e.g., HOA docs, plat amendments).
+
+    Args:
+        doc_legal: Document's legal description from ORI
+        expected_lot: Lot number we searched for (e.g., "4")
+        expected_block: Block number we searched for (e.g., "8")
+        expected_subdivision: Subdivision name to check against (e.g., "TOUCHSTONE PHASE 2")
+
+    Returns:
+        True if document matches (or if no lot/block filter applies)
+    """
+    # If no filter criteria, allow all documents
+    if not expected_lot and not expected_block:
+        return True
+
+    # If document has no legal description, caller should handle this case
+    # We can't verify, so return True (allow) - caller decides whether to filter
+    if not doc_legal:
+        return True
+
+    # Parse the document's legal description
+    parsed = parse_legal_description(doc_legal)
+
+    # Check subdivision match first - reject documents from wrong phase/subdivision
+    if expected_subdivision and parsed.subdivision and not _subdivisions_match(expected_subdivision, parsed.subdivision):
+        return False
+
+    # Check lot match if we have an expected lot
+    if expected_lot:
+        # Get all lots from the document (handles multi-lot properties)
+        doc_lots = parsed.lots if parsed.lots else ([parsed.lot] if parsed.lot else [])
+
+        if not doc_lots:
+            # Document has no lot info - check if it mentions our subdivision
+            # If it does, this is likely a subdivision-wide document (HOA, plat, etc.)
+            # that applies to ALL lots, not specifically to our lot - REJECT it
+            if expected_subdivision and expected_subdivision.upper() in (doc_legal or "").upper():  # noqa: SIM103
+                # Document mentions our subdivision but has no specific lot
+                # This could be for ANY lot in the subdivision - reject it
+                return False
+            # Document doesn't mention our subdivision at all
+            # Could be a general lien/mortgage - allow with caution
+            return True
+
+        # Check if expected lot matches any of the document's lots EXACTLY
+        lot_match = any(
+            doc_lot.upper() == expected_lot.upper()
+            for doc_lot in doc_lots
+        )
+        if not lot_match:
+            return False
+
+    # Check block match if we have an expected block
+    if expected_block:
+        if parsed.block:
+            # Document has a block - must match exactly
+            if parsed.block.upper() != expected_block.upper():
+                return False
+        else:
+            # Document has NO block but we expect one
+            # If document has a specific lot, it should also have a block in a platted subdivision
+            # Reject it to prevent cross-property contamination (e.g., LOT 4 from wrong phase)
+            doc_lots = parsed.lots if parsed.lots else ([parsed.lot] if parsed.lot else [])
+            if doc_lots:
+                # Document specifies a lot but no block - likely wrong property
+                return False
+            # Document has no lot or block - could be general document, allow
+
+    return True
 
 
 class IterativeDiscovery:
@@ -55,6 +246,12 @@ class IterativeDiscovery:
         self.name_matcher = NameMatcher(conn)
         self.ori_scraper = ORIApiScraper()
 
+        # Property-level lot/block filter for current folio
+        # These are set during run() and apply to ALL documents saved
+        self._folio_expected_lot: str | None = None
+        self._folio_expected_block: str | None = None
+        self._folio_subdivision: str | None = None
+
     def run(
         self,
         folio: str,
@@ -69,6 +266,10 @@ class IterativeDiscovery:
         Returns a DiscoveryResult with statistics and completion status.
         """
         logger.info(f"Starting iterative discovery for {folio}")
+
+        # Extract lot/block filter from the known legal description
+        # This will be applied to ALL documents to prevent cross-property contamination
+        self._set_folio_filter(hcpa_data, final_judgment, bulk_parcel)
 
         # Initialize search queue
         self.search_queue.initialize_for_folio(
@@ -124,6 +325,37 @@ class IterativeDiscovery:
             stopped_reason = "max_iterations"
             logger.warning(f"Max iterations reached for {folio}")
 
+        # If exhausted but chain incomplete, try gap-bounded searches
+        if stopped_reason == "exhausted" and not self._is_chain_complete(folio):
+            gaps_queued = self._queue_gap_bounded_searches(folio)
+            if gaps_queued > 0:
+                logger.info(f"Queued {gaps_queued} gap-bounded searches for {folio}")
+                # Continue discovery with gap-bounded searches
+                while iteration < MAX_ITERATIONS_PER_FOLIO:
+                    iteration += 1
+
+                    if self._is_chain_complete(folio):
+                        stopped_reason = "complete"
+                        break
+
+                    search = self.search_queue.get_next_ready(folio)
+                    if not search:
+                        stopped_reason = "exhausted"
+                        break
+
+                    try:
+                        self.search_queue.mark_in_progress(search.id)
+                        new_docs = self._execute_search(folio, search)
+                        documents_found += new_docs
+                        logger.debug(f"  Gap-search iteration {iteration}: found {new_docs} new docs")
+                    except RateLimitError:
+                        self.search_queue.mark_rate_limited(search.id)
+                    except Exception as e:
+                        self.search_queue.mark_failed(search.id, str(e))
+
+        # Link name variations across documents (e.g., "ROSRIGUEZ" <-> "RODRIGUEZ")
+        self._link_party_variations(folio)
+
         # Calculate chain coverage
         chain_years = self._calculate_chain_years(folio)
 
@@ -143,6 +375,54 @@ class IterativeDiscovery:
 
         return result
 
+    def _set_folio_filter(
+        self,
+        hcpa_data: Optional[dict],
+        final_judgment: Optional[dict],
+        bulk_parcel: Optional[dict],
+    ) -> None:
+        """
+        Set the lot/block/subdivision filter for the current folio.
+
+        This filter is applied to ALL documents saved during discovery
+        to prevent cross-property contamination when searching by party name.
+        """
+        # Reset filter
+        self._folio_expected_lot = None
+        self._folio_expected_block = None
+        self._folio_subdivision = None
+
+        # Try to extract from HCPA first (most reliable)
+        legal_text = None
+        if hcpa_data and hcpa_data.get("legal_description"):
+            legal_text = hcpa_data["legal_description"]
+        elif final_judgment and final_judgment.get("legal_description"):
+            legal_text = final_judgment["legal_description"]
+        elif bulk_parcel and bulk_parcel.get("raw_legal1"):
+            legal_text = bulk_parcel["raw_legal1"]
+
+        if not legal_text:
+            logger.debug("No legal description available for folio filter")
+            return
+
+        # Parse the legal description
+        parsed = parse_legal_description(legal_text)
+
+        # Only set filter if we have specific lot/block info
+        # (not for metes and bounds or vague descriptions)
+        if parsed.lot or (parsed.lots and len(parsed.lots) == 1):
+            self._folio_expected_lot = (parsed.lot or parsed.lots[0]).upper() if (parsed.lot or parsed.lots) else None
+        if parsed.block:
+            self._folio_expected_block = parsed.block.upper()
+        if parsed.subdivision:
+            self._folio_subdivision = parsed.subdivision.upper()
+
+        if self._folio_expected_lot or self._folio_expected_block:
+            logger.info(
+                f"  Folio filter set: lot={self._folio_expected_lot} "
+                f"block={self._folio_expected_block} subdiv={self._folio_subdivision}"
+            )
+
     def _execute_search(self, folio: str, search: SearchItem) -> int:
         """
         Execute a search and process results.
@@ -155,12 +435,50 @@ class IterativeDiscovery:
             self.search_queue.mark_completed(search.id, 0, 0)
             return 0
 
+        # Determine lot/block filter to use:
+        # 1. For instrument searches, use folio filter (adjacent docs may be different properties)
+        # 2. For legal searches, extract from search term (most specific)
+        # 3. For name searches, use folio-level filter (prevents cross-property contamination)
+        expected_lot: str | None = None
+        expected_block: str | None = None
+
+        if search.search_type == "instrument":
+            # Instrument searches find docs by instrument number from adjacent searches
+            # But adjacent docs could be for DIFFERENT properties recorded nearby
+            # We MUST still apply lot/block filter to verify correct property
+            expected_lot = self._folio_expected_lot
+            expected_block = self._folio_expected_block
+        elif search.search_type == "legal":
+            # Use search-term-specific filter for legal searches
+            expected_lot, expected_block = _extract_lot_block_from_search(search.search_term)
+        else:
+            # For name/case searches, use folio-level filter
+            # This is CRITICAL to prevent cross-property contamination
+            expected_lot = self._folio_expected_lot
+            expected_block = self._folio_expected_block
+
+        if expected_lot or expected_block:
+            logger.debug(f"  Filtering for lot={expected_lot} block={expected_block}")
+
         # Process each document
         new_count = 0
+        filtered_count = 0
         for doc in documents:
+            # Apply lot/block filter to verify document is for correct property
+            if expected_lot or expected_block:
+                doc_legal = doc.get("Legal") or doc.get("legal_description")
+                # Only filter if document HAS a legal description we can verify
+                # Documents without legal (mortgages, assignments) are allowed through
+                if doc_legal and not _document_matches_lot_block(doc_legal, expected_lot, expected_block, self._folio_subdivision):
+                    filtered_count += 1
+                    continue
+
             if self._save_document(folio, doc, search.id):
                 new_count += 1
                 self._extract_new_vectors(folio, doc, search.id)
+
+        if filtered_count > 0:
+            logger.debug(f"  Filtered out {filtered_count} docs not matching lot/block")
 
         self.search_queue.mark_completed(search.id, len(documents), new_count)
         return new_count
@@ -172,12 +490,14 @@ class IterativeDiscovery:
                 return self.ori_scraper.search_by_legal(
                     search.search_term,
                     start_date=self._format_date(search.date_from) or "01/01/1900",
+                    end_date=self._format_date(search.date_to),
                 )
 
             if search.search_type == "name":
                 return self.ori_scraper.search_by_party(
                     search.search_term,
                     start_date=self._format_date(search.date_from) or "01/01/1900",
+                    end_date=self._format_date(search.date_to),
                 )
 
             if search.search_type == "instrument":
@@ -190,6 +510,20 @@ class IterativeDiscovery:
                     book, page = parts
                     return self.ori_scraper.search_by_book_page_sync(book, page)
                 logger.warning(f"Invalid book/page format: {search.search_term}")
+                return []
+
+            if search.search_type == "plat":
+                # Parse plat book/page from search term (format: "P:BOOK/PAGE")
+                # Plats use book_type="P" (Subdivision Plat Map), not "OR"
+                term = search.search_term.removeprefix("P:")
+                parts = term.split("/")
+                if len(parts) == 2:
+                    plat_book, plat_page = parts
+                    logger.info(f"Searching plat: Book {plat_book} Page {plat_page}")
+                    return self.ori_scraper.search_by_book_page_sync(
+                        plat_book, plat_page, book_type="P"
+                    )
+                logger.warning(f"Invalid plat format: {search.search_term}")
                 return []
 
             if search.search_type == "case":
@@ -379,6 +713,33 @@ class IterativeDiscovery:
             p2 = parties_two[0] if isinstance(parties_two, list) else parties_two
             self.name_matcher.detect_and_link(folio, p1, p2)
 
+        # 4. Extract instrument references from document text
+        # Documents may reference other instruments (e.g., "CLK #2019437669")
+        referenced_instruments = self._extract_instrument_references(doc)
+        for ref_instrument in referenced_instruments:
+            # Queue a search for each referenced instrument
+            try:
+                self.conn.execute(
+                    """
+                    INSERT INTO ori_search_queue (
+                        folio, search_type, search_term, priority, status,
+                        triggered_by_search_id, triggered_by_instrument
+                    )
+                    VALUES (?, 'instrument', ?, ?, 'ready', ?, ?)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    [folio, ref_instrument, PRIORITY_INSTRUMENT, search_id, instrument],
+                )
+                logger.debug(f"  Queued referenced instrument: {ref_instrument}")
+            except Exception as e:
+                logger.debug(f"Could not queue instrument {ref_instrument}: {e}")
+
+        # 5. Queue adjacent instrument searches for deeds/mortgages
+        # Deeds and mortgages are often recorded sequentially on the same day
+        doc_type = doc.get("DocType") or doc.get("document_type") or ""
+        if instrument:
+            self._queue_adjacent_instruments(folio, str(instrument), doc_type, search_id)
+
     def _save_party(
         self,
         folio: str,
@@ -414,6 +775,152 @@ class IterativeDiscovery:
         except Exception as e:
             logger.debug(f"Could not save party: {e}")
 
+    def _extract_instrument_references(self, doc: dict) -> list[str]:
+        """
+        Extract instrument number references from document fields.
+
+        Documents often reference related instruments with patterns like:
+        - "CLK #2019437669"
+        - "INST #2019437669"
+        - "INSTRUMENT NO. 2019437669"
+        - "O.R. BOOK 12345 PAGE 678" (converted to instrument lookup)
+
+        Returns list of instrument numbers found.
+        """
+        import re
+
+        references: set[str] = set()
+
+        # Fields that may contain references
+        fields_to_check = [
+            doc.get("Legal") or doc.get("legal_description") or "",
+            doc.get("Comments") or doc.get("comments") or "",
+            doc.get("party1") or "",
+            doc.get("party2") or "",
+        ]
+
+        # Also check parties arrays
+        fields_to_check.extend(doc.get("PartiesOne") or [])
+        fields_to_check.extend(doc.get("PartiesTwo") or [])
+
+        text = " ".join(str(f) for f in fields_to_check if f)
+
+        # Pattern 1: CLK #NNNNNNNNNN or CLK#NNNNNNNNNN
+        for match in re.finditer(r"CLK\s*#?\s*(\d{7,10})", text, re.IGNORECASE):
+            references.add(match.group(1))
+
+        # Pattern 2: INST #NNNNNNNNNN or INSTRUMENT NO. NNNNNNNNNN
+        for match in re.finditer(r"INST(?:RUMENT)?\s*(?:#|NO\.?)?\s*(\d{7,10})", text, re.IGNORECASE):
+            references.add(match.group(1))
+
+        # Pattern 3: O.R. NNNNNNNNNN or OR NNNNNNNNNN (direct instrument)
+        for match in re.finditer(r"O\.?R\.?\s+(\d{7,10})", text, re.IGNORECASE):
+            references.add(match.group(1))
+
+        # Don't include the document's own instrument number
+        own_instrument = str(doc.get("Instrument") or doc.get("instrument_number") or "")
+        references.discard(own_instrument)
+
+        return list(references)
+
+    def _queue_adjacent_instruments(
+        self,
+        folio: str,
+        instrument: str,
+        doc_type: str,
+        search_id: int,
+    ) -> int:
+        """
+        Queue searches for adjacent instrument numbers.
+
+        When we find a mortgage or deed, the related deed/mortgage is often
+        recorded the same day with a sequential instrument number.
+
+        Example: Deed 2019437668, Mortgage 2019437669
+
+        Args:
+            folio: Property folio number
+            instrument: The instrument number we found
+            doc_type: Document type (to determine what to look for)
+            search_id: ID of the search that found this document
+
+        Returns:
+            Number of adjacent instrument searches queued
+        """
+        # Only queue adjacents for deeds and encumbrances (mortgages/liens)
+        doc_type_upper = (doc_type or "").upper()
+        is_deed = any(dt in doc_type_upper for dt in DEED_TYPES)
+        is_encumbrance = any(et in doc_type_upper for et in ENCUMBRANCE_TYPES)
+
+        if not is_deed and not is_encumbrance:
+            return 0
+
+        # Parse instrument as integer
+        try:
+            base_instrument = int(instrument)
+        except (ValueError, TypeError):
+            logger.debug(f"Cannot parse instrument as integer: {instrument}")
+            return 0
+
+        queued = 0
+        for offset in range(-ADJACENT_INSTRUMENT_RANGE, ADJACENT_INSTRUMENT_RANGE + 1):
+            if offset == 0:
+                continue  # Skip the original instrument
+
+            adjacent_instrument = str(base_instrument + offset)
+
+            # Check if we already have this instrument
+            existing = self.conn.execute(
+                "SELECT id FROM documents WHERE instrument_number = ? LIMIT 1",
+                [adjacent_instrument],
+            ).fetchone()
+
+            if existing:
+                continue  # Already have this document
+
+            # Check if already queued
+            already_queued = self.conn.execute(
+                """
+                SELECT id FROM ori_search_queue
+                WHERE folio = ? AND search_type = 'instrument' AND search_term = ?
+                LIMIT 1
+                """,
+                [folio, adjacent_instrument],
+            ).fetchone()
+
+            if already_queued:
+                continue
+
+            # Queue the adjacent instrument search
+            try:
+                self.conn.execute(
+                    """
+                    INSERT INTO ori_search_queue (
+                        folio, search_type, search_term, priority, status,
+                        triggered_by_search_id, triggered_by_instrument
+                    )
+                    VALUES (?, 'instrument', ?, ?, 'ready', ?, ?)
+                    """,
+                    [
+                        folio,
+                        adjacent_instrument,
+                        PRIORITY_INSTRUMENT,
+                        search_id,
+                        instrument,
+                    ],
+                )
+                queued += 1
+            except Exception as e:
+                logger.debug(f"Could not queue adjacent instrument {adjacent_instrument}: {e}")
+
+        if queued > 0:
+            logger.debug(
+                f"  Queued {queued} adjacent instruments for {instrument} "
+                f"(±{ADJACENT_INSTRUMENT_RANGE})"
+            )
+
+        return queued
+
     def _get_document_count(self, folio: str) -> int:
         """Get current document count for a folio."""
         result = self.conn.execute(
@@ -426,27 +933,225 @@ class IterativeDiscovery:
         """
         Check if chain of title is complete.
 
-        Complete means:
-        1. At least MRTA_YEARS_REQUIRED years covered, OR
-        2. Chain goes back to root of title (plat, government patent)
+        Complete means: unbroken sequence of ownership from anchor to present.
+
+        Checks:
+        1. Have anchor (plat/root of title) with known date
+        2. Have at least one deed
+        3. First deed is within MAX_ANCHOR_GAP_DAYS of anchor
+        4. Each deed's grantee matches next deed's grantor
+        5. Last deed's grantee matches current owner
         """
+        # Fallback: if chain covers MRTA years, it's marketable regardless
         chain_years = self._calculate_chain_years(folio)
         if chain_years >= MRTA_YEARS_REQUIRED:
+            logger.debug(f"Chain complete via MRTA: {chain_years:.1f} years")
             return True
 
-        # Check for root of title
+        # Get anchor date (plat or oldest root of title)
+        anchor_date = self._get_anchor_date(folio)
+        if not anchor_date:
+            logger.debug(f"Chain incomplete: no anchor date found for {folio}")
+            return False
+
+        # Get all deeds sorted by date
+        deeds = self._get_deeds(folio)
+        if not deeds:
+            logger.debug(f"Chain incomplete: no deeds found for {folio}")
+            return False
+
+        # Check 1: First deed should be near anchor
+        first_deed = deeds[0]
+        first_deed_date = first_deed["recording_date"]
+        if isinstance(first_deed_date, str):
+            first_deed_date = parse_date(first_deed_date)
+
+        if first_deed_date:
+            days_from_anchor = (first_deed_date - anchor_date).days
+            if days_from_anchor > MAX_ANCHOR_GAP_DAYS:
+                logger.debug(
+                    f"Chain incomplete: {days_from_anchor} days gap between "
+                    f"anchor ({anchor_date}) and first deed ({first_deed_date})"
+                )
+                return False
+
+        # Check 2: Each grantee matches next grantor
+        for i in range(len(deeds) - 1):
+            current_grantee = deeds[i].get("grantee") or deeds[i].get("party_two")
+            next_grantor = deeds[i + 1].get("grantor") or deeds[i + 1].get("party_one")
+
+            if current_grantee and next_grantor:
+                match = self.name_matcher.match(current_grantee, next_grantor)
+                if not match.is_match:
+                    logger.debug(
+                        f"Chain break: '{current_grantee}' != '{next_grantor}' "
+                        f"between deed {i + 1} and {i + 2}"
+                    )
+                    return False
+
+        # Check 3: Last grantee should match current owner
+        current_owner = self._get_current_owner(folio)
+        if current_owner:
+            last_grantee = deeds[-1].get("grantee") or deeds[-1].get("party_two")
+            if last_grantee:
+                match = self.name_matcher.match(last_grantee, current_owner)
+                if not match.is_match:
+                    logger.debug(
+                        f"Chain incomplete: last grantee '{last_grantee}' "
+                        f"!= current owner '{current_owner}'"
+                    )
+                    return False
+
+        # Check 4: Log any large gaps (warning only, not failure)
+        for i in range(len(deeds) - 1):
+            date1 = deeds[i]["recording_date"]
+            date2 = deeds[i + 1]["recording_date"]
+            if isinstance(date1, str):
+                date1 = parse_date(date1)
+            if isinstance(date2, str):
+                date2 = parse_date(date2)
+            if date1 and date2:
+                gap_days = (date2 - date1).days
+                if gap_days > MAX_OWNERSHIP_GAP_DAYS:
+                    logger.warning(
+                        f"Large gap of {gap_days} days between deeds for {folio}"
+                    )
+
+        logger.info(f"Chain complete for {folio}: {len(deeds)} deeds from anchor")
+        return True
+
+    def _get_anchor_date(self, folio: str) -> Optional[date]:
+        """
+        Get the anchor (root of title) date for a folio.
+
+        Priority:
+        1. Plat document recording date
+        2. Government patent/deed
+        3. Oldest deed if no plat (for properties predating modern records)
+        """
+        # Check for plat in documents
         result = self.conn.execute(
             """
-            SELECT document_type
+            SELECT recording_date
             FROM documents
             WHERE folio = ?
-              AND UPPER(document_type) IN ('PLAT', 'PATENT', 'GOVERNMENT DEED', 'GOV DEED')
+              AND UPPER(document_type) LIKE '%PLAT%'
+            ORDER BY recording_date ASC
             LIMIT 1
             """,
             [folio],
         ).fetchone()
 
-        return result is not None
+        if result and result[0]:
+            anchor = result[0]
+            if isinstance(anchor, str):
+                anchor = parse_date(anchor)
+            return anchor
+
+        # Check for government patent
+        result = self.conn.execute(
+            """
+            SELECT recording_date
+            FROM documents
+            WHERE folio = ?
+              AND UPPER(document_type) IN ('PATENT', 'GOVERNMENT DEED', 'GOV DEED')
+            ORDER BY recording_date ASC
+            LIMIT 1
+            """,
+            [folio],
+        ).fetchone()
+
+        if result and result[0]:
+            anchor = result[0]
+            if isinstance(anchor, str):
+                anchor = parse_date(anchor)
+            return anchor
+
+        # Fallback: oldest deed (for properties without plat in our data)
+        result = self.conn.execute(
+            """
+            SELECT MIN(recording_date)
+            FROM documents
+            WHERE folio = ?
+              AND recording_date IS NOT NULL
+            """,
+            [folio],
+        ).fetchone()
+
+        if result and result[0]:
+            anchor = result[0]
+            if isinstance(anchor, str):
+                anchor = parse_date(anchor)
+            return anchor
+
+        return None
+
+    def _get_deeds(self, folio: str) -> list[dict]:
+        """Get all deed documents for a folio, sorted by recording date."""
+        # Build deed type filter - handle both short codes and full names
+        deed_patterns = []
+        for dt in DEED_TYPES:
+            deed_patterns.append(f"UPPER(document_type) = '{dt}'")
+            deed_patterns.append(f"UPPER(document_type) LIKE '%({dt})%'")
+
+        where_clause = " OR ".join(deed_patterns)
+
+        result = self.conn.execute(
+            f"""
+            SELECT
+                instrument_number,
+                recording_date,
+                document_type,
+                party1 as grantor,
+                party2 as grantee
+            FROM documents
+            WHERE folio = ?
+              AND ({where_clause})
+            ORDER BY recording_date ASC
+            """,
+            [folio],
+        ).fetchall()
+
+        columns = ["instrument_number", "recording_date", "document_type", "grantor", "grantee"]
+        return [dict(zip(columns, row, strict=True)) for row in result]
+
+    def _get_current_owner(self, folio: str) -> Optional[str]:
+        """Get the current owner from HCPA data or status table."""
+        # Try parcels table first (HCPA data) - may be in v1 or v2
+        try:
+            result = self.conn.execute(
+                """
+                SELECT owner_name
+                FROM parcels
+                WHERE folio = ?
+                LIMIT 1
+                """,
+                [folio],
+            ).fetchone()
+
+            if result and result[0]:
+                return result[0]
+        except Exception as e:
+            logger.debug(f"Could not query parcels table: {e}")
+
+        # Try auctions table (defendant is usually the current owner)
+        try:
+            result = self.conn.execute(
+                """
+                SELECT defendant
+                FROM auctions
+                WHERE folio = ?
+                LIMIT 1
+                """,
+                [folio],
+            ).fetchone()
+
+            if result and result[0]:
+                return result[0]
+        except Exception as e:
+            logger.debug(f"Could not query auctions table: {e}")
+
+        return None
 
     def _calculate_chain_years(self, folio: str) -> float:
         """Calculate total years covered by documents."""
@@ -475,6 +1180,327 @@ class IterativeDiscovery:
 
         days = (newest - oldest).days
         return days / 365.25
+
+    def _get_chain_gaps(self, folio: str) -> list[ChainGap]:
+        """
+        Identify gaps in the chain of title.
+
+        Returns a list of ChainGap objects describing:
+        - Gap between anchor (plat) and first deed
+        - Gaps between consecutive deeds (ownership breaks)
+        - Gap between last deed and current owner
+
+        These gaps can be used to bound name searches to specific date ranges,
+        making searches like "LENNAR HOMES" tractable (6000+ unbounded results
+        vs ~10 bounded results).
+        """
+        from datetime import datetime, UTC
+
+        gaps: list[ChainGap] = []
+        today = datetime.now(tz=UTC).date()
+
+        # Get anchor date
+        anchor_date = self._get_anchor_date(folio)
+
+        # Get all deeds sorted by date
+        deeds = self._get_deeds(folio)
+
+        # Get developer name from plat if available
+        developer = self._get_developer_from_plat(folio)
+
+        # Get current owner
+        current_owner = self._get_current_owner(folio)
+
+        # Gap 1: Anchor to first deed
+        if anchor_date and deeds:
+            first_deed = deeds[0]
+            first_deed_date = first_deed["recording_date"]
+            if isinstance(first_deed_date, str):
+                first_deed_date = parse_date(first_deed_date)
+
+            if first_deed_date:
+                gap_days = (first_deed_date - anchor_date).days
+                if gap_days > MAX_ANCHOR_GAP_DAYS:
+                    # First deed is too far from anchor - need intermediate deed
+                    first_grantor = first_deed.get("grantor")
+                    gaps.append(ChainGap(
+                        start_date=anchor_date,
+                        end_date=first_deed_date,
+                        gap_type="anchor_to_first_deed",
+                        expected_grantor=developer,  # Plat developer should be selling
+                        expected_grantee=first_grantor,  # First deed's grantor bought from someone
+                        days=gap_days,
+                    ))
+        elif anchor_date and not deeds:
+            # Have anchor but NO deeds - major gap
+            gaps.append(ChainGap(
+                start_date=anchor_date,
+                end_date=today,
+                gap_type="anchor_to_first_deed",
+                expected_grantor=developer,
+                expected_grantee=current_owner,
+                days=(today - anchor_date).days,
+            ))
+
+        # Gap 2: Between consecutive deeds (ownership breaks)
+        for i in range(len(deeds) - 1):
+            current_deed = deeds[i]
+            next_deed = deeds[i + 1]
+
+            current_grantee = current_deed.get("grantee")
+            next_grantor = next_deed.get("grantor")
+
+            # Check if grantee matches next grantor
+            if current_grantee and next_grantor:
+                match = self.name_matcher.match(current_grantee, next_grantor)
+                if not match.is_match:
+                    # Chain break - different people
+                    date1 = current_deed["recording_date"]
+                    date2 = next_deed["recording_date"]
+                    if isinstance(date1, str):
+                        date1 = parse_date(date1)
+                    if isinstance(date2, str):
+                        date2 = parse_date(date2)
+
+                    if date1 and date2:
+                        gap_days = (date2 - date1).days
+                        gaps.append(ChainGap(
+                            start_date=date1,
+                            end_date=date2,
+                            gap_type="ownership_gap",
+                            expected_grantor=current_grantee,  # Who should be selling
+                            expected_grantee=next_grantor,  # Who should be buying
+                            days=gap_days,
+                        ))
+
+        # Gap 3: Last deed to current owner
+        if deeds and current_owner:
+            last_deed = deeds[-1]
+            last_grantee = last_deed.get("grantee")
+
+            if last_grantee:
+                match = self.name_matcher.match(last_grantee, current_owner)
+                if not match.is_match:
+                    # Last deed grantee doesn't match current owner
+                    last_date = last_deed["recording_date"]
+                    if isinstance(last_date, str):
+                        last_date = parse_date(last_date)
+
+                    if last_date:
+                        gap_days = (today - last_date).days
+                        gaps.append(ChainGap(
+                            start_date=last_date,
+                            end_date=today,
+                            gap_type="to_current_owner",
+                            expected_grantor=last_grantee,  # Last known owner
+                            expected_grantee=current_owner,  # Current owner
+                            days=gap_days,
+                        ))
+
+        if gaps:
+            logger.info(f"Found {len(gaps)} chain gaps for {folio}")
+            for gap in gaps:
+                logger.debug(
+                    f"  Gap: {gap.gap_type} from {gap.start_date} to {gap.end_date} "
+                    f"({gap.days} days), expected: {gap.expected_grantor} → {gap.expected_grantee}"
+                )
+
+        return gaps
+
+    def _get_developer_from_plat(self, folio: str) -> Optional[str]:
+        """Get the developer/owner name from the plat document."""
+        result = self.conn.execute(
+            """
+            SELECT party1, party2, parties_one
+            FROM documents
+            WHERE folio = ?
+              AND UPPER(document_type) LIKE '%PLAT%'
+            ORDER BY recording_date ASC
+            LIMIT 1
+            """,
+            [folio],
+        ).fetchone()
+
+        if result:
+            # party1 or parties_one typically has the developer
+            if result[0]:
+                return result[0]
+            if result[2] and isinstance(result[2], list) and result[2]:
+                return result[2][0]
+
+        return None
+
+    def _queue_gap_bounded_searches(self, folio: str) -> int:
+        """
+        Queue name searches bounded by chain gap dates.
+
+        When normal discovery exhausts, analyze the chain for gaps and queue
+        targeted searches with specific date bounds. This makes searches like
+        "LENNAR HOMES" tractable (6000+ unbounded results vs ~10 bounded).
+
+        Returns the number of searches queued.
+        """
+        gaps = self._get_chain_gaps(folio)
+        if not gaps:
+            return 0
+
+        queued = 0
+        for gap in gaps:
+            # Queue search for expected grantor (seller)
+            if gap.expected_grantor and not self.name_matcher.is_generic(gap.expected_grantor):
+                try:
+                    self.conn.execute(
+                        """
+                        INSERT INTO ori_search_queue (
+                            folio, search_type, search_term, priority, status,
+                            date_from, date_to, triggered_by_instrument
+                        )
+                        VALUES (?, 'name', ?, ?, 'ready', ?, ?, ?)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        [
+                            folio,
+                            gap.expected_grantor,
+                            PRIORITY_NAME_CHAIN - 5,  # Higher priority for gap searches
+                            gap.start_date,
+                            gap.end_date,
+                            f"gap:{gap.gap_type}",
+                        ],
+                    )
+                    queued += 1
+                    logger.debug(
+                        f"  Queued gap search: {gap.expected_grantor} "
+                        f"({gap.start_date} to {gap.end_date})"
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not queue gap search: {e}")
+
+            # Queue search for expected grantee (buyer)
+            if gap.expected_grantee and not self.name_matcher.is_generic(gap.expected_grantee):
+                try:
+                    self.conn.execute(
+                        """
+                        INSERT INTO ori_search_queue (
+                            folio, search_type, search_term, priority, status,
+                            date_from, date_to, triggered_by_instrument
+                        )
+                        VALUES (?, 'name', ?, ?, 'ready', ?, ?, ?)
+                        ON CONFLICT DO NOTHING
+                        """,
+                        [
+                            folio,
+                            gap.expected_grantee,
+                            PRIORITY_NAME_CHAIN - 5,
+                            gap.start_date,
+                            gap.end_date,
+                            f"gap:{gap.gap_type}",
+                        ],
+                    )
+                    queued += 1
+                    logger.debug(
+                        f"  Queued gap search: {gap.expected_grantee} "
+                        f"({gap.start_date} to {gap.end_date})"
+                    )
+                except Exception as e:
+                    logger.debug(f"Could not queue gap search: {e}")
+
+        return queued
+
+    def _link_party_variations(self, folio: str) -> int:
+        """
+        Link spelling variations of party names across documents.
+
+        After discovery completes, compare all party names for this folio
+        and link any that are spelling variations of each other.
+
+        For example: "ROSRIGUEZ APONTE" and "RODRIGUEZ APONTE" would be
+        linked to the same identity.
+
+        Uses Union-Find clustering to properly group all variations before
+        creating identities, avoiding the problem of overwriting links when
+        A↔B and A↔C are both matches.
+
+        Returns the number of new links created.
+        """
+        # Get all distinct party names for this folio that aren't already linked
+        parties = self.conn.execute(
+            """
+            SELECT DISTINCT party_name
+            FROM property_parties
+            WHERE folio = ? AND linked_identity_id IS NULL
+            """,
+            [folio],
+        ).fetchall()
+
+        if len(parties) < 2:
+            return 0
+
+        party_names = [row[0] for row in parties]
+
+        # Union-Find data structure for clustering
+        parent: dict[str, str] = {name: name for name in party_names}
+
+        def find(name: str) -> str:
+            """Find the root of a name's cluster with path compression."""
+            if parent[name] != name:
+                parent[name] = find(parent[name])
+            return parent[name]
+
+        def union(name1: str, name2: str) -> None:
+            """Merge two clusters."""
+            root1, root2 = find(name1), find(name2)
+            if root1 != root2:
+                parent[root1] = root2
+
+        # Build clusters by comparing pairs
+        for i, name1 in enumerate(party_names):
+            for name2 in party_names[i + 1 :]:
+                # Skip if already in same cluster
+                if find(name1) == find(name2):
+                    continue
+
+                match_result = self.name_matcher.match(name1, name2)
+                if match_result.is_match and match_result.link_type == "spelling_variation":
+                    union(name1, name2)
+
+        # Group names by their cluster root
+        clusters: dict[str, list[str]] = {}
+        for name in party_names:
+            root = find(name)
+            if root not in clusters:
+                clusters[root] = []
+            clusters[root].append(name)
+
+        # Create one identity per cluster (skip single-member clusters)
+        links_created = 0
+        for members in clusters.values():
+            if len(members) < 2:
+                continue
+
+            # Use the first member as canonical name
+            canonical = members[0]
+
+            # Create the linked identity
+            identity_id = self.name_matcher.get_or_create_linked_identity(
+                canonical,
+                canonical,
+                "spelling_variation",
+                0.85,  # Default threshold for spelling variations
+            )
+
+            # Link ALL members to this single identity
+            for member in members:
+                self.name_matcher.link_party_to_identity(folio, member, identity_id)
+
+            logger.info(
+                f"  Linked spelling cluster: {members} → identity {identity_id}"
+            )
+            links_created += len(members) - 1  # Count links, not members
+
+        if links_created > 0:
+            logger.info(f"Created {links_created} name variation links for {folio}")
+
+        return links_created
 
     def get_discovery_stats(self, folio: str) -> dict:
         """Get discovery statistics for a folio."""

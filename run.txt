@@ -19,6 +19,8 @@
   3. Start server: uv run main.py --web --ngrok
   4. Share the displayed public URL to access from anywhere
 
+
+  codex --sandbox-mode=danger-full-access --approval-policy=never --network-access=enabled
   codex --ask-for-approval never --search true
   claude --dangerously-skip-permissions
   claude mcp add playwright npx @playwright/mcp@latest
@@ -52,3 +54,7 @@ Summary: ORI Public Access Search Options
   | Date            | Recording Date                                                      | Low - Too broad                      |
   | Simple Searches | Pre-configured name searches                                        | Low - Consumer-focused               |
   | Marriage/DP     | Specialized searches                                                | ❌ Not relevant                      |
+
+
+   append the “2025‑12‑27
+  — History Workflow Review” section to code/HillsInspector/docs/PAST.md, and I’ll do it.

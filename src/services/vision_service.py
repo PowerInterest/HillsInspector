@@ -8,6 +8,96 @@ import functools
 from typing import Dict, Optional, Any
 from loguru import logger
 from PIL import Image
+from json_repair import repair_json
+
+
+def _extract_json_candidate(text: str) -> Optional[str]:
+    start = text.find("{")
+    if start == -1:
+        return None
+    in_string = False
+    escape = False
+    depth = 0
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == "\"":
+                in_string = False
+            continue
+        if ch == "\"":
+            in_string = True
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+    return text[start:]
+
+
+def _sanitize_json_text(text: str) -> str:
+    out = []
+    in_string = False
+    escape = False
+    for ch in text:
+        if in_string:
+            if escape:
+                escape = False
+                out.append(ch)
+                continue
+            if ch == "\\":
+                escape = True
+                out.append(ch)
+                continue
+            if ch == "\"":
+                in_string = False
+                out.append(ch)
+                continue
+            if ch == "\n":
+                out.append("\\n")
+                continue
+            if ch == "\r":
+                out.append("\\r")
+                continue
+            if ch == "\t":
+                out.append("\\t")
+                continue
+            out.append(ch)
+            continue
+        if ch == "\"":
+            in_string = True
+        out.append(ch)
+    return "".join(out)
+
+
+def _append_missing_braces(text: str) -> str:
+    in_string = False
+    escape = False
+    depth = 0
+    for ch in text:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == "\"":
+                in_string = False
+            continue
+        if ch == "\"":
+            in_string = True
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(depth - 1, 0)
+    if depth > 0:
+        return text + ("}" * depth)
+    return text
 
 
 def robust_json_parse(text: str, context: str = "") -> Optional[Dict[str, Any]]:
@@ -23,13 +113,24 @@ def robust_json_parse(text: str, context: str = "") -> Optional[Dict[str, Any]]:
     if not text:
         return None
 
-    # Clean up markdown code blocks
+    # Clean up markdown code blocks and isolate a JSON candidate if possible.
     cleaned = text.replace("```json", "").replace("```", "").strip()
+    candidate = _extract_json_candidate(cleaned)
+    if candidate:
+        cleaned = candidate
+    cleaned = _sanitize_json_text(cleaned)
 
     # First try direct parsing
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
+        pass
+
+    # Repair common LLM JSON issues (e.g., stray text, trailing commas, missing quotes).
+    try:
+        repaired = repair_json(cleaned)
+        return json.loads(repaired)
+    except Exception:
         pass
 
     # Try to fix missing commas between properties
@@ -46,6 +147,13 @@ def robust_json_parse(text: str, context: str = "") -> Optional[Dict[str, Any]]:
 
     try:
         return json.loads(fixed2)
+    except json.JSONDecodeError:
+        pass
+
+    # Attempt to close any missing braces for truncated outputs.
+    fixed3 = _append_missing_braces(fixed2)
+    try:
+        return json.loads(fixed3)
     except json.JSONDecodeError:
         snippet = cleaned[:500].replace("\n", " ")
         logger.warning(
@@ -964,7 +1072,7 @@ class VisionService:
         self._semaphore = VisionService._global_semaphore
 
     @classmethod
-    def health_check_endpoints(cls, timeout: int = 5) -> list[dict]:
+    def health_check_endpoints(cls, timeout: int = 15) -> list[dict]:
         """
         Check all vision endpoints at startup, return only healthy ones.
 
@@ -983,22 +1091,46 @@ class VisionService:
         """
         import requests as req
 
-        healthy = []
-        for endpoint in cls.API_ENDPOINTS:
+        def check_endpoint(endpoint: dict) -> tuple[dict, str, str | None]:
+            base_url = endpoint["url"].rsplit("/v1/", 1)[0]
+            models_url = f"{base_url}/v1/models"
             try:
-                base_url = endpoint["url"].rsplit('/v1/', 1)[0]
-                response = req.get(f"{base_url}/v1/models", timeout=timeout)
+                response = req.get(models_url, timeout=timeout)
                 if response.ok:
+                    return endpoint, "healthy", None
+                return endpoint, "unhealthy", f"HTTP {response.status_code}"
+            except req.exceptions.Timeout:
+                return endpoint, "timeout", models_url
+            except req.exceptions.ConnectionError:
+                return endpoint, "connection_error", models_url
+            except Exception as e:
+                return endpoint, "failed", f"{models_url} - {e}"
+
+        healthy = []
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(8, len(cls.API_ENDPOINTS))
+        ) as executor:
+            futures = [
+                executor.submit(check_endpoint, endpoint)
+                for endpoint in cls.API_ENDPOINTS
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                endpoint, status, detail = future.result()
+                if status == "healthy":
                     healthy.append(endpoint)
                     logger.success(f"Vision endpoint healthy: {endpoint['url']}")
+                elif status == "unhealthy":
+                    logger.warning(
+                        f"Vision endpoint unhealthy ({detail}): {endpoint['url']}"
+                    )
+                elif status == "timeout":
+                    logger.warning(f"Vision endpoint timeout: {detail}")
+                elif status == "connection_error":
+                    logger.warning(f"Vision endpoint connection refused: {detail}")
                 else:
-                    logger.warning(f"Vision endpoint unhealthy (HTTP {response.status_code}): {endpoint['url']}")
-            except req.exceptions.Timeout:
-                logger.warning(f"Vision endpoint timeout: {endpoint['url']}")
-            except req.exceptions.ConnectionError:
-                logger.warning(f"Vision endpoint connection refused: {endpoint['url']}")
-            except Exception as e:
-                logger.warning(f"Vision endpoint check failed: {endpoint['url']} - {e}")
+                    logger.warning(f"Vision endpoint check failed: {detail}")
 
         if healthy:
             cls._healthy_endpoints = healthy

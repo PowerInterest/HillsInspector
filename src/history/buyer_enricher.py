@@ -5,6 +5,7 @@ from loguru import logger
 import duckdb
 from src.models.property import Property
 from src.history.hcpa_history_scraper import HistoricalHCPAScraper
+from src.history.db_init import ensure_history_schema
 from src.utils.time import ensure_duckdb_utc
 from src.utils.logging_config import configure_logger
 
@@ -20,6 +21,7 @@ PLACEHOLDER_BUYERS = {
     "unknown",
     "",
 }
+INVALID_PARCELS = {"property appraiser", "n/a", "none", "unknown"}
 
 
 class BuyerNameEnricher:
@@ -31,6 +33,7 @@ class BuyerNameEnricher:
         max_days_after: int = 365,
     ):
         self.db_path = db_path
+        ensure_history_schema(self.db_path)
         self.scraper = HistoricalHCPAScraper(headless=headless)
         self.max_concurrent = max_concurrent
         self.max_days_after = max_days_after
@@ -44,13 +47,15 @@ class BuyerNameEnricher:
                 FROM auctions
                 WHERE parcel_id IS NOT NULL
                   AND parcel_id != ''
+                  AND lower(parcel_id) NOT IN ({invalids})
                   AND buyer_type = 'Third Party'
                   AND (sold_to IS NULL OR lower(sold_to) IN ({placeholders}))
                   AND (status IS NULL OR lower(status) NOT LIKE '%walked away%')
                 ORDER BY auction_date ASC
                 LIMIT ?
             """.format(
-                placeholders=",".join([f"'{p}'" for p in PLACEHOLDER_BUYERS])
+                placeholders=",".join([f"'{p}'" for p in PLACEHOLDER_BUYERS]),
+                invalids=",".join([f"'{p}'" for p in INVALID_PARCELS]),
             )
             return conn.execute(query, [limit]).fetchall()
         finally:
@@ -177,7 +182,7 @@ class BuyerNameEnricher:
         targets = self.get_targets(batch_size)
         if not targets:
             logger.info("No third-party buyer placeholders to enrich.")
-            return
+            return 0
 
         logger.info(f"Enriching buyer names for {len(targets)} auctions via HCPA sales history...")
         sem = asyncio.Semaphore(self.max_concurrent)
@@ -186,6 +191,26 @@ class BuyerNameEnricher:
         updates = [r for r in results if r]
         self._update_buyers(updates)
         logger.info(f"Updated {len(updates)} buyer names from HCPA.")
+        return len(updates)
+
+    async def enrich_all_pending(
+        self,
+        batch_size: int = 25,
+        max_batches: int | None = None,
+    ) -> int:
+        """Process all pending buyer placeholders in batches."""
+        total_updates = 0
+        batches = 0
+        while True:
+            if max_batches is not None and batches >= max_batches:
+                logger.info("Reached max buyer enrichment batches (%d).", max_batches)
+                break
+            updates = await self.enrich_batch(batch_size)
+            if updates == 0:
+                break
+            total_updates += updates
+            batches += 1
+        return total_updates
 
 
 if __name__ == "__main__":

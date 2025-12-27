@@ -23,6 +23,7 @@ RATE_LIMIT_BACKOFF_SECONDS = 300
 MAX_CONSECUTIVE_RATE_LIMITS = 5
 
 # Search priorities (lower = search first)
+PRIORITY_PLAT = 5  # Plat is ROOT OF TITLE - search first!
 PRIORITY_BOOK_PAGE = 10
 PRIORITY_INSTRUMENT = 15
 PRIORITY_CASE = 20
@@ -42,6 +43,13 @@ LEGAL_PRIORITY_INFERRED = 5
 # Chain requirements
 MRTA_YEARS_REQUIRED = 30
 
+# Chain completion thresholds
+MAX_ANCHOR_GAP_DAYS = 730  # Max days between plat and first deed (2 years - builders hold lots)
+MAX_OWNERSHIP_GAP_DAYS = 3650  # Max days between deeds before warning (10 years)
+
+# Instrument reference discovery
+ADJACENT_INSTRUMENT_RANGE = 5  # Search ±N instruments when finding mortgage/deed
+
 # Matching thresholds
 NAME_FUZZY_THRESHOLD = 0.85
 NAME_CHANGE_CONFIDENCE = 0.5
@@ -60,6 +68,10 @@ CQID_BOOK_PAGE = 319
 CQID_INSTRUMENT = 320
 CQID_LEGAL = 321
 CQID_NAME = 326
+
+# ORI Book Types (OBKey__1530_1 parameter)
+BOOK_TYPE_OR = "OR"  # Official Records (default)
+BOOK_TYPE_PLAT = "P"  # Subdivision Plat Map
 
 # Result limits by endpoint
 LIMIT_PUBLIC_ACCESS = 6000

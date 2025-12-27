@@ -12,6 +12,7 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 from src.scrapers.ori_api_scraper import ORIApiScraper
 from src.services.final_judgment_processor import FinalJudgmentProcessor
 from src.utils.time import ensure_duckdb_utc
+from src.history.db_init import ensure_history_schema
 
 DB_PATH = Path("data/history.db")
 PDF_STORAGE_DIR = Path("data/history_pdfs")
@@ -19,6 +20,7 @@ PDF_STORAGE_DIR = Path("data/history_pdfs")
 class JudgmentPipeline:
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
+        ensure_history_schema(self.db_path)
         self.scraper = ORIApiScraper()
         self.processor = FinalJudgmentProcessor()
         PDF_STORAGE_DIR.mkdir(parents=True, exist_ok=True)

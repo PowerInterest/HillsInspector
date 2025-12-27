@@ -157,12 +157,41 @@ graph LR
 
 ---
 
+## Foreclosing Lien Identification
+
+### Challenge: Securitized Mortgages
+When mortgages are securitized (sold to trusts), the plaintiff name often differs from the recorded creditor:
+- **Recorded Creditor**: Original lender or MERS nominee (e.g., "KIAVI FUNDING INC")
+- **Plaintiff**: Trustee of securitization trust (e.g., "U.S. BANK NATIONAL ASSOCIATION, AS TRUSTEE FOR LHOME MORTGAGE TRUST 2024-RTL3")
+
+Assignments to trusts are often not recorded in public records, breaking the name-matching logic.
+
+### Solution: Inference Fallback
+When exact name matching fails:
+1. Check if `foreclosure_type` contains "FIRST" or "MORTGAGE"
+2. Find the most recent unsatisfied mortgage for the current owner
+3. Infer this as the foreclosing lien
+4. Flag with `FORECLOSING_LIEN_INFERRED` uncertainty
+
+```mermaid
+graph TD
+    A[Find Foreclosing Lien] --> B{Exact Name Match?}
+    B -- Yes --> C[Use Matched Encumbrance]
+    B -- No --> D{Is First Mortgage FC?}
+    D -- Yes --> E[Use Most Recent Mortgage]
+    D -- No --> F[Flag as Uncertain]
+    E --> G[Add INFERRED Flag]
+```
+
+---
+
 ## Scraper Implementation Status
 
 ### ✅ Working:
 - **ORI Scraper**: Ingests mortgages, liens, and assignments.
 - **Title Chain Service**: Builds timeline, tracks assignments, calculates MRTA.
 - **Survival Analyzer**: Orchestrates the logic defined above.
+- **Foreclosing Lien Inference**: Falls back to most recent mortgage when name matching fails (Dec 2025).
 
 ### ⚠️ Removed:
 - **Tax Deed Sales**: This logic has been moved to a separate document: [TaxDeed.md](file:///home/user/code/HillsInspector/docs/TaxDeed.md).

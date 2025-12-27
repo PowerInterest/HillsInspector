@@ -26,6 +26,7 @@ from config.step4v2 import (
     PRIORITY_NAME_CHAIN,
     PRIORITY_NAME_GENERIC,
     PRIORITY_NAME_OWNER,
+    PRIORITY_PLAT,
     RATE_LIMIT_BACKOFF_SECONDS,
 )
 from src.utils.legal_description import parse_legal_description, generate_search_permutations
@@ -38,7 +39,7 @@ class SearchItem:
 
     id: int
     folio: str
-    search_type: str  # 'legal', 'name', 'book_page', 'instrument', 'case'
+    search_type: str  # 'plat', 'book_page', 'instrument', 'legal', 'name', 'case'
     search_term: str
     search_operator: str  # 'EQUALS', 'BEGINS', 'CONTAINS' (for legal)
     priority: int
@@ -78,7 +79,40 @@ class SearchQueue:
         """
         count = 0
 
-        # 1. Legal descriptions from various sources (now generates permutations)
+        # =====================================================================
+        # TIER 1: EXACT LOOKUPS (No false positives - search these FIRST)
+        # =====================================================================
+
+        # 1a. Plat Book/Page from Final Judgment - ROOT OF TITLE
+        # The plat is when the lot legally came into existence. This is the
+        # absolute beginning of the chain of title for platted properties.
+        # 95.6% of FJs have plat_book/plat_page extracted.
+        # IMPORTANT: Plats use book_type="P" (Subdivision Plat Map), not "OR"
+        if final_judgment:
+            plat_book = final_judgment.get("plat_book")
+            plat_page = final_judgment.get("plat_page")
+            if plat_book and plat_page and self.queue_plat_search(folio, str(plat_book), str(plat_page)):
+                count += 1
+                logger.debug(f"Queued plat search: Plat Book {plat_book} Page {plat_page}")
+
+        # 1b. Book/Page AND Instrument from HCPA Sales History
+        # Modern recordings (post ~2010) use instrument numbers only.
+        # Older recordings have book/page. We search for BOTH to cover all eras.
+        sales_history = self._get_sales_history(folio)
+        for sale in sales_history:
+            # Queue instrument search (modern recordings - post ~2010)
+            instrument = sale.get("instrument")
+            if instrument and self.queue_instrument_search(folio, str(instrument)):
+                count += 1
+            # Queue book/page search (older recordings - pre ~2010)
+            if sale.get("book") and sale.get("page") and self.queue_book_page_search(folio, sale["book"], sale["page"]):
+                count += 1
+
+        # =====================================================================
+        # TIER 2: HIGH-CONFIDENCE LEGAL DESCRIPTIONS
+        # =====================================================================
+
+        # 2a. Final Judgment legal description (most accurate - courts verify this)
         if final_judgment and final_judgment.get("legal_description"):
             count += self.queue_legal_search(
                 folio,
@@ -88,6 +122,7 @@ class SearchQueue:
                 source_type="final_judgment",
             )
 
+        # 2b. HCPA legal description
         if hcpa_data and hcpa_data.get("legal_description"):
             count += self.queue_legal_search(
                 folio,
@@ -97,7 +132,11 @@ class SearchQueue:
                 source_type="hcpa",
             )
 
-        # Bulk parcel legal descriptions (raw_legal1-4)
+        # =====================================================================
+        # TIER 3: LOWER CONFIDENCE SOURCES (Last resort)
+        # =====================================================================
+
+        # 3. Bulk parcel legal descriptions (raw_legal1-4)
         if bulk_parcel:
             for i in range(1, 5):
                 legal = bulk_parcel.get(f"raw_legal{i}")
@@ -110,14 +149,7 @@ class SearchQueue:
                         source_type="bulk_import",
                     )
 
-        # 2. Book/Page from HCPA Sales History (highest priority)
-        sales_history = self._get_sales_history(folio)
-        for sale in sales_history:
-            if sale.get("book") and sale.get("page"):
-                self.queue_book_page_search(folio, sale["book"], sale["page"])
-                count += 1
-
-        # 3. Case number search (for foreclosure docs)
+        # 4. Case number search (for foreclosure docs)
         case_number = auction.get("case_number")
         if case_number:
             self.queue_case_search(folio, case_number)
@@ -249,6 +281,43 @@ class SearchQueue:
             search_type="book_page",
             search_term=search_term,
             priority=PRIORITY_BOOK_PAGE,
+            triggered_by_instrument=triggered_by_instrument,
+            triggered_by_search_id=triggered_by_search_id,
+        )
+
+    def queue_plat_search(
+        self,
+        folio: str,
+        plat_book: str,
+        plat_page: str,
+        triggered_by_instrument: Optional[str] = None,
+        triggered_by_search_id: Optional[int] = None,
+    ) -> bool:
+        """
+        Queue a plat book/page search (ROOT OF TITLE - highest priority).
+
+        Plats use book_type="P" (Subdivision Plat Map), not "OR" (Official Records).
+        The plat recording is when the lot legally came into existence.
+        This is the absolute beginning of the chain of title.
+
+        Args:
+            folio: Property folio
+            plat_book: Plat book number (e.g., "135")
+            plat_page: Plat page number (e.g., "12")
+
+        Returns:
+            True if queued, False if duplicate or invalid
+        """
+        if not plat_book or not plat_page:
+            return False
+
+        # Use "P:" prefix to indicate this is a plat search (book_type="P")
+        search_term = f"P:{plat_book}/{plat_page}"
+        return self._queue_search(
+            folio=folio,
+            search_type="plat",
+            search_term=search_term,
+            priority=PRIORITY_PLAT,
             triggered_by_instrument=triggered_by_instrument,
             triggered_by_search_id=triggered_by_search_id,
         )

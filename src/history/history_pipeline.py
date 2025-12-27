@@ -11,6 +11,7 @@ from src.history.scrape_history import run_scrape
 from src.history.buyer_enricher import BuyerNameEnricher
 from src.history.resale_scanner import ResaleScanner
 from src.history.judgment_pipeline import JudgmentPipeline
+from src.history.db_init import ensure_history_schema
 from src.utils.time import today_local
 from src.utils.db_snapshot import DatabaseSnapshotError, refresh_web_snapshot
 from src.utils.logging_config import configure_logger
@@ -20,6 +21,8 @@ configure_logger(log_file="history_pipeline.log")
 
 async def run_history_pipeline():
     logger.info("Starting Historical Auction Analysis Pipeline...")
+
+    ensure_history_schema(Path("data/history.db"))
     
     # Phase 2: Skeleton Scrape
     logger.info("Phase 2: Running Skeleton Scrape...")
@@ -28,7 +31,7 @@ async def run_history_pipeline():
     # Phase 3: Buyer Name Enrichment (HCPA Sales History)
     logger.info("Phase 3: Enriching buyer names from HCPA sales history...")
     buyer_enricher = BuyerNameEnricher(headless=True)
-    await buyer_enricher.enrich_batch(25)
+    await buyer_enricher.enrich_all_pending(25)
     
     # Phase 4: Final Judgment processing (SKIPPED for speed)
     # logger.info("Phase 4: Running Judgment Pipeline...")
@@ -38,7 +41,7 @@ async def run_history_pipeline():
     # Phase 5: Flip Analysis (Resale Scanning)
     logger.info("Phase 5: Running Resale Scanner (Flip Analysis)...")
     scanner = ResaleScanner()
-    await scanner.scan_batch(50)
+    await scanner.scan_all_pending(50)
     
     logger.info("Historical Pipeline completed successfully.")
     try:

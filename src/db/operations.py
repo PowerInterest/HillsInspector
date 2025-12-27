@@ -265,14 +265,26 @@ class PropertyDB:
         """)
         
         # Step 5: ORI Ingestion
-        # If we have documents for this folio, we ran ORI ingestion
-        conn.execute("""
-            UPDATE auctions
-            SET needs_ori_ingestion = FALSE
-            WHERE parcel_id IN (
-                SELECT DISTINCT folio FROM documents
-            )
-        """)
+        # Only mark complete if chain_of_title exists in V2 database
+        if USE_STEP4_V2:
+            try:
+                v2_conn = duckdb.connect(V2_DB_PATH, read_only=True)
+                folios_with_chain = v2_conn.execute(
+                    "SELECT DISTINCT folio FROM chain_of_title"
+                ).fetchall()
+                v2_conn.close()
+                if folios_with_chain:
+                    folio_list = [f[0] for f in folios_with_chain]
+                    conn.execute(
+                        """
+                        UPDATE auctions
+                        SET needs_ori_ingestion = FALSE
+                        WHERE parcel_id IN (SELECT * FROM UNNEST(?::VARCHAR[]))
+                        """,
+                        [folio_list],
+                    )
+            except Exception as e:
+                logger.debug(f"V2 chain check failed in initialize_pipeline_flags: {e}")
         
         # Step 6: Lien Survival
         # If status is ANALYZED or FLAGGED, we ran analysis
@@ -2846,17 +2858,19 @@ class PropertyDB:
             params,
         )
 
-        # Step 5: ORI ingestion (documents table - check v2 if enabled)
+        # Step 5: ORI ingestion - only mark complete if chain_of_title exists
+        # (not just documents - we need the chain to be built)
         if USE_STEP4_V2:
-            # Check v2 database for documents
+            # Check v2 database for chain_of_title (not just documents)
+            # This ensures the discovery loop actually ran and built a chain
             try:
                 v2_conn = duckdb.connect(V2_DB_PATH, read_only=True)
-                folios_with_docs = v2_conn.execute(
-                    "SELECT DISTINCT folio FROM documents"
+                folios_with_chain = v2_conn.execute(
+                    "SELECT DISTINCT folio FROM chain_of_title"
                 ).fetchall()
                 v2_conn.close()
-                if folios_with_docs:
-                    folio_list = [f[0] for f in folios_with_docs]
+                if folios_with_chain:
+                    folio_list = [f[0] for f in folios_with_chain]
                     conn.execute(
                         f"""
                         UPDATE status s SET step_ori_ingested = NOW()
@@ -2871,19 +2885,8 @@ class PropertyDB:
                     )
             except Exception as e:
                 logger.debug(f"V2 backfill check failed: {e}")
-        elif table_exists("documents"):
-            conn.execute(
-                f"""
-                UPDATE status s SET step_ori_ingested = NOW()
-                WHERE s.step_ori_ingested IS NULL
-                  AND s.case_number IN (
-                    SELECT case_number FROM auctions
-                    WHERE COALESCE(parcel_id, folio) IN (SELECT DISTINCT folio FROM documents)
-                  )
-                  {date_clause}
-                """,
-                params,
-            )
+        # NOTE: V1 documents table fallback removed - when USE_STEP4_V2 is True,
+        # we should only mark ORI complete based on V2 chain_of_title data
 
         # Step 6: Survival analysis (auctions status ANALYZED/FLAGGED)
         conn.execute(

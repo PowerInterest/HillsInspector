@@ -303,14 +303,19 @@ class NameMatcher:
             )
 
         # Rule 4: Marriage name change (same first name, different last)
-        # This is low confidence and only triggered as last resort
-        if self.same_first_name(name1, name2):
-            return MatchResult(
-                is_match=True,
-                link_type="name_change",
-                confidence=NAME_CHANGE_CONFIDENCE,
-                canonical_name=name1,
-            )
+        # DISABLED: This rule is too aggressive for property records.
+        # It matches "JOHN SMITH" with "JOHN DOE" just because they share "JOHN",
+        # causing massive cross-property contamination in chain of title.
+        # Marriage/name changes should be inferred from sequential deeds on the
+        # SAME property, not from name matching alone.
+        #
+        # if self.same_first_name(name1, name2):
+        #     return MatchResult(
+        #         is_match=True,
+        #         link_type="name_change",
+        #         confidence=NAME_CHANGE_CONFIDENCE,
+        #         canonical_name=name1,
+        #     )
 
         return MatchResult(is_match=False)
 

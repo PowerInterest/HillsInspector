@@ -150,3 +150,17 @@ CREATE TABLE property_details (
     *   **Dashboard View**: High-level charts (Profitable Flips vs Failed Flips, Top Investors).
     *   **Data Grid**: Searchable table of the `auctions` joined with `resales`.
     *   **Drill-down**: Click a row to see the "Lifecycle Card" (Images + Timeline of Buy/Sell).
+
+---
+
+## 2025-12-27 — History Workflow Review
+
+### ROI/Flip Coverage Root Causes
+*   Phase 3 and Phase 5 ran single batches per execution (25/50 rows), leaving most third-party auctions unprocessed.
+*   History DB initialization did not guarantee `scraped_dates` or scan timestamp columns, so new installs skipped tracking.
+*   Resale date parsing only handled a narrow subset of HCPA formats, dropping valid flips.
+
+### Fixes Implemented
+*   Added a schema guard (`ensure_history_schema`) to create missing tables/columns on every history run.
+*   Buyer enrichment and resale scans now iterate all pending batches in one run.
+*   Resale date parsing expanded and profit/ROI only computed when a valid winning bid exists.

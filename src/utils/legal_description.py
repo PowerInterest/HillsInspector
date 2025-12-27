@@ -17,6 +17,7 @@ import re
 from typing import List, Optional, Tuple
 from dataclasses import dataclass, field
 from loguru import logger
+from rapidfuzz import fuzz
 
 
 @dataclass
@@ -333,7 +334,7 @@ def parse_legal_description(raw_text: str) -> LegalDescription:
     return result
 
 
-def generate_search_permutations(legal: LegalDescription, raw_legal: str = "", max_permutations: int = 10) -> List[str]:
+def generate_search_permutations(legal: LegalDescription, raw_legal: str = "", max_permutations: int = 20) -> List[str]:
     """
     Generate search string permutations for ORI search.
 
@@ -344,17 +345,25 @@ def generate_search_permutations(legal: LegalDescription, raw_legal: str = "", m
         "L 9 B D BRUSSELS BOY"
 
     So we must search with lot/block first for best results:
-        "L 44 B 2 SYMPHONY*" - finds the specific lot
+        "L 44 B 2 SYMPHONY ISLES" - EXACT match first (no wildcard)
+        "L 44 B 2 SYMPHONY*" - wildcard as fallback
         "SYMPHONY*" alone returns random lots from the subdivision
+
+    SEARCH STRATEGY (to avoid >300 result searches):
+        1. Try EXACT terms first (no wildcard) - most specific
+        2. Try WILDCARD terms as fallback - broader but necessary for abbreviation variations
 
     Args:
         legal: Parsed legal description
         max_permutations: Maximum number of permutations to return
 
     Returns:
-        List of search strings to try, ordered by specificity (all with wildcards)
+        List of search strings to try, ordered by specificity:
+        - First: exact matches (no wildcard)
+        - Then: wildcard matches
     """
-    permutations = []
+    exact_terms = []      # No wildcard - exact match
+    wildcard_terms = []   # With wildcard - broader search
 
     def _subdivision_prefixes(subdivision: str) -> List[str]:
         if not subdivision:
@@ -429,6 +438,18 @@ def generate_search_permutations(legal: LegalDescription, raw_legal: str = "", m
         except (ValueError, TypeError):
             return False
 
+    # Helper to add both exact and wildcard terms
+    def add_term(term: str) -> None:
+        """Add both exact (no wildcard) and wildcard version of a term."""
+        # Clean up term - remove trailing wildcard if present
+        base = term.rstrip('*').strip()
+        if base:
+            if base not in exact_terms:
+                exact_terms.append(base)
+            wildcard = f"{base}*"
+            if wildcard not in wildcard_terms:
+                wildcard_terms.append(wildcard)
+
     # Priority 0: Multi-lot combined format
     # ORI uses different formats:
     # - Full lots: "L 1 AND 2 B R" (CASTLE HEIGHTS style)
@@ -437,78 +458,108 @@ def generate_search_permutations(legal: LegalDescription, raw_legal: str = "", m
         # For partial/consecutive lots, use range notation (e.g., "PT L 1-3 B 100")
         if is_partial_lot and are_consecutive(lots_to_use):
             lot_range = f"{lots_to_use[0]}-{lots_to_use[-1]}"
-            permutations.append(f"PT L {lot_range} B {legal.block}*")
-            permutations.append(f"L {lot_range} B {legal.block}*")  # Also try without PT
             if subdiv_prefixes:
-                permutations.append(f"PT L {lot_range} B {legal.block} {subdiv_prefixes[0]}*")
+                add_term(f"PT L {lot_range} B {legal.block} {subdiv_prefixes[0]}")
+            add_term(f"PT L {lot_range} B {legal.block}")
+            add_term(f"L {lot_range} B {legal.block}")  # Also try without PT
 
         # Generate "L 1 AND 2 B R" format for first two lots
         combined_lots = " AND ".join(lots_to_use[:2])
-        # Try with and without subdivision prefix
-        permutations.append(f"{partial_prefix}L {combined_lots} B {legal.block}*")
+        # Try with subdivision prefix FIRST (more specific)
         if subdiv_prefixes:
-            # Try with MAP prefix (common in ORI: "L 1 AND 2 B R MAP OF CASTLE HEIGHTS")
-            permutations.append(f"{partial_prefix}L {combined_lots} B {legal.block} MAP*")
             for prefix in subdiv_prefixes[:2]:  # Only first 2 prefixes to avoid explosion
-                permutations.append(f"{partial_prefix}L {combined_lots} B {legal.block} {prefix}*")
+                add_term(f"{partial_prefix}L {combined_lots} B {legal.block} {prefix}")
+            # Try with MAP prefix (common in ORI: "L 1 AND 2 B R MAP OF CASTLE HEIGHTS")
+            add_term(f"{partial_prefix}L {combined_lots} B {legal.block} MAP")
+        # Then without subdivision prefix
+        add_term(f"{partial_prefix}L {combined_lots} B {legal.block}")
 
-    # Priority 1: Most specific - Lot + Block + Subdivision first word
+    # Priority 1: Most specific - Lot + Block + Subdivision (FULL name first, then prefixes)
     # Try both formats: "L {lot} B {block}" (with space) FIRST for API compatibility,
     # then "L{lot} B{block}" (no space) for browser search
     if lots_to_use and legal.block and subdiv_prefixes:
         for lot in lots_to_use:
+            # Try FULL subdivision name first (most specific)
+            if legal.subdivision:
+                add_term(f"L {lot} B {legal.block} {legal.subdivision}")
+                add_term(f"L{lot} B{legal.block} {legal.subdivision}")
+                if not legal.block.isdigit():
+                    add_term(f"L {lot} BLK {legal.block} {legal.subdivision}")
+
+            # Then try prefixes (progressively less specific)
             for prefix in subdiv_prefixes:
-                # With space format FIRST (e.g., "L 40 B 1 TEMPLE OAKS*") - works with API CONTAINS
-                permutations.append(f"L {lot} B {legal.block} {prefix}*")
-                # No space format (e.g., "L40 B1 TEMPLE OAKS*") - browser wildcard search
-                permutations.append(f"L{lot} B{legal.block} {prefix}*")
+                # With space format (e.g., "L 40 B 1 TEMPLE OAKS") - works with API CONTAINS
+                add_term(f"L {lot} B {legal.block} {prefix}")
+                # No space format (e.g., "L40 B1 TEMPLE OAKS") - browser wildcard search
+                add_term(f"L{lot} B{legal.block} {prefix}")
                 # Also try with BLK for alpha blocks (some records use BLK D instead of B D)
                 if not legal.block.isdigit():
-                    permutations.append(f"L {lot} BLK {legal.block} {prefix}*")
-                    permutations.append(f"L{lot} BLK{legal.block} {prefix}*")
+                    add_term(f"L {lot} BLK {legal.block} {prefix}")
+                    add_term(f"L{lot} BLK{legal.block} {prefix}")
 
-    # Priority 2: Lot + Subdivision (no block)
+    # Priority 2: Lot + Block only (no subdivision) - only if we have lot/block
+    # This is useful when the subdivision name varies in ORI records
+    if lots_to_use and legal.block:
+        for lot in lots_to_use:
+            # Only add exact matches for lot+block (wildcard would be too broad)
+            # These won't get wildcards via add_term; we add exact only
+            term = f"L {lot} B {legal.block}"
+            if term not in exact_terms:
+                exact_terms.append(term)
+
+    # Priority 3: Lot + Subdivision (no block)
     if lots_to_use and subdiv_prefixes:
         for lot in lots_to_use:
+            # Full subdivision first
+            if legal.subdivision:
+                add_term(f"L {lot} {legal.subdivision}")
+            # Then prefixes
             for prefix in subdiv_prefixes:
-                # With space first for API compatibility
-                permutations.append(f"L {lot} {prefix}*")
-                permutations.append(f"L{lot} {prefix}*")
+                add_term(f"L {lot} {prefix}")
+                add_term(f"L{lot} {prefix}")
 
-    # Priority 3: Just subdivision name with wildcard (broader search)
+    # Priority 4: Just subdivision name (broader search)
     # This returns all lots in subdivision - useful as fallback
+    # NOTE: Only add wildcard versions for subdivision-only searches
     if subdiv_prefixes:
-        # Include the shortest prefixes last (1-word, then 2-word if available)
-        permutations.append(f"{subdiv_prefixes[-1]}*")
-        if len(subdiv_prefixes) >= 2:
-            permutations.append(f"{subdiv_prefixes[-2]}*")
+        # Include the longest prefixes first (most specific)
+        for prefix in subdiv_prefixes:
+            wildcard = f"{prefix}*"
+            if wildcard not in wildcard_terms:
+                wildcard_terms.append(wildcard)
 
-    # For condos, try unit + building name with wildcard
+    # Priority 5: For condos, try unit + building name
     if legal.unit and subdiv_prefixes:
-        permutations.append(f"UNIT {legal.unit} {subdiv_prefixes[0]}*")
-        permutations.append(f"U {legal.unit} {subdiv_prefixes[0]}*")
+        if legal.subdivision:
+            add_term(f"UNIT {legal.unit} {legal.subdivision}")
+            add_term(f"U {legal.unit} {legal.subdivision}")
+        for prefix in subdiv_prefixes[:2]:
+            add_term(f"UNIT {legal.unit} {prefix}")
+            add_term(f"U {legal.unit} {prefix}")
 
-    # If we have section-township-range, add that with wildcard
+    # Priority 6: If we have section-township-range, add those searches
     if legal.section and legal.township and legal.range:
         str_search = f"{legal.section}-{legal.township}-{legal.range}"
         if subdiv_prefixes:
-            permutations.append(f"{str_search} {subdiv_prefixes[0]}*")
-        permutations.append(f"{str_search}*")
+            add_term(f"{str_search} {subdiv_prefixes[0]}")
+        add_term(str_search)
         # Narrative STR search (works better for metes-and-bounds ORI indexing)
-        permutations.append(f"SECTION {legal.section} TOWNSHIP {legal.township}*")
-        permutations.append(f"SECTION {legal.section} TOWNSHIP {legal.township} RANGE {legal.range}*")
+        add_term(f"SECTION {legal.section} TOWNSHIP {legal.township} RANGE {legal.range}")
+        add_term(f"SECTION {legal.section} TOWNSHIP {legal.township}")
 
-    # Fallback: If we have lot/block but no subdivision, DON'T search
+    # Fallback: If we have lot/block but no subdivision, DON'T search with wildcards
     # Searches like "L 6 B 26*" are too broad and match hundreds of properties
-    # across different subdivisions. Better to skip than pollute results.
-    # NOTE: We intentionally do NOT generate "L X B Y*" searches without subdivision.
+    # across different subdivisions. We only add exact "L X B Y" in Priority 2.
 
-    # Last resort: use a specific prefix of the raw text.
+    # Last resort: use a specific prefix of the raw text (for metes-and-bounds).
     # For metes-and-bounds (often starts with COM/BEG/etc), a longer prefix is far more specific
     # than any single token and reduces irrelevant matches.
-    if not permutations and legal.raw_text:
+    has_terms = bool(exact_terms or wildcard_terms)
+    if not has_terms and legal.raw_text:
         words = legal.raw_text.upper().strip().split()
         raw_upper = legal.raw_text.upper().lstrip()
+        # Strip leading section numbers (e.g., "1\tCOM..." or "1 COM...")
+        raw_upper = re.sub(r'^\d+[\t\s]+', '', raw_upper)
         if raw_upper.startswith(("COM ", "BEG ", "BEGIN", "COMMENCE", "COMMENCING", "TRACT")):
             # Try extracting road names (often stable across recordings) before falling back to a raw prefix.
             road_regex = re.compile(
@@ -519,45 +570,37 @@ def generate_search_permutations(legal: LegalDescription, raw_legal: str = "", m
                 name = re.sub(r"\s+", " ", m.group(1).strip())
                 suffix = m.group(2).strip()
                 if name:
-                    permutations.append(f"{name} {suffix}*")
-                    permutations.append(f"{name}*")
+                    # For road names, add both exact and wildcard
+                    add_term(f"{name} {suffix}")
+                    add_term(name)
 
+            # Add a long prefix as wildcard-only fallback
             prefix = raw_upper[:60].strip()
             if prefix:
-                permutations.append(f"{prefix}*")
+                wildcard = f"{prefix}*"
+                if wildcard not in wildcard_terms:
+                    wildcard_terms.append(wildcard)
 
-            # Remove duplicates while preserving order, then return early.
-            seen = set()
-            deduped = []
-            for p in permutations:
-                if p not in seen:
-                    seen.add(p)
-                    deduped.append(p)
-            return deduped[:max_permutations]
+            # Combine and return
+            result = exact_terms + wildcard_terms
+            return result[:max_permutations]
 
         common_prefixes = {
-            "LOT",
-            "L",
-            "LT",
-            "BLOCK",
-            "BLK",
-            "B",
-            "UNIT",
-            "U",
-            "THE",
-            "OF",
-            "IN",
-            "AT",
-            "COM",
-            "COMMENCE",
-            "COMMENCING",
-            "BEG",
-            "BEGIN",
-            "BEGINNING",
-            "RUN",
-            "THN",
-            "THENCE",
-            "ALG",
+            # Lot/block identifiers
+            "LOT", "L", "LT", "BLOCK", "BLK", "B", "UNIT", "U",
+            # Articles/prepositions
+            "THE", "OF", "IN", "AT", "TO", "FOR", "AND", "OR", "A", "AN",
+            # Metes-and-bounds terms (too generic for searches)
+            "COM", "COMMENCE", "COMMENCING", "BEG", "BEGIN", "BEGINNING",
+            "RUN", "THN", "THENCE", "ALG", "ALONG", "CONT", "CONTINUE",
+            "LINE", "LINES", "POINT", "CORNER", "COR", "BDRY", "BOUNDARY",
+            "FEET", "FT", "FOOT", "DEGREES", "DEG", "MINUTES", "MIN",
+            "NORTH", "SOUTH", "EAST", "WEST", "NLY", "SLY", "ELY", "WLY",
+            "NORTHERLY", "SOUTHERLY", "EASTERLY", "WESTERLY",
+            "RIGHT", "LEFT", "SAID", "BEING", "LYING", "LESS", "MORE",
+            "PORTION", "PART", "HALF", "QUARTER", "SECTION", "SEC",
+            "TOWNSHIP", "TWP", "RANGE", "RNG", "THAT", "THEN", "FROM",
+            "WITH", "ALSO", "PLAT", "BOOK", "PAGE", "RECORD", "RECORDED",
         }
 
         for word in words:
@@ -566,23 +609,22 @@ def generate_search_permutations(legal: LegalDescription, raw_legal: str = "", m
             # Prefer alphabetic tokens; numeric tokens are too broad.
             cleaned = re.sub(r"[^A-Z]", "", word)
             if len(cleaned) >= 4:
-                permutations.append(f"{cleaned}*")
+                # For single-word fallback, use wildcard only
+                wildcard = f"{cleaned}*"
+                if wildcard not in wildcard_terms:
+                    wildcard_terms.append(wildcard)
                 break
 
-        if not permutations:
+        if not wildcard_terms:
             prefix = raw_upper[:60].strip()
             if prefix:
-                permutations.append(f"{prefix}*")
+                wildcard_terms.append(f"{prefix}*")
 
-    # Remove duplicates while preserving order
-    seen = set()
-    unique_perms = []
-    for p in permutations:
-        if p not in seen:
-            seen.add(p)
-            unique_perms.append(p)
+    # Combine exact terms first, then wildcard terms
+    # This ensures we try exact matches before broader wildcard searches
+    result = exact_terms + wildcard_terms
 
-    return unique_perms[:max_permutations]
+    return result[:max_permutations]
 
 
 def normalize_for_comparison(text: str) -> str:
@@ -809,6 +851,256 @@ def match_legal_descriptions(desc1: str, desc2: str, threshold: float = 0.8) -> 
     return score >= threshold, score
 
 
+# Abbreviation normalizations for subdivision fuzzy matching
+SUBDIVISION_NORMALIZATIONS = {
+    # Phase variations
+    r'\bPH\b': 'PHASE',
+    r'\bPHASE\b': 'PHASE',
+    # Section variations
+    r'\bSEC\b': 'SECTION',
+    r'\bSECT\b': 'SECTION',
+    # Roman numerals to Arabic
+    r'\bII\b': '2',
+    r'\bIII\b': '3',
+    r'\bIV\b': '4',
+    r'\bV\b': '5',
+    r'\bVI\b': '6',
+    r'\bVII\b': '7',
+    r'\bVIII\b': '8',
+    r'\bIX\b': '9',
+    r'\bX\b': '10',
+    # Word numerals to Arabic
+    r'\bONE\b': '1',
+    r'\bTWO\b': '2',
+    r'\bTHREE\b': '3',
+    r'\bFOUR\b': '4',
+    r'\bFIVE\b': '5',
+    r'\bSIX\b': '6',
+    r'\bSEVEN\b': '7',
+    r'\bEIGHT\b': '8',
+    r'\bNINE\b': '9',
+    r'\bTEN\b': '10',
+    # Block variations
+    r'\bBLK\b': 'BLOCK',
+    r'\bBK\b': 'BLOCK',
+    # Subdivision variations
+    r'\bSUBDIV\b': 'SUBDIVISION',
+    r'\bSUBD\b': 'SUBDIVISION',
+    r'\bSUB\b': 'SUBDIVISION',
+    r'\bS/D\b': 'SUBDIVISION',
+}
+
+
+def normalize_subdivision_for_matching(subdivision: str) -> str:
+    """
+    Normalize a subdivision name for fuzzy matching.
+
+    Expands abbreviations and normalizes numerals so that:
+    - "TOUCHSTONE PH 2" → "TOUCHSTONE PHASE 2"
+    - "TAMPA PALMS SEC II" → "TAMPA PALMS SECTION 2"
+
+    Args:
+        subdivision: Raw subdivision name
+
+    Returns:
+        Normalized subdivision name
+    """
+    if not subdivision:
+        return ""
+
+    result = subdivision.upper().strip()
+
+    # Normalize whitespace
+    result = re.sub(r'\s+', ' ', result)
+
+    # Remove punctuation (commas, periods) but keep apostrophes for names like O'BRIEN
+    result = re.sub(r'[,.]', ' ', result)
+    result = re.sub(r'\s+', ' ', result).strip()
+
+    # Apply normalizations
+    for pattern, replacement in SUBDIVISION_NORMALIZATIONS.items():
+        result = re.sub(pattern, replacement, result)
+
+    return result
+
+
+def legal_descriptions_match(
+    legal_a: str,
+    legal_b: str,
+    threshold: float = 0.80
+) -> Tuple[bool, float, str]:
+    """
+    Check if two legal descriptions refer to the same property.
+
+    Uses component-based matching:
+    - Lot number(s): EXACT match required
+    - Block number(s): EXACT match required
+    - Subdivision: FUZZY match (normalized, then compared)
+
+    Args:
+        legal_a: First legal description
+        legal_b: Second legal description
+        threshold: Minimum fuzzy ratio for subdivision match (0.0-1.0)
+
+    Returns:
+        Tuple of (is_match, confidence_score, reason)
+        - is_match: True if descriptions match
+        - confidence_score: 0.0-1.0 indicating match quality
+        - reason: Explanation of match/no-match
+    """
+    if not legal_a or not legal_b:
+        return False, 0.0, "One or both legal descriptions empty"
+
+    # Parse both legal descriptions
+    parsed_a = parse_legal_description(legal_a)
+    parsed_b = parse_legal_description(legal_b)
+
+    # Get lots (use lots list if available, else single lot)
+    lots_a = set(parsed_a.lots) if parsed_a.lots else ({parsed_a.lot} if parsed_a.lot else set())
+    lots_b = set(parsed_b.lots) if parsed_b.lots else ({parsed_b.lot} if parsed_b.lot else set())
+
+    # Get blocks
+    block_a = parsed_a.block
+    block_b = parsed_b.block
+
+    # Get subdivisions - include phase/section in comparison if parsed separately
+    subdiv_a = parsed_a.subdivision or ""
+    subdiv_b = parsed_b.subdivision or ""
+
+    # Append phase to subdivision if parsed separately (for consistent comparison)
+    # e.g., "TOUCHSTONE" + phase=2 → "TOUCHSTONE PHASE 2"
+    if parsed_a.phase and parsed_a.phase not in subdiv_a:
+        subdiv_a = f"{subdiv_a} PHASE {parsed_a.phase}".strip()
+    if parsed_b.phase and parsed_b.phase not in subdiv_b:
+        subdiv_b = f"{subdiv_b} PHASE {parsed_b.phase}".strip()
+
+    # Also check for unit (condos)
+    unit_a = parsed_a.unit
+    unit_b = parsed_b.unit
+
+    # Track match components
+    lot_match = None
+    block_match = None
+    subdiv_match = None
+    subdiv_score = 0.0
+    unit_match = None
+
+    # --- Lot Matching (EXACT) ---
+    if lots_a and lots_b:
+        # Check if there's any overlap in lots
+        lot_overlap = lots_a & lots_b
+        if lot_overlap:
+            lot_match = True
+        else:
+            lot_match = False
+            return False, 0.0, f"Lot mismatch: {lots_a} vs {lots_b}"
+    elif lots_a or lots_b:
+        # One has lots, other doesn't - can't confirm match on lots
+        lot_match = None  # Indeterminate
+
+    # --- Block Matching (EXACT) ---
+    if block_a and block_b:
+        if block_a == block_b:
+            block_match = True
+        else:
+            block_match = False
+            return False, 0.0, f"Block mismatch: {block_a} vs {block_b}"
+    elif block_a or block_b:
+        # One has block, other doesn't
+        block_match = None  # Indeterminate
+
+    # --- Unit Matching (EXACT, for condos) ---
+    if unit_a and unit_b:
+        if unit_a == unit_b:
+            unit_match = True
+        else:
+            unit_match = False
+            return False, 0.0, f"Unit mismatch: {unit_a} vs {unit_b}"
+
+    # --- Subdivision Matching (FUZZY) ---
+    if subdiv_a and subdiv_b:
+        # Normalize both subdivisions
+        norm_a = normalize_subdivision_for_matching(subdiv_a)
+        norm_b = normalize_subdivision_for_matching(subdiv_b)
+
+        # Use token_set_ratio for better partial matching
+        # This handles cases like "TAMPA PALMS" vs "TAMPA PALMS SECTION 20"
+        # token_set_ratio is order-independent and handles subsets
+        subdiv_score = fuzz.token_set_ratio(norm_a, norm_b) / 100.0
+
+        logger.debug(
+            f"Legal fuzzy match: '{subdiv_a}' vs '{subdiv_b}' | "
+            f"normalized: '{norm_a}' vs '{norm_b}' | score: {subdiv_score:.2f}"
+        )
+
+        if subdiv_score >= threshold:
+            subdiv_match = True
+        else:
+            subdiv_match = False
+            reason = f"Subdivision mismatch: '{subdiv_a}' vs '{subdiv_b}' (score: {subdiv_score:.2f})"
+            logger.debug(f"Legal match FAILED: {reason}")
+            return False, subdiv_score, reason
+    elif subdiv_a or subdiv_b:
+        # One has subdivision, other doesn't - this is suspicious
+        # If one legal explicitly names a subdivision and other doesn't, don't match
+        subdiv_match = None  # Indeterminate - but require at least one solid match
+    else:
+        # Neither has subdivision - we can't verify they're the same property
+        # Just having matching lot/block isn't enough (lot 4 block 8 exists in many subdivisions)
+        # Mark as indeterminate but we'll require subdivision match for high confidence
+        subdiv_match = None
+
+    # --- Calculate overall confidence ---
+    # Count how many components matched vs were testable
+    matched_components = sum(1 for m in [lot_match, block_match, subdiv_match, unit_match] if m is True)
+    testable_components = sum(1 for m in [lot_match, block_match, subdiv_match, unit_match] if m is not None)
+
+    if testable_components == 0:
+        # No components could be compared - can't determine match
+        return False, 0.0, "No comparable components (lot, block, subdivision, unit)"
+
+    # All testable components must match
+    all_matched = all(m is True for m in [lot_match, block_match, subdiv_match, unit_match] if m is not None)
+
+    if all_matched:
+        # CRITICAL: For lot/block matches, we REQUIRE subdivision confirmation
+        # "Lot 4 Block 8" could exist in hundreds of subdivisions
+        # Without subdivision match, we can't confirm it's the same property
+        if (lot_match or block_match) and subdiv_match is None:
+            # We have lot/block match but couldn't compare subdivisions
+            # This is NOT a confident match - could be different properties
+            reason = f"Lot/block match but no subdivision to verify (lot={lots_a}, block={block_a})"
+            logger.debug(f"Legal match FAILED: {reason} | '{legal_a}' vs '{legal_b}'")
+            return False, 0.3, reason
+
+        # Calculate confidence based on what matched
+        # More components matched = higher confidence
+        base_confidence = matched_components / max(testable_components, 1)
+
+        # Weight subdivision score into confidence if available
+        if subdiv_match is True and subdiv_score > 0:
+            confidence = (base_confidence + subdiv_score) / 2
+        else:
+            confidence = base_confidence
+
+        # Build reason string
+        matched_parts = []
+        if lot_match:
+            matched_parts.append(f"lot={list(lots_a & lots_b)}")
+        if block_match:
+            matched_parts.append(f"block={block_a}")
+        if unit_match:
+            matched_parts.append(f"unit={unit_a}")
+        if subdiv_match:
+            matched_parts.append(f"subdiv={subdiv_a} ({subdiv_score:.2f})")
+
+        reason = f"Match: {', '.join(matched_parts)}"
+        logger.debug(f"Legal match SUCCESS: {reason} | '{legal_a}' vs '{legal_b}'")
+        return True, confidence, reason
+    # Should not reach here due to early returns, but just in case
+    return False, 0.0, "Component mismatch"
+
+
 if __name__ == "__main__":
     # Test the utilities
     test_cases = [
@@ -826,3 +1118,34 @@ if __name__ == "__main__":
         print(f"Parsed: {parsed}")
         perms = generate_search_permutations(parsed, test)
         print(f"Search permutations: {perms}")
+
+    # Test legal_descriptions_match()
+    print("\n" + "=" * 60)
+    print("LEGAL DESCRIPTION MATCHING TESTS")
+    print("=" * 60)
+
+    match_test_cases = [
+        # Should match - same property different formats
+        ("L 4 B 8 TOUCHSTONE PH 2", "LOT 4 BLOCK 8 TOUCHSTONE PHASE 2", True),
+        ("LOT 15 BLOCK 3 TAMPA PALMS SEC 20", "L 15 B 3 TAMPA PALMS SECTION 20", True),
+        ("UNIT 5 HARBOUR ISLAND CONDO", "UNIT 5 HARBOUR ISLAND CONDOMINIUM", True),
+        ("L 4 B 8 TOUCHSTONE SUBDIVISION", "LOT 4 BLOCK 8 TOUCHSTONE SUB", True),
+        # Should NOT match - different lots
+        ("L 4 B 8 TOUCHSTONE PH 2", "L 5 B 8 TOUCHSTONE PH 2", False),
+        # Should NOT match - different blocks
+        ("L 4 B 8 TOUCHSTONE PH 2", "L 4 B 9 TOUCHSTONE PH 2", False),
+        # Should NOT match - different subdivisions
+        ("L 4 B 8 TOUCHSTONE SUBDIVISION", "L 4 B 8 SWEETWATER SUBDIVISION", False),
+        # Should NOT match - can't verify (parser limitation - no subdivision extracted)
+        # "LOT 4 BLOCK 8 TOUCHSTONE PHASE TWO" - parser can't extract subdivision (TWO not digit)
+        ("L 4 B 8 TOUCHSTONE PH 2", "LOT 4 BLOCK 8 TOUCHSTONE PHASE TWO", False),
+        # Should NOT match - lot/block only without subdivision verification
+        ("L 4 B 8 TOUCHSTONE PH 2", "L 4 B 8 SWEETWATER TOWNHOMES", False),
+    ]
+
+    for legal_a, legal_b, expected in match_test_cases:
+        is_match, confidence, reason = legal_descriptions_match(legal_a, legal_b)
+        status = "✅" if is_match == expected else "❌"
+        print(f"\n{status} '{legal_a}' vs '{legal_b}'")
+        print(f"   Expected: {expected}, Got: {is_match}, Confidence: {confidence:.2f}")
+        print(f"   Reason: {reason}")

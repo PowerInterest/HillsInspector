@@ -62,42 +62,65 @@ class TaxScraper:
             await stealth.apply_stealth_async(page)
 
             try:
-                # Build search URL - use street address without city/zip for better matching
+                # Try multiple search strategies in order
+                search_queries = []
+
+                # Strategy 1: Street address only (most common)
                 search_address = self._normalize_address(property_address)
-                encoded_address = urllib.parse.quote(search_address)
-                search_url = f"{self.BASE_URL}?search_query={encoded_address}"
+                if search_address:
+                    search_queries.append(("address", search_address))
 
-                logger.info(f"Navigating to {search_url}")
-                await page.goto(search_url, timeout=60000)
-                await page.wait_for_load_state("domcontentloaded")
+                # Strategy 2: Parcel ID / Folio (more reliable if available)
+                if parcel_id and len(parcel_id) > 5:
+                    search_queries.append(("parcel", parcel_id))
 
-                # Wait for search results
-                try:
-                    await page.wait_for_selector("button:has-text('View'), text=No bills or accounts matched, text=Page", timeout=15000)
-                except Exception:
-                    logger.debug("Timeout waiting for search results selector, using fallback wait")
-                    await asyncio.sleep(8)
+                found_results = False
+                for search_type, search_term in search_queries:
+                    encoded_term = urllib.parse.quote(search_term)
+                    search_url = f"{self.BASE_URL}?search_query={encoded_term}"
 
-                # Check for "No results"
-                text = await page.inner_text("body")
-                if "No bills or accounts matched your search" in text:
-                    logger.info(f"No tax records found for {property_address}")
+                    logger.info(f"Navigating to {search_url} (search by {search_type})")
+                    await page.goto(search_url, timeout=60000)
+                    await page.wait_for_load_state("domcontentloaded")
+
+                    # Wait for search results
+                    try:
+                        await page.wait_for_selector("button:has-text('View'), text=No bills or accounts matched, text=Page", timeout=15000)
+                    except Exception:
+                        logger.debug("Timeout waiting for search results selector, using fallback wait")
+                        await asyncio.sleep(8)
+
+                    # Check for "No results"
+                    text = await page.inner_text("body")
+                    if "No bills or accounts matched your search" not in text:
+                        found_results = True
+                        break
+                    logger.debug(f"No results with {search_type} search: {search_term}")
+
+                if not found_results:
+                    logger.info(f"No tax records found for {property_address} (tried address and parcel ID)")
                     return tax_status
 
-                # Check if already on detail page
+                # Wait for JavaScript redirect to complete (site auto-redirects to detail page on unique match)
+                await asyncio.sleep(3)
+
+                # Re-check URL and page content after redirect
                 page_url = page.url
+                text = await page.inner_text("body")
+
+                # Check if already on detail page (the site redirects directly when there's a unique match)
                 is_search_page = "search_query=" in page_url
-                
-                # Broaden detection of detail page
-                has_detail_markers = any(marker in text for marker in ["Account Summary", "Real Estate Account", "Property Information", "Amount Due", "Assessed Value"])
-                already_on_detail = (
-                    has_detail_markers and
-                    (
-                        not is_search_page or (
-                            "/property-tax/" in page_url and len(page_url.split("/")[-1]) > 15
-                        )
-                    )
-                )
+                # URL pattern for detail page: /property-tax/{base64_id}
+                is_detail_url = "/property-tax/" in page_url and len(page_url.split("/")[-1]) > 20
+
+                # Check for content markers indicating we're on detail page
+                detail_markers = ["Account Summary", "Real Estate Account", "Amount due", "Account history", "Your account is"]
+                has_detail_markers = any(marker in text for marker in detail_markers)
+
+                already_on_detail = is_detail_url or (has_detail_markers and not is_search_page)
+
+                if already_on_detail:
+                    logger.debug(f"Already on detail page for {property_address}")
 
                 view_links = []
                 if not already_on_detail:
@@ -428,17 +451,25 @@ class TaxScraper:
         """
         Normalize address for search.
 
-        Removes common suffixes like DR, ST, AVE, etc. to improve matching.
+        Extracts just the street address (number + street name) without city/state/zip.
+        This improves matching on the tax collector site.
         """
         if not address:
             return ""
 
-        # Keep only the street number and first part of street name
-        # This helps match variations like "123 MAIN ST" vs "123 MAIN STREET"
-        parts = address.upper().strip().split()
+        # Remove common separators and city/state/zip
+        # Pattern: "123 MAIN ST, TAMPA, FL 33602" -> "123 MAIN ST"
+        # Also handles: "123 MAIN ST, TAMPA, FL- 33602" (note the dash)
+        address = address.upper().strip()
 
-        # Build normalized address - include suffix for uniqueness but don't over-filter
-        return " ".join(parts)
+        # Split on comma and take just the street portion
+        if ',' in address:
+            address = address.split(',')[0].strip()
+
+        # Remove any remaining state/zip at the end (e.g., "FL 33602" or "FL- 33602")
+        address = re.sub(r'\s+FL[-\s]*\d{5}.*$', '', address, flags=re.IGNORECASE)
+
+        return address.strip()
 
     @staticmethod
     def _parse_amount_due(text: str) -> Optional[float]:
