@@ -631,6 +631,7 @@ class PermitScraper:
             permits_data.append(permit_dict)
 
         # Find most recent screenshot
+        safe_addr = re.sub(r'[^\w\s-]', '', address).replace(' ', '_')[:30]
         screenshot_files = list(self.output_dir.glob(f"permit_*_{safe_addr}*.png"))
         screenshot_path = None
         if screenshot_files:
