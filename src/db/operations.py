@@ -426,9 +426,7 @@ class PropertyDB:
     def mark_hcpa_scrape_failed(self, case_number: str, error: str) -> None:
         """Record an HCPA scrape failure on the auction row."""
         conn = self.connect()
-        conn.execute(
-            "ALTER TABLE auctions ADD COLUMN hcpa_scrape_failed INTEGER DEFAULT 0"
-        )
+        self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN hcpa_scrape_failed INTEGER DEFAULT 0")
         self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN hcpa_scrape_error TEXT")
         conn.execute(
             """
@@ -444,9 +442,7 @@ class PropertyDB:
     def mark_ori_party_fallback_used(self, case_number: str, note: str = "") -> None:
         """Record that ORI party-search fallback was used (for review)."""
         conn = self.connect()
-        conn.execute(
-            "ALTER TABLE auctions ADD COLUMN ori_party_fallback_used INTEGER DEFAULT 0"
-        )
+        self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN ori_party_fallback_used INTEGER DEFAULT 0")
         self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN ori_party_fallback_note TEXT")
         conn.execute(
             """

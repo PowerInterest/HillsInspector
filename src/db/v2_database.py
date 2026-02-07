@@ -42,6 +42,8 @@ class V2Database:
                 acquisition_price DOUBLE,
                 link_status TEXT,
                 confidence_score DOUBLE,
+                mrta_status TEXT DEFAULT 'pending',
+                years_covered DOUBLE DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -125,6 +127,18 @@ class V2Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Migrations for existing databases missing new columns
+        for col, col_type, default in [
+            ("mrta_status", "TEXT", "'pending'"),
+            ("years_covered", "DOUBLE", "0"),
+        ]:
+            try:
+                conn.execute(
+                    f"ALTER TABLE chain_of_title ADD COLUMN {col} {col_type} DEFAULT {default}"
+                )
+            except Exception:
+                pass  # Column already exists
 
     def close(self) -> None:
         """Close the V2 database connection if open."""

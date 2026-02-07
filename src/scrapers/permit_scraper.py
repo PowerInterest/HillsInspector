@@ -28,6 +28,7 @@ from typing import List, Optional, Dict, Any
 from loguru import logger
 
 from playwright.async_api import async_playwright, Page
+from playwright_stealth import Stealth
 from src.utils.time import now_utc
 
 # Import VisionService for complex pages
@@ -285,6 +286,7 @@ class PermitScraper:
                 viewport={'width': 1280, 'height': 900}
             )
             page = await context.new_page()
+            await Stealth().apply_stealth_async(page)
 
             try:
                 # Navigate to portal
@@ -605,13 +607,6 @@ class PermitScraper:
         Returns:
             List of Permit objects
         """
-        # Check cache
-        if not force_refresh and not self.storage.needs_refresh(property_id, "permits", max_age_days=7):
-            cached = self.storage.get_latest(property_id, "permits")
-            if cached and cached.extraction_success:
-                logger.debug(f"Using cached permit data for {property_id}")
-                return []  # Data is in cache
-
         # Scrape permits
         permits = await self.get_permits(address, city)
 
@@ -636,7 +631,7 @@ class PermitScraper:
             permits_data.append(permit_dict)
 
         # Find most recent screenshot
-        screenshot_files = list(self.output_dir.glob(f"permit_*_{address.replace(' ', '_')[:30]}*.png"))
+        screenshot_files = list(self.output_dir.glob(f"permit_*_{safe_addr}*.png"))
         screenshot_path = None
         if screenshot_files:
             latest_screenshot = max(screenshot_files, key=lambda x: x.stat().st_mtime)
