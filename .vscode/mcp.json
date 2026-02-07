@@ -1,0 +1,43 @@
+{
+	"servers": {
+		"microsoft/playwright-mcp": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"@playwright/mcp@latest"
+			],
+			"gallery": "https://api.mcp.github.com",
+			"version": "0.0.1-seed"
+		},
+		"cloudflare-radar": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"mcp-remote",
+				"https://radar.mcp.cloudflare.com/mcp"
+			],
+			"env": {
+				"CLOUDFLARE_API_TOKEN": "Xatv0EaCbN2kkAE0JyqiDo00p2g9sQElreDmw6x-"
+			}
+		},
+		"context7": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"-y",
+				"@upstash/context7-mcp",
+				"--api-key",
+				"ctx7sk-19454ef8-e2fd-439a-b8bc-9ed5cf6c290e"
+			]
+		},
+		"censys-platform": {
+			"type": "http",
+			"url": "https://mcp.platform.censys.io/platform/mcp/",
+			"headers": {
+				"Authorization": "Bearer 91c85b3f-c978-494f-9bf8-93b32dda9af4",
+				"X-Organization-ID": "91c85b3f-c978-494f-9bf8-93b32dda9af4"
+			}
+		}
+	},
+	"inputs": []
+}

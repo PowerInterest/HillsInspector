@@ -1,4 +1,91 @@
 {
+    "chatgpt.commentCodeLensEnabled": false,
+    "terminal.integrated.profiles.linux": {
+        "Claude+Codex": {
+            "path": "/usr/bin/tmux",
+            "args": [
+                "new-session",
+                "-A",
+                "-s",
+                "AI",
+                "bash",
+                "-c",
+                "source .venv/bin/activate 2>/dev/null; /home/elalto@dbag.lab/.local/bin/claude --dangerously-skip-permissions",
+                ";",
+                "split-window",
+                "-h",
+                "bash",
+                "-c",
+                "source .venv/bin/activate 2>/dev/null; codex --ask-for-approval never --sandbox danger-full-access --enable web_search_request"
+            ],
+            "icon": "hubot",
+            "color": "terminal.ansiMagenta",
+            "overrideName": true
+        },
+        "Claude": {
+            "path": "/usr/bin/tmux",
+            "args": [
+                "new-session",
+                "-A",
+                "-s",
+                "Claude",
+                "bash",
+                "-c",
+                "source .venv/bin/activate 2>/dev/null; /home/elalto@dbag.lab/.local/bin/claude --dangerously-skip-permissions"
+            ],
+            "icon": "hubot",
+            "color": "terminal.ansiRed",
+            "overrideName": true
+        },
+        "Codex": {
+            "path": "/usr/bin/tmux",
+            "args": [
+                "new-session",
+                "-A",
+                "-s",
+                "Codex",
+                "bash",
+                "-c",
+                "source .venv/bin/activate 2>/dev/null; codex --ask-for-approval never --sandbox danger-full-access --enable web_search_request"
+            ],
+            "icon": "code",
+            "color": "terminal.ansiGreen",
+            "overrideName": true
+        },
+        "Gem": {
+            "path": "/usr/bin/tmux",
+            "args": [
+                "new-session",
+                "-A",
+                "-s",
+                "Gem",
+                "gemini"
+            ],
+            "icon": "keyboard",
+            "color": "terminal.ansiBlue",
+            "overrideName": true
+        },
+        "Monitor": {
+            "path": "/usr/bin/tmux",
+            "args": [
+                "new-session",
+                "-A",
+                "-s",
+                "Monitor",
+                "htop",
+                ";",
+                "split-window",
+                "-h",
+                "nvtop"
+            ],
+            "icon": "pulse",
+            "color": "terminal.ansiYellow",
+            "overrideName": true
+        }
+    },
+    "mcp.configFiles": [
+        "${workspaceFolder}/.vscode/mcp.json"
+    ],
     "python.pythonPath": ".venv/bin/python",
     "[python]": {
         "editor.defaultFormatter": "charliermarsh.ruff",

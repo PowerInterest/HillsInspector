@@ -13,6 +13,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from src.utils.time import now_utc, today_local
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
+from src.utils.logging_utils import log_search, Timer
 
 
 async def apply_stealth(page):
@@ -171,7 +172,15 @@ class ORIApiScraper:
             "RecordDateEnd": end_date or today_local().strftime("%m/%d/%Y"),
             "Legal": ["CONTAINS", clean_legal],
         }
-        return self._execute_search(payload)
+        with Timer() as t:
+            results = self._execute_search(payload)
+        log_search(
+            source="ORI_API",
+            query=f"legal:{clean_legal}",
+            results_raw=len(results),
+            duration_ms=t.ms,
+        )
+        return results
 
     def search_by_legal_parallel(
         self,
@@ -199,7 +208,14 @@ class ORIApiScraper:
         def search_single(term: str) -> tuple[str, List[Dict[str, Any]]]:
             """Search a single term and return (term, results)."""
             try:
-                results = self.search_by_legal(term, start_date)
+                with Timer() as t:
+                    results = self.search_by_legal(term, start_date)
+                log_search(
+                    source="ORI_API",
+                    query=f"legal:{term}",
+                    results_raw=len(results),
+                    duration_ms=t.ms,
+                )
                 return (term, results)
             except Exception as e:
                 logger.debug(f"Parallel search failed for '{term}': {e}")
@@ -228,9 +244,12 @@ class ORIApiScraper:
                 seen_instruments.add(instrument)
                 unique_results.append(doc)
 
-        if successful_terms:
-            logger.info(f"Parallel search: {len(unique_results)} unique docs from {len(successful_terms)} successful terms")
-
+        log_search(
+            source="ORI_API",
+            query=f"legal_parallel:{len(search_terms)} terms",
+            results_raw=len(unique_results),
+            results_kept=len(unique_results),
+        )
         return unique_results
 
     def search_by_party(
@@ -316,7 +335,8 @@ class ORIApiScraper:
             await apply_stealth(page_obj)
 
             logger.debug(f"ORI Browser GET: {url}")
-            await page_obj.goto(url, timeout=60000)
+            with Timer() as t:
+                await page_obj.goto(url, timeout=60000)
             await page_obj.wait_for_load_state("domcontentloaded", timeout=30000)
             await asyncio.sleep(2)
 
@@ -354,7 +374,12 @@ class ORIApiScraper:
                     }
                     results.append(normalized)
 
-            logger.info(f"Found {len(results)} records for book/page: {book}/{page}")
+            log_search(
+                source="ORI_CQID",
+                query=f"book_page:{book}/{page}",
+                results_raw=len(results),
+                duration_ms=t.ms,
+            )
             return results
 
         except Exception as e:

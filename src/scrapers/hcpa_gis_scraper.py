@@ -60,11 +60,43 @@ def convert_bulk_parcel_to_url_format(bulk_parcel: str) -> str:
     return bulk_parcel
 
 
+async def _wait_for_page_load(page) -> bool:
+    """
+    Wait for key elements to appear that indicate the page has loaded content.
+    Returns True when content is ready.
+    Properly cancels pending tasks to prevent resource leaks.
+    """
+    # Create tasks for different success/failure indicators
+    tasks = [
+        asyncio.create_task(page.wait_for_selector(".parcel-result, #parcel-result, .property-card", timeout=15000)),
+        asyncio.create_task(page.wait_for_selector(".property-image, .parcel-image, img[src*='hcpafl.org']", timeout=15000)),
+        asyncio.create_task(page.wait_for_selector("text=no results", timeout=15000)),
+    ]
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        # CRITICAL: Cancel all pending tasks to prevent orphaned coroutines
+        for task in pending:
+            task.cancel()
+            # Suppress CancelledError from cancelled tasks
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        return len(done) > 0
+    except Exception:
+        # Cancel all tasks on error
+        for task in tasks:
+            task.cancel()
+        return False
+
+
 async def scrape_hcpa_property(
     parcel_id: str | None = None,
     folio: str | None = None,
     storage: ScraperStorage | None = None,
-    timeout_seconds: int = 300, # Increased from 120s for slow connections
+    timeout_seconds: int = 120,
+    page: "Page | None" = None,  # Optional: reuse existing page to avoid browser spawn
+    storage_key: str | None = None,  # Optional: override storage ID (e.g. use Case Number)
 ) -> dict:
     """
     Scrape property data from HCPA GIS portal (async version).
@@ -74,13 +106,14 @@ async def scrape_hcpa_property(
         folio: The folio number (e.g., 1918870000) - will search for parcel
         storage: Optional ScraperStorage instance
         timeout_seconds: Overall timeout in seconds for the scrape operation
+        page: Optional Playwright page to reuse (avoids spawning new browser)
 
     Returns:
         Dictionary with property data including sales history
     """
     try:
         return await asyncio.wait_for(
-            _scrape_hcpa_property_impl(parcel_id, folio, storage),
+            _scrape_hcpa_property_impl(parcel_id, folio, storage, page, storage_key),
             timeout=timeout_seconds,
         )
     except TimeoutError:
@@ -106,8 +139,15 @@ async def _scrape_hcpa_property_impl(
     parcel_id: str | None = None,
     folio: str | None = None,
     storage: ScraperStorage | None = None,
+    page: "Page | None" = None,
+    storage_key: str | None = None,
 ) -> dict:
-    """Internal implementation of HCPA property scraping."""
+    """
+    Internal implementation of HCPA property scraping.
+    
+    If page is provided, uses existing page (no browser spawn).
+    If page is None, creates new browser instance (standalone use).
+    """
     if not storage:
         storage = ScraperStorage()
 
@@ -124,22 +164,30 @@ async def _scrape_hcpa_property_impl(
         "permits": [],
     }
 
+    # Track whether we own the browser (need to clean up) or are reusing
+    owns_browser = page is None
     playwright = None
     browser = None
+    
     try:
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080},
-            locale='en-US',
-            timezone_id='America/New_York',
-        )
-        page = await context.new_page()
-        # Set default navigation timeout to 60s
-        page.set_default_navigation_timeout(60000)
-        page.set_default_timeout(30000) # 30s for actions
-        await apply_stealth(page)
+        if owns_browser:
+            # No page provided - create new browser (standalone usage)
+            logger.debug("HCPA scraper: launching new browser instance")
+            playwright = await async_playwright().start()
+            browser = await playwright.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={'width': 1920, 'height': 1080},
+                locale='en-US',
+                timezone_id='America/New_York',
+            )
+            page = await context.new_page()
+            page.set_default_navigation_timeout(30000)
+            page.set_default_timeout(30000)
+            await apply_stealth(page)
+        else:
+            # Page provided - reuse it (no browser spawn needed)
+            logger.debug("HCPA scraper: reusing provided page instance")
 
         if parcel_id:
             url = f"https://gis.hcpafl.org/propertysearch/#/parcel/basic/{parcel_id}"
@@ -147,9 +195,14 @@ async def _scrape_hcpa_property_impl(
             # Go to search page and search by folio
             url = "https://gis.hcpafl.org/propertysearch/#/search/basic"
             logger.info(f"HCPA GIS GET: {url}")
-            await page.goto(url)
-            await page.wait_for_load_state("domcontentloaded")
+            try:
+                await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+            except Exception as e:
+                logger.error(f"Failed to load search page: {e}")
+                return result
+
             await asyncio.sleep(2)
+
 
             # Find and fill folio search
             folio_input = page.locator('input[placeholder*="Folio"]').first
@@ -175,33 +228,55 @@ async def _scrape_hcpa_property_impl(
             await playwright.stop()
             raise ValueError("Must provide either parcel_id or folio")
 
-        logger.info(f"HCPA GIS GET: {url}")
-        await page.goto(url)
-        await page.wait_for_load_state("domcontentloaded")
-
-        # Wait for page to fully load - needs more time for all sections
-        await asyncio.sleep(5)
+        if url:
+            logger.info(f"HCPA GIS GET: {url}")
+            try:
+                # 1. Navigation with strict timeout
+                await page.goto(url, timeout=20000, wait_until="domcontentloaded")
+                
+                # 2. explicit wait for the property image or map image, which signals page load completion
+                # We also check for the "no results" text in parallel to fail fast
+                try:
+                    await asyncio.wait_for(
+                        _wait_for_page_load(page),
+                        timeout=50000 # 15s wait for content
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout waiting for property image/content for {url}")
+                
+            except Exception as e:
+                logger.error(f"Navigation/Load failed for {url}: {e}")
+                result["error"] = f"Navigation failed: {str(e)[:100]}"
+                return result
 
         # Check for error/no results indicators on the page
-        page_text = await page.inner_text("body")
-        no_results_indicators = ["no results", "parcel not found", "invalid parcel", "no parcel"]
-        if any(indicator in page_text.lower() for indicator in no_results_indicators):
-            prop_id = folio or parcel_id or "unknown"
-            logger.warning(f"HCPA GIS page indicates no results for {prop_id}")
-            result["error"] = f"HCPA page shows no results for parcel {prop_id}"
+        try:
+            page_text = await page.inner_text("body", timeout=5000)
+            no_results_indicators = ["no results", "parcel not found", "invalid parcel", "no parcel"]
+            if any(indicator in page_text.lower() for indicator in no_results_indicators):
+                prop_id = folio or parcel_id or "unknown"
+                logger.warning(f"HCPA GIS page indicates no results for {prop_id}")
+                result["error"] = f"HCPA page shows no results for parcel {prop_id}"
+        except Exception as e:
+            logger.warning(f"Could not check page text: {e}")
 
-        # Take screenshot
-        screenshot_bytes = await page.screenshot(full_page=True)
+        # Take screenshot with strict timeout
+        try:
+            screenshot_bytes = await page.screenshot(full_page=True, timeout=10000)
+            
+            # Use storage_key if provided, otherwise folio or parcel_id
+            prop_id = storage_key or folio or parcel_id or "unknown"
 
-        # Use folio if available, else parcel_id as property_id
-        prop_id = folio or parcel_id or "unknown"
+            screenshot_path = storage.save_screenshot(
+                property_id=prop_id,
+                scraper="hcpa_gis",
+                image_data=screenshot_bytes
+            )
+            logger.info(f"Screenshot saved to: {screenshot_path}")
+        except Exception as e:
+            logger.error(f"Failed to take screenshot for {url}: {e}")
+            # Don't fail the whole scrape just because screenshot failed
 
-        screenshot_path = storage.save_screenshot(
-            property_id=prop_id,
-            scraper="hcpa_gis",
-            image_data=screenshot_bytes
-        )
-        logger.info(f"Screenshot saved to: {screenshot_path}")
 
         # Extract property info from the Property Record Card section
         try:
@@ -470,17 +545,32 @@ async def _scrape_hcpa_property_impl(
             logger.error(f"Error extracting permits: {e}")
 
     finally:
-        # Ensure cleanup happens even on timeout/cancellation
-        try:
-            if browser:
-                await browser.close()
-        except Exception as e:
-            logger.debug(f"Error closing browser: {e}")
-        try:
-            if playwright:
-                await playwright.stop()
-        except Exception as e:
-            logger.debug(f"Error stopping playwright: {e}")
+        # Only clean up browser if we created it (owns_browser=True)
+        # If page was passed in, caller is responsible for cleanup
+        if owns_browser:
+            async def _safe_cleanup():
+                try:
+                    if browser:
+                        await browser.close()
+                except Exception as e:
+                    logger.debug(f"Error closing browser: {e}")
+                try:
+                    if playwright:
+                        await playwright.stop()
+                except Exception as e:
+                    logger.debug(f"Error stopping playwright: {e}")
+            
+            try:
+                await asyncio.wait_for(_safe_cleanup(), timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("Browser cleanup timed out after 10s - forcing termination")
+                try:
+                    if browser and hasattr(browser, '_impl_obj') and browser._impl_obj:
+                        proc = getattr(browser._impl_obj, '_process', None)
+                        if proc:
+                            proc.kill()
+                except Exception:
+                    pass
 
     # Save raw data
     prop_id = folio or parcel_id or "unknown"
@@ -491,13 +581,13 @@ async def _scrape_hcpa_property_impl(
         context="property_details"
     )
 
-    # Record scrape
-    storage.record_scrape(
+    # Record scrape (use async version to avoid blocking event loop)
+    await storage.record_scrape_async(
         property_id=prop_id,
         scraper="hcpa_gis",
         screenshot_path=screenshot_path,
         raw_data_path=raw_path,
-        vision_data=result, # It's not vision data but structured data
+        vision_data=result,
         success=True
     )
 

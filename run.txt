@@ -1,3 +1,6 @@
+claude --dangerously-skip-permissions
+codex --ask-for-approval never --sandbox danger-full-access --enable web_search_request
+  
   # Start web server with ngrok tunnel
   uv run main.py --web --ngrok
 
@@ -58,3 +61,20 @@ Summary: ORI Public Access Search Options
 
    append the “2025‑12‑27
   — History Workflow Review” section to code/HillsInspector/docs/PAST.md, and I’ll do it.
+
+    Logic/Bug Impact
+
+  - Judgment extraction step will continually mark cases as missing PDFs unless files are manually placed
+    under data/properties/..., because the scraper/inbox path and orchestrator lookup path differ.
+  - If ScraperStorage DB integration is ever re-enabled, it will point at the wrong DB filename.
+
+  Suggested Alignment Tasks
+
+  1. Pick a single raw artifact root (data/properties) and update ScraperStorage,
+     orchestrator PDF lookups, and docs accordingly.
+  2. Update README to reflect actual DB architecture (SQLite primary data/
+     property_master_v2.db) and current 40‑day window, or change code to match the documented 60‑day plan.
+  3. Decide on pandas vs Polars; if Polars-only is the policy, refactor pandas usages 
+  4. Enable judgment PDF download in the pipeline (set process_final_judgments=True and route saves to the
+     chosen artifact path) 
+  5. Adjust “Zero-JS” language to acknowledge HTMX

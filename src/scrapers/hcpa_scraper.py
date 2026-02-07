@@ -4,6 +4,7 @@ import json
 from typing import Optional
 from loguru import logger
 from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
 
 from src.models.property import Property
 from src.services.scraper_storage import ScraperStorage
@@ -34,7 +35,8 @@ class HCPAScraper:
                 user_agent=USER_AGENT
             )
             page = await context.new_page()
-            
+            await Stealth().apply_stealth_async(page)
+
             try:
                 logger.info("Visiting {url} to enrich parcel {parcel} (case {case})", url=self.BASE_URL, parcel=prop.parcel_id, case=prop.case_number)
                 await page.goto(self.BASE_URL, timeout=60000)

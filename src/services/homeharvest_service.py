@@ -8,7 +8,7 @@ import time
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-import pandas as pd
+from math import isnan
 from loguru import logger
 from homeharvest import scrape_property
 from src.db.operations import PropertyDB
@@ -343,8 +343,8 @@ class HomeHarvestService:
                 return True  # Not a blocking error, just no data
 
             # Take the most recent relevant record (usually the first one)
-            # HomeHarvest returns a DataFrame.
-            row = df.iloc[0]
+            # HomeHarvest returns a pandas DataFrame - convert to dict at boundary.
+            row = df.iloc[0].to_dict()
             data = self._build_record_data(folio, row)
             self.insert_record_data(data)
             logger.success(f"Saved data for {folio}")
@@ -424,12 +424,21 @@ class HomeHarvestService:
             logger.error(f"Error processing {location}: {e}")
             return None, "error"
 
-    def _build_record_data(self, folio: str, row: pd.Series) -> Dict[str, Any]:
+    def _build_record_data(self, folio: str, row: Dict[str, Any]) -> Dict[str, Any]:
+        def _is_na(v: Any) -> bool:
+            """Check if value is None or NaN."""
+            if v is None:
+                return True
+            try:
+                return isinstance(v, float) and isnan(v)
+            except (TypeError, ValueError):
+                return False
+
         # Helper to get value safely
         def val(col, dtype=str):
             if col not in row: return None
             v = row[col]
-            if pd.isna(v): return None
+            if _is_na(v): return None
             try:
                 if dtype == 'json': return json.dumps(v, default=str)
                 if dtype == 'bool': return bool(v)
@@ -444,8 +453,10 @@ class HomeHarvestService:
             v = val(col)
             if not v: return None
             try:
-                # pandas timestamp to string
-                return pd.to_datetime(v).isoformat()
+                from datetime import datetime
+                if hasattr(v, 'isoformat'):
+                    return v.isoformat()
+                return datetime.fromisoformat(str(v)).isoformat()
             except Exception:
                 return str(v)
 

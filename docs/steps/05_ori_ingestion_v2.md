@@ -1,4 +1,4 @@
-# Step 4v2: ORI Ingestion & Chain of Title
+# Step 5: ORI Ingestion & Chain of Title (V2)
 
 **Version:** 2.0
 **Status:** Implemented & Tested

@@ -4,8 +4,14 @@
 - Entry point: `main.py` (flags: `--update`, `--web`, `--new`); orchestration in `src/orchestrator.py`.
 - Scrapers in `src/scrapers/`; ingest helpers in `src/ingest/`; transforms/enrichment in `src/services/`; shared utilities in `src/utils/`.
 - DuckDB schema and scripts in `src/db/`; FastAPI + Jinja app in `app/web/` with API helpers in `app/services/` and DB wiring in `app/web/database.py`.
-- Databases: main DB `data/property_master.db`; web snapshot DB `data/property_master_web.db` (refreshed periodically during `--update` and on `--web` startup; use this for read-only access if the main DB is locked); historical auctions DB `data/history.db`.
-- Raw artifacts live under `data/properties/` (per-folio parquet/json/pdfs/photos); logs in `logs/`; docs in `docs/`; maintenance scripts in `scripts/`.
+- **Primary Database**: `data/property_master_sqlite.db` (SQLite) for transactional data, status tracking, and simple queries.
+- **Analytics Database**: `data/property_master_v2.db` (DuckDB) for complex title chain analysis and heavy-lifting queries.
+- **Web Snapshot**: `data/property_master_web.db` (SQLite) refreshable snapshot for read-only web access.
+- **Data Flow (Inbox Strategy)**:
+    - Scrapers write raw data (Parquet) and assets (PDFs) to case-specific folders: `data/Foreclosure/{case_number}/`.
+    - `InboxScanner` (`src/ingest/inbox_scanner.py`) picks up `auction.parquet` files, ingests them into SQLite, and moves them to a `consumed/` subfolder.
+    - This decouples scraping (io-bound, parallel) from database writes (locking, serial), preventing `database is locked` errors.
+- Logs in `logs/`; docs in `docs/`; maintenance scripts in `scripts/`.
 - Tests belong in `tests/` mirroring module paths; fixtures in `tests/fixtures/`.
 
 ## Build, Test, and Development Commands
@@ -19,7 +25,11 @@
 ## Coding Style & Naming Conventions
 - Python 3.12, 4-space indents, prefer double quotes; avoid relative imports (see `pyproject.toml`).
 - Modules/files snake_case; classes PascalCase; functions/vars snake_case; constants UPPER_SNAKE.
-- Use Polars for dataframes and DuckDB for storage; avoid pandas/sqlite; favor bulk operations over row-by-row inserts.
+- **Data Persistence**:
+    - **Raw Data**: Write to Parquet files in `data/Foreclosure/{case_number}/`.
+    - **Transactional**: Use SQLite (`src/db/operations.py`) for property status and updates.
+    - **Analysis**: Use DuckDB (`src/db/v2/`) for complex aggregations and title chains.
+    - **Dataframes**: Use Polars for data manipulation.
 - Ruff formatter target width ~88 chars; keep comments minimal and purposeful.
 
 ## Testing Guidelines

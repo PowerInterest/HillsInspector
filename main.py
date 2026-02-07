@@ -13,20 +13,19 @@ import logging
 import os
 import shutil
 import signal
+import sqlite3
 import sys
 from datetime import date
 from pathlib import Path
 
-import duckdb
 from loguru import logger
 
-from config.step4v2 import V2_DB_PATH
-from src.db.migrations.create_v2_database import create_v2_database
-from src.db.new import create_database
+from src.db.migrations.create_sqlite_database import create_sqlite_database
 from src.ingest.bulk_parcel_ingest import download_and_ingest
 from src.utils.db_lock import DatabaseLockError, exclusive_db_lock
 from src.utils.db_snapshot import DatabaseSnapshotError, refresh_web_snapshot
 from src.utils.time import now_utc
+from src.utils.logging_utils import env_log_level, add_optional_sinks
 
 
 class InterceptHandler(logging.Handler):
@@ -51,9 +50,10 @@ class InterceptHandler(logging.Handler):
 
 # Configure logging - both console and file
 logger.remove()
+_level = env_log_level("INFO")
 logger.add(
     sys.stderr,
-    level="INFO",
+    level=_level,
     format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
     backtrace=True,
     diagnose=True,
@@ -63,12 +63,13 @@ logger.add(
     "logs/hills_inspector_{time:YYYY-MM-DD}.log",
     rotation="00:00",  # Rotate at midnight daily
     retention="30 days",
-    level="INFO",
+    level=_level,
     format="{time:HH:mm:ss} | {level: <8} | {module}:{function}:{line} | {extra} - {message}{exception}",
     backtrace=True,
     diagnose=True,
     enqueue=False,
 )
+add_optional_sinks()
 
 # Intercept standard logging (Playwright, httpx, etc.) and route to loguru
 logging.basicConfig(handlers=[InterceptHandler()], level=logging.INFO, force=True)
@@ -76,19 +77,19 @@ for logger_name in ["playwright", "httpx", "httpcore", "asyncio", "urllib3"]:
     logging.getLogger(logger_name).handlers = [InterceptHandler()]
     logging.getLogger(logger_name).propagate = False
 
-DB_PATH = Path("data/property_master.db")
+DB_PATH = Path("data/property_master_sqlite.db")
 
 # Global shutdown flag for signal handlers
 _shutdown_requested = False
 
 
 def _checkpoint_and_cleanup(reason: str = "shutdown") -> None:
-    """Checkpoint the database to flush WAL and preserve data."""
+    """Checkpoint the SQLite database to flush WAL and preserve data."""
     try:
         if DB_PATH.exists():
-            conn = duckdb.connect(str(DB_PATH), read_only=False)
+            conn = sqlite3.connect(str(DB_PATH), timeout=30.0)
             try:
-                conn.execute("CHECKPOINT")
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 logger.info(f"Database checkpointed on {reason} - data preserved")
             finally:
                 conn.close()
@@ -114,16 +115,14 @@ def _is_wal_replay_error(exc: Exception) -> bool:
 
 
 def _cleanup_wal_files(db_path: Path) -> None:
-    """Delete WAL only when DuckDB reports a WAL replay error on open."""
-    wal_path = db_path.with_suffix(db_path.suffix + ".wal")
+    """Delete WAL only when SQLite reports a WAL replay error on open."""
+    wal_path = Path(str(db_path) + "-wal")
     if not wal_path.exists():
         return
     try:
-        import duckdb
-
-        conn = duckdb.connect(str(db_path), read_only=False)
+        conn = sqlite3.connect(str(db_path), timeout=30.0)
         try:
-            conn.execute("CHECKPOINT")
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
             conn.close()
     except Exception as exc:
@@ -137,29 +136,23 @@ def _cleanup_wal_files(db_path: Path) -> None:
             logger.info(f"WAL cleanup skipped for {wal_path}: {exc}")
 
 def handle_new():
-    """Create new databases (v1 and v2), archiving the old ones."""
+    """Create new SQLite databases, archiving the old ones."""
     timestamp = now_utc().strftime("%Y%m%d_%H%M%S")
 
-    # Archive and create v1 database
+    # Archive existing SQLite database if it exists
     if DB_PATH.exists():
-        archive_path = DB_PATH.parent / f"property_master_{timestamp}.db"
-        logger.info(f"Archiving existing v1 database to {archive_path}")
+        archive_path = DB_PATH.parent / f"property_master_sqlite_{timestamp}.db"
+        logger.info(f"Archiving existing SQLite database to {archive_path}")
         shutil.move(str(DB_PATH), str(archive_path))
+        # Also archive WAL files
+        for ext in ["-wal", "-shm"]:
+            wal_file = Path(str(DB_PATH) + ext)
+            if wal_file.exists():
+                shutil.move(str(wal_file), str(archive_path) + ext)
 
-    logger.info("Creating new v1 database...")
-    create_database(str(DB_PATH))
-    logger.success("New v1 database created successfully.")
-
-    # Archive and create v2 database
-    v2_path = Path(V2_DB_PATH)
-    if v2_path.exists():
-        archive_path = v2_path.parent / f"property_master_v2_{timestamp}.db"
-        logger.info(f"Archiving existing v2 database to {archive_path}")
-        shutil.move(str(v2_path), str(archive_path))
-
-    logger.info("Creating new v2 database...")
-    create_v2_database()
-    logger.success("New v2 database created successfully.")
+    logger.info("Creating new SQLite database with WAL mode...")
+    create_sqlite_database()
+    logger.success("New SQLite database created successfully.")
 
     # Auto-download and ingest bulk data
     try:
@@ -415,6 +408,12 @@ def main():
         default=3,
         help="Max retries for failed cases (default 3).",
     )
+    parser.add_argument(
+        "--auction-limit",
+        type=int,
+        default=None,
+        help="Max auctions to scrape per date (for testing).",
+    )
 
     args = parser.parse_args()
 
@@ -474,6 +473,7 @@ def main():
                 skip_tax_deeds=skip_tax_deeds,
                 retry_failed=args.retry_failed,
                 max_retries=args.max_retries,
+                auction_limit=args.auction_limit,
             )
         )
     elif args.web:

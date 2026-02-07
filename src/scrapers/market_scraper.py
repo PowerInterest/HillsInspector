@@ -1,8 +1,9 @@
 """
-Market data scraper for Zillow/Realtor.com using VisionService.
+Market data scraper for Zillow using VisionService.
 
 NOTE: This scraper uses screenshot + Vision API approach due to aggressive
 bot detection on real estate sites. Uses playwright-stealth for better success rates.
+Realtor.com is handled separately by HomeHarvestService.
 """
 import asyncio
 import json
@@ -131,33 +132,22 @@ class MarketScraper:
                     logger.warning(f"Zillow scrape failed: {e}")
                     zillow_error = e
 
-                # 2. Try Realtor.com if Zillow failed or if we want secondary confirmation
-                # For now, let's try Realtor if Zillow price is missing
+                # 2. Realtor.com is handled by HomeHarvestService in parallel
+                # We do NOT want to scrape it here to avoid double-hitting the domain
+                # and increasing blocking risk.
                 if not details.price or details.status == "Unknown":
-                    logger.info(f"Zillow data incomplete, attempting Realtor.com: {realtor_url}")
-                    try:
-                        realtor_data, realtor_shot, _ = await self._scrape_source(
-                            page, realtor_url, "realtor", prop_id, self.vision.extract_realtor_listing
-                        )
-                        if realtor_data:
-                            self._update_details_from_data(details, realtor_data, "Realtor")
-                            if realtor_shot and (not details.screenshot_path or not details.price):
-                                details.screenshot_path = realtor_shot
-                            logger.success(f"Successfully scraped Realtor.com for {address}")
-                    except Exception as e:
-                        logger.warning(f"Realtor scrape failed: {e}")
-                        realtor_error = e
+                    logger.info("Zillow parsing incomplete, but skipping Realtor fallback (handled by HomeHarvest)")
 
             finally:
                 await browser.close()
 
-        # If both sources failed with errors, raise to signal retry needed
-        if zillow_error and realtor_error:
-            raise RuntimeError(f"Both market sources failed - Zillow: {zillow_error}, Realtor: {realtor_error}")
+        # If Zillow failed with error, raise to signal retry needed
+        if zillow_error:
+            raise RuntimeError(f"Zillow scrape failed: {zillow_error}")
 
-        # If we tried both and got no useful data (but no hard errors), that's also a failure
-        if not details.price and details.status == "Unknown" and (zillow_error or realtor_error):
-            raise RuntimeError(f"Market scrape failed with partial errors - Zillow: {zillow_error}, Realtor: {realtor_error}")
+        # If we got no useful data (but no hard errors), that's also a failure
+        if not details.price and details.status == "Unknown" and zillow_error:
+            raise RuntimeError(f"Market scrape failed with partial errors - Zillow: {zillow_error}")
 
         return details
 

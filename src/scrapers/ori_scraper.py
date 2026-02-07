@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 from urllib.parse import quote
 
 from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
 from loguru import logger
 
 
@@ -28,6 +29,7 @@ class ORIScraper:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
+            await Stealth().apply_stealth_async(page)
             try:
                 await page.goto(url, timeout=time_limit_ms)
                 await page.wait_for_load_state("networkidle")
