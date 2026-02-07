@@ -1,6 +1,7 @@
 
 import asyncio
 import re
+import time
 import urllib.parse
 from typing import List, Optional
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from playwright_stealth import Stealth
 from src.services.scraper_storage import ScraperStorage
 from src.services.vision_service import VisionService
 from src.models.property import TaxStatus, TaxCertificate
+from src.utils.logging_utils import log_search
 
 
 @dataclass
@@ -50,6 +52,8 @@ class TaxScraper:
             return TaxStatus()
 
         logger.info(f"Searching Tax Collector for: {property_address} (Parcel: {parcel_id})")
+        search_started = time.perf_counter()
+        result_found = False
         tax_status = TaxStatus(situs=property_address)
 
         async with async_playwright() as p:
@@ -99,6 +103,15 @@ class TaxScraper:
 
                 if not found_results:
                     logger.info(f"No tax records found for {property_address} (tried address and parcel ID)")
+                    duration_ms = (time.perf_counter() - search_started) * 1000
+                    log_search(
+                        source="TAX",
+                        query=property_address,
+                        results_raw=0,
+                        results_kept=0,
+                        duration_ms=duration_ms,
+                        parcel_id=parcel_id,
+                    )
                     return tax_status
 
                 # Wait for JavaScript redirect to complete (site auto-redirects to detail page on unique match)
@@ -163,9 +176,27 @@ class TaxScraper:
                              view_links = results_table_links
                         else:
                             logger.warning(f"No View buttons or result links found for {property_address}")
+                            duration_ms = (time.perf_counter() - search_started) * 1000
+                            log_search(
+                                source="TAX",
+                                query=property_address,
+                                results_raw=0,
+                                results_kept=0,
+                                duration_ms=duration_ms,
+                                parcel_id=parcel_id,
+                            )
                             return tax_status
                     except Exception:
                         logger.warning(f"No View buttons found for {property_address}")
+                        duration_ms = (time.perf_counter() - search_started) * 1000
+                        log_search(
+                            source="TAX",
+                            query=property_address,
+                            results_raw=0,
+                            results_kept=0,
+                            duration_ms=duration_ms,
+                            parcel_id=parcel_id,
+                        )
                         return tax_status
 
                 # Navigate to detail page if needed
@@ -184,6 +215,15 @@ class TaxScraper:
                         already_on_detail = True
                     except Exception as e:
                         logger.warning(f"Navigation to detail failed: {e}")
+                        duration_ms = (time.perf_counter() - search_started) * 1000
+                        log_search(
+                            source="TAX",
+                            query=property_address,
+                            results_raw=0,
+                            results_kept=0,
+                            duration_ms=duration_ms,
+                            parcel_id=parcel_id,
+                        )
                         # Fallback parsing of search results logic inside 'finally' or here?
                         # Using search result parsing fallback
                         amount_due = self._parse_amount_due(text)
@@ -224,21 +264,30 @@ class TaxScraper:
                      tax_status.amount_due = tax_data.get("amount_due", 0.0)
                      tax_status.paid_in_full = tax_data.get("paid_in_full", False)
                      tax_status.last_payment = tax_data.get("last_payment")
-                     
+
                      if tax_data.get("certificates"):
                          for cert in tax_data["certificates"]:
                              tax_status.certificates.append(TaxCertificate(
                                  certificate_number=str(cert.get("certificate_number")),
                                  face_value=float(cert.get("face_value", 0.0))
                              ))
-                     
+                     result_found = True
             except Exception as e:
-                logger.error(f"Error scraping Tax site: {e}")
+                logger.exception(f"Error scraping Tax site: {e}")
                 # Re-raise so orchestrator can properly mark as failed with actual error
                 raise
             finally:
                 await browser.close()
 
+        duration_ms = (time.perf_counter() - search_started) * 1000
+        log_search(
+            source="TAX",
+            query=property_address,
+            results_raw=1 if result_found else 0,
+            results_kept=len(tax_status.certificates) + (1 if tax_status.amount_due else 0),
+            duration_ms=duration_ms,
+            parcel_id=parcel_id,
+        )
         return tax_status
 
     async def get_tax_liens(self, parcel_id: str, property_address: Optional[str] = None) -> List[dict]:

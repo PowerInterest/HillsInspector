@@ -25,6 +25,7 @@ from src.services.homeharvest_service import HomeHarvestService
 # Step 4v2 - Iterative Discovery
 from config.step4v2 import USE_STEP4_V2, V2_DB_PATH
 from src.services.step4v2 import IterativeDiscovery, ChainBuilder
+from src.db.v2_database import V2Database
 
 # Database & Storage
 from src.db.operations import PropertyDB
@@ -200,7 +201,8 @@ def verify_status(
             (start_date, end_date),
         )
 
-        base_dir = Path("data/properties")
+        foreclosure_dir = Path("data/Foreclosure")
+        properties_dir = Path("data/properties")
         legacy_dir = Path("data/pdfs/final_judgments")
         updated = 0
 
@@ -211,10 +213,14 @@ def verify_status(
                 continue
 
             candidates: list[Path] = []
+            # Primary: data/Foreclosure/{case_number}/documents/ (where auction_scraper saves)
+            sanitized_case = case_number.replace("/", "_").replace("\\", "_").replace(":", "_")
+            candidates.append(foreclosure_dir / sanitized_case / "documents")
+            # Secondary: data/properties/{folio}/documents/
             if parcel_id:
                 sanitized = parcel_id.replace("/", "_").replace("\\", "_").replace(":", "_")
-                candidates.append(base_dir / sanitized / "documents")
-            candidates.append(base_dir / f"unknown_case_{case_number}" / "documents")
+                candidates.append(properties_dir / sanitized / "documents")
+            candidates.append(properties_dir / f"unknown_case_{case_number}" / "documents")
 
             has_pdf = False
             for doc_dir in candidates:
@@ -279,102 +285,46 @@ class PipelineOrchestrator:
         self.homeharvest_semaphore = asyncio.Semaphore(1)
         self.v2_db_semaphore = asyncio.Semaphore(1)  # Serialize v2 DB writes
 
-        # V2 database connection (lazy-loaded)
-        self._v2_conn: Optional[duckdb.DuckDBPyConnection] = None
+        # V2 database (lazy-loaded)
+        self._v2_db: Optional[V2Database] = None
+
+    def _get_v2_db(self) -> V2Database:
+        """Get or create the V2Database instance."""
+        if self._v2_db is None:
+            self._v2_db = V2Database()
+        return self._v2_db
 
     def _get_v2_conn(self) -> duckdb.DuckDBPyConnection:
         """Get or create a connection to the v2 database."""
-        if self._v2_conn is None:
-            from src.utils.time import ensure_duckdb_utc
-            self._v2_conn = duckdb.connect(V2_DB_PATH)
-            ensure_duckdb_utc(self._v2_conn)
-        return self._v2_conn
+        return self._get_v2_db().connect()
 
     def _close_v2_conn(self) -> None:
         """Close the v2 database connection if open."""
-        if self._v2_conn is not None:
-            try:
-                self._v2_conn.close()
-            except Exception:
-                logger.debug("Error while closing v2 connection")
-            self._v2_conn = None
+        if self._v2_db is not None:
+            self._v2_db.close()
 
     def folio_has_chain_of_title(self, folio: str) -> bool:
         """Check if folio has chain of title data (uses v2 when enabled)."""
         if USE_STEP4_V2:
-            conn = self._get_v2_conn()
-            result = conn.execute(
-                "SELECT COUNT(*) FROM chain_of_title WHERE folio = ?", [folio]
-            ).fetchone()
-            return result[0] > 0 if result else False
+            return self._get_v2_db().folio_has_chain_of_title(folio)
         return self.db.folio_has_chain_of_title(folio)
 
     def get_chain_of_title(self, folio: str) -> Dict[str, Any]:
         """Get chain of title records (uses v2 when enabled)."""
         if USE_STEP4_V2:
-            conn = self._get_v2_conn()
-            # Get ownership periods
-            periods = conn.execute(
-                """SELECT id, folio, owner_name, acquired_from, acquisition_date,
-                          disposition_date, acquisition_instrument, acquisition_doc_type,
-                          acquisition_price, link_status, confidence_score, mrta_status,
-                          years_covered
-                   FROM chain_of_title WHERE folio = ?
-                   ORDER BY acquisition_date""",
-                [folio]
-            ).fetchall()
-            cols = [desc[0] for desc in conn.description]
-            ownership_timeline = []
-
-            for row in periods:
-                period = dict(zip(cols, row, strict=False))
-                period_id = period["id"]
-
-                # Get encumbrances for this period
-                encs = conn.execute(
-                    """SELECT * FROM encumbrances
-                       WHERE chain_period_id = ?
-                       ORDER BY recording_date""",
-                    [period_id]
-                ).fetchall()
-                enc_cols = [desc[0] for desc in conn.description]
-                period["encumbrances"] = [dict(zip(enc_cols, e, strict=False)) for e in encs]
-                ownership_timeline.append(period)
-
-            return {
-                "folio": folio,
-                "ownership_timeline": ownership_timeline,
-                "current_owner": ownership_timeline[-1]["owner_name"] if ownership_timeline else None,
-                "total_transfers": len(ownership_timeline)
-            }
+            return self._get_v2_db().get_chain_of_title(folio)
         return self.db.get_chain_of_title(folio)
 
     def get_encumbrances_by_folio(self, folio: str) -> List[dict]:
         """Get encumbrances for folio (uses v2 when enabled)."""
         if USE_STEP4_V2:
-            conn = self._get_v2_conn()
-            result = conn.execute(
-                """SELECT id, folio, chain_period_id, encumbrance_type, creditor, debtor,
-                          amount, amount_confidence, amount_flags, recording_date, instrument,
-                          book, page, is_satisfied, satisfaction_instrument, satisfaction_date,
-                          survival_status, is_joined, is_inferred
-                   FROM encumbrances WHERE folio = ?
-                   ORDER BY recording_date""",
-                [folio]
-            ).fetchall()
-            cols = [desc[0] for desc in conn.description]
-            return [dict(zip(cols, row, strict=False)) for row in result]
+            return self._get_v2_db().get_encumbrances_by_folio(folio)
         return self.db.get_encumbrances_by_folio(folio)
 
     def encumbrance_exists(self, folio: str, book: str, page: str) -> bool:
         """Check if encumbrance exists by book/page (uses v2 when enabled)."""
         if USE_STEP4_V2:
-            conn = self._get_v2_conn()
-            result = conn.execute(
-                "SELECT COUNT(*) FROM encumbrances WHERE folio = ? AND book = ? AND page = ?",
-                [folio, book, page]
-            ).fetchone()
-            return result[0] > 0 if result else False
+            return self._get_v2_db().encumbrance_exists(folio, book, page)
         return self.db.encumbrance_exists(folio, book, page)
 
     def _gather_and_analyze_survival(self, prop: Property) -> Dict[str, Any]:
@@ -853,6 +803,19 @@ class PipelineOrchestrator:
             plaintiff=auction_dict.get('plaintiff'),
             defendant=auction_dict.get('defendant')
         )
+
+        # Pre-hydrate from bulk parcel data (parcels + bulk_parcels tables)
+        # This fills in address/owner that the auction scraper may not have,
+        # preventing the "Skipping enrichment: No address" bail below.
+        if is_valid_folio(parcel_id):
+            bulk_data = self.db.get_parcel_by_folio(parcel_id)
+            if bulk_data:
+                if prop.address == "Unknown" and bulk_data.get("address"):
+                    prop.address = bulk_data["address"]
+                    address = prop.address
+                    logger.info(f"Hydrated address from bulk data for {parcel_id}: {address}")
+                if not prop.owner_name and bulk_data.get("owner_name"):
+                    prop.owner_name = bulk_data["owner_name"]
 
         # Check for invalid folios (mobile homes, "Property Appraiser", etc.)
         if not is_valid_folio(parcel_id):
@@ -1620,10 +1583,12 @@ class PipelineOrchestrator:
 
         async with self.hcpa_semaphore:
             try:
-                # Use storage with skip_db_init=True to avoid direct DB writes
-                # that would conflict with DatabaseWriter queue
-                hcpa_storage = ScraperStorage(skip_db_init=True)
-                result = await scrape_hcpa_property(parcel_id=parcel_id, storage=hcpa_storage)
+                hcpa_storage = ScraperStorage()
+                result = await scrape_hcpa_property(
+                    parcel_id=parcel_id,
+                    storage=hcpa_storage,
+                    storage_key=case_number
+                )
 
                 # Check errors - mark status so we don't retry forever
                 if result.get("error"):
@@ -1671,12 +1636,36 @@ class PipelineOrchestrator:
                         {"func": self.db.mark_status_step_complete, "args": [case_number, "step_hcpa_enriched", 4]},
                     )
                 else:
-                    # No useful data extracted - mark as failed so it can be retried
-                    logger.warning(f"HCPA GIS returned no sales_history or legal_description for {parcel_id}")
-                    await self.db_writer.enqueue(
-                        "generic_call",
-                        {"func": self.db.mark_status_failed, "args": [case_number, "No sales_history or legal_description extracted", 4]},
+                    # No sales_history/legal_description from HCPA.
+                    # If bulk data already provided owner+address, mark as completed
+                    # so the property can proceed through the rest of the pipeline.
+                    bulk_data = self.db.get_parcel_by_folio(parcel_id)
+                    has_bulk_basics = (
+                        bulk_data
+                        and bulk_data.get("owner_name")
+                        and bulk_data.get("address")
                     )
+                    if has_bulk_basics:
+                        logger.info(
+                            f"HCPA returned no data for {parcel_id} but bulk data has owner+address, marking complete"
+                        )
+                        await self.db_writer.enqueue(
+                            "generic_call",
+                            {
+                                "func": self.db.mark_step_complete_by_folio,
+                                "args": [parcel_id, "needs_hcpa_enrichment"],
+                            },
+                        )
+                        await self.db_writer.enqueue(
+                            "generic_call",
+                            {"func": self.db.mark_status_step_complete, "args": [case_number, "step_hcpa_enriched", 4]},
+                        )
+                    else:
+                        logger.warning(f"HCPA GIS returned no sales_history or legal_description for {parcel_id}")
+                        await self.db_writer.enqueue(
+                            "generic_call",
+                            {"func": self.db.mark_status_failed, "args": [case_number, "No sales_history or legal_description extracted", 4]},
+                        )
 
             except Exception as e:
                 logger.warning(f"HCPA GIS failed: {e}")
@@ -1744,8 +1733,7 @@ class PipelineOrchestrator:
                 "SELECT * FROM parcels WHERE folio = ? LIMIT 1", [folio]
             ).fetchone()
             if parcel_row:
-                cols = [desc[0] for desc in conn.description]
-                hcpa_data = dict(zip(cols, parcel_row, strict=False))
+                hcpa_data = dict(parcel_row)
 
             # Get bulk parcel data
             bulk_parcel = None
@@ -1753,8 +1741,7 @@ class PipelineOrchestrator:
                 "SELECT * FROM bulk_parcels WHERE folio = ? OR strap = ? LIMIT 1", [folio, folio]
             ).fetchone()
             if bulk_row:
-                cols = [desc[0] for desc in conn.description]
-                bulk_parcel = dict(zip(cols, bulk_row, strict=False))
+                bulk_parcel = dict(bulk_row)
 
             # Get final judgment data
             final_judgment = auction.get("extracted_judgment_data") or {}
@@ -1833,7 +1820,7 @@ class PipelineOrchestrator:
         async with self.permit_semaphore:
             try:
                 permits = await self.permit_scraper.get_permits_for_property(
-                    parcel_id, address, "Tampa"
+                    case_number, address, "Tampa"
                 )
                 if permits:
                     await self.db_writer.enqueue(
@@ -2044,37 +2031,8 @@ async def run_full_update(
                             fast_fail=True,
                             max_properties=auction_limit if auction_limit and auction_limit > 0 else None,
                         )
-                        # Orchestrator handles ALL DB writes
-                        for p in props:
-                            db.upsert_auction(p)
-                            # Track status for this case
-                            db.upsert_status(
-                                case_number=p.case_number,
-                                parcel_id=p.parcel_id,
-                                auction_date=p.auction_date,
-                                auction_type="FORECLOSURE",
-                            )
-                            db.mark_status_step_complete(
-                                p.case_number,
-                                "step_auction_scraped",
-                                1,
-                            )
-                            # Write parcel data if valid folio
-                            if p.parcel_id and is_valid_folio(p.parcel_id):
-                                db.upsert_parcel(p)
-                            # Write judgment data if extracted
-                            if p.judgment_payload:
-                                db.update_judgment_data(p.case_number, p.judgment_payload)
-                            # Mark HCPA scrape failures
-                            if p.hcpa_scrape_failed:
-                                db.mark_hcpa_scrape_failed(p.case_number, p.hcpa_scrape_error or "Unknown error")
-                            # Mark PDF downloaded if we have a path
-                            if p.final_judgment_pdf_path:
-                                db.mark_status_step_complete(
-                                    p.case_number,
-                                    "step_pdf_downloaded",
-                                    1,
-                                )
+                        # Scraper writes to Inbox (Parquet) automatically.
+                        # We only track the scrape event here.
                         db.record_auction_scrape(current, "foreclosure", len(props))
                         logger.success(f"Scraped {len(props)} auctions for {current}")
                     else:
@@ -2083,6 +2041,13 @@ async def run_full_update(
         except Exception as exc:
             logger.error(f"Foreclosure scrape failed: {exc}")
 
+        # Ingest from Inbox (Parquet -> SQLite)
+        try:
+            from src.ingest.inbox_scanner import InboxScanner
+            logger.info("Ingesting scraped data from Inbox...")
+            InboxScanner(db=db).scan_and_ingest()
+        except Exception as e:
+            logger.error(f"Ingestion failed: {e}")
         logger.info("=" * 60)
         logger.info("STEP 1.5: SCRAPING TAX DEED AUCTIONS")
         logger.info("=" * 60)
@@ -2191,10 +2156,18 @@ async def run_full_update(
                 if case_number in processed_case_numbers:
                     continue
 
-                sanitized_folio = parcel_id.replace("/", "_").replace("\\", "_").replace(":", "_")
-                base_dir = Path("data/properties") / sanitized_folio / "documents"
-                pdf_paths = list(base_dir.glob("final_judgment*.pdf")) if base_dir.exists() else []
+                # Primary: data/Foreclosure/{case_number}/documents/ (where auction_scraper saves)
+                sanitized_case = case_number.replace("/", "_").replace("\\", "_").replace(":", "_")
+                foreclosure_doc_dir = Path("data/Foreclosure") / sanitized_case / "documents"
+                pdf_paths = list(foreclosure_doc_dir.glob("final_judgment*.pdf")) if foreclosure_doc_dir.exists() else []
 
+                # Fallback: data/properties/{folio}/documents/
+                if not pdf_paths and parcel_id:
+                    sanitized_folio = parcel_id.replace("/", "_").replace("\\", "_").replace(":", "_")
+                    properties_doc_dir = Path("data/properties") / sanitized_folio / "documents"
+                    pdf_paths = list(properties_doc_dir.glob("final_judgment*.pdf")) if properties_doc_dir.exists() else []
+
+                # Legacy fallback
                 if not pdf_paths:
                     legacy_path = Path(f"data/pdfs/final_judgments/{case_number}_final_judgment.pdf")
                     if legacy_path.exists():
@@ -2399,11 +2372,7 @@ async def run_full_update(
                     p.property_address,
                     p.city,
                     p.zip_code,
-                    COALESCE(
-                        TRY_CAST(a.auction_date AS DATE),
-                        CAST(TRY_STRPTIME(CAST(a.auction_date AS VARCHAR), '%m/%d/%Y') AS DATE),
-                        CAST(TRY_STRPTIME(CAST(a.auction_date AS VARCHAR), '%m/%d/%Y %H:%M:%S') AS DATE)
-                    ) AS auction_date_norm,
+                    normalize_date(a.auction_date) AS auction_date_norm,
                     p.latitude,
                     p.longitude
                 FROM parcels p

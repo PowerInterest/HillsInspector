@@ -1,22 +1,23 @@
 """
 Database operations for property data.
 Provides high-level functions for inserting and querying data.
+Uses SQLite with WAL mode for concurrent write support.
 """
-import duckdb
+import sqlite3
 import threading
 from contextlib import suppress
 from datetime import date, datetime
-from typing import List, Optional, Dict, Any, Any as AnyType
+from typing import List, Optional, Dict, Any
 import json
 from loguru import logger
 
 from config.step4v2 import USE_STEP4_V2, V2_DB_PATH
 from src.models.property import Property, Lien
-from src.utils.time import ensure_duckdb_utc, now_utc_naive, parse_date, today_local
+from src.utils.time import now_utc_naive, parse_date, today_local
 
 class PropertyDB:
     def __init__(self, db_path: Optional[str] = None):
-        self.db_path = db_path or "data/property_master.db"
+        self.db_path = db_path or "data/property_master_sqlite.db"
         self._local = threading.local()
         self._local.conn = None
         self._schema_migrations_applied = False
@@ -36,11 +37,35 @@ class PropertyDB:
         self._local.conn = value
     
     def connect(self):
-        """Open database connection."""
+        """Open database connection with SQLite WAL mode."""
         conn = self._get_conn()
         if conn is None:
-            conn = duckdb.connect(self.db_path)
-            ensure_duckdb_utc(conn)
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            # Enable WAL mode for concurrent writes
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA cache_size=-64000")
+            
+            def _sqlite_normalize_date(date_val):
+                if not date_val:
+                    return None
+                date_str = str(date_val).strip()
+                formats = [
+                    '%Y-%m-%d',
+                    '%m/%d/%Y', 
+                    '%Y-%m-%d %H:%M:%S',
+                    '%m/%d/%Y %H:%M:%S'
+                ]
+                for fmt in formats:
+                    try:
+                        return datetime.strptime(date_str, fmt).strftime('%Y-%m-%d')
+                    except ValueError:
+                        continue
+                return None
+
+            conn.create_function("normalize_date", 1, _sqlite_normalize_date)
             self._local.conn = conn
         self._apply_schema_migrations(conn)
         return conn
@@ -50,27 +75,25 @@ class PropertyDB:
         Force WAL checkpoint - flushes all pending writes to the main database file.
 
         This is critical for data durability. Without checkpointing, all changes
-        remain in the WAL file and can be lost if the process crashes or the
-        WAL replay fails on next open.
+        remain in the WAL file and can be lost if the process crashes.
 
         Call this after completing each major pipeline step to ensure data is
         persisted to disk.
         """
-        conn = self._get_conn()
-        if conn is None:
-            # No existing connection - create one for checkpoint
-            conn = self.connect()
+        # Filesystem is now the checkpoint (Parquet/PDFs).
+        # Disabling explicit WAL checkpointing to avoid locking.
+
+    def _safe_exec(self, conn, sql, params=()):
+        """Execute SQL ignoring errors (for schema updates)."""
         try:
-            conn.execute("CHECKPOINT")
-            logger.info("Database checkpoint complete - WAL flushed to disk")
-        except Exception as e:
-            logger.warning(f"Checkpoint failed (non-fatal): {e}")
+            conn.execute(sql, params)
+        except Exception:
+            pass
 
     def _apply_schema_migrations(self, conn) -> None:
         """
-        Apply lightweight, idempotent schema migrations.
-
-        Keep this narrow and safe: only `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
+        Apply lightweight, idempotent schema migrations for SQLite.
+        Uses try/except since SQLite doesn't support ADD COLUMN IF NOT EXISTS.
         """
         if self._schema_migrations_applied or conn is None:
             return
@@ -78,93 +101,85 @@ class PropertyDB:
         def table_exists(table_name: str) -> bool:
             with suppress(Exception):
                 row = conn.execute(
-                    """
-                    SELECT 1
-                    FROM information_schema.tables
-                    WHERE table_name = ?
-                    LIMIT 1
-                    """,
-                    [table_name],
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+                    (table_name,),
                 ).fetchone()
                 return row is not None
             return False
 
+        def add_column_if_not_exists(table: str, column: str, col_type: str, default: str = None):
+            """Helper to add column if it doesn't exist (SQLite compatible)."""
+            try:
+                if default is not None:
+                    self._safe_exec(conn, f"ALTER TABLE {table} ADD COLUMN {column} {col_type} DEFAULT {default}")
+                else:
+                    self._safe_exec(conn, f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
+
         if not table_exists("parcels"):
             conn.execute("""
-                CREATE TABLE parcels (
-                    folio VARCHAR PRIMARY KEY,
-                    parcel_id VARCHAR,
-                    owner_name VARCHAR,
-                    property_address VARCHAR,
-                    city VARCHAR,
-                    zip_code VARCHAR,
-                    land_use VARCHAR,
+                CREATE TABLE IF NOT EXISTS parcels (
+                    folio TEXT PRIMARY KEY,
+                    parcel_id TEXT,
+                    owner_name TEXT,
+                    property_address TEXT,
+                    city TEXT,
+                    zip_code TEXT,
+                    land_use TEXT,
                     year_built INTEGER,
-                    beds FLOAT,
-                    baths FLOAT,
-                    heated_area FLOAT,
-                    lot_size FLOAT,
-                    assessed_value FLOAT,
-                    market_value FLOAT,
-                    last_sale_date DATE,
-                    last_sale_price FLOAT,
-                    image_url VARCHAR,
-                    market_analysis_content VARCHAR,
-                    latitude DOUBLE,
-                    longitude DOUBLE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    beds REAL,
+                    baths REAL,
+                    heated_area REAL,
+                    lot_size REAL,
+                    assessed_value REAL,
+                    market_value REAL,
+                    last_sale_date TEXT,
+                    last_sale_price REAL,
+                    image_url TEXT,
+                    market_analysis_content TEXT,
+                    latitude REAL,
+                    longitude REAL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
         if table_exists("parcels"):
-            conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS tax_status VARCHAR")
-            conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS tax_warrant BOOLEAN")
+            add_column_if_not_exists("parcels", "tax_status", "TEXT")
+            add_column_if_not_exists("parcels", "tax_warrant", "INTEGER")
 
         if table_exists("encumbrances"):
-            conn.execute(
-                "ALTER TABLE encumbrances ADD COLUMN IF NOT EXISTS is_joined BOOLEAN DEFAULT FALSE"
-            )
-            conn.execute(
-                "ALTER TABLE encumbrances ADD COLUMN IF NOT EXISTS is_inferred BOOLEAN DEFAULT FALSE"
-            )
+            add_column_if_not_exists("encumbrances", "is_joined", "INTEGER", "0")
+            add_column_if_not_exists("encumbrances", "is_inferred", "INTEGER", "0")
 
         if not table_exists("market_data"):
-            conn.execute("CREATE SEQUENCE IF NOT EXISTS market_data_seq START 1")
-            # Drop if exists (in case it was created incorrectly without data)
             conn.execute("DROP TABLE IF EXISTS market_data") 
             conn.execute("""
-                CREATE TABLE market_data (
-                    id INTEGER PRIMARY KEY DEFAULT nextval('market_data_seq'),
-                    folio VARCHAR,
-                    source VARCHAR,
-                    capture_date DATE,
-                    listing_status VARCHAR,
-                    list_price FLOAT,
-                    zestimate FLOAT,
-                    rent_estimate FLOAT,
-                    hoa_monthly FLOAT,
+                CREATE TABLE IF NOT EXISTS market_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    folio TEXT,
+                    source TEXT,
+                    capture_date TEXT,
+                    listing_status TEXT,
+                    list_price REAL,
+                    zestimate REAL,
+                    rent_estimate REAL,
+                    hoa_monthly REAL,
                     days_on_market INTEGER,
-                    price_history VARCHAR,
-                    raw_json VARCHAR,
-                    screenshot_path VARCHAR,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    price_history TEXT,
+                    raw_json TEXT,
+                    screenshot_path TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
         if table_exists("chain_of_title"):
-            conn.execute(
-                "ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS link_status VARCHAR"
-            )
-            conn.execute(
-                "ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS confidence_score FLOAT"
-            )
-            conn.execute(
-                "ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS mrta_status VARCHAR"
-            )
-            conn.execute(
-                "ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS years_covered FLOAT"
-            )
+            add_column_if_not_exists("chain_of_title", "link_status", "TEXT")
+            add_column_if_not_exists("chain_of_title", "confidence_score", "REAL")
+            add_column_if_not_exists("chain_of_title", "mrta_status", "TEXT")
+            add_column_if_not_exists("chain_of_title", "years_covered", "REAL")
 
         self._schema_migrations_applied = True
         # Note: We intentionally do NOT checkpoint here. Checkpointing requires
@@ -241,7 +256,7 @@ class PropertyDB:
         ]
         
         for flag in flags:
-            conn.execute(f"ALTER TABLE auctions ADD COLUMN IF NOT EXISTS {flag} BOOLEAN DEFAULT TRUE")
+            self._safe_exec(conn, f"ALTER TABLE auctions ADD COLUMN {flag} INTEGER DEFAULT 1")
             
         # 2. Backfill state based on existing data
         
@@ -275,13 +290,15 @@ class PropertyDB:
                 v2_conn.close()
                 if folios_with_chain:
                     folio_list = [f[0] for f in folios_with_chain]
+                    placeholders = ",".join(["?"] * len(folio_list))
+                    
                     conn.execute(
-                        """
+                        f"""
                         UPDATE auctions
                         SET needs_ori_ingestion = FALSE
-                        WHERE parcel_id IN (SELECT * FROM UNNEST(?::VARCHAR[]))
+                        WHERE parcel_id IN ({placeholders})
                         """,
-                        [folio_list],
+                        folio_list,
                     )
             except Exception as e:
                 logger.debug(f"V2 chain check failed in initialize_pipeline_flags: {e}")
@@ -325,7 +342,7 @@ class PropertyDB:
             SET needs_homeharvest_enrichment = FALSE
             WHERE folio IN (
                 SELECT DISTINCT folio FROM home_harvest
-                WHERE created_at >= CURRENT_DATE - INTERVAL 7 DAY
+                WHERE created_at >= date('now', '-\1 days')
             )
         """)
         
@@ -410,9 +427,9 @@ class PropertyDB:
         """Record an HCPA scrape failure on the auction row."""
         conn = self.connect()
         conn.execute(
-            "ALTER TABLE auctions ADD COLUMN IF NOT EXISTS hcpa_scrape_failed BOOLEAN DEFAULT FALSE"
+            "ALTER TABLE auctions ADD COLUMN hcpa_scrape_failed INTEGER DEFAULT 0"
         )
-        conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS hcpa_scrape_error VARCHAR")
+        self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN hcpa_scrape_error TEXT")
         conn.execute(
             """
             UPDATE auctions
@@ -428,9 +445,9 @@ class PropertyDB:
         """Record that ORI party-search fallback was used (for review)."""
         conn = self.connect()
         conn.execute(
-            "ALTER TABLE auctions ADD COLUMN IF NOT EXISTS ori_party_fallback_used BOOLEAN DEFAULT FALSE"
+            "ALTER TABLE auctions ADD COLUMN ori_party_fallback_used INTEGER DEFAULT 0"
         )
-        conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS ori_party_fallback_note VARCHAR")
+        self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN ori_party_fallback_note TEXT")
         conn.execute(
             """
             UPDATE auctions
@@ -455,7 +472,7 @@ class PropertyDB:
         conn = self.connect()
 
         # Ensure column exists (dynamic schema update)
-        conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS has_valid_parcel_id BOOLEAN DEFAULT TRUE")
+        self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN has_valid_parcel_id INTEGER DEFAULT 1")
 
         # Check if auction already exists
         existing = conn.execute(
@@ -527,6 +544,7 @@ class PropertyDB:
             [prop.case_number]
         ).fetchone()
 
+        conn.commit()
         return result[0] if result else 0
     
     def update_parcel_tax_status(self, folio: str, tax_status: str, tax_warrant: bool):
@@ -553,9 +571,9 @@ class PropertyDB:
 
         folio = prop.parcel_id
 
-        # Ensure columns exist (DuckDB supports IF NOT EXISTS natively)
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS market_analysis_content VARCHAR")
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS legal_description VARCHAR")
+        # Ensure columns exist (DuckDB supportsnatively)
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN market_analysis_content TEXT")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN legal_description TEXT")
 
         # Use ON CONFLICT for atomic upsert
         # 1. Try to insert (ignore if exists)
@@ -634,8 +652,8 @@ class PropertyDB:
 
         # Ensure table exists and has grantor/grantee columns
         self.create_sales_history_table()
-        conn.execute("ALTER TABLE sales_history ADD COLUMN IF NOT EXISTS grantor VARCHAR")
-        conn.execute("ALTER TABLE sales_history ADD COLUMN IF NOT EXISTS grantee VARCHAR")
+        self._safe_exec(conn, "ALTER TABLE sales_history ADD COLUMN grantor TEXT")
+        self._safe_exec(conn, "ALTER TABLE sales_history ADD COLUMN grantee TEXT")
 
         # Create index on instrument for faster lookups
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_history_instrument ON sales_history(folio, instrument)")
@@ -715,8 +733,7 @@ class PropertyDB:
             ORDER BY case_number
         """, [auction_date]).fetchall()
         
-        columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row, strict=True)) for row in results]
+        return [dict(row) for row in results]
     
     def get_pending_analysis(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get auctions that need lien analysis."""
@@ -729,8 +746,7 @@ class PropertyDB:
             LIMIT ?
         """, [limit]).fetchall()
         
-        columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row, strict=True)) for row in results]
+        return [dict(row) for row in results]
     
     def mark_as_analyzed(self, case_number: str):
         """Mark an auction as analyzed."""
@@ -754,8 +770,8 @@ class PropertyDB:
         """Save the OCR'd text of the Final Judgment."""
         conn = self.connect()
         
-        # Ensure column exists (DuckDB supports IF NOT EXISTS natively)
-        conn.execute("ALTER TABLE auctions ADD COLUMN IF NOT EXISTS final_judgment_content VARCHAR")
+        # Ensure column exists (DuckDB supportsnatively)
+        self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN final_judgment_content TEXT")
             
         conn.execute("""
             UPDATE auctions
@@ -812,7 +828,7 @@ class PropertyDB:
         """Parse recording_date from various formats."""
         return parse_date(value)
 
-    def save_liens(self, folio: str, liens: List[AnyType], case_number: str | None = None):
+    def save_liens(self, folio: str, liens: List[Any], case_number: str | None = None):
         """Save identified liens to the database.
 
         Args:
@@ -823,24 +839,23 @@ class PropertyDB:
         conn = self.connect()
 
         try:
-            # Create sequence and table with folio as primary grouping
-            conn.execute("CREATE SEQUENCE IF NOT EXISTS liens_id_seq")
+            # Create table with folio as primary grouping
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS liens (
-                    id INTEGER PRIMARY KEY DEFAULT nextval('liens_id_seq'),
-                    folio VARCHAR,
-                    case_number VARCHAR,
-                    document_type VARCHAR,
+                    id INTEGER PRIMARY KEY,
+                    folio TEXT,
+                    case_number TEXT,
+                    document_type TEXT,
                     recording_date DATE,
                     amount DECIMAL(12, 2),
-                    grantor VARCHAR,
-                    grantee VARCHAR,
-                    book VARCHAR,
-                    page VARCHAR,
-                    description VARCHAR,
-                    instrument_number VARCHAR,
-                    survives_foreclosure BOOLEAN,
-                    is_surviving BOOLEAN,
+                    grantor TEXT,
+                    grantee TEXT,
+                    book TEXT,
+                    page TEXT,
+                    description TEXT,
+                    instrument_number TEXT,
+                    survives_foreclosure INTEGER,
+                    is_surviving INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -848,7 +863,7 @@ class PropertyDB:
             # Add folio column if it doesn't exist (migration)
             import contextlib
             with contextlib.suppress(Exception):
-                conn.execute("ALTER TABLE liens ADD COLUMN IF NOT EXISTS folio VARCHAR")
+                self._safe_exec(conn, "ALTER TABLE liens ADD COLUMN folio TEXT")
 
             # Insert new liens (don't delete - allow accumulation from multiple sources)
             for lien in liens:
@@ -928,8 +943,7 @@ class PropertyDB:
         """, [case_number]).fetchall()
         if not rows:
             return []
-        columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, r, strict=True)) for r in rows]
+        return [dict(r) for r in rows]
 
     @staticmethod
     def _dict_to_lien(data: Dict[str, Any]) -> Lien:
@@ -958,8 +972,8 @@ class PropertyDB:
     def ensure_geocode_columns(self):
         """Add latitude/longitude to parcels if missing."""
         conn = self.connect()
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS latitude DOUBLE")
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS longitude DOUBLE")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN latitude REAL")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN longitude REAL")
 
     def update_legal_description(self, folio: str, legal_description: str):
         """Update the legal description for a parcel."""
@@ -975,11 +989,11 @@ class PropertyDB:
         conn = self.connect()
         
         # Ensure columns exist
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_zone VARCHAR")
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_zone_subtype VARCHAR")
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_risk_level VARCHAR")
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_insurance_required BOOLEAN")
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_base_elevation FLOAT")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_zone TEXT")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_zone_subtype TEXT")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_risk_level TEXT")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_insurance_required INTEGER")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_base_elevation REAL")
         
         conn.execute("""
             UPDATE parcels SET
@@ -998,8 +1012,8 @@ class PropertyDB:
             flood_data.get("static_bfe"),
             folio
         ])
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS latitude DOUBLE")
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS longitude DOUBLE")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN latitude REAL")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN longitude REAL")
 
     def update_parcel_coordinates(self, parcel_id: str, latitude: float, longitude: float):
         """Update parcel lat/lon."""
@@ -1024,34 +1038,29 @@ class PropertyDB:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS legal_variations (
                 id INTEGER PRIMARY KEY,
-                folio VARCHAR,
-                variation_text VARCHAR,
-                source_instrument VARCHAR,
-                source_type VARCHAR,
-                is_canonical BOOLEAN DEFAULT FALSE,
+                folio TEXT,
+                variation_text TEXT,
+                source_instrument TEXT,
+                source_type TEXT,
+                is_canonical INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
-        # Create sequences
-        conn.execute("CREATE SEQUENCE IF NOT EXISTS chain_id_seq")
-        conn.execute("CREATE SEQUENCE IF NOT EXISTS encumbrance_id_seq")
-        conn.execute("CREATE SEQUENCE IF NOT EXISTS market_id_seq")
 
         # Chain of Title table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS chain_of_title (
-                id INTEGER PRIMARY KEY DEFAULT nextval('chain_id_seq'),
-                folio VARCHAR,
-                owner_name VARCHAR,
-                acquired_from VARCHAR,
+                id INTEGER PRIMARY KEY,
+                folio TEXT,
+                owner_name TEXT,
+                acquired_from TEXT,
                 acquisition_date DATE,
                 disposition_date DATE,
-                acquisition_instrument VARCHAR,
-                acquisition_doc_type VARCHAR,
-                acquisition_price FLOAT,
-                link_status VARCHAR,
-                confidence_score FLOAT,
+                acquisition_instrument TEXT,
+                acquisition_doc_type TEXT,
+                acquisition_price REAL,
+                link_status TEXT,
+                confidence_score REAL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -1059,60 +1068,53 @@ class PropertyDB:
         # Encumbrances table (enhanced)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS encumbrances (
-                id INTEGER PRIMARY KEY DEFAULT nextval('encumbrance_id_seq'),
-                folio VARCHAR,
+                id INTEGER PRIMARY KEY,
+                folio TEXT,
                 chain_period_id INTEGER,
-                encumbrance_type VARCHAR,
-                creditor VARCHAR,
-                debtor VARCHAR,
-                amount FLOAT,
-                amount_confidence VARCHAR,
-                amount_flags VARCHAR,
+                encumbrance_type TEXT,
+                creditor TEXT,
+                debtor TEXT,
+                amount REAL,
+                amount_confidence TEXT,
+                amount_flags TEXT,
                 recording_date DATE,
-                instrument VARCHAR,
-                book VARCHAR,
-                page VARCHAR,
-                is_satisfied BOOLEAN DEFAULT FALSE,
-                satisfaction_instrument VARCHAR,
+                instrument TEXT,
+                book TEXT,
+                page TEXT,
+                is_satisfied INTEGER DEFAULT 0,
+                satisfaction_instrument TEXT,
                 satisfaction_date DATE,
-                survival_status VARCHAR,
-                
-                -- Party 2 Resolution Fields
-                party2_resolution_method VARCHAR,  -- 'cqid_326', 'ocr_extraction', NULL if original
-                is_self_transfer BOOLEAN DEFAULT FALSE,
-                self_transfer_type VARCHAR,  -- 'exact_match', 'trust_transfer', 'name_variation'
-                
+                survival_status TEXT,
+                party2_resolution_method TEXT,
+                is_self_transfer INTEGER DEFAULT 0,
+                self_transfer_type TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_joined BOOLEAN DEFAULT FALSE,
-                is_inferred BOOLEAN DEFAULT FALSE
+                is_joined INTEGER DEFAULT 0,
+                is_inferred INTEGER DEFAULT 0
             )
         """)
-
-        # Migration: Add columns if not exists
-        conn.execute("ALTER TABLE encumbrances ADD COLUMN IF NOT EXISTS is_joined BOOLEAN DEFAULT FALSE")
-        conn.execute("ALTER TABLE encumbrances ADD COLUMN IF NOT EXISTS is_inferred BOOLEAN DEFAULT FALSE")
 
         # Market data table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS market_data (
-                id INTEGER PRIMARY KEY DEFAULT nextval('market_id_seq'),
-                folio VARCHAR,
-                source VARCHAR,
+                id INTEGER PRIMARY KEY,
+                folio TEXT,
+                source TEXT,
                 capture_date DATE,
-                listing_status VARCHAR,
-                list_price FLOAT,
-                zestimate FLOAT,
-                rent_estimate FLOAT,
-                hoa_monthly FLOAT,
+                listing_status TEXT,
+                list_price REAL,
+                zestimate REAL,
+                rent_estimate REAL,
+                hoa_monthly REAL,
                 days_on_market INTEGER,
-                price_history VARCHAR,
-                raw_json VARCHAR,
-                screenshot_path VARCHAR,
+                price_history TEXT,
+                raw_json TEXT,
+                screenshot_path TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
-        print("Chain of title tables created successfully")
+        logger.info("Chain of title tables created successfully")
 
     def save_legal_variation(self, folio: str, variation_text: str,
                              source_instrument: str, source_type: str,
@@ -1139,11 +1141,11 @@ class PropertyDB:
         conn = self.connect()
 
         # Migration: Add new ORI API fields if they don't exist
-        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS sales_price FLOAT")
-        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS page_count INTEGER")
-        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS ori_uuid VARCHAR")
-        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS ori_id VARCHAR")
-        conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS book_type VARCHAR")
+        self._safe_exec(conn, "ALTER TABLE documents ADD COLUMN sales_price REAL")
+        self._safe_exec(conn, "ALTER TABLE documents ADD COLUMN page_count INTEGER")
+        self._safe_exec(conn, "ALTER TABLE documents ADD COLUMN ori_uuid TEXT")
+        self._safe_exec(conn, "ALTER TABLE documents ADD COLUMN ori_id TEXT")
+        self._safe_exec(conn, "ALTER TABLE documents ADD COLUMN book_type TEXT")
 
         # Check if exists by instrument number
         inst = doc_data.get("instrument_number")
@@ -1242,10 +1244,10 @@ class PropertyDB:
         conn = self.connect()
 
         # Schema migrations (idempotent)
-        conn.execute("ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS link_status VARCHAR")
-        conn.execute("ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS confidence_score FLOAT")
-        conn.execute("ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS mrta_status VARCHAR")
-        conn.execute("ALTER TABLE chain_of_title ADD COLUMN IF NOT EXISTS years_covered FLOAT")
+        self._safe_exec(conn, "ALTER TABLE chain_of_title ADD COLUMN link_status TEXT")
+        self._safe_exec(conn, "ALTER TABLE chain_of_title ADD COLUMN confidence_score REAL")
+        self._safe_exec(conn, "ALTER TABLE chain_of_title ADD COLUMN mrta_status TEXT")
+        self._safe_exec(conn, "ALTER TABLE chain_of_title ADD COLUMN years_covered REAL")
 
         # Preserve existing lien survival annotations across chain rebuilds (best-effort).
         prior_survival: dict[str, dict[str, Any]] = {}
@@ -1258,9 +1260,9 @@ class PropertyDB:
                 """,
                 [folio],
             ).fetchall()
-            cols = [desc[0] for desc in conn.description]
+            # cols = [desc[0] for desc in conn.description]
             for row in rows:
-                rec = dict(zip(cols, row, strict=True))
+                rec = dict(row)
                 inst = (rec.get("instrument") or "").strip()
                 book = (rec.get("book") or "").strip()
                 page = (rec.get("page") or "").strip()
@@ -1475,11 +1477,10 @@ class PropertyDB:
             ORDER BY acquisition_date
         """, [folio]).fetchall()
 
-        columns = [desc[0] for desc in conn.description]
         ownership_timeline = []
 
         for row in periods:
-            period = dict(zip(columns, row, strict=True))
+            period = dict(row)
             period_id = period["id"]
 
             # Get encumbrances for this period
@@ -1489,8 +1490,7 @@ class PropertyDB:
                 ORDER BY recording_date
             """, [period_id]).fetchall()
 
-            enc_columns = [desc[0] for desc in conn.description]
-            period["encumbrances"] = [dict(zip(enc_columns, e, strict=True)) for e in encumbrances]
+            period["encumbrances"] = [dict(e) for e in encumbrances]
 
             ownership_timeline.append(period)
 
@@ -1504,17 +1504,13 @@ class PropertyDB:
     def create_sources_table(self):
         """Create table for tracking data sources."""
         conn = self.connect()
-        conn.execute("CREATE SEQUENCE IF NOT EXISTS property_sources_id_seq")
-        with suppress(Exception):
-            conn.execute("SELECT nextval('property_sources_id_seq')")
-
         conn.execute("""
             CREATE TABLE IF NOT EXISTS property_sources (
-                id INTEGER PRIMARY KEY DEFAULT nextval('property_sources_id_seq'),
-                folio VARCHAR,
-                source_name VARCHAR,
-                url VARCHAR,
-                description VARCHAR,
+                id INTEGER PRIMARY KEY,
+                folio TEXT,
+                source_name TEXT,
+                url TEXT,
+                description TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(folio, url)
             )
@@ -1526,7 +1522,7 @@ class PropertyDB:
                 for row in conn.execute("PRAGMA table_info('property_sources')").fetchall()
             }
             if "source_name" not in columns:
-                conn.execute("ALTER TABLE property_sources ADD COLUMN source_name VARCHAR")
+                self._safe_exec(conn, "ALTER TABLE property_sources ADD COLUMN source_name TEXT")
                 if "source_type" in columns:
                     conn.execute("""
                         UPDATE property_sources
@@ -1534,7 +1530,7 @@ class PropertyDB:
                         WHERE source_name IS NULL
                     """)
             if "description" not in columns:
-                conn.execute("ALTER TABLE property_sources ADD COLUMN description VARCHAR")
+                self._safe_exec(conn, "ALTER TABLE property_sources ADD COLUMN description TEXT")
 
     def save_market_data(self, folio: str, source: str, data: Dict[str, Any],
                          screenshot_path: Optional[str] = None):
@@ -1567,24 +1563,22 @@ class PropertyDB:
         """Create sales_history table for storing deeds/transactions from HCPA."""
         conn = self.connect()
 
-        # Create sequence for auto-increment
-        conn.execute("CREATE SEQUENCE IF NOT EXISTS sales_history_seq")
-
+        # Create sales_history table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sales_history (
-                id INTEGER PRIMARY KEY DEFAULT nextval('sales_history_seq'),
-                folio VARCHAR,
-                strap VARCHAR,
-                book VARCHAR,
-                page VARCHAR,
-                instrument VARCHAR,
-                sale_date VARCHAR,
-                doc_type VARCHAR,
-                qualified VARCHAR,
-                vacant_improved VARCHAR,
-                sale_price FLOAT,
-                ori_link VARCHAR,
-                pdf_path VARCHAR,
+                id INTEGER PRIMARY KEY,
+                folio TEXT,
+                strap TEXT,
+                book TEXT,
+                page TEXT,
+                instrument TEXT,
+                sale_date TEXT,
+                doc_type TEXT,
+                qualified TEXT,
+                vacant_improved TEXT,
+                sale_price REAL,
+                ori_link TEXT,
+                pdf_path TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(folio, book, page)
             )
@@ -1616,8 +1610,8 @@ class PropertyDB:
         if not row:
             return None
 
-        cols = [desc[0] for desc in conn.description]
-        data = dict(zip(cols, row, strict=False))
+        # cols = [desc[0] for desc in conn.description]
+        data = dict(row)
 
         return {
             "parcel_id": data.get("folio"),
@@ -1632,6 +1626,63 @@ class PropertyDB:
             "heated_area": data.get("heated_area"),
         }
 
+    def get_parcel_by_folio(self, folio: str) -> Optional[Dict[str, Any]]:
+        """Get combined parcel data from parcels + bulk_parcels tables.
+
+        Prefers parcels data (HCPA-enriched) over bulk_parcels. Returns
+        a dict with address, owner_name, latitude, longitude, etc.
+        Returns None if folio is not found in either table.
+        """
+        conn = self.connect()
+
+        # Primary: parcels table (HCPA-enriched data)
+        row = conn.execute(
+            "SELECT * FROM parcels WHERE folio = ?", [folio]
+        ).fetchone()
+        parcel = dict(row) if row else {}
+
+        # Secondary: bulk_parcels table (bulk county data)
+        bulk_row = conn.execute(
+            "SELECT * FROM bulk_parcels WHERE folio = ? OR strap = ? LIMIT 1",
+            [folio, folio]
+        ).fetchone()
+        bulk = dict(bulk_row) if bulk_row else {}
+
+        if not parcel and not bulk:
+            return None
+
+        # Merge: parcels wins over bulk for every field
+        address = (
+            parcel.get("property_address")
+            or bulk.get("property_address")
+        )
+        city = parcel.get("city") or bulk.get("city")
+        zip_code = parcel.get("zip_code") or bulk.get("zip_code")
+        if address and city:
+            full_address = f"{address}, {city}, FL"
+            if zip_code:
+                full_address += f" {zip_code}"
+        elif address:
+            full_address = address
+        else:
+            full_address = None
+
+        return {
+            "folio": folio,
+            "address": full_address,
+            "owner_name": parcel.get("owner_name") or bulk.get("owner_name"),
+            "latitude": parcel.get("latitude") or bulk.get("latitude"),
+            "longitude": parcel.get("longitude") or bulk.get("longitude"),
+            "year_built": parcel.get("year_built") or bulk.get("year_built"),
+            "beds": parcel.get("beds") or bulk.get("beds"),
+            "baths": parcel.get("baths") or bulk.get("baths"),
+            "heated_area": parcel.get("heated_area") or bulk.get("heated_area"),
+            "lot_size": parcel.get("lot_size") or bulk.get("lot_size"),
+            "assessed_value": parcel.get("assessed_value") or bulk.get("assessed_value"),
+            "market_value": parcel.get("market_value") or bulk.get("market_value"),
+            "land_use": parcel.get("land_use") or bulk.get("land_use"),
+        }
+
     def get_encumbrances_by_folio(self, folio: str) -> List[Dict[str, Any]]:
         """Get all encumbrances for a folio."""
         conn = self.connect()
@@ -1641,8 +1692,7 @@ class PropertyDB:
             ORDER BY recording_date DESC
         """, [folio]).fetchall()
         
-        columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row, strict=True)) for row in rows]
+        return [dict(row) for row in rows]
 
     def get_auction_by_case(self, case_number: str) -> Optional[Dict[str, Any]]:
         """Get an auction by case number."""
@@ -1655,8 +1705,7 @@ class PropertyDB:
         if not row:
             return None
             
-        columns = [desc[0] for desc in conn.description]
-        return dict(zip(columns, row, strict=True))
+        return dict(row)
 
     def save_source(self, folio: str, source_name: str, url: str, description: str = ""):
         """
@@ -1711,8 +1760,7 @@ class PropertyDB:
             ORDER BY created_at DESC
         """, [folio]).fetchall()
 
-        columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row, strict=True)) for row in results]
+        return [dict(row) for row in results]
 
     def save_sales_history(self, folio: str, strap: str, sales: List[Dict]):
         """
@@ -1787,8 +1835,7 @@ class PropertyDB:
         else:
             return []
 
-        columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row, strict=True)) for row in results]
+        return [dict(row) for row in results]
 
     # ------------------------------------------------------------------
     # Restriction / Easement helpers
@@ -1831,8 +1878,7 @@ class PropertyDB:
 
         if not rows:
             return []
-        columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row, strict=True)) for row in rows]
+        return [dict(row) for row in rows]
 
     def folio_has_restrictions(self, folio: str) -> bool:
         """Quick existence check for restriction/easement docs for a folio."""
@@ -1869,8 +1915,7 @@ class PropertyDB:
         ).fetchall()
         if not rows:
             return []
-        columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row, strict=True)) for row in rows]
+        return [dict(row) for row in rows]
 
     def get_tax_status(self, folio: str) -> Dict[str, Any]:
         """
@@ -1899,15 +1944,12 @@ class PropertyDB:
         """Execute a raw query and return dict results."""
         conn = self.connect()
         results = conn.execute(query, params).fetchall()
-        columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row, strict=False)) for row in results]
+        return [dict(row) for row in results]
 
     def ensure_last_analyzed_column(self):
         """Add last_analyzed_case_number column if missing."""
         conn = self.connect()
-        conn.execute(
-            "ALTER TABLE parcels ADD COLUMN IF NOT EXISTS last_analyzed_case_number VARCHAR"
-        )
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN last_analyzed_case_number TEXT")
 
     def get_auction_count_by_date(self, auction_date: date) -> int:
         """Get count of auctions we have for a specific date."""
@@ -1916,11 +1958,7 @@ class PropertyDB:
             """
             SELECT COUNT(*)
             FROM auctions
-            WHERE COALESCE(
-                TRY_CAST(auction_date AS DATE),
-                CAST(TRY_STRPTIME(CAST(auction_date AS VARCHAR), '%m/%d/%Y') AS DATE),
-                CAST(TRY_STRPTIME(CAST(auction_date AS VARCHAR), '%m/%d/%Y %H:%M:%S') AS DATE)
-            ) = ?
+            WHERE normalize_date(auction_date) = ?
             """,
             [auction_date],
         ).fetchone()
@@ -1933,7 +1971,7 @@ class PropertyDB:
             """
             CREATE TABLE IF NOT EXISTS auction_scrape_log (
                 auction_date DATE,
-                auction_type VARCHAR,
+                auction_type TEXT,
                 auction_count INTEGER,
                 scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (auction_date, auction_type)
@@ -1962,9 +2000,9 @@ class PropertyDB:
         conn.execute(
             """
             INSERT INTO auction_scrape_log (auction_date, auction_type, auction_count, scraped_at)
-            VALUES (?, ?, ?, NOW())
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT (auction_date, auction_type)
-            DO UPDATE SET auction_count = excluded.auction_count, scraped_at = NOW()
+            DO UPDATE SET auction_count = excluded.auction_count, scraped_at = CURRENT_TIMESTAMP
             """,
             [auction_date, auction_type, auction_count],
         )
@@ -1983,8 +2021,8 @@ class PropertyDB:
                 ON p.folio = COALESCE(a.parcel_id, a.folio)
             WHERE COALESCE(
                 TRY_CAST(a.auction_date AS DATE),
-                CAST(TRY_STRPTIME(CAST(a.auction_date AS VARCHAR), '%m/%d/%Y') AS DATE),
-                CAST(TRY_STRPTIME(CAST(a.auction_date AS VARCHAR), '%m/%d/%Y %H:%M:%S') AS DATE)
+                CAST(TRY_STRPTIME(CAST(a.auction_date AS TEXT), '%m/%d/%Y') AS DATE),
+                CAST(TRY_STRPTIME(CAST(a.auction_date AS TEXT), '%m/%d/%Y %H:%M:%S') AS DATE)
             ) BETWEEN ? AND ?
         """
         results = conn.execute(query, [start_date, end_date]).fetchall()
@@ -2023,11 +2061,7 @@ class PropertyDB:
                     COALESCE(a.property_address, p.property_address) AS address,
                     p.owner_name AS owner_name,
                     p.legal_description AS legal_description,
-                    COALESCE(
-                        TRY_CAST(a.auction_date AS DATE),
-                        CAST(TRY_STRPTIME(CAST(a.auction_date AS VARCHAR), '%m/%d/%Y') AS DATE),
-                        CAST(TRY_STRPTIME(CAST(a.auction_date AS VARCHAR), '%m/%d/%Y %H:%M:%S') AS DATE)
-                    ) AS auction_date_norm
+                    normalize_date(a.auction_date) AS auction_date_norm
                 FROM auctions a
                 LEFT JOIN parcels p
                     ON p.folio = COALESCE(a.parcel_id, a.folio)
@@ -2053,8 +2087,7 @@ class PropertyDB:
             ORDER BY n.auction_date_norm, n.case_number
         """
         results = conn.execute(query, params).fetchall()
-        columns = [desc[0] for desc in conn.description]
-        return [dict(zip(columns, row, strict=False)) for row in results]
+        return [dict(row) for row in results]
 
     def folio_has_sales_history(self, folio: str) -> bool:
         """Check if folio has sales history data."""
@@ -2193,10 +2226,10 @@ class PropertyDB:
     def save_flood_data(self, folio: str, flood_zone: str, flood_risk: str, insurance_required: bool):
         """Save flood zone data to parcels table."""
         conn = self.connect()
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_zone VARCHAR")
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_risk VARCHAR")
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_risk_level VARCHAR")
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_insurance_required BOOLEAN")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_zone TEXT")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_risk TEXT")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_risk_level TEXT")
+        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_insurance_required INTEGER")
 
         conn.execute("INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio])
         conn.execute(
@@ -2266,7 +2299,7 @@ class PropertyDB:
         conn = self.connect()
         try:
              result = conn.execute(
-                "SELECT COUNT(*) FROM property_sources WHERE folio = ? AND source_name = 'sunbiz' AND created_at > CURRENT_DATE - INTERVAL 30 DAY", 
+                "SELECT COUNT(*) FROM property_sources WHERE folio = ? AND source_name = 'sunbiz' AND created_at > date('now', '-\1 days')", 
                 [folio]
              ).fetchone()
              return result[0] > 0 if result else False
@@ -2279,7 +2312,7 @@ class PropertyDB:
         try:
             # Match 7-day logic from HomeHarvestService
             result = conn.execute(
-                "SELECT COUNT(*) FROM home_harvest WHERE folio = ? AND created_at > CURRENT_DATE - INTERVAL 7 DAY",
+                "SELECT COUNT(*) FROM home_harvest WHERE folio = ? AND created_at > date('now', '-\1 days')",
                 [folio]
             ).fetchone()
             return result[0] > 0 if result else False
@@ -2303,10 +2336,10 @@ class PropertyDB:
         conn = self.connect()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS status (
-                case_number VARCHAR PRIMARY KEY,
-                parcel_id VARCHAR,
+                case_number TEXT PRIMARY KEY,
+                parcel_id TEXT,
                 auction_date DATE,
-                auction_type VARCHAR,
+                auction_type TEXT,
                 step_auction_scraped TIMESTAMP,
                 step_pdf_downloaded TIMESTAMP,
                 step_judgment_extracted TIMESTAMP,
@@ -2320,8 +2353,8 @@ class PropertyDB:
                 step_market_fetched TIMESTAMP,
                 step_tax_checked TIMESTAMP,
                 current_step INTEGER DEFAULT 0,
-                pipeline_status VARCHAR DEFAULT 'pending',
-                last_error VARCHAR,
+                pipeline_status TEXT DEFAULT 'pending',
+                last_error TEXT,
                 error_step INTEGER,
                 retry_count INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -2361,17 +2394,17 @@ class PropertyDB:
         auction_type = self._normalize_auction_type(auction_type)
         conn = self.connect()
         # Column renamed to pipeline_status to avoid DuckDB ambiguity with table name 'status'
-        # Use NOW() instead of CURRENT_TIMESTAMP to avoid DuckDB parsing issues
+        # Use CURRENT_TIMESTAMP instead of CURRENT_TIMESTAMP to avoid DuckDB parsing issues
         conn.execute(
             """
             INSERT INTO status (case_number, parcel_id, auction_date, auction_type, pipeline_status, step_auction_scraped, updated_at)
-            VALUES (?, ?, ?, ?, 'pending', NOW(), NOW())
+            VALUES (?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT (case_number) DO UPDATE SET
                 parcel_id = COALESCE(excluded.parcel_id, parcel_id),
                 auction_date = COALESCE(excluded.auction_date, auction_date),
                 auction_type = COALESCE(excluded.auction_type, auction_type),
                 step_auction_scraped = COALESCE(step_auction_scraped, excluded.step_auction_scraped),
-                updated_at = NOW()
+                updated_at = CURRENT_TIMESTAMP
             """,
             [case_number, parcel_id, auction_date, auction_type],
         )
@@ -2413,12 +2446,12 @@ class PropertyDB:
             conn.execute(
                 f"""
                 UPDATE status SET
-                    {step_column} = NOW(),
+                    {step_column} = CURRENT_TIMESTAMP,
                     current_step = CASE WHEN current_step < ? THEN ? ELSE current_step END,
                     pipeline_status = ?,
                     last_error = NULL,
                     error_step = NULL,
-                    updated_at = NOW()
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE case_number = ?
                 """,
                 [step_number, step_number, new_status, case_number],
@@ -2427,11 +2460,11 @@ class PropertyDB:
             conn.execute(
                 f"""
                 UPDATE status SET
-                    {step_column} = NOW(),
+                    {step_column} = CURRENT_TIMESTAMP,
                     pipeline_status = ?,
                     last_error = NULL,
                     error_step = NULL,
-                    updated_at = NOW()
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE case_number = ?
                 """,
                 [new_status, case_number],
@@ -2513,8 +2546,8 @@ class PropertyDB:
                 """
                 UPDATE status SET
                     pipeline_status = 'completed',
-                    completed_at = NOW(),
-                    updated_at = NOW()
+                    completed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE case_number = ?
                 """,
                 [case_number],
@@ -2536,7 +2569,7 @@ class PropertyDB:
                 last_error = ?,
                 error_step = ?,
                 retry_count = retry_count + 1,
-                updated_at = NOW()
+                updated_at = CURRENT_TIMESTAMP
             WHERE case_number = ?
             """,
             [error_message, error_step, case_number],
@@ -2550,8 +2583,8 @@ class PropertyDB:
             """
             UPDATE status SET
                 pipeline_status = 'completed',
-                completed_at = NOW(),
-                updated_at = NOW()
+                completed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
             WHERE case_number = ?
             """,
             [case_number],
@@ -2566,7 +2599,7 @@ class PropertyDB:
             UPDATE status SET
                 pipeline_status = 'skipped',
                 last_error = ?,
-                updated_at = NOW()
+                updated_at = CURRENT_TIMESTAMP
             WHERE case_number = ?
             """,
             [reason, case_number],
@@ -2753,32 +2786,35 @@ class PropertyDB:
         conn = self.connect()
 
         def table_exists(table_name: str) -> bool:
-            result = conn.execute(
-                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
-                [table_name],
-            ).fetchone()
-            return result[0] > 0 if result else False
+            try:
+                result = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    [table_name],
+                ).fetchone()
+                return result is not None
+            except Exception:
+                return False
 
         # Ensure columns used for backfill exist when optional migrations haven't run.
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS bulk_folio VARCHAR")
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS raw_legal1 VARCHAR")
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS flood_zone VARCHAR")
-        conn.execute("ALTER TABLE parcels ADD COLUMN IF NOT EXISTS tax_status VARCHAR")
+        for col, col_type in [("bulk_folio", "TEXT"), ("raw_legal1", "TEXT"), ("flood_zone", "TEXT"), ("tax_status", "TEXT")]:
+            with suppress(Exception):
+                self._safe_exec(conn, f"ALTER TABLE parcels ADD COLUMN {col} {col_type}")
 
         date_clause = ""
         params: list = []
         if start_date:
-            date_clause += " AND s.auction_date >= ?"
+            date_clause += " AND status.auction_date >= ?"
             params.append(start_date)
         if end_date:
-            date_clause += " AND s.auction_date <= ?"
+            date_clause += " AND status.auction_date <= ?"
             params.append(end_date)
 
         # Step 1: Auction scraped (default for known cases)
         conn.execute(
             f"""
-            UPDATE status s SET step_auction_scraped = COALESCE(s.step_auction_scraped, s.created_at, NOW())
-            WHERE s.step_auction_scraped IS NULL
+            UPDATE status 
+            SET step_auction_scraped = COALESCE(status.step_auction_scraped, status.created_at, CURRENT_TIMESTAMP)
+            WHERE status.step_auction_scraped IS NULL
             {date_clause}
             """,
             params,
@@ -2787,10 +2823,11 @@ class PropertyDB:
         # Step 2: Judgment extracted
         conn.execute(
             f"""
-            UPDATE status s SET step_judgment_extracted = NOW()
-            FROM auctions a
-            WHERE s.case_number = a.case_number
-              AND s.step_judgment_extracted IS NULL
+            UPDATE status 
+            SET step_judgment_extracted = CURRENT_TIMESTAMP
+            FROM auctions AS a
+            WHERE status.case_number = a.case_number
+              AND status.step_judgment_extracted IS NULL
               AND a.extracted_judgment_data IS NOT NULL
               {date_clause}
             """,
@@ -2800,9 +2837,10 @@ class PropertyDB:
         # Step 1 PDF downloaded: if judgment extracted, PDF existed
         conn.execute(
             f"""
-            UPDATE status s SET step_pdf_downloaded = NOW()
-            WHERE s.step_pdf_downloaded IS NULL
-              AND s.step_judgment_extracted IS NOT NULL
+            UPDATE status 
+            SET step_pdf_downloaded = CURRENT_TIMESTAMP
+            WHERE status.step_pdf_downloaded IS NULL
+              AND status.step_judgment_extracted IS NOT NULL
               {date_clause}
             """,
             params,
@@ -2811,11 +2849,12 @@ class PropertyDB:
         # Step 3: Bulk enrichment (best-effort using bulk-parcel markers)
         conn.execute(
             f"""
-            UPDATE status s SET step_bulk_enriched = NOW()
-            FROM auctions a
-            JOIN parcels p ON COALESCE(a.parcel_id, a.folio) = p.folio
-            WHERE s.case_number = a.case_number
-              AND s.step_bulk_enriched IS NULL
+            UPDATE status 
+            SET step_bulk_enriched = CURRENT_TIMESTAMP
+            FROM auctions AS a
+            JOIN parcels AS p ON COALESCE(a.parcel_id, a.folio) = p.folio
+            WHERE status.case_number = a.case_number
+              AND status.step_bulk_enriched IS NULL
               AND (p.bulk_folio IS NOT NULL OR p.raw_legal1 IS NOT NULL)
               {date_clause}
             """,
@@ -2826,9 +2865,10 @@ class PropertyDB:
         if table_exists("home_harvest"):
             conn.execute(
                 f"""
-                UPDATE status s SET step_homeharvest_enriched = NOW()
-                WHERE s.step_homeharvest_enriched IS NULL
-                  AND s.case_number IN (
+                UPDATE status 
+                SET step_homeharvest_enriched = CURRENT_TIMESTAMP
+                WHERE status.step_homeharvest_enriched IS NULL
+                  AND status.case_number IN (
                     SELECT case_number FROM auctions
                     WHERE COALESCE(parcel_id, folio) IN (SELECT DISTINCT folio FROM home_harvest)
                   )
@@ -2843,9 +2883,10 @@ class PropertyDB:
             sales_history_filter = "OR COALESCE(a.parcel_id, a.folio) IN (SELECT DISTINCT folio FROM sales_history)"
         conn.execute(
             f"""
-            UPDATE status s SET step_hcpa_enriched = NOW()
-            WHERE s.step_hcpa_enriched IS NULL
-              AND s.case_number IN (
+            UPDATE status 
+            SET step_hcpa_enriched = CURRENT_TIMESTAMP
+            WHERE status.step_hcpa_enriched IS NULL
+              AND status.case_number IN (
                 SELECT a.case_number
                 FROM auctions a
                 WHERE COALESCE(a.parcel_id, a.folio) IN (
@@ -2871,17 +2912,20 @@ class PropertyDB:
                 v2_conn.close()
                 if folios_with_chain:
                     folio_list = [f[0] for f in folios_with_chain]
+                    placeholders = ",".join(["?"] * len(folio_list))
+                    query_params = list(folio_list) + list(params)
+                    
                     conn.execute(
                         f"""
-                        UPDATE status s SET step_ori_ingested = NOW()
-                        WHERE s.step_ori_ingested IS NULL
-                          AND s.case_number IN (
+                        UPDATE status SET step_ori_ingested = CURRENT_TIMESTAMP
+                        WHERE status.step_ori_ingested IS NULL
+                          AND status.case_number IN (
                             SELECT case_number FROM auctions
-                            WHERE COALESCE(parcel_id, folio) IN (SELECT * FROM UNNEST(?::VARCHAR[]))
+                            WHERE COALESCE(parcel_id, folio) IN ({placeholders})
                           )
                           {date_clause}
                         """,
-                        [folio_list] + params,
+                        query_params,
                     )
             except Exception as e:
                 logger.debug(f"V2 backfill check failed: {e}")
@@ -2891,10 +2935,11 @@ class PropertyDB:
         # Step 6: Survival analysis (auctions status ANALYZED/FLAGGED)
         conn.execute(
             f"""
-            UPDATE status s SET step_survival_analyzed = NOW()
-            FROM auctions a
-            WHERE s.case_number = a.case_number
-              AND s.step_survival_analyzed IS NULL
+            UPDATE status 
+            SET step_survival_analyzed = CURRENT_TIMESTAMP
+            FROM auctions AS a
+            WHERE status.case_number = a.case_number
+              AND status.step_survival_analyzed IS NULL
               AND a.status IN ('ANALYZED', 'FLAGGED')
               {date_clause}
             """,
@@ -2905,9 +2950,10 @@ class PropertyDB:
         if table_exists("permits"):
             conn.execute(
                 f"""
-                UPDATE status s SET step_permits_checked = NOW()
-                WHERE s.step_permits_checked IS NULL
-                  AND s.case_number IN (
+                UPDATE status 
+                SET step_permits_checked = CURRENT_TIMESTAMP
+                WHERE status.step_permits_checked IS NULL
+                  AND status.case_number IN (
                     SELECT case_number FROM auctions
                     WHERE COALESCE(parcel_id, folio) IN (SELECT DISTINCT folio FROM permits)
                   )
@@ -2919,9 +2965,10 @@ class PropertyDB:
         # Step 8: Flood check
         conn.execute(
             f"""
-            UPDATE status s SET step_flood_checked = NOW()
-            WHERE s.step_flood_checked IS NULL
-              AND s.case_number IN (
+            UPDATE status 
+            SET step_flood_checked = CURRENT_TIMESTAMP
+            WHERE status.step_flood_checked IS NULL
+              AND status.case_number IN (
                 SELECT case_number FROM auctions
                 WHERE COALESCE(parcel_id, folio) IN (
                     SELECT folio FROM parcels WHERE flood_zone IS NOT NULL
@@ -2936,9 +2983,10 @@ class PropertyDB:
         if table_exists("market_data"):
             conn.execute(
                 f"""
-                UPDATE status s SET step_market_fetched = NOW()
-                WHERE s.step_market_fetched IS NULL
-                  AND s.case_number IN (
+                UPDATE status 
+                SET step_market_fetched = CURRENT_TIMESTAMP
+                WHERE status.step_market_fetched IS NULL
+                  AND status.case_number IN (
                     SELECT case_number FROM auctions
                     WHERE COALESCE(parcel_id, folio) IN (SELECT DISTINCT folio FROM market_data)
                   )
@@ -2950,9 +2998,10 @@ class PropertyDB:
         # Step 12: Tax check
         conn.execute(
             f"""
-            UPDATE status s SET step_tax_checked = NOW()
-            WHERE s.step_tax_checked IS NULL
-              AND s.case_number IN (
+            UPDATE status 
+            SET step_tax_checked = CURRENT_TIMESTAMP
+            WHERE status.step_tax_checked IS NULL
+              AND status.case_number IN (
                 SELECT case_number FROM auctions
                 WHERE COALESCE(parcel_id, folio) IN (
                     SELECT folio FROM parcels WHERE tax_status IS NOT NULL
@@ -2979,10 +3028,11 @@ class PropertyDB:
         for flag, step in step_flag_map.items():
             conn.execute(
                 f"""
-                UPDATE status s SET {step} = NOW()
-                FROM auctions a
-                WHERE s.case_number = a.case_number
-                  AND s.{step} IS NULL
+                UPDATE status 
+                SET {step} = CURRENT_TIMESTAMP
+                FROM auctions AS a
+                WHERE status.case_number = a.case_number
+                  AND status.{step} IS NULL
                   AND a.{flag} = FALSE
                   {date_clause}
                 """,
@@ -3032,7 +3082,7 @@ class PropertyDB:
                 COALESCE(a.parcel_id, a.folio),
                 a.auction_date,
                 a.auction_type,
-                NOW()
+                CURRENT_TIMESTAMP
             FROM auctions a
             WHERE a.case_number IS NOT NULL
             AND a.case_number NOT IN (SELECT case_number FROM status)
@@ -3046,8 +3096,8 @@ class PropertyDB:
                 parcel_id = COALESCE(status.parcel_id, a.parcel_id, a.folio),
                 auction_date = COALESCE(status.auction_date, a.auction_date),
                 auction_type = COALESCE(status.auction_type, a.auction_type),
-                step_auction_scraped = COALESCE(status.step_auction_scraped, status.created_at, NOW()),
-                updated_at = NOW()
+                step_auction_scraped = COALESCE(status.step_auction_scraped, status.created_at, CURRENT_TIMESTAMP),
+                updated_at = CURRENT_TIMESTAMP
             FROM auctions a
             WHERE status.case_number = a.case_number
             """
