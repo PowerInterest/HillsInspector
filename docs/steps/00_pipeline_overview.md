@@ -5,6 +5,20 @@
 The HillsInspector pipeline uses a hybrid architecture:
 - **Sequential Pre-processing**: Steps 1-3.5 run sequentially in `main.py`
 - **Parallel Enrichment**: Steps 4+ run in parallel via `PipelineOrchestrator`
+- **Single Database**: All data stored in SQLite (`data/property_master_sqlite.db`) with WAL mode
+
+## Database
+
+**SQLite only** (`data/property_master_sqlite.db`) with WAL mode enabled. All pipeline data — auctions, parcels, documents, chain of title, encumbrances, and analysis results — lives in this single database.
+
+Key tables:
+- `auctions` - Foreclosure/tax deed auction listings
+- `status` - Pipeline step completion tracking
+- `parcels` - Property details (owner, address, legal description, coords)
+- `permits` - Building permit data
+- `market_data` - Zillow/listing data
+- `sales_history` - HCPA sales history
+- `bulk_parcels` - HCPA bulk parcel import (529K+ rows)
 
 ## Pipeline Stages
 
@@ -30,12 +44,16 @@ The orchestrator processes each auction property through 3 phases:
 | Market (Realtor) | Get HOA, price history | 2 |
 | FEMA Flood | Check flood zone | 10 |
 | Sunbiz | Corporate entity lookup | 5 |
-| HCPA GIS | Get sales history | 5 |
+| HCPA GIS | Get sales history, write to parcels table | 5 |
 
 #### Phase 2: ORI Ingestion (Sequential)
-- Search Official Records Index
+- Read legal description from `parcels` table (populated by HCPA GIS in Phase 1)
+- Fallback chain: `parcels.legal_description` -> `parcels.judgment_legal_description` -> `bulk_parcels.raw_legal1-4` -> party name search
+- Search Official Records Index via PAV Direct Search browser (CQID 321) and API fallback
+- **Fast zero-result detection**: All browser searches intercept the PAV `KeywordSearch` API response (`page.expect_response`). Empty `Data` array → bail instantly instead of waiting 30s for table rows that never appear. Saves ~3.6h per run (76% of searches are zero-result).
 - Build chain of title
 - Download document PDFs
+- Vision extraction gated by `VISION_EXTRACT_DOC_TYPES` — skips NOC, ASG, RELLP, PR, AGR, AFF (ORI metadata sufficient for those types)
 - Extract encumbrances
 
 #### Phase 3: Survival Analysis (Sequential)
@@ -80,9 +98,11 @@ main.py --update
 |  For each auction (parallel):        |
 |    +-> Phase 1: Gather data          |
 |    |     Tax, Zillow, Realtor,       |
-|    |     FEMA, Sunbiz, HCPA GIS      |
+|    |     FEMA, Sunbiz, HCPA GIS     |
+|    |     (writes to parcels table)   |
 |    +-> Phase 2: ORI Ingestion        |
-|    |     Chain of title, documents   |
+|    |     Read legal desc from parcels|
+|    |     Search ORI, build chain     |
 |    +-> Phase 3: Survival Analysis    |
 |          Lien priority, calc debt    |
 +--------------------------------------+
@@ -96,7 +116,7 @@ main.py --update
 ## Key Components
 
 ### DatabaseWriter (Serialized Writes)
-All database writes are serialized through a queue to prevent DuckDB concurrency issues:
+All database writes are serialized through an async queue to prevent SQLite locking issues:
 ```python
 writer = DatabaseWriter(Path(db.db_path))
 await writer.start()
@@ -114,6 +134,7 @@ permit_semaphore = asyncio.Semaphore(5)      # Building permits
 hcpa_semaphore = asyncio.Semaphore(5)        # HCPA GIS
 sunbiz_semaphore = asyncio.Semaphore(5)      # Sunbiz
 fema_semaphore = asyncio.Semaphore(10)       # FEMA API (fast)
+homeharvest_semaphore = asyncio.Semaphore(1) # HomeHarvest (serial)
 ```
 
 ### Skip Logic
@@ -150,14 +171,16 @@ uv run main.py --update --start-date YYYY-MM-DD --end-date YYYY-MM-DD --auction-
 | `main.py` | Entry point, runs pre-processing steps |
 | `src/orchestrator.py` | Parallel property enrichment |
 | `src/db/writer.py` | Serialized database writes |
+| `src/db/operations.py` | All SQLite database operations |
 | `src/services/ingestion_service.py` | ORI search & chain building |
+| `src/scrapers/ori_api_scraper.py` | ORI browser & API searches (PAV Direct Search) |
 | `src/services/lien_survival_analyzer.py` | Lien priority analysis |
 
 ## Data Flow
 
 ```
 Auctions (scraped)
-    -> parcels (bulk enriched)
+    -> parcels (HCPA GIS + bulk enriched)
     -> home_harvest (MLS photos)
     -> documents (ORI PDFs)
     -> chain_of_title (ownership)

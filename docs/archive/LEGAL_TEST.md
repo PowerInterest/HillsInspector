@@ -1,0 +1,2609 @@
+# Legal Description Test Cases
+
+This document shows all legal descriptions in the database and what search terms the current code generates.
+
+## Summary
+- Total properties with legal descriptions: 93
+
+---
+
+### Folio: `172716ZZZ000000103700U`
+**Case:** 292025CA003784A001HC
+
+**Legal Description:**
+```
+1	COM AT NW COR OF NW 1/4 RUN S 608.2 FT TO A PT ON SLY R/W LINE OF TARPON SPRINGS RD THN ALG SD R/W N 78 DEG 05 MIN E 306.90 FT TO WLY R/W LINE S 11 DEG 55 MIN E 200 FT TO POB THN CONT S 11 DEG 55 MIN E 110 FT THN S 78 DEG 05 MIN W 150 FT THN S 69 DEG 28 MIN W 232.29 FT TO W BDRY OF SD NW 1/4 THN N 148 FT THN N 78 DEG 05 MIN E 349.11 FT TO POB
+```
+
+**Parsed:**
+- Subdivision: None
+- Lot: None | Lots: []
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (3):**
+1. `TARPON SPRINGS RD*`
+2. `TARPON SPRINGS*`
+3. `COM AT NW COR OF NW 1/4 RUN S 608.2 FT TO A PT ON SLY R/W LI*`
+
+---
+
+### Folio: `17273572S000000000120U`
+**Case:** 292024CA009924A001HC
+
+**Legal Description:**
+```
+1	NORTHTON GROVES SUBDIVISION LOT 12
+```
+
+**Parsed:**
+- Subdivision: NORTHTON GROVES SUBDIVISION
+- Lot: 12 | Lots: ['12']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (8):**
+1. `L 12 NORTHTON GROVES SUBDIVISION*`
+2. `L12 NORTHTON GROVES SUBDIVISION*`
+3. `L 12 NORTHTON GROVES*`
+4. `L12 NORTHTON GROVES*`
+5. `L 12 NORTHTON*`
+6. `L12 NORTHTON*`
+7. `NORTHTON*`
+8. `NORTHTON GROVES*`
+
+---
+
+### Folio: `17273603C000001000020U`
+**Case:** 292016CA009351A001HC
+
+**Legal Description:**
+```
+1	EASTBROOK LOT 2 BLOCK 1
+```
+
+**Parsed:**
+- Subdivision: EASTBROOK
+- Lot: 2 | Lots: ['2']
+- Block: 1
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (5):**
+1. `L 2 B 1 EASTBROOK*`
+2. `L2 B1 EASTBROOK*`
+3. `L 2 EASTBROOK*`
+4. `L2 EASTBROOK*`
+5. `EASTBROOK*`
+
+---
+
+### Folio: `172806045000004000260U`
+**Case:** 292024CA007849A001HC
+
+**Legal Description:**
+```
+1	WESTWOOD LAKES PHASE 1A LOT 26 BLOCK 4
+```
+
+**Parsed:**
+- Subdivision: WESTWOOD LAKES PHASE 1A
+- Lot: 26 | Lots: ['26']
+- Block: 4
+- Unit: None
+- Phase: 1A
+
+**Generated Search Terms (10):**
+1. `L 26 B 4 WESTWOOD LAKES PHASE*`
+2. `L26 B4 WESTWOOD LAKES PHASE*`
+3. `L 26 B 4 WESTWOOD LAKES*`
+4. `L26 B4 WESTWOOD LAKES*`
+5. `L 26 B 4 WESTWOOD*`
+6. `L26 B4 WESTWOOD*`
+7. `L 26 WESTWOOD LAKES PHASE*`
+8. `L26 WESTWOOD LAKES PHASE*`
+9. `L 26 WESTWOOD LAKES*`
+10. `L26 WESTWOOD LAKES*`
+
+---
+
+### Folio: `172814ZZZ000000315400U`
+**Case:** 292024CA006789A001HC
+
+**Legal Description:**
+```
+1	TRACT DESC AS FROM NW COR OF SW 1/4 OF NW 1/4 RUN S 01 DEG 10 MIN 33 SEC W ALG W BDRY 250 FT THN S 89 DEG 23 MIN 01 SEC E 323.58 FT TO A PT OF CURVE TO LEFT W/RAD OF 1823.88 FT CHD BRG N 88 DEG 01 MIN 19 SEC E 165.12 FT THN S 00 DEG 36 MIN 59 SEC W 30.12 FT TO A PT OF CURVE SD PT BEING ON S R/W GARDNER RD THN ALG S R/W RUN S 85 DEG 44 MIN 40.5 SEC W 15.05 FT TO POB THN S 00 DEG 36 MIN 59 SEC W 360.76 FT THN N 89 DEG 23 MIN 01 SEC W 227.27 FT THN N 01 DEG 10 MIN 33 SEC E 154.88 FT THN S 89 DEG 
+```
+
+**Parsed:**
+- Subdivision: None
+- Lot: None | Lots: []
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (5):**
+1. `GARDNER RD*`
+2. `GARDNER*`
+3. `FOR KITTY HAWK RD*`
+4. `FOR KITTY HAWK*`
+5. `TRACT DESC AS FROM NW COR OF SW 1/4 OF NW 1/4 RUN S 01 DEG 1*`
+
+---
+
+### Folio: `17282107GA00000000380U`
+**Case:** 292025CA004347A001HC
+
+**Legal Description:**
+```
+1	COUNTRYWAY PARCEL B TRACT 7 PHASE 2 LOT 38 BLOCK A
+```
+
+**Parsed:**
+- Subdivision: COUNTRYWAY PARCEL
+- Lot: 38 | Lots: ['38']
+- Block: A
+- Unit: None
+- Phase: 2
+
+**Generated Search Terms (10):**
+1. `L 38 B A COUNTRYWAY PARCEL*`
+2. `L38 BA COUNTRYWAY PARCEL*`
+3. `L 38 BLK A COUNTRYWAY PARCEL*`
+4. `L38 BLKA COUNTRYWAY PARCEL*`
+5. `L 38 B A COUNTRYWAY*`
+6. `L38 BA COUNTRYWAY*`
+7. `L 38 BLK A COUNTRYWAY*`
+8. `L38 BLKA COUNTRYWAY*`
+9. `L 38 COUNTRYWAY PARCEL*`
+10. `L38 COUNTRYWAY PARCEL*`
+
+---
+
+### Folio: `1728360D5000000000480U`
+**Case:** 292020CA002531A001HC
+
+**Legal Description:**
+```
+1	GOLDEN ESTATES LOT 48
+```
+
+**Parsed:**
+- Subdivision: GOLDEN ESTATES
+- Lot: 48 | Lots: ['48']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (6):**
+1. `L 48 GOLDEN ESTATES*`
+2. `L48 GOLDEN ESTATES*`
+3. `L 48 GOLDEN*`
+4. `L48 GOLDEN*`
+5. `GOLDEN*`
+6. `GOLDEN ESTATES*`
+
+---
+
+### Folio: `1729010DZ000002000100U`
+**Case:** 292025CA003461A001HC
+
+**Legal Description:**
+```
+1	GOLFWOOD ESTATES UNIT NO 08 LOT 10 BLOCK 2
+```
+
+**Parsed:**
+- Subdivision: GOLFWOOD ESTATES UNIT NO 08
+- Lot: 10 | Lots: ['10']
+- Block: 2
+- Unit: 08
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 10 B 2 GOLFWOOD ESTATES UNIT*`
+2. `L10 B2 GOLFWOOD ESTATES UNIT*`
+3. `L 10 B 2 GOLFWOOD ESTATES*`
+4. `L10 B2 GOLFWOOD ESTATES*`
+5. `L 10 B 2 GOLFWOOD*`
+6. `L10 B2 GOLFWOOD*`
+7. `L 10 GOLFWOOD ESTATES UNIT*`
+8. `L10 GOLFWOOD ESTATES UNIT*`
+9. `L 10 GOLFWOOD ESTATES*`
+10. `L10 GOLFWOOD ESTATES*`
+
+---
+
+### Folio: `1729020FM000025000180U`
+**Case:** 292018CA008689A001HC
+
+**Legal Description:**
+```
+1	TOWN'N COUNTRY PARK UNIT NO 06 E 13 FT OF LOT 18 AND W 52 FT OF LOT 19 BLOCK 25
+```
+
+**Parsed:**
+- Subdivision: TOWN'N COUNTRY PARK UNIT NO 06
+- Lot: 18 | Lots: ['18', '19']
+- Block: 25
+- Unit: 06
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `PT L 18-19 B 25*`
+2. `L 18-19 B 25*`
+3. `PT L 18-19 B 25 TOWN N COUNTRY*`
+4. `PT L 18 AND 19 B 25*`
+5. `PT L 18 AND 19 B 25 MAP*`
+6. `PT L 18 AND 19 B 25 TOWN N COUNTRY*`
+7. `PT L 18 AND 19 B 25 TOWN N*`
+8. `L 18 B 25 TOWN N COUNTRY*`
+9. `L18 B25 TOWN N COUNTRY*`
+10. `L 18 B 25 TOWN N*`
+
+---
+
+### Folio: `1827280P1000005000200U`
+**Case:** 292023CA013106A001HC
+
+**Legal Description:**
+```
+1	NORTHDALE SECTION E UNIT NO 3 LOT 20 BLOCK 5
+```
+
+**Parsed:**
+- Subdivision: NORTHDALE SECTION E UNIT NO 3
+- Lot: 20 | Lots: ['20']
+- Block: 5
+- Unit: 3
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 20 B 5 NORTHDALE SECTION E*`
+2. `L20 B5 NORTHDALE SECTION E*`
+3. `L 20 B 5 NORTHDALE SECTION*`
+4. `L20 B5 NORTHDALE SECTION*`
+5. `L 20 B 5 NORTHDALE*`
+6. `L20 B5 NORTHDALE*`
+7. `L 20 NORTHDALE SECTION E*`
+8. `L20 NORTHDALE SECTION E*`
+9. `L 20 NORTHDALE SECTION*`
+10. `L20 NORTHDALE SECTION*`
+
+---
+
+### Folio: `1827320R2000017000150U`
+**Case:** 292024CA002578A001HC
+
+**Legal Description:**
+```
+1	NORTHDALE SECTION B UNIT NO 2 LOT 15 BLOCK 17
+```
+
+**Parsed:**
+- Subdivision: NORTHDALE SECTION B
+- Lot: 15 | Lots: ['15']
+- Block: 17
+- Unit: 2
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 15 B 17 NORTHDALE SECTION B*`
+2. `L15 B17 NORTHDALE SECTION B*`
+3. `L 15 B 17 NORTHDALE SECTION*`
+4. `L15 B17 NORTHDALE SECTION*`
+5. `L 15 B 17 NORTHDALE*`
+6. `L15 B17 NORTHDALE*`
+7. `L 15 NORTHDALE SECTION B*`
+8. `L15 NORTHDALE SECTION B*`
+9. `L 15 NORTHDALE SECTION*`
+10. `L15 NORTHDALE SECTION*`
+
+---
+
+### Folio: `1828029S4000000000080U`
+**Case:** 292024CA005801A001HC
+
+**Legal Description:**
+```
+1	HILLANDALE RESERVE PHASE 1 LOT 8
+```
+
+**Parsed:**
+- Subdivision: HILLANDALE RESERVE PHASE 1
+- Lot: 8 | Lots: ['8']
+- Block: None
+- Unit: None
+- Phase: 1
+
+**Generated Search Terms (8):**
+1. `L 8 HILLANDALE RESERVE PHASE*`
+2. `L8 HILLANDALE RESERVE PHASE*`
+3. `L 8 HILLANDALE RESERVE*`
+4. `L8 HILLANDALE RESERVE*`
+5. `L 8 HILLANDALE*`
+6. `L8 HILLANDALE*`
+7. `HILLANDALE*`
+8. `HILLANDALE RESERVE*`
+
+---
+
+### Folio: `1828050VX000001000300U`
+**Case:** 292024CA006113A001HC
+
+**Legal Description:**
+```
+1	VILLAGE IX OF CARROLLWOOD VILLAGE PHASE III LOT 30 BLOCK 1
+```
+
+**Parsed:**
+- Subdivision: VILLAGE IX OF CARROLLWOOD VILLAGE PHASE III
+- Lot: 30 | Lots: ['30']
+- Block: 1
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 30 B 1 VILLAGE IX CARROLLWOOD*`
+2. `L30 B1 VILLAGE IX CARROLLWOOD*`
+3. `L 30 B 1 VILLAGE IX*`
+4. `L30 B1 VILLAGE IX*`
+5. `L 30 B 1 VILLAGE*`
+6. `L30 B1 VILLAGE*`
+7. `L 30 VILLAGE IX CARROLLWOOD*`
+8. `L30 VILLAGE IX CARROLLWOOD*`
+9. `L 30 VILLAGE IX*`
+10. `L30 VILLAGE IX*`
+
+---
+
+### Folio: `1828364FX000033000150A`
+**Case:** 292024CA001183A001HC
+
+**Legal Description:**
+```
+1	WEST SUWANEE HEIGHTS LOT 15 BLOCK 33
+```
+
+**Parsed:**
+- Subdivision: WEST SUWANEE HEIGHTS
+- Lot: 15 | Lots: ['15']
+- Block: 33
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 15 B 33 WEST SUWANEE HEIGHTS*`
+2. `L15 B33 WEST SUWANEE HEIGHTS*`
+3. `L 15 B 33 WEST SUWANEE*`
+4. `L15 B33 WEST SUWANEE*`
+5. `L 15 B 33 WEST*`
+6. `L15 B33 WEST*`
+7. `L 15 WEST SUWANEE HEIGHTS*`
+8. `L15 WEST SUWANEE HEIGHTS*`
+9. `L 15 WEST SUWANEE*`
+10. `L15 WEST SUWANEE*`
+
+---
+
+### Folio: `1829144PP000008000110A`
+**Case:** 292025CA003703A001HC
+
+**Legal Description:**
+```
+1	MUNRO'S AND CLEWIS'S ADDITION TO WEST TAMPA LOT 11 BLOCK 8
+```
+
+**Parsed:**
+- Subdivision: MUNRO'S AND CLEWIS'S ADDITION TO WEST TAMPA
+- Lot: 11 | Lots: ['11']
+- Block: 8
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 11 B 8 MUNRO S AND*`
+2. `L11 B8 MUNRO S AND*`
+3. `L 11 B 8 MUNRO S*`
+4. `L11 B8 MUNRO S*`
+5. `L 11 B 8 MUNRO*`
+6. `L11 B8 MUNRO*`
+7. `L 11 B 8 MUNROS AND CLEWISS*`
+8. `L11 B8 MUNROS AND CLEWISS*`
+9. `L 11 B 8 MUNROS AND*`
+10. `L11 B8 MUNROS AND*`
+
+---
+
+### Folio: `1829163JG000000000195A`
+**Case:** 292025CA003465A001HC
+
+**Legal Description:**
+```
+1	FOREST HEIGHTS E 50 FT OF W 153.9 FT OF S 100 FT OF LOT 19
+```
+
+**Parsed:**
+- Subdivision: FOREST HEIGHTS E 50 FT OF W 153.9 FT OF S 100 FT OF
+- Lot: 19 | Lots: ['19']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (8):**
+1. `L 19 FOREST HEIGHTS E*`
+2. `L19 FOREST HEIGHTS E*`
+3. `L 19 FOREST HEIGHTS*`
+4. `L19 FOREST HEIGHTS*`
+5. `L 19 FOREST*`
+6. `L19 FOREST*`
+7. `FOREST*`
+8. `FOREST HEIGHTS*`
+
+---
+
+### Folio: `1829213LU000001000110A`
+**Case:** 292024CA008410A001HC
+
+**Legal Description:**
+```
+1	ANADELL SUBDIVISION LOT 11 AND W 15 FT OF LOT 12 BLOCK 1
+```
+
+**Parsed:**
+- Subdivision: ANADELL SUBDIVISION
+- Lot: 11 | Lots: ['11', '12']
+- Block: 1
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `PT L 11-12 B 1*`
+2. `L 11-12 B 1*`
+3. `PT L 11-12 B 1 ANADELL SUBDIVISION*`
+4. `PT L 11 AND 12 B 1*`
+5. `PT L 11 AND 12 B 1 MAP*`
+6. `PT L 11 AND 12 B 1 ANADELL SUBDIVISION*`
+7. `PT L 11 AND 12 B 1 ANADELL*`
+8. `L 11 B 1 ANADELL SUBDIVISION*`
+9. `L11 B1 ANADELL SUBDIVISION*`
+10. `L 11 B 1 ANADELL*`
+
+---
+
+### Folio: `182936509000044000130A`
+**Case:** 292009CA023311A001HC
+
+**Legal Description:**
+```
+1	DAVIS ISLANDS PB10 PG52 TO 57 AND PB17 PG5 TO 9 LOT 13 & LOT BEG AT SW COR OF LOT 14 & RUN N 35 FT E TO E LINE OF SAID LOT TO PT 22.5 FT N OF SE COR S 22.5 FT AND W TO BEG BLOCK 44
+```
+
+**Parsed:**
+- Subdivision: DAVIS ISLANDS PB10 PG52 TO 57 AND PB17 PG5 TO 9
+- Lot: 13 | Lots: ['13', '14', 'TO']
+- Block: 44
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `PT L 13-TO B 44*`
+2. `L 13-TO B 44*`
+3. `PT L 13-TO B 44 DAVIS ISLANDS PB10*`
+4. `PT L 13 AND 14 B 44*`
+5. `PT L 13 AND 14 B 44 MAP*`
+6. `PT L 13 AND 14 B 44 DAVIS ISLANDS PB10*`
+7. `PT L 13 AND 14 B 44 DAVIS ISLANDS*`
+8. `L 13 B 44 DAVIS ISLANDS PB10*`
+9. `L13 B44 DAVIS ISLANDS PB10*`
+10. `L 13 B 44 DAVIS ISLANDS*`
+
+---
+
+### Folio: `1830093YD000010000110A`
+**Case:** 292023CA013582A001HC
+
+**Legal Description:**
+```
+1	GANDY MANOR ADDITION LOT 11 BLOCK 10
+```
+
+**Parsed:**
+- Subdivision: GANDY MANOR ADDITION
+- Lot: 11 | Lots: ['11']
+- Block: 10
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 11 B 10 GANDY MANOR ADDITION*`
+2. `L11 B10 GANDY MANOR ADDITION*`
+3. `L 11 B 10 GANDY MANOR*`
+4. `L11 B10 GANDY MANOR*`
+5. `L 11 B 10 GANDY*`
+6. `L11 B10 GANDY*`
+7. `L 11 GANDY MANOR ADDITION*`
+8. `L11 GANDY MANOR ADDITION*`
+9. `L 11 GANDY MANOR*`
+10. `L11 GANDY MANOR*`
+
+---
+
+### Folio: `18301742J000100000010A`
+**Case:** 292025CA009228A001HC
+
+**Legal Description:**
+```
+1	PORT TAMPA CITY MAP LOTS 1 2 AND 3 LESS W 50 FT THEREOF BLOCK 100
+```
+
+**Parsed:**
+- Subdivision: PORT TAMPA CITY MAP LOTS 1 2 AND 3 LESS W 50 FT THEREOF
+- Lot: None | Lots: ['1', '2', '3']
+- Block: 100
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `PT L 1-3 B 100*`
+2. `L 1-3 B 100*`
+3. `PT L 1-3 B 100 PORT TAMPA CITY*`
+4. `PT L 1 AND 2 B 100*`
+5. `PT L 1 AND 2 B 100 MAP*`
+6. `PT L 1 AND 2 B 100 PORT TAMPA CITY*`
+7. `PT L 1 AND 2 B 100 PORT TAMPA*`
+8. `L 1 B 100 PORT TAMPA CITY*`
+9. `L1 B100 PORT TAMPA CITY*`
+10. `L 1 B 100 PORT TAMPA*`
+
+---
+
+### Folio: `1927351E1000001000200A`
+**Case:** 292023CA015562A001HC
+
+**Legal Description:**
+```
+1	TAMPA PALMS 2C UNIT 1 LOT 20 BLOCK 1
+```
+
+**Parsed:**
+- Subdivision: TAMPA PALMS 2C UNIT 1
+- Lot: 20 | Lots: ['20']
+- Block: 1
+- Unit: 1
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 20 B 1 TAMPA PALMS 2C*`
+2. `L20 B1 TAMPA PALMS 2C*`
+3. `L 20 B 1 TAMPA PALMS*`
+4. `L20 B1 TAMPA PALMS*`
+5. `L 20 B 1 TAMPA*`
+6. `L20 B1 TAMPA*`
+7. `L 20 TAMPA PALMS 2C*`
+8. `L20 TAMPA PALMS 2C*`
+9. `L 20 TAMPA PALMS*`
+10. `L20 TAMPA PALMS*`
+
+---
+
+### Folio: `1928041FJ000002000120U`
+**Case:** 292025CC032519A001HC
+
+**Legal Description:**
+```
+1	THE OAKS UNIT VII A CONDOMINIUM BLDG 2 UNIT 12
+```
+
+**Parsed:**
+- Subdivision: OAKS
+- Lot: None | Lots: []
+- Block: None
+- Unit: 12
+- Phase: None
+
+**Generated Search Terms (3):**
+1. `OAKS*`
+2. `UNIT 12 OAKS*`
+3. `U 12 OAKS*`
+
+---
+
+### Folio: `1928071GR000000000090U`
+**Case:** 292024CA009910A001HC
+
+**Legal Description:**
+```
+1	FLOWERS AND STUART OAK GROVE SUBDIVISION LOT 9
+```
+
+**Parsed:**
+- Subdivision: FLOWERS AND STUART OAK GROVE SUBDIVISION
+- Lot: 9 | Lots: ['9']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (8):**
+1. `L 9 FLOWERS AND STUART*`
+2. `L9 FLOWERS AND STUART*`
+3. `L 9 FLOWERS AND*`
+4. `L9 FLOWERS AND*`
+5. `L 9 FLOWERS*`
+6. `L9 FLOWERS*`
+7. `FLOWERS*`
+8. `FLOWERS AND*`
+
+---
+
+### Folio: `1928131IO000001000400U`
+**Case:** 292025CA002067A001HC
+
+**Legal Description:**
+```
+1	TEMPLE OAKS LOT 40 BLOCK 1
+```
+
+**Parsed:**
+- Subdivision: TEMPLE OAKS
+- Lot: 40 | Lots: ['40']
+- Block: 1
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 40 B 1 TEMPLE OAKS*`
+2. `L40 B1 TEMPLE OAKS*`
+3. `L 40 B 1 TEMPLE*`
+4. `L40 B1 TEMPLE*`
+5. `L 40 TEMPLE OAKS*`
+6. `L40 TEMPLE OAKS*`
+7. `L 40 TEMPLE*`
+8. `L40 TEMPLE*`
+9. `TEMPLE*`
+10. `TEMPLE OAKS*`
+
+---
+
+### Folio: `192817439000004000230A`
+**Case:** 292024CA000157A001HC
+
+**Legal Description:**
+```
+1	SHERWOOD HEIGHTS UNIT NO 3 LOT 23 BLOCK 4
+```
+
+**Parsed:**
+- Subdivision: SHERWOOD HEIGHTS UNIT NO 3
+- Lot: 23 | Lots: ['23']
+- Block: 4
+- Unit: 3
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 23 B 4 SHERWOOD HEIGHTS UNIT*`
+2. `L23 B4 SHERWOOD HEIGHTS UNIT*`
+3. `L 23 B 4 SHERWOOD HEIGHTS*`
+4. `L23 B4 SHERWOOD HEIGHTS*`
+5. `L 23 B 4 SHERWOOD*`
+6. `L23 B4 SHERWOOD*`
+7. `L 23 SHERWOOD HEIGHTS UNIT*`
+8. `L23 SHERWOOD HEIGHTS UNIT*`
+9. `L 23 SHERWOOD HEIGHTS*`
+10. `L23 SHERWOOD HEIGHTS*`
+
+---
+
+### Folio: `19281744B000004000020A`
+**Case:** 292024CA006995A001HC
+
+**Legal Description:**
+```
+1	ALTMAN COLBY SUBDIVISION LOT 2 BLOCK 4
+```
+
+**Parsed:**
+- Subdivision: ALTMAN COLBY SUBDIVISION
+- Lot: 2 | Lots: ['2']
+- Block: 4
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 2 B 4 ALTMAN COLBY SUBDIVISION*`
+2. `L2 B4 ALTMAN COLBY SUBDIVISION*`
+3. `L 2 B 4 ALTMAN COLBY*`
+4. `L2 B4 ALTMAN COLBY*`
+5. `L 2 B 4 ALTMAN*`
+6. `L2 B4 ALTMAN*`
+7. `L 2 ALTMAN COLBY SUBDIVISION*`
+8. `L2 ALTMAN COLBY SUBDIVISION*`
+9. `L 2 ALTMAN COLBY*`
+10. `L2 ALTMAN COLBY*`
+
+---
+
+### Folio: `192818453R00000000010A`
+**Case:** 292024CA003776A001HC
+
+**Legal Description:**
+```
+1	CASTLE HEIGHTS MAP LOTS 1 AND 2 BLOCK R
+```
+
+**Parsed:**
+- Subdivision: CASTLE HEIGHTS MAP LOTS 1 AND 2
+- Lot: None | Lots: ['1', '2']
+- Block: R
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 1 AND 2 B R*`
+2. `L 1 AND 2 B R MAP*`
+3. `L 1 AND 2 B R CASTLE HEIGHTS MAP*`
+4. `L 1 AND 2 B R CASTLE HEIGHTS*`
+5. `L 1 B R CASTLE HEIGHTS MAP*`
+6. `L1 BR CASTLE HEIGHTS MAP*`
+7. `L 1 BLK R CASTLE HEIGHTS MAP*`
+8. `L1 BLKR CASTLE HEIGHTS MAP*`
+9. `L 1 B R CASTLE HEIGHTS*`
+10. `L1 BR CASTLE HEIGHTS*`
+
+---
+
+### Folio: `1928231IS000019000300U`
+**Case:** 292024CA007393A001HC
+
+**Legal Description:**
+```
+1	TEMPLE PARK UNIT NO 3 LOT 30 BLOCK 19
+```
+
+**Parsed:**
+- Subdivision: TEMPLE PARK UNIT NO 3
+- Lot: 30 | Lots: ['30']
+- Block: 19
+- Unit: 3
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 30 B 19 TEMPLE PARK UNIT*`
+2. `L30 B19 TEMPLE PARK UNIT*`
+3. `L 30 B 19 TEMPLE PARK*`
+4. `L30 B19 TEMPLE PARK*`
+5. `L 30 B 19 TEMPLE*`
+6. `L30 B19 TEMPLE*`
+7. `L 30 TEMPLE PARK UNIT*`
+8. `L30 TEMPLE PARK UNIT*`
+9. `L 30 TEMPLE PARK*`
+10. `L30 TEMPLE PARK*`
+
+---
+
+### Folio: `1928231J1000005J00000T`
+**Case:** 292025CA005917A001HC
+
+**Legal Description:**
+```
+1	ORANGE RIVER ESTATES UNIT 11 C LOT J BLOCK 5
+```
+
+**Parsed:**
+- Subdivision: ORANGE RIVER ESTATES UNIT 11
+- Lot: J | Lots: ['J']
+- Block: 5
+- Unit: 11
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L J B 5 ORANGE RIVER ESTATES*`
+2. `LJ B5 ORANGE RIVER ESTATES*`
+3. `L J B 5 ORANGE RIVER*`
+4. `LJ B5 ORANGE RIVER*`
+5. `L J B 5 ORANGE*`
+6. `LJ B5 ORANGE*`
+7. `L J ORANGE RIVER ESTATES*`
+8. `LJ ORANGE RIVER ESTATES*`
+9. `L J ORANGE RIVER*`
+10. `LJ ORANGE RIVER*`
+
+---
+
+### Folio: `1928245UC000001000020T`
+**Case:** 292023CA011753A001HC
+
+**Legal Description:**
+```
+1	BRIDGEFORD OAKS PHASE 2 LOT 2 BLOCK 1
+```
+
+**Parsed:**
+- Subdivision: BRIDGEFORD OAKS PHASE 2
+- Lot: 2 | Lots: ['2']
+- Block: 1
+- Unit: None
+- Phase: 2
+
+**Generated Search Terms (10):**
+1. `L 2 B 1 BRIDGEFORD OAKS PHASE*`
+2. `L2 B1 BRIDGEFORD OAKS PHASE*`
+3. `L 2 B 1 BRIDGEFORD OAKS*`
+4. `L2 B1 BRIDGEFORD OAKS*`
+5. `L 2 B 1 BRIDGEFORD*`
+6. `L2 B1 BRIDGEFORD*`
+7. `L 2 BRIDGEFORD OAKS PHASE*`
+8. `L2 BRIDGEFORD OAKS PHASE*`
+9. `L 2 BRIDGEFORD OAKS*`
+10. `L2 BRIDGEFORD OAKS*`
+
+---
+
+### Folio: `1928281LE000002000140U`
+**Case:** 292023CA000743A001HC
+
+**Legal Description:**
+```
+1	DEL RIO ESTATES LOT 14 BLOCK 2
+```
+
+**Parsed:**
+- Subdivision: DEL RIO ESTATES
+- Lot: 14 | Lots: ['14']
+- Block: 2
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 14 B 2 DEL RIO ESTATES*`
+2. `L14 B2 DEL RIO ESTATES*`
+3. `L 14 B 2 DEL RIO*`
+4. `L14 B2 DEL RIO*`
+5. `L 14 B 2 DEL*`
+6. `L14 B2 DEL*`
+7. `L 14 DEL RIO ESTATES*`
+8. `L14 DEL RIO ESTATES*`
+9. `L 14 DEL RIO*`
+10. `L14 DEL RIO*`
+
+---
+
+### Folio: `19283046T000000002180A`
+**Case:** 292025CA005375A001HC
+
+**Legal Description:**
+```
+1	FERN CLIFF LOT 218
+```
+
+**Parsed:**
+- Subdivision: FERN CLIFF
+- Lot: 218 | Lots: ['218']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (6):**
+1. `L 218 FERN CLIFF*`
+2. `L218 FERN CLIFF*`
+3. `L 218 FERN*`
+4. `L218 FERN*`
+5. `FERN*`
+6. `FERN CLIFF*`
+
+---
+
+### Folio: `19290549Y000005000131A`
+**Case:** 292018CA010544A001HC
+
+**Legal Description:**
+```
+1	BELLMONT HEIGHTS N 54 FT OF LOT 13 BLOCK 5
+```
+
+**Parsed:**
+- Subdivision: BELLMONT HEIGHTS N 54 FT OF
+- Lot: 13 | Lots: ['13']
+- Block: 5
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 13 B 5 BELLMONT HEIGHTS N*`
+2. `L13 B5 BELLMONT HEIGHTS N*`
+3. `L 13 B 5 BELLMONT HEIGHTS*`
+4. `L13 B5 BELLMONT HEIGHTS*`
+5. `L 13 B 5 BELLMONT*`
+6. `L13 B5 BELLMONT*`
+7. `L 13 BELLMONT HEIGHTS N*`
+8. `L13 BELLMONT HEIGHTS N*`
+9. `L 13 BELLMONT HEIGHTS*`
+10. `L13 BELLMONT HEIGHTS*`
+
+---
+
+### Folio: `1929074LY000026000060A`
+**Case:** 292025CA000562A001HC
+
+**Legal Description:**
+```
+1	BONITA BLKS 26 TO 30 AND 32 TO 36 AND 38 TO 48 LOT 6 BLOCK 26
+```
+
+**Parsed:**
+- Subdivision: BONITA BLKS 26 TO 30 AND 32 TO 36 AND 38 TO 48
+- Lot: 6 | Lots: ['6']
+- Block: 26
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 6 B 26 BONITA BLKS 26*`
+2. `L6 B26 BONITA BLKS 26*`
+3. `L 6 B 26 BONITA BLKS*`
+4. `L6 B26 BONITA BLKS*`
+5. `L 6 B 26 BONITA*`
+6. `L6 B26 BONITA*`
+7. `L 6 BONITA BLKS 26*`
+8. `L6 BONITA BLKS 26*`
+9. `L 6 BONITA BLKS*`
+10. `L6 BONITA BLKS*`
+
+---
+
+### Folio: `1929074UM000001000120A`
+**Case:** 292025CA000489A001HC
+
+**Legal Description:**
+```
+1	PANAMA LOT 12 AND S 1/2 OF CLOSED ALLEY BLOCK 1
+```
+
+**Parsed:**
+- Subdivision: PANAMA
+- Lot: 12 | Lots: ['12']
+- Block: 1
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (5):**
+1. `L 12 B 1 PANAMA*`
+2. `L12 B1 PANAMA*`
+3. `L 12 PANAMA*`
+4. `L12 PANAMA*`
+5. `PANAMA*`
+
+---
+
+### Folio: `1929074UT000002000140A`
+**Case:** 292025CA001598A001HC
+
+**Legal Description:**
+```
+1	LA PALOMA LOT 14 BLOCK 2
+```
+
+**Parsed:**
+- Subdivision: LA PALOMA
+- Lot: 14 | Lots: ['14']
+- Block: 2
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 14 B 2 LA PALOMA*`
+2. `L14 B2 LA PALOMA*`
+3. `L 14 B 2 LA*`
+4. `L14 B2 LA*`
+5. `L 14 LA PALOMA*`
+6. `L14 LA PALOMA*`
+7. `L 14 LA*`
+8. `L14 LA*`
+9. `LA*`
+10. `LA PALOMA*`
+
+---
+
+### Folio: `1929084N6000008000050A`
+**Case:** 292024CA005365A001HC
+
+**Legal Description:**
+```
+1	JACKSON HEIGHTS LOT 5 BLOCK 8
+```
+
+**Parsed:**
+- Subdivision: JACKSON HEIGHTS
+- Lot: 5 | Lots: ['5']
+- Block: 8
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 5 B 8 JACKSON HEIGHTS*`
+2. `L5 B8 JACKSON HEIGHTS*`
+3. `L 5 B 8 JACKSON*`
+4. `L5 B8 JACKSON*`
+5. `L 5 JACKSON HEIGHTS*`
+6. `L5 JACKSON HEIGHTS*`
+7. `L 5 JACKSON*`
+8. `L5 JACKSON*`
+9. `JACKSON*`
+10. `JACKSON HEIGHTS*`
+
+---
+
+### Folio: `1929104BX000015000160A`
+**Case:** 292024CA007107A001HC
+
+**Legal Description:**
+```
+1	GRANT PARK LOT 16 BLOCK 15
+```
+
+**Parsed:**
+- Subdivision: GRANT PARK
+- Lot: 16 | Lots: ['16']
+- Block: 15
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 16 B 15 GRANT PARK*`
+2. `L16 B15 GRANT PARK*`
+3. `L 16 B 15 GRANT*`
+4. `L16 B15 GRANT*`
+5. `L 16 GRANT PARK*`
+6. `L16 GRANT PARK*`
+7. `L 16 GRANT*`
+8. `L16 GRANT*`
+9. `GRANT*`
+10. `GRANT PARK*`
+
+---
+
+### Folio: `1929174WA000030000130A`
+**Case:** 292022CA000016A001HC
+
+**Legal Description:**
+```
+1	TURMAN'S EAST YBOR LOT 13 BLOCK 30
+```
+
+**Parsed:**
+- Subdivision: TURMAN'S EAST YBOR
+- Lot: 13 | Lots: ['13']
+- Block: 30
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 13 B 30 TURMAN S EAST*`
+2. `L13 B30 TURMAN S EAST*`
+3. `L 13 B 30 TURMAN S*`
+4. `L13 B30 TURMAN S*`
+5. `L 13 B 30 TURMAN*`
+6. `L13 B30 TURMAN*`
+7. `L 13 B 30 TURMANS EAST YBOR*`
+8. `L13 B30 TURMANS EAST YBOR*`
+9. `L 13 B 30 TURMANS EAST*`
+10. `L13 B30 TURMANS EAST*`
+
+---
+
+### Folio: `1929231OT000006000130U`
+**Case:** 292023CA013924A001HC
+
+**Legal Description:**
+```
+1	WINSTON PARK UNIT NO 3 LOT 13 BLOCK 6
+```
+
+**Parsed:**
+- Subdivision: WINSTON PARK UNIT NO 3
+- Lot: 13 | Lots: ['13']
+- Block: 6
+- Unit: 3
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 13 B 6 WINSTON PARK UNIT*`
+2. `L13 B6 WINSTON PARK UNIT*`
+3. `L 13 B 6 WINSTON PARK*`
+4. `L13 B6 WINSTON PARK*`
+5. `L 13 B 6 WINSTON*`
+6. `L13 B6 WINSTON*`
+7. `L 13 WINSTON PARK UNIT*`
+8. `L13 WINSTON PARK UNIT*`
+9. `L 13 WINSTON PARK*`
+10. `L13 WINSTON PARK*`
+
+---
+
+### Folio: `192935663000001641100U`
+**Case:** 292024CA003786A001HC
+
+**Legal Description:**
+```
+1	SOUTH TAMPA SUBDIVISION W 72.15 FT OF E 567.9 FT OF N 140 FT OF TRACT 9 IN NW 1/4 LESS N 10 FT FOR RD
+```
+
+**Parsed:**
+- Subdivision: None
+- Lot: None | Lots: []
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (1):**
+1. `TAMPA*`
+
+---
+
+### Folio: `192935B6Y000008000040U`
+**Case:** 292024CA001812A001HC
+
+**Legal Description:**
+```
+1	TOUCHSTONE PHASE 2 LOT 4 BLOCK 8
+```
+
+**Parsed:**
+- Subdivision: TOUCHSTONE PHASE 2
+- Lot: 4 | Lots: ['4']
+- Block: 8
+- Unit: None
+- Phase: 2
+
+**Generated Search Terms (10):**
+1. `L 4 B 8 TOUCHSTONE PHASE 2*`
+2. `L4 B8 TOUCHSTONE PHASE 2*`
+3. `L 4 B 8 TOUCHSTONE PHASE*`
+4. `L4 B8 TOUCHSTONE PHASE*`
+5. `L 4 B 8 TOUCHSTONE*`
+6. `L4 B8 TOUCHSTONE*`
+7. `L 4 TOUCHSTONE PHASE 2*`
+8. `L4 TOUCHSTONE PHASE 2*`
+9. `L 4 TOUCHSTONE PHASE*`
+10. `L4 TOUCHSTONE PHASE*`
+
+---
+
+### Folio: `192935B95000014000260U`
+**Case:** 292025CC027661A001HC
+
+**Legal Description:**
+```
+1	TOUCHSTONE PHASE 3 LOT 26 BLOCK 14
+```
+
+**Parsed:**
+- Subdivision: TOUCHSTONE PHASE 3
+- Lot: 26 | Lots: ['26']
+- Block: 14
+- Unit: None
+- Phase: 3
+
+**Generated Search Terms (10):**
+1. `L 26 B 14 TOUCHSTONE PHASE 3*`
+2. `L26 B14 TOUCHSTONE PHASE 3*`
+3. `L 26 B 14 TOUCHSTONE PHASE*`
+4. `L26 B14 TOUCHSTONE PHASE*`
+5. `L 26 B 14 TOUCHSTONE*`
+6. `L26 B14 TOUCHSTONE*`
+7. `L 26 TOUCHSTONE PHASE 3*`
+8. `L26 TOUCHSTONE PHASE 3*`
+9. `L 26 TOUCHSTONE PHASE*`
+10. `L26 TOUCHSTONE PHASE*`
+
+---
+
+### Folio: `193002C11000003000130U`
+**Case:** 292024CA007111A001HC
+
+**Legal Description:**
+```
+1	MADISON VILLAGE TOWNHOMES LOT 13 BLOCK 3
+```
+
+**Parsed:**
+- Subdivision: MADISON VILLAGE TOWNHOMES
+- Lot: 13 | Lots: ['13']
+- Block: 3
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 13 B 3 MADISON VILLAGE TOWNHOMES*`
+2. `L13 B3 MADISON VILLAGE TOWNHOMES*`
+3. `L 13 B 3 MADISON VILLAGE*`
+4. `L13 B3 MADISON VILLAGE*`
+5. `L 13 B 3 MADISON*`
+6. `L13 B3 MADISON*`
+7. `L 13 MADISON VILLAGE TOWNHOMES*`
+8. `L13 MADISON VILLAGE TOWNHOMES*`
+9. `L 13 MADISON VILLAGE*`
+10. `L13 MADISON VILLAGE*`
+
+---
+
+### Folio: `193024ZZZ000001717900U`
+**Case:** 292025CA001912A001HC
+
+**Legal Description:**
+```
+1	N 80 FT OF S 553 FT OF W 170 FT OF E 800 FT OF GOV LOT 8
+```
+
+**Parsed:**
+- Subdivision: N 80 FT OF S 553 FT OF W 170 FT OF E 800 FT OF GOV
+- Lot: 8 | Lots: ['8']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 8 N 80 FT*`
+2. `L8 N 80 FT*`
+3. `L 8 N 80*`
+4. `L8 N 80*`
+5. `L 8 N*`
+6. `L8 N*`
+7. `L 8 N 80 FTS*`
+8. `L8 N 80 FTS*`
+9. `N 80 FTS*`
+10. `N*`
+
+---
+
+### Folio: `19311163D000011000160U`
+**Case:** 292025CC011341A001HC
+
+**Legal Description:**
+```
+1	KINGS LAKE PHASE 3 LOT 16 BLOCK 11
+```
+
+**Parsed:**
+- Subdivision: KINGS LAKE PHASE 3
+- Lot: 16 | Lots: ['16']
+- Block: 11
+- Unit: None
+- Phase: 3
+
+**Generated Search Terms (10):**
+1. `L 16 B 11 KINGS LAKE PHASE*`
+2. `L16 B11 KINGS LAKE PHASE*`
+3. `L 16 B 11 KINGS LAKE*`
+4. `L16 B11 KINGS LAKE*`
+5. `L 16 B 11 KINGS*`
+6. `L16 B11 KINGS*`
+7. `L 16 KINGS LAKE PHASE*`
+8. `L16 KINGS LAKE PHASE*`
+9. `L 16 KINGS LAKE*`
+10. `L16 KINGS LAKE*`
+
+---
+
+### Folio: `193120773000000000200U`
+**Case:** 292025CA001236A001HC
+
+**Legal Description:**
+```
+1	SUNSET BAY TOWNHOMES LOT 20
+```
+
+**Parsed:**
+- Subdivision: SUNSET BAY TOWNHOMES
+- Lot: 20 | Lots: ['20']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (8):**
+1. `L 20 SUNSET BAY TOWNHOMES*`
+2. `L20 SUNSET BAY TOWNHOMES*`
+3. `L 20 SUNSET BAY*`
+4. `L20 SUNSET BAY*`
+5. `L 20 SUNSET*`
+6. `L20 SUNSET*`
+7. `SUNSET*`
+8. `SUNSET BAY*`
+
+---
+
+### Folio: `193122B4000124D000020U`
+**Case:** 292025CA007236A001HC
+
+**Legal Description:**
+```
+1	WATERSET PHASE 4A SOUTH LOT 2 BLOCK 124D
+```
+
+**Parsed:**
+- Subdivision: WATERSET PHASE 4A SOUTH
+- Lot: 2 | Lots: ['2']
+- Block: 124D
+- Unit: None
+- Phase: 4A
+
+**Generated Search Terms (10):**
+1. `L 2 B 124D WATERSET PHASE 4A*`
+2. `L2 B124D WATERSET PHASE 4A*`
+3. `L 2 BLK 124D WATERSET PHASE 4A*`
+4. `L2 BLK124D WATERSET PHASE 4A*`
+5. `L 2 B 124D WATERSET PHASE*`
+6. `L2 B124D WATERSET PHASE*`
+7. `L 2 BLK 124D WATERSET PHASE*`
+8. `L2 BLK124D WATERSET PHASE*`
+9. `L 2 B 124D WATERSET*`
+10. `L2 B124D WATERSET*`
+
+---
+
+### Folio: `1931329UW000093000030U`
+**Case:** 292017CA006782A001HC
+
+**Legal Description:**
+```
+1	MIRABAY PARCEL 22 LOT 3 BLOCK 93
+```
+
+**Parsed:**
+- Subdivision: MIRABAY PARCEL 22
+- Lot: 3 | Lots: ['3']
+- Block: 93
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 3 B 93 MIRABAY PARCEL 22*`
+2. `L3 B93 MIRABAY PARCEL 22*`
+3. `L 3 B 93 MIRABAY PARCEL*`
+4. `L3 B93 MIRABAY PARCEL*`
+5. `L 3 B 93 MIRABAY*`
+6. `L3 B93 MIRABAY*`
+7. `L 3 MIRABAY PARCEL 22*`
+8. `L3 MIRABAY PARCEL 22*`
+9. `L 3 MIRABAY PARCEL*`
+10. `L3 MIRABAY PARCEL*`
+
+---
+
+### Folio: `193136954000007000120U`
+**Case:** 292022CA007345A001HC
+
+**Legal Description:**
+```
+1	CYPRESS CREEK PHASE 2 LOT 12 BLOCK 7
+```
+
+**Parsed:**
+- Subdivision: CYPRESS CREEK PHASE 2
+- Lot: 12 | Lots: ['12']
+- Block: 7
+- Unit: None
+- Phase: 2
+
+**Generated Search Terms (10):**
+1. `L 12 B 7 CYPRESS CREEK PHASE*`
+2. `L12 B7 CYPRESS CREEK PHASE*`
+3. `L 12 B 7 CYPRESS CREEK*`
+4. `L12 B7 CYPRESS CREEK*`
+5. `L 12 B 7 CYPRESS*`
+6. `L12 B7 CYPRESS*`
+7. `L 12 CYPRESS CREEK PHASE*`
+8. `L12 CYPRESS CREEK PHASE*`
+9. `L 12 CYPRESS CREEK*`
+10. `L12 CYPRESS CREEK*`
+
+---
+
+### Folio: `1932012WC000004000110U`
+**Case:** 292024CA004592A001HC
+
+**Legal Description:**
+```
+1	SUN LAKES SUBDIVISION LOT 11 BLOCK 4
+```
+
+**Parsed:**
+- Subdivision: SUN LAKES SUBDIVISION
+- Lot: 11 | Lots: ['11']
+- Block: 4
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 11 B 4 SUN LAKES SUBDIVISION*`
+2. `L11 B4 SUN LAKES SUBDIVISION*`
+3. `L 11 B 4 SUN LAKES*`
+4. `L11 B4 SUN LAKES*`
+5. `L 11 B 4 SUN*`
+6. `L11 B4 SUN*`
+7. `L 11 SUN LAKES SUBDIVISION*`
+8. `L11 SUN LAKES SUBDIVISION*`
+9. `L 11 SUN LAKES*`
+10. `L11 SUN LAKES*`
+
+---
+
+### Folio: `1932041UX000003000200U`
+**Case:** 292024CA004298A001HC
+
+**Legal Description:**
+```
+1	RUSKIN GROWERS SUBDIVISION UNIT NO 3A LOT 20 BLOCK 3
+```
+
+**Parsed:**
+- Subdivision: RUSKIN GROWERS SUBDIVISION UNIT NO 3
+- Lot: 20 | Lots: ['20']
+- Block: 3
+- Unit: 3A
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 20 B 3 RUSKIN GROWERS SUBDIVISION*`
+2. `L20 B3 RUSKIN GROWERS SUBDIVISION*`
+3. `L 20 B 3 RUSKIN GROWERS*`
+4. `L20 B3 RUSKIN GROWERS*`
+5. `L 20 B 3 RUSKIN*`
+6. `L20 B3 RUSKIN*`
+7. `L 20 RUSKIN GROWERS SUBDIVISION*`
+8. `L20 RUSKIN GROWERS SUBDIVISION*`
+9. `L 20 RUSKIN GROWERS*`
+10. `L20 RUSKIN GROWERS*`
+
+---
+
+### Folio: `1932049WM000032000020U`
+**Case:** 292025CA004191A001HC
+
+**Legal Description:**
+```
+1	HAWKS POINT PHASES 1C-2 AND 1D-1 LOT 2 BLOCK 32
+```
+
+**Parsed:**
+- Subdivision: HAWKS POINT PHASES 1C-2 AND 1D-1
+- Lot: 2 | Lots: ['2']
+- Block: 32
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 2 B 32 HAWKS POINT PHASES*`
+2. `L2 B32 HAWKS POINT PHASES*`
+3. `L 2 B 32 HAWKS POINT*`
+4. `L2 B32 HAWKS POINT*`
+5. `L 2 B 32 HAWKS*`
+6. `L2 B32 HAWKS*`
+7. `L 2 HAWKS POINT PHASES*`
+8. `L2 HAWKS POINT PHASES*`
+9. `L 2 HAWKS POINT*`
+10. `L2 HAWKS POINT*`
+
+---
+
+### Folio: `193206C07000000002280U`
+**Case:** 292023CA012827A001HC
+
+**Legal Description:**
+```
+1	SHELL COVE PHASE 1 LOT 228
+```
+
+**Parsed:**
+- Subdivision: SHELL COVE PHASE 1
+- Lot: 228 | Lots: ['228']
+- Block: None
+- Unit: None
+- Phase: 1
+
+**Generated Search Terms (8):**
+1. `L 228 SHELL COVE PHASE*`
+2. `L228 SHELL COVE PHASE*`
+3. `L 228 SHELL COVE*`
+4. `L228 SHELL COVE*`
+5. `L 228 SHELL*`
+6. `L228 SHELL*`
+7. `SHELL*`
+8. `SHELL COVE*`
+
+---
+
+### Folio: `1932071V5000000001250U`
+**Case:** 292024CA000700A001HC
+
+**Legal Description:**
+```
+1	RUSKIN CITY MAP OF N 120 FT OF LOT 125
+```
+
+**Parsed:**
+- Subdivision: RUSKIN CITY MAP OF N 120 FT OF
+- Lot: 125 | Lots: ['125']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (8):**
+1. `L 125 RUSKIN CITY MAP*`
+2. `L125 RUSKIN CITY MAP*`
+3. `L 125 RUSKIN CITY*`
+4. `L125 RUSKIN CITY*`
+5. `L 125 RUSKIN*`
+6. `L125 RUSKIN*`
+7. `RUSKIN*`
+8. `RUSKIN CITY*`
+
+---
+
+### Folio: `1932091UU000000002702U`
+**Case:** 292025CA001743A001HC
+
+**Legal Description:**
+```
+1	RUSKIN COLONY FARMS THE E 109 FT OF N 209 FT OF LOT 270
+```
+
+**Parsed:**
+- Subdivision: RUSKIN COLONY FARMS THE E 109 FT OF N 209 FT OF
+- Lot: 270 | Lots: ['270']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (8):**
+1. `L 270 RUSKIN COLONY FARMS*`
+2. `L270 RUSKIN COLONY FARMS*`
+3. `L 270 RUSKIN COLONY*`
+4. `L270 RUSKIN COLONY*`
+5. `L 270 RUSKIN*`
+6. `L270 RUSKIN*`
+7. `RUSKIN*`
+8. `RUSKIN COLONY*`
+
+---
+
+### Folio: `19322086I000020000180U`
+**Case:** 292025CA001227A001HC
+
+**Legal Description:**
+```
+1	RIVER BEND PHASE 4A LOT 18 BLOCK 20
+```
+
+**Parsed:**
+- Subdivision: RIVER BEND PHASE 4A
+- Lot: 18 | Lots: ['18']
+- Block: 20
+- Unit: None
+- Phase: 4A
+
+**Generated Search Terms (10):**
+1. `L 18 B 20 RIVER BEND PHASE*`
+2. `L18 B20 RIVER BEND PHASE*`
+3. `L 18 B 20 RIVER BEND*`
+4. `L18 B20 RIVER BEND*`
+5. `L 18 B 20 RIVER*`
+6. `L18 B20 RIVER*`
+7. `L 18 RIVER BEND PHASE*`
+8. `L18 RIVER BEND PHASE*`
+9. `L 18 RIVER BEND*`
+10. `L18 RIVER BEND*`
+
+---
+
+### Folio: `20270669S000006000050U`
+**Case:** 292023CA012230A001HC
+
+**Legal Description:**
+```
+1	LIVE OAK PRESERVE PHASE 1B VILLAGES 2/7 LOT 5 BLOCK 6
+```
+
+**Parsed:**
+- Subdivision: LIVE OAK PRESERVE PHASE 1B VILLAGES 2/7
+- Lot: 5 | Lots: ['5']
+- Block: 6
+- Unit: None
+- Phase: 1B
+
+**Generated Search Terms (10):**
+1. `L 5 B 6 LIVE OAK PRESERVE*`
+2. `L5 B6 LIVE OAK PRESERVE*`
+3. `L 5 B 6 LIVE OAK*`
+4. `L5 B6 LIVE OAK*`
+5. `L 5 B 6 LIVE*`
+6. `L5 B6 LIVE*`
+7. `L 5 LIVE OAK PRESERVE*`
+8. `L5 LIVE OAK PRESERVE*`
+9. `L 5 LIVE OAK*`
+10. `L5 LIVE OAK*`
+
+---
+
+### Folio: `20270672I000019000250U`
+**Case:** 292024CC069952A001HC
+
+**Legal Description:**
+```
+1	LIVE OAK PRESERVE PHASE 1C VILLAGES 3/4/5/6 LOT 25 BLOCK 19
+```
+
+**Parsed:**
+- Subdivision: LIVE OAK PRESERVE PHASE 1C VILLAGES 3/4/5/6
+- Lot: 25 | Lots: ['25']
+- Block: 19
+- Unit: None
+- Phase: 1C
+
+**Generated Search Terms (10):**
+1. `L 25 B 19 LIVE OAK PRESERVE*`
+2. `L25 B19 LIVE OAK PRESERVE*`
+3. `L 25 B 19 LIVE OAK*`
+4. `L25 B19 LIVE OAK*`
+5. `L 25 B 19 LIVE*`
+6. `L25 B19 LIVE*`
+7. `L 25 LIVE OAK PRESERVE*`
+8. `L25 LIVE OAK PRESERVE*`
+9. `L 25 LIVE OAK*`
+10. `L25 LIVE OAK*`
+
+---
+
+### Folio: `20270721L000000000100U`
+**Case:** 292024CC008466A001HC
+
+**Legal Description:**
+```
+1	PEBBLE CREEK VILLAGE UNIT NO 4 LOT 10 AND PORTION LOT 9 DESC AS FOLLOWS: BEG MOST NELY COR LOT 9 S 17 DEG W 28.88 FT FOR POB THN S 17 DEG W 3.56 FT S 75 DEG W 5 FT N 14 DEG W 3 FT THN N 75 DEG E 6.91 FT TO THE POB
+```
+
+**Parsed:**
+- Subdivision: PEBBLE CREEK VILLAGE UNIT NO 4
+- Lot: 10 | Lots: ['10', '9']
+- Block: None
+- Unit: 4
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 10 PEBBLE CREEK VILLAGE*`
+2. `L10 PEBBLE CREEK VILLAGE*`
+3. `L 10 PEBBLE CREEK*`
+4. `L10 PEBBLE CREEK*`
+5. `L 10 PEBBLE*`
+6. `L10 PEBBLE*`
+7. `L 9 PEBBLE CREEK VILLAGE*`
+8. `L9 PEBBLE CREEK VILLAGE*`
+9. `L 9 PEBBLE CREEK*`
+10. `L9 PEBBLE CREEK*`
+
+---
+
+### Folio: `20271089U000029000050A`
+**Case:** 292016CA002809A001HC
+
+**Legal Description:**
+```
+1	HERITAGE ISLES PHASE 2A LOT 5 BLOCK 29
+```
+
+**Parsed:**
+- Subdivision: HERITAGE ISLES PHASE 2A
+- Lot: 5 | Lots: ['5']
+- Block: 29
+- Unit: None
+- Phase: 2A
+
+**Generated Search Terms (10):**
+1. `L 5 B 29 HERITAGE ISLES PHASE*`
+2. `L5 B29 HERITAGE ISLES PHASE*`
+3. `L 5 B 29 HERITAGE ISLES*`
+4. `L5 B29 HERITAGE ISLES*`
+5. `L 5 B 29 HERITAGE*`
+6. `L5 B29 HERITAGE*`
+7. `L 5 HERITAGE ISLES PHASE*`
+8. `L5 HERITAGE ISLES PHASE*`
+9. `L 5 HERITAGE ISLES*`
+10. `L5 HERITAGE ISLES*`
+
+---
+
+### Folio: `202817ZZZ000002083000U`
+**Case:** 292024CA003600A001HC
+
+**Legal Description:**
+```
+1	E 126 FT OF W 963 FT OF N 1/4 OF NW 1/4 OF SW 1/4 LESS N 25 FT FOR RD
+```
+
+**Parsed:**
+- Subdivision: None
+- Lot: None | Lots: []
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (1):**
+1. `E 126 FT OF W 963 FT OF N 1/4 OF NW 1/4 OF SW 1/4 LESS N 25*`
+
+---
+
+### Folio: `20290497O000008000050U`
+**Case:** 292023CA016606A001HC
+
+**Legal Description:**
+```
+1	PALMETTO COVE TOWNHOMES LOT 5 BLOCK 8
+```
+
+**Parsed:**
+- Subdivision: PALMETTO COVE TOWNHOMES
+- Lot: 5 | Lots: ['5']
+- Block: 8
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 5 B 8 PALMETTO COVE TOWNHOMES*`
+2. `L5 B8 PALMETTO COVE TOWNHOMES*`
+3. `L 5 B 8 PALMETTO COVE*`
+4. `L5 B8 PALMETTO COVE*`
+5. `L 5 B 8 PALMETTO*`
+6. `L5 B8 PALMETTO*`
+7. `L 5 PALMETTO COVE TOWNHOMES*`
+8. `L5 PALMETTO COVE TOWNHOMES*`
+9. `L 5 PALMETTO COVE*`
+10. `L5 PALMETTO COVE*`
+
+---
+
+### Folio: `20290676F000014000020U`
+**Case:** 292024CC029283A001HC
+
+**Legal Description:**
+```
+1	ASHBURN SQUARE TOWNHOMES LOT 2 BLOCK 14
+```
+
+**Parsed:**
+- Subdivision: ASHBURN SQUARE TOWNHOMES
+- Lot: 2 | Lots: ['2']
+- Block: 14
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 2 B 14 ASHBURN SQUARE TOWNHOMES*`
+2. `L2 B14 ASHBURN SQUARE TOWNHOMES*`
+3. `L 2 B 14 ASHBURN SQUARE*`
+4. `L2 B14 ASHBURN SQUARE*`
+5. `L 2 B 14 ASHBURN*`
+6. `L2 B14 ASHBURN*`
+7. `L 2 ASHBURN SQUARE TOWNHOMES*`
+8. `L2 ASHBURN SQUARE TOWNHOMES*`
+9. `L 2 ASHBURN SQUARE*`
+10. `L2 ASHBURN SQUARE*`
+
+---
+
+### Folio: `2029112A2000001000480U`
+**Case:** 292025CA004039A001HC
+
+**Legal Description:**
+```
+1	OAK FOREST ADDITION LOT 48 BLOCK 1
+```
+
+**Parsed:**
+- Subdivision: OAK FOREST ADDITION
+- Lot: 48 | Lots: ['48']
+- Block: 1
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 48 B 1 OAK FOREST ADDITION*`
+2. `L48 B1 OAK FOREST ADDITION*`
+3. `L 48 B 1 OAK FOREST*`
+4. `L48 B1 OAK FOREST*`
+5. `L 48 B 1 OAK*`
+6. `L48 B1 OAK*`
+7. `L 48 OAK FOREST ADDITION*`
+8. `L48 OAK FOREST ADDITION*`
+9. `L 48 OAK FOREST*`
+10. `L48 OAK FOREST*`
+
+---
+
+### Folio: `2029132AL000002000090U`
+**Case:** 292022CA006047A001HC
+
+**Legal Description:**
+```
+1	BRANDON LAKES LOT 9 BLOCK 2
+```
+
+**Parsed:**
+- Subdivision: BRANDON LAKES
+- Lot: 9 | Lots: ['9']
+- Block: 2
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 9 B 2 BRANDON LAKES*`
+2. `L9 B2 BRANDON LAKES*`
+3. `L 9 B 2 BRANDON*`
+4. `L9 B2 BRANDON*`
+5. `L 9 BRANDON LAKES*`
+6. `L9 BRANDON LAKES*`
+7. `L 9 BRANDON*`
+8. `L9 BRANDON*`
+9. `BRANDON*`
+10. `BRANDON LAKES*`
+
+---
+
+### Folio: `2029272H5000000000160U`
+**Case:** 292024CA000430A001HC
+
+**Legal Description:**
+```
+1	LA VIVA UNIT II LOT 16
+```
+
+**Parsed:**
+- Subdivision: LA VIVA UNIT II
+- Lot: 16 | Lots: ['16']
+- Block: None
+- Unit: II
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 16 LA VIVA UNIT*`
+2. `L16 LA VIVA UNIT*`
+3. `L 16 LA VIVA*`
+4. `L16 LA VIVA*`
+5. `L 16 LA*`
+6. `L16 LA*`
+7. `LA*`
+8. `LA VIVA*`
+9. `UNIT II LA VIVA UNIT*`
+10. `U II LA VIVA UNIT*`
+
+---
+
+### Folio: `2029332IWF00000000070U`
+**Case:** 292025CA001673A001HC
+
+**Legal Description:**
+```
+1	PROVIDENCE LAKES UNIT III PHASE B LOT 7 BLOCK F
+```
+
+**Parsed:**
+- Subdivision: PROVIDENCE LAKES UNIT III PHASE
+- Lot: 7 | Lots: ['7']
+- Block: F
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 7 B F PROVIDENCE LAKES UNIT*`
+2. `L7 BF PROVIDENCE LAKES UNIT*`
+3. `L 7 BLK F PROVIDENCE LAKES UNIT*`
+4. `L7 BLKF PROVIDENCE LAKES UNIT*`
+5. `L 7 B F PROVIDENCE LAKES*`
+6. `L7 BF PROVIDENCE LAKES*`
+7. `L 7 BLK F PROVIDENCE LAKES*`
+8. `L7 BLKF PROVIDENCE LAKES*`
+9. `L 7 B F PROVIDENCE*`
+10. `L7 BF PROVIDENCE*`
+
+---
+
+### Folio: `2030052NF000001000270U`
+**Case:** 292024CA006590A001HC
+
+**Legal Description:**
+```
+1	STERLING RANCH UNIT 1 LOT 27 BLOCK 1
+```
+
+**Parsed:**
+- Subdivision: STERLING RANCH UNIT 1
+- Lot: 27 | Lots: ['27']
+- Block: 1
+- Unit: 1
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 27 B 1 STERLING RANCH UNIT*`
+2. `L27 B1 STERLING RANCH UNIT*`
+3. `L 27 B 1 STERLING RANCH*`
+4. `L27 B1 STERLING RANCH*`
+5. `L 27 B 1 STERLING*`
+6. `L27 B1 STERLING*`
+7. `L 27 STERLING RANCH UNIT*`
+8. `L27 STERLING RANCH UNIT*`
+9. `L 27 STERLING RANCH*`
+10. `L27 STERLING RANCH*`
+
+---
+
+### Folio: `203011ZZZ000002872400U`
+**Case:** 292022CA005816A001HC
+
+**Legal Description:**
+```
+1	BEG 1359.68 FT S AND 30 FT E OF NW COR OF NW 1/4 AND RUN E 186.23 FT S 281 FT W 186.23 FT AND N 281 FT TO BEG
+```
+
+**Parsed:**
+- Subdivision: None
+- Lot: None | Lots: []
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (1):**
+1. `BEG 1359.68 FT S AND 30 FT E OF NW COR OF NW 1/4 AND RUN E 1*`
+
+---
+
+### Folio: `2030132Q3000001000080U`
+**Case:** 292023CA001973A001HC
+
+**Legal Description:**
+```
+1	BLOOMINGDALE SECTION EE PHASE 1B LOT 8 BLOCK 1
+```
+
+**Parsed:**
+- Subdivision: BLOOMINGDALE SECTION EE PHASE 1B
+- Lot: 8 | Lots: ['8']
+- Block: 1
+- Unit: None
+- Phase: 1B
+
+**Generated Search Terms (10):**
+1. `L 8 B 1 BLOOMINGDALE SECTION EE*`
+2. `L8 B1 BLOOMINGDALE SECTION EE*`
+3. `L 8 B 1 BLOOMINGDALE SECTION*`
+4. `L8 B1 BLOOMINGDALE SECTION*`
+5. `L 8 B 1 BLOOMINGDALE*`
+6. `L8 B1 BLOOMINGDALE*`
+7. `L 8 BLOOMINGDALE SECTION EE*`
+8. `L8 BLOOMINGDALE SECTION EE*`
+9. `L 8 BLOOMINGDALE SECTION*`
+10. `L8 BLOOMINGDALE SECTION*`
+
+---
+
+### Folio: `2030172RA000004000050U`
+**Case:** 292025CA006279A001HC
+
+**Legal Description:**
+```
+1	ASHLEY OAKS UNIT NO 1 LOT 5 BLOCK 4
+```
+
+**Parsed:**
+- Subdivision: ASHLEY OAKS UNIT NO 1
+- Lot: 5 | Lots: ['5']
+- Block: 4
+- Unit: 1
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 5 B 4 ASHLEY OAKS UNIT*`
+2. `L5 B4 ASHLEY OAKS UNIT*`
+3. `L 5 B 4 ASHLEY OAKS*`
+4. `L5 B4 ASHLEY OAKS*`
+5. `L 5 B 4 ASHLEY*`
+6. `L5 B4 ASHLEY*`
+7. `L 5 ASHLEY OAKS UNIT*`
+8. `L5 ASHLEY OAKS UNIT*`
+9. `L 5 ASHLEY OAKS*`
+10. `L5 ASHLEY OAKS*`
+
+---
+
+### Folio: `2030192RX000000000260U`
+**Case:** 292025CA002174A001HC
+
+**Legal Description:**
+```
+1	KENLAKE SUBDIVISION LOT 26
+```
+
+**Parsed:**
+- Subdivision: KENLAKE SUBDIVISION
+- Lot: 26 | Lots: ['26']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (6):**
+1. `L 26 KENLAKE SUBDIVISION*`
+2. `L26 KENLAKE SUBDIVISION*`
+3. `L 26 KENLAKE*`
+4. `L26 KENLAKE*`
+5. `KENLAKE*`
+6. `KENLAKE SUBDIVISION*`
+
+---
+
+### Folio: `2030232SX000000000050U`
+**Case:** 292025CA000261A001HC
+
+**Legal Description:**
+```
+1	RIVER RAPIDS SUBDIVISION LOT 5
+```
+
+**Parsed:**
+- Subdivision: RIVER RAPIDS SUBDIVISION
+- Lot: 5 | Lots: ['5']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (8):**
+1. `L 5 RIVER RAPIDS SUBDIVISION*`
+2. `L5 RIVER RAPIDS SUBDIVISION*`
+3. `L 5 RIVER RAPIDS*`
+4. `L5 RIVER RAPIDS*`
+5. `L 5 RIVER*`
+6. `L5 RIVER*`
+7. `RIVER*`
+8. `RIVER RAPIDS*`
+
+---
+
+### Folio: `20302878A000021000300U`
+**Case:** 292025CA002688A001HC
+
+**Legal Description:**
+```
+1	RIVERCREST PHASE 2 PARCEL N LOT 30 BLOCK 21
+```
+
+**Parsed:**
+- Subdivision: RIVERCREST PHASE 2 PARCEL N
+- Lot: 30 | Lots: ['30']
+- Block: 21
+- Unit: None
+- Phase: 2
+
+**Generated Search Terms (10):**
+1. `L 30 B 21 RIVERCREST PHASE 2*`
+2. `L30 B21 RIVERCREST PHASE 2*`
+3. `L 30 B 21 RIVERCREST PHASE*`
+4. `L30 B21 RIVERCREST PHASE*`
+5. `L 30 B 21 RIVERCREST*`
+6. `L30 B21 RIVERCREST*`
+7. `L 30 RIVERCREST PHASE 2*`
+8. `L30 RIVERCREST PHASE 2*`
+9. `L 30 RIVERCREST PHASE*`
+10. `L30 RIVERCREST PHASE*`
+
+---
+
+### Folio: `2031022U8000013000030U`
+**Case:** 292024CA007548A001HC
+
+**Legal Description:**
+```
+1	TROPICAL ACRES SOUTH UNIT NO 2 LOT 3 BLK 13
+```
+
+**Parsed:**
+- Subdivision: TROPICAL ACRES SOUTH UNIT NO 2
+- Lot: 3 | Lots: ['3']
+- Block: 13
+- Unit: 2
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 3 B 13 TROPICAL ACRES SOUTH*`
+2. `L3 B13 TROPICAL ACRES SOUTH*`
+3. `L 3 B 13 TROPICAL ACRES*`
+4. `L3 B13 TROPICAL ACRES*`
+5. `L 3 B 13 TROPICAL*`
+6. `L3 B13 TROPICAL*`
+7. `L 3 TROPICAL ACRES SOUTH*`
+8. `L3 TROPICAL ACRES SOUTH*`
+9. `L 3 TROPICAL ACRES*`
+10. `L3 TROPICAL ACRES*`
+
+---
+
+### Folio: `203107A02000000001890U`
+**Case:** 292021CA008295A001HC
+
+**Legal Description:**
+```
+1	COPPER CREEK PHASE 1 LOT 189
+```
+
+**Parsed:**
+- Subdivision: COPPER CREEK PHASE 1
+- Lot: 189 | Lots: ['189']
+- Block: None
+- Unit: None
+- Phase: 1
+
+**Generated Search Terms (8):**
+1. `L 189 COPPER CREEK PHASE*`
+2. `L189 COPPER CREEK PHASE*`
+3. `L 189 COPPER CREEK*`
+4. `L189 COPPER CREEK*`
+5. `L 189 COPPER*`
+6. `L189 COPPER*`
+7. `COPPER*`
+8. `COPPER CREEK*`
+
+---
+
+### Folio: `203109736000005000160U`
+**Case:** 292022CA002444A001HC
+
+**Legal Description:**
+```
+1	SUMMERFIELD VILL I TRACT 21 UNIT 2 PHS 3A/3B LOT 16 BLOCK 5
+```
+
+**Parsed:**
+- Subdivision: SUMMERFIELD VILL I TRACT 21 UNIT 2 PHS 3A/3B
+- Lot: 16 | Lots: ['16']
+- Block: 5
+- Unit: 2
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 16 B 5 SUMMERFIELD VILL I*`
+2. `L16 B5 SUMMERFIELD VILL I*`
+3. `L 16 B 5 SUMMERFIELD VILL*`
+4. `L16 B5 SUMMERFIELD VILL*`
+5. `L 16 B 5 SUMMERFIELD*`
+6. `L16 B5 SUMMERFIELD*`
+7. `L 16 SUMMERFIELD VILL I*`
+8. `L16 SUMMERFIELD VILL I*`
+9. `L 16 SUMMERFIELD VILL*`
+10. `L16 SUMMERFIELD VILL*`
+
+---
+
+### Folio: `2031162VBA00000000580U`
+**Case:** 292024CA003211A001HC
+
+**Legal Description:**
+```
+1	MEADOWBROOKE AT SUMMERFIELD UNIT 1 LOT 58 BLOCK A
+```
+
+**Parsed:**
+- Subdivision: MEADOWBROOKE AT SUMMERFIELD UNIT 1
+- Lot: 58 | Lots: ['58']
+- Block: A
+- Unit: 1
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 58 B A MEADOWBROOKE SUMMERFIELD UNIT*`
+2. `L58 BA MEADOWBROOKE SUMMERFIELD UNIT*`
+3. `L 58 BLK A MEADOWBROOKE SUMMERFIELD UNIT*`
+4. `L58 BLKA MEADOWBROOKE SUMMERFIELD UNIT*`
+5. `L 58 B A MEADOWBROOKE SUMMERFIELD*`
+6. `L58 BA MEADOWBROOKE SUMMERFIELD*`
+7. `L 58 BLK A MEADOWBROOKE SUMMERFIELD*`
+8. `L58 BLKA MEADOWBROOKE SUMMERFIELD*`
+9. `L 58 B A MEADOWBROOKE*`
+10. `L58 BA MEADOWBROOKE*`
+
+---
+
+### Folio: `2031169VY000002000160U`
+**Case:** 292024CC071425A001HC
+
+**Legal Description:**
+```
+1	SOUTH FORK TRACT L PHASE 1 LOT 16 BLOCK 2
+```
+
+**Parsed:**
+- Subdivision: SOUTH FORK TRACT L PHASE 1
+- Lot: 16 | Lots: ['16']
+- Block: 2
+- Unit: None
+- Phase: 1
+
+**Generated Search Terms (10):**
+1. `L 16 B 2 SOUTH FORK TRACT*`
+2. `L16 B2 SOUTH FORK TRACT*`
+3. `L 16 B 2 SOUTH FORK*`
+4. `L16 B2 SOUTH FORK*`
+5. `L 16 B 2 SOUTH*`
+6. `L16 B2 SOUTH*`
+7. `L 16 SOUTH FORK TRACT*`
+8. `L16 SOUTH FORK TRACT*`
+9. `L 16 SOUTH FORK*`
+10. `L16 SOUTH FORK*`
+
+---
+
+### Folio: `2031169Y5000000000460U`
+**Case:** 292025CA003186A001HC
+
+**Legal Description:**
+```
+1	SOUTH FORK TRACT N LOT 46
+```
+
+**Parsed:**
+- Subdivision: SOUTH FORK TRACT N
+- Lot: 46 | Lots: ['46']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (8):**
+1. `L 46 SOUTH FORK TRACT*`
+2. `L46 SOUTH FORK TRACT*`
+3. `L 46 SOUTH FORK*`
+4. `L46 SOUTH FORK*`
+5. `L 46 SOUTH*`
+6. `L46 SOUTH*`
+7. `SOUTH*`
+8. `SOUTH FORK*`
+
+---
+
+### Folio: `203117A0W000000001670U`
+**Case:** 292023CA016053A001HC
+
+**Legal Description:**
+```
+1	OAKS AT SHADY CREEK PHASE 1 LOT 167
+```
+
+**Parsed:**
+- Subdivision: OAKS AT SHADY CREEK PHASE 1
+- Lot: 167 | Lots: ['167']
+- Block: None
+- Unit: None
+- Phase: 1
+
+**Generated Search Terms (8):**
+1. `L 167 OAKS SHADY CREEK*`
+2. `L167 OAKS SHADY CREEK*`
+3. `L 167 OAKS SHADY*`
+4. `L167 OAKS SHADY*`
+5. `L 167 OAKS*`
+6. `L167 OAKS*`
+7. `OAKS*`
+8. `OAKS SHADY*`
+
+---
+
+### Folio: `203131B48000004000220U`
+**Case:** 292024CC057727A001HC
+
+**Legal Description:**
+```
+1	CYPRESS CREEK PARCEL K PHASE 1 LOT 22 BLOCK 4
+```
+
+**Parsed:**
+- Subdivision: CYPRESS CREEK PARCEL K PHASE 1
+- Lot: 22 | Lots: ['22']
+- Block: 4
+- Unit: None
+- Phase: 1
+
+**Generated Search Terms (10):**
+1. `L 22 B 4 CYPRESS CREEK PARCEL*`
+2. `L22 B4 CYPRESS CREEK PARCEL*`
+3. `L 22 B 4 CYPRESS CREEK*`
+4. `L22 B4 CYPRESS CREEK*`
+5. `L 22 B 4 CYPRESS*`
+6. `L22 B4 CYPRESS*`
+7. `L 22 CYPRESS CREEK PARCEL*`
+8. `L22 CYPRESS CREEK PARCEL*`
+9. `L 22 CYPRESS CREEK*`
+10. `L22 CYPRESS CREEK*`
+
+---
+
+### Folio: `203204C34000000003980U`
+**Case:** 292024CA005605A001HC
+
+**Legal Description:**
+```
+1	CREEK PRESERVE PHASES 1 6 7 AND 8 LOT 398
+```
+
+**Parsed:**
+- Subdivision: CREEK PRESERVE PHASES 1 6 7 AND 8
+- Lot: 398 | Lots: ['398']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (8):**
+1. `L 398 CREEK PRESERVE PHASES*`
+2. `L398 CREEK PRESERVE PHASES*`
+3. `L 398 CREEK PRESERVE*`
+4. `L398 CREEK PRESERVE*`
+5. `L 398 CREEK*`
+6. `L398 CREEK*`
+7. `CREEK*`
+8. `CREEK PRESERVE*`
+
+---
+
+### Folio: `203204C35000000000990U`
+**Case:** 292024CC036974A001HC
+
+**Legal Description:**
+```
+1	CREEK PRESERVE PHASES 2 3 AND 4 LOT 99
+```
+
+**Parsed:**
+- Subdivision: CREEK PRESERVE PHASES 2 3 AND 4
+- Lot: 99 | Lots: ['99']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (8):**
+1. `L 99 CREEK PRESERVE PHASES*`
+2. `L99 CREEK PRESERVE PHASES*`
+3. `L 99 CREEK PRESERVE*`
+4. `L99 CREEK PRESERVE*`
+5. `L 99 CREEK*`
+6. `L99 CREEK*`
+7. `CREEK*`
+8. `CREEK PRESERVE*`
+
+---
+
+### Folio: `2032072W5BB0000000190U`
+**Case:** 292024CA005958A001HC
+
+**Legal Description:**
+```
+1	DEL WEBB'S SUN CITY FLORIDA UNIT NO 02 LOT 19 BLOCK BB
+```
+
+**Parsed:**
+- Subdivision: DEL WEBB'S SUN CITY FLORIDA UNIT NO 02
+- Lot: 19 | Lots: ['19']
+- Block: BB
+- Unit: 02
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 19 B BB DEL WEBB S*`
+2. `L19 BBB DEL WEBB S*`
+3. `L 19 BLK BB DEL WEBB S*`
+4. `L19 BLKBB DEL WEBB S*`
+5. `L 19 B BB DEL WEBB*`
+6. `L19 BBB DEL WEBB*`
+7. `L 19 BLK BB DEL WEBB*`
+8. `L19 BLKBB DEL WEBB*`
+9. `L 19 B BB DEL*`
+10. `L19 BBB DEL*`
+
+---
+
+### Folio: `2032089YQ000024000060U`
+**Case:** 292019CA011399A001HC
+
+**Legal Description:**
+```
+1	SUNSHINE VILLAGE PHASES 1A-1/1B-1/1C LOT 6 BLOCK 24
+```
+
+**Parsed:**
+- Subdivision: SUNSHINE VILLAGE PHASES 1A-1/1B-1/1C
+- Lot: 6 | Lots: ['6']
+- Block: 24
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 6 B 24 SUNSHINE VILLAGE PHASES*`
+2. `L6 B24 SUNSHINE VILLAGE PHASES*`
+3. `L 6 B 24 SUNSHINE VILLAGE*`
+4. `L6 B24 SUNSHINE VILLAGE*`
+5. `L 6 B 24 SUNSHINE*`
+6. `L6 B24 SUNSHINE*`
+7. `L 6 SUNSHINE VILLAGE PHASES*`
+8. `L6 SUNSHINE VILLAGE PHASES*`
+9. `L 6 SUNSHINE VILLAGE*`
+10. `L6 SUNSHINE VILLAGE*`
+
+---
+
+### Folio: `21282730G000000000110U`
+**Case:** 292023CA001389A001HC
+
+**Legal Description:**
+```
+1	WOODARD'S MANOR LOT 11
+```
+
+**Parsed:**
+- Subdivision: WOODARD'S MANOR
+- Lot: 11 | Lots: ['11']
+- Block: None
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 11 WOODARD S MANOR*`
+2. `L11 WOODARD S MANOR*`
+3. `L 11 WOODARD S*`
+4. `L11 WOODARD S*`
+5. `L 11 WOODARD*`
+6. `L11 WOODARD*`
+7. `L 11 WOODARDS MANOR*`
+8. `L11 WOODARDS MANOR*`
+9. `L 11 WOODARDS*`
+10. `L11 WOODARDS*`
+
+---
+
+### Folio: `213007369000000000230U`
+**Case:** 292023CA000797A001HC
+
+**Legal Description:**
+```
+1	LITTLE OAK ESTATES UNIT 2 LOT 23
+```
+
+**Parsed:**
+- Subdivision: LITTLE OAK ESTATES UNIT 2
+- Lot: 23 | Lots: ['23']
+- Block: None
+- Unit: 2
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 23 LITTLE OAK ESTATES*`
+2. `L23 LITTLE OAK ESTATES*`
+3. `L 23 LITTLE OAK*`
+4. `L23 LITTLE OAK*`
+5. `L 23 LITTLE*`
+6. `L23 LITTLE*`
+7. `LITTLE*`
+8. `LITTLE OAK*`
+9. `UNIT 2 LITTLE OAK ESTATES*`
+10. `U 2 LITTLE OAK ESTATES*`
+
+---
+
+### Folio: `21300836P000002000020U`
+**Case:** 292023CA012155A001HC
+
+**Legal Description:**
+```
+1	RIVER RIDGE RESERVE LOT 2 BLOCK 2
+```
+
+**Parsed:**
+- Subdivision: RIVER RIDGE RESERVE
+- Lot: 2 | Lots: ['2']
+- Block: 2
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 2 B 2 RIVER RIDGE RESERVE*`
+2. `L2 B2 RIVER RIDGE RESERVE*`
+3. `L 2 B 2 RIVER RIDGE*`
+4. `L2 B2 RIVER RIDGE*`
+5. `L 2 B 2 RIVER*`
+6. `L2 B2 RIVER*`
+7. `L 2 RIVER RIDGE RESERVE*`
+8. `L2 RIVER RIDGE RESERVE*`
+9. `L 2 RIVER RIDGE*`
+10. `L2 RIVER RIDGE*`
+
+---
+
+### Folio: `2228285BZ000020000030P`
+**Case:** 292024CA004642A001HC
+
+**Legal Description:**
+```
+1	LINCOLN PARK SOUTH LOT 3 BLOCK 20
+```
+
+**Parsed:**
+- Subdivision: LINCOLN PARK SOUTH
+- Lot: 3 | Lots: ['3']
+- Block: 20
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 3 B 20 LINCOLN PARK SOUTH*`
+2. `L3 B20 LINCOLN PARK SOUTH*`
+3. `L 3 B 20 LINCOLN PARK*`
+4. `L3 B20 LINCOLN PARK*`
+5. `L 3 B 20 LINCOLN*`
+6. `L3 B20 LINCOLN*`
+7. `L 3 LINCOLN PARK SOUTH*`
+8. `L3 LINCOLN PARK SOUTH*`
+9. `L 3 LINCOLN PARK*`
+10. `L3 LINCOLN PARK*`
+
+---
+
+### Folio: `2228325E4000001000020P`
+**Case:** 292023CA014791A001HC
+
+**Legal Description:**
+```
+1	DREW SUBDIVISION LOT 2 BLOCK 1
+```
+
+**Parsed:**
+- Subdivision: DREW SUBDIVISION
+- Lot: 2 | Lots: ['2']
+- Block: 1
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 2 B 1 DREW SUBDIVISION*`
+2. `L2 B1 DREW SUBDIVISION*`
+3. `L 2 B 1 DREW*`
+4. `L2 B1 DREW*`
+5. `L 2 DREW SUBDIVISION*`
+6. `L2 DREW SUBDIVISION*`
+7. `L 2 DREW*`
+8. `L2 DREW*`
+9. `DREW*`
+10. `DREW SUBDIVISION*`
+
+---
+
+### Folio: `222904A47F00000000220P`
+**Case:** 292024CC057497A001HC
+
+**Legal Description:**
+```
+1	WALDEN WOODS SINGLE FAMILY LOT 22 BLOCK F
+```
+
+**Parsed:**
+- Subdivision: WALDEN WOODS SINGLE FAMILY
+- Lot: 22 | Lots: ['22']
+- Block: F
+- Unit: None
+- Phase: None
+
+**Generated Search Terms (10):**
+1. `L 22 B F WALDEN WOODS SINGLE*`
+2. `L22 BF WALDEN WOODS SINGLE*`
+3. `L 22 BLK F WALDEN WOODS SINGLE*`
+4. `L22 BLKF WALDEN WOODS SINGLE*`
+5. `L 22 B F WALDEN WOODS*`
+6. `L22 BF WALDEN WOODS*`
+7. `L 22 BLK F WALDEN WOODS*`
+8. `L22 BLKF WALDEN WOODS*`
+9. `L 22 B F WALDEN*`
+10. `L22 BF WALDEN*`
+
+---

@@ -192,6 +192,9 @@ ORI document metadata from clerk searches.
 | `self_transfer_type` | `VARCHAR` | YES |  |  |
 | `party2_confidence` | `FLOAT` | YES |  | 1.0 |
 | `party2_resolved_at` | `TIMESTAMP` | YES |  |  |
+| `triggered_by_search_id` | `INTEGER` | YES |  |  |
+| `parties_one` | `TEXT` | YES |  |  |
+| `parties_two` | `TEXT` | YES |  |  |
 | `created_at` | `TIMESTAMP` | YES |  | CURRENT_TIMESTAMP |
 
 ### encumbrances
@@ -310,10 +313,10 @@ MLS data and photos from HomeHarvest library (Realtor.com).
 | `created_at` | `TIMESTAMP` | YES |  | CURRENT_TIMESTAMP |
 | `updated_at` | `TIMESTAMP` | YES |  | CURRENT_TIMESTAMP |
 
-### legal_variations
+### legal_variations (Legacy)
+> **Note:** Part of the deprecated V2 ORI ingestion path. Preserved for data history but no longer populated.
 
 Alternative legal description formats found in ORI documents.
-
 | Column | Type | Nullable | Key | Default |
 | :--- | :--- | :--- | :--- | :--- |
 | `id` | `INTEGER` | NO | PRI | nextval('legal_variations_seq') |
@@ -323,6 +326,15 @@ Alternative legal description formats found in ORI documents.
 | `source_type` | `VARCHAR` | YES |  |  |
 | `is_canonical` | `BOOLEAN` | YES |  | CAST('f' AS BOOLEAN) |
 | `created_at` | `TIMESTAMP` | YES |  | CURRENT_TIMESTAMP |
+
+### property_parties (Legacy)
+> **Note:** Part of the deprecated V2 ORI ingestion path. Preserved for data history but no longer populated.
+
+### linked_identities (Legacy)
+> **Note:** Part of the deprecated V2 ORI ingestion path. Preserved for data history but no longer populated.
+
+### ori_search_queue (Legacy)
+> **Note:** Part of the deprecated V2 ORI ingestion path. Preserved for data history but no longer populated.
 
 ### liens
 
@@ -398,6 +410,7 @@ Property details from HCPA GIS scraper. Enriched during pipeline.
 | `last_analyzed_case_number` | `VARCHAR` | YES |  |  |
 | `legal_description` | `VARCHAR` | YES |  |  |
 | `tax_status` | `VARCHAR` | YES |  |  |
+| `judgment_legal_description` | `VARCHAR` | YES |  |  |
 | `tax_warrant` | `BOOLEAN` | YES |  |  |
 
 ### permits

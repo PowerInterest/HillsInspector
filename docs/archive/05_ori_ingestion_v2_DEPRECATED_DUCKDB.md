@@ -1,8 +1,25 @@
 # Step 5: ORI Ingestion & Chain of Title (V2)
 
 **Version:** 2.0
-**Status:** Implemented & Tested
-**Last Updated:** 2025-12-24
+**Status:** DISABLED (2026-02-09) - V1 SQLite path is active
+**Last Updated:** 2026-02-09
+
+> **IMPORTANT**: As of 2026-02-09, the V2 DuckDB-based ORI ingestion is **disabled**.
+> `USE_STEP4_V2 = False` in `config/step4v2.py`. All ORI ingestion now uses the V1 path
+> via `IngestionService` with SQLite (`data/property_master_sqlite.db`).
+>
+> **Why disabled:** The V2 path had systemic issues - it queried V1 SQLite tables
+> (`parcels`, `bulk_parcels`, `sales_history`) from a DuckDB connection, the V2 DuckDB
+> schema was out of sync with the step4v2 code (column name mismatches like `doc_type`
+> vs `document_type`), and maintaining two databases added unnecessary complexity.
+> The project is migrating to SQLite only.
+>
+> The V1 path (`_run_ori_ingestion_v1` in orchestrator -> `IngestionService`) searches ORI
+> by legal description via browser (CQID 321) with API POST fallback, builds chain of title,
+> and stores everything in SQLite.
+>
+> This document is preserved as a design reference for the iterative discovery algorithm,
+> which may be reimplemented against SQLite in the future.
 
 ## Overview
 

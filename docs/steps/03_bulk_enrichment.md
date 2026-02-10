@@ -8,7 +8,7 @@ This step enriches the `parcels` table using the comprehensive bulk data dump fr
 - **Origin**: [HCPA Downloads](https://www.hcpafl.org/Downloads/GIS)
   - `parcel_MM_DD_YYYY.zip` (Main characteristics)
   - `LatLon_Table_MM_DD_YYYY.zip` (Geographic coordinates)
-- **Method**: Polars / DuckDB
+- **Method**: Polars
 
 ## Process Flow
 
