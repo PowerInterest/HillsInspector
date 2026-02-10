@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List
 
 from src.db.operations import PropertyDB
@@ -9,7 +10,10 @@ from src.db.writer import DatabaseWriter
 from src.services.scraper_storage import ScraperStorage
 from src.orchestrator import PipelineOrchestrator
 
+from pipelinev2.db_init import ensure_sqlite_db
+from pipelinev2.ingestion import IngestionServiceV2
 from pipelinev2.state import RunContext
+from pipelinev2.runtime_patch import apply as apply_runtime_patch
 
 
 VALID_STEP_COLUMNS = {
@@ -33,10 +37,29 @@ def _chunked(values: list[str], size: int = 900):
         yield values[i : i + size]
 
 
+def get_data_dir(context: RunContext) -> Path:
+    data_dir = Path(context.data_dir)
+    if data_dir.resolve() == Path("data").resolve():
+        raise RuntimeError("pipelinev2 must not use production data/ directory")
+    data_dir.mkdir(parents=True, exist_ok=True)
+    for sub in [
+        "Foreclosure",
+        "properties",
+        "judgments",
+        "pdfs/final_judgments",
+        "temp/doc_images",
+    ]:
+        (data_dir / sub).mkdir(parents=True, exist_ok=True)
+    return data_dir
+
+
 def get_db(context: RunContext) -> PropertyDB:
     db = context.services.get("db")
     if db is None:
-        db = PropertyDB()
+        data_dir = get_data_dir(context)
+        db_path = data_dir / "property_master_sqlite.db"
+        ensure_sqlite_db(db_path)
+        db = PropertyDB(db_path=str(db_path))
         context.services["db"] = db
     return db
 
@@ -45,7 +68,13 @@ def get_storage(context: RunContext, db: PropertyDB | None = None) -> ScraperSto
     storage = context.services.get("storage")
     if storage is None:
         db = db or get_db(context)
+        data_dir = get_data_dir(context)
+        base_dir = data_dir / "Foreclosure"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        ScraperStorage.BASE_DIR = base_dir
+        ScraperStorage.DB_PATH = str(data_dir / "property_master_sqlite.db")
         storage = ScraperStorage(db_path=db.db_path, db=db)
+        storage.BASE_DIR = base_dir
         context.services["storage"] = storage
     return storage
 
@@ -210,10 +239,17 @@ def summarize_multi_step_outcomes(
 
 
 async def run_with_orchestrator(context: RunContext, coro_fn):
+    apply_runtime_patch(get_data_dir(context))
     db = get_db(context)
     storage = get_storage(context, db=db)
     writer = DatabaseWriter(db=db)
     orchestrator = PipelineOrchestrator(db_writer=writer, db=db, storage=storage)
+    orchestrator.ingestion_service = IngestionServiceV2(
+        db_writer=writer,
+        db=db,
+        storage=storage,
+        data_dir=get_data_dir(context),
+    )
 
     await writer.start()
     try:
@@ -223,5 +259,4 @@ async def run_with_orchestrator(context: RunContext, coro_fn):
             await writer.stop()
         finally:
             await orchestrator.ingestion_service.shutdown()
-            orchestrator._close_v2_conn()
     return result

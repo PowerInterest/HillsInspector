@@ -66,6 +66,9 @@ def coerce_datetime_utc(value: Any) -> datetime | None:
 
 
 def ensure_duckdb_utc(conn) -> None:
-    """Set DuckDB session timezone to UTC for consistent timestamps."""
-    with suppress(Exception):
-        conn.execute("SET TimeZone='UTC'")
+    """Deprecated: was used to set DuckDB session timezone. Now a no-op.
+
+    Kept for backward compatibility with callers that haven't been migrated yet.
+    Safe to remove once all call-sites are converted to SQLite.
+    """
+    pass

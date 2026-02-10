@@ -6,12 +6,6 @@ This configuration controls the iterative discovery algorithm.
 
 from pathlib import Path
 
-# Enable Step 4v2 (set to True to use new iterative discovery)
-USE_STEP4_V2 = True
-
-# Database path for v2
-V2_DB_PATH = "data/property_master_v2.db"
-
 # Discovery limits
 MAX_ITERATIONS_PER_FOLIO = 50
 MAX_DOCUMENTS_PER_FOLIO = 500

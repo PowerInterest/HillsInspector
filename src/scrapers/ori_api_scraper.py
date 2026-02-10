@@ -302,6 +302,7 @@ class ORIApiScraper:
         Search ORI by book and page number using browser-based CQID=319 endpoint.
 
         This is the most accurate search method - returns exact document.
+        Uses API response interception for instant zero-result detection.
 
         Known OBKey parameters for CQID 319:
         - OBKey__573_1: Book number
@@ -335,10 +336,39 @@ class ORIApiScraper:
             await apply_stealth(page_obj)
 
             logger.debug(f"ORI Browser GET: {url}")
+
+            # Intercept the KeywordSearch API response for fast zero-result
+            # detection (same pattern as search_by_legal_browser).
             with Timer() as t:
-                await page_obj.goto(url, timeout=60000)
-            await page_obj.wait_for_load_state("domcontentloaded", timeout=30000)
-            await asyncio.sleep(2)
+                async with page_obj.expect_response(
+                    lambda r: "CustomQuery/KeywordSearch" in r.url,
+                    timeout=30000,
+                ) as response_info:
+                    await page_obj.goto(url, timeout=60000)
+
+                api_response = await response_info.value
+
+                if api_response.status != 200:
+                    logger.warning(
+                        f"PAV API returned {api_response.status} for book/page {book}/{page}"
+                    )
+                    return []
+
+                api_data = await api_response.json()
+
+                if not api_data.get("Data"):
+                    logger.debug(f"No results for book/page: {book}/{page} (API fast-detect)")
+                    log_search(
+                        source="ORI_CQID",
+                        query=f"book_page:{book}/{page}",
+                        results_raw=0,
+                        duration_ms=t.ms,
+                    )
+                    return []
+
+                # Results exist – wait for the Angular table to render
+                await page_obj.wait_for_selector("table tbody tr", timeout=15000)
+                await asyncio.sleep(2)
 
             # Get column headers
             headers = await page_obj.query_selector_all("table thead th")
@@ -710,6 +740,11 @@ class ORIApiScraper:
         Search ORI by legal description using browser-based CQID=321 endpoint.
         This returns ALL results without the 25-record API limit.
 
+        Uses API response interception to detect zero results instantly instead
+        of waiting 30s for table rows that never appear. The Angular SPA fires
+        POST /api/CustomQuery/KeywordSearch automatically; empty Data means no
+        documents matched.
+
         Args:
             legal_desc: Legal description to search (e.g., "L 198 TUSCANY*" with wildcard)
             headless: Run browser in headless mode
@@ -743,10 +778,43 @@ class ORIApiScraper:
                 await apply_stealth(page)
 
                 logger.info(f"ORI Browser GET: {url}")
-                await page.goto(url, timeout=60000)
-                # Use domcontentloaded instead of networkidle (faster, less prone to hanging)
-                await page.wait_for_load_state("domcontentloaded", timeout=30000)
-                await page.wait_for_selector("table tbody tr", timeout=30000)
+
+                # Intercept the KeywordSearch API response for fast zero-result
+                # detection.  The Angular SPA reads CQID + OBKey from the URL
+                # query-string and automatically POSTs to
+                # /api/CustomQuery/KeywordSearch.
+                #
+                # • Zero results  → {"Data":[], ...}  returned instantly
+                # • Has results   → {"Data":[...], ...}  returned in <2 s
+                #
+                # Previously we waited up to 30 s for `table tbody tr` that
+                # never appeared on zero-result searches (76 % of all searches).
+                async with page.expect_response(
+                    lambda r: "CustomQuery/KeywordSearch" in r.url,
+                    timeout=30000,
+                ) as response_info:
+                    await page.goto(url, timeout=60000)
+
+                api_response = await response_info.value
+
+                # Server error (e.g. 500 = clerk timeout) – treat as no results
+                if api_response.status != 200:
+                    logger.warning(
+                        f"PAV API returned {api_response.status} for '{legal_desc}'"
+                    )
+                    return []
+
+                api_data = await api_response.json()
+
+                # Fast path: zero results – bail immediately
+                if not api_data.get("Data"):
+                    logger.info(
+                        f"Zero results for legal '{legal_desc}' (API fast-detect)"
+                    )
+                    return []
+
+                # Results exist – wait for the Angular table to render them
+                await page.wait_for_selector("table tbody tr", timeout=15000)
                 await asyncio.sleep(2)  # Give table time to render fully
 
                 # Get column headers
@@ -881,6 +949,8 @@ asyncio.run(main())
         Unlike legal description search, this returns documents where the party
         appears as EITHER Party 1 (grantor) OR Party 2 (grantee).
 
+        Uses API response interception for instant zero-result detection.
+
         Args:
             party_name: Party name to search (e.g., "BARGAMIN KRISTEN*" with wildcard)
             headless: Run browser in headless mode
@@ -904,10 +974,34 @@ asyncio.run(main())
             await apply_stealth(page)
 
             logger.info(f"ORI Browser GET: {url}")
-            await page.goto(url, timeout=60000)
-            # Use domcontentloaded instead of networkidle (faster, less prone to hanging)
-            await page.wait_for_load_state("domcontentloaded", timeout=30000)
-            await asyncio.sleep(3)  # Give table time to render
+
+            # Intercept the KeywordSearch API response for fast zero-result
+            # detection (same pattern as search_by_legal_browser).
+            async with page.expect_response(
+                lambda r: "CustomQuery/KeywordSearch" in r.url,
+                timeout=30000,
+            ) as response_info:
+                await page.goto(url, timeout=60000)
+
+            api_response = await response_info.value
+
+            if api_response.status != 200:
+                logger.warning(
+                    f"PAV API returned {api_response.status} for party '{party_name}'"
+                )
+                return []
+
+            api_data = await api_response.json()
+
+            if not api_data.get("Data"):
+                logger.info(
+                    f"Zero results for party '{party_name}' (API fast-detect)"
+                )
+                return []
+
+            # Results exist – wait for the Angular table to render
+            await page.wait_for_selector("table tbody tr", timeout=15000)
+            await asyncio.sleep(2)
 
             # Get column headers
             headers = await page.query_selector_all("table thead th")
@@ -1007,6 +1101,8 @@ asyncio.run(main())
         This is more targeted than searching by party alone - it filters to a specific
         instrument while using the party name search interface.
 
+        Uses API response interception for instant zero-result detection.
+
         Known OBKey parameters:
         - OBKey__486_1: Party name (CQID 326)
         - OBKey__1006_1: Instrument number (CQID 320)
@@ -1040,9 +1136,36 @@ asyncio.run(main())
             await apply_stealth(page)
 
             logger.info(f"ORI Browser GET: {url}")
-            await page.goto(url, timeout=60000)
-            await page.wait_for_load_state("domcontentloaded", timeout=30000)
-            await asyncio.sleep(3)
+
+            # Intercept the KeywordSearch API response for fast zero-result
+            # detection (same pattern as search_by_legal_browser).
+            async with page.expect_response(
+                lambda r: "CustomQuery/KeywordSearch" in r.url,
+                timeout=30000,
+            ) as response_info:
+                await page.goto(url, timeout=60000)
+
+            api_response = await response_info.value
+
+            if api_response.status != 200:
+                logger.warning(
+                    f"PAV API returned {api_response.status} for party+instrument "
+                    f"'{party_name}' / {instrument}"
+                )
+                return []
+
+            api_data = await api_response.json()
+
+            if not api_data.get("Data"):
+                logger.info(
+                    f"Zero results for party+instrument '{party_name}' / {instrument} "
+                    f"(API fast-detect)"
+                )
+                return []
+
+            # Results exist – wait for the Angular table to render
+            await page.wait_for_selector("table tbody tr", timeout=15000)
+            await asyncio.sleep(2)
 
             # Get column headers
             headers = await page.query_selector_all("table thead th")

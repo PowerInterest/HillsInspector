@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-import duckdb
+import sqlite3
 from loguru import logger
 
 from config.step4v2 import (
@@ -58,11 +58,11 @@ class SearchQueue:
     Handles queueing, deduplication, and prioritization of ORI searches.
     """
 
-    def __init__(self, conn: duckdb.DuckDBPyConnection):
+    def __init__(self, conn: sqlite3.Connection):
         """Initialize the search queue manager."""
         self.conn = conn
         self.name_matcher = NameMatcher(conn)
-        self._limit_warned_folios: set[str] = set()  # Track folios that hit search limit
+        self._limit_warned_folios: set[str] = set()  # Track folios that hit search limit  # Track folios that hit search limit
 
     def initialize_for_folio(
         self,
@@ -198,18 +198,21 @@ class SearchQueue:
 
     def _get_sales_history(self, folio: str) -> list[dict]:
         """Get sales history records for a folio."""
-        result = self.conn.execute(
-            """
-            SELECT book, page, instrument, sale_date, doc_type, sale_price, grantor, grantee
-            FROM sales_history
-            WHERE folio = ? OR strap = ?
-            ORDER BY sale_date DESC
-            """,
-            [folio, folio],
-        ).fetchall()
+        try:
+            result = self.conn.execute(
+                """
+                SELECT book, page, instrument, sale_date, doc_type, sale_price, grantor, grantee
+                FROM sales_history
+                WHERE folio = ? OR strap = ?
+                ORDER BY sale_date DESC
+                """,
+                [folio, folio],
+            ).fetchall()
 
-        columns = ["book", "page", "instrument", "sale_date", "doc_type", "sale_price", "grantor", "grantee"]
-        return [dict(zip(columns, row, strict=True)) for row in result]
+            return [dict(row) for row in result]
+        except Exception:
+            # sales_history may not exist
+            return []
 
     def queue_legal_search(
         self,
@@ -704,8 +707,30 @@ class SearchQueue:
 
     def clear_queue(self, folio: str) -> int:
         """Clear all searches for a folio. Returns count deleted."""
-        result = self.conn.execute(
-            "DELETE FROM ori_search_queue WHERE folio = ? RETURNING id",
+        cursor = self.conn.execute(
+            "DELETE FROM ori_search_queue WHERE folio = ?",
             [folio],
-        ).fetchall()
-        return len(result)
+        )
+        return cursor.rowcount
+
+    def cancel_pending_searches(self, folio: str, search_type: str) -> int:
+        """
+        Cancel all pending searches of a specific type for a folio.
+
+        Used when a higher-priority search yields results, making lower-priority
+        fallbacks redundant (short-circuiting).
+        """
+        cursor = self.conn.execute(
+            """
+            DELETE FROM ori_search_queue
+            WHERE folio = ?
+              AND search_type = ?
+              AND status = 'pending'
+            """,
+            [folio, search_type],
+        )
+
+        count = cursor.rowcount
+        if count > 0:
+            logger.info(f"Short-circuit: Cancelled {count} pending '{search_type}' searches for {folio}")
+        return count

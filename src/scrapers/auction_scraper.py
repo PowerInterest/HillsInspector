@@ -386,7 +386,16 @@ class AuctionScraper:
                     plaintiff = judgment_result.get("plaintiff")
                     defendant = judgment_result.get("defendant")
                 elif case_href and "CQID=320" in case_href and not instrument_number:
-                    logger.warning(f"No instrument number for {case_number} - judgment PDF not yet available")
+                    logger.info(f"No instrument number for {case_number} - trying ORI case search fallback")
+                    judgment_result = await self._search_judgment_by_case_number(page, case_number, parcel_id_text)
+                    pdf_path = judgment_result.get("pdf_path")
+                    plaintiff = judgment_result.get("plaintiff")
+                    defendant = judgment_result.get("defendant")
+                    if pdf_path:
+                        # Update instrument from the downloaded filename
+                        logger.info(f"ORI fallback succeeded for {case_number}")
+                    else:
+                        logger.warning(f"ORI fallback found no judgment for {case_number}")
 
                 prop = Property(
                     case_number=case_number,
@@ -569,6 +578,147 @@ class AuctionScraper:
 
         except Exception as e:
             logger.error(f"Error downloading PDF for {case_number}: {e}")
+            return result
+        finally:
+            if new_page:
+                await new_page.close()
+            if new_context:
+                await new_context.close()
+
+    async def _search_judgment_by_case_number(
+        self,
+        page: Page,
+        case_number: str,
+        parcel_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Fallback: search the ORI case-number API to find the Final Judgment
+        instrument number, then download via the PAV document API.
+
+        Uses POST /Public/ORIUtilities/DocumentSearch/api/Search
+        with {"CaseNum": "<full_case_number>"}.
+        """
+        result = {"pdf_path": None, "plaintiff": None, "defendant": None}
+        storage_id = case_number
+
+        # Check if already downloaded
+        existing_path = self.storage.document_exists(
+            property_id=storage_id,
+            doc_type="final_judgment",
+            doc_id=case_number,
+            extension="pdf",
+        )
+        if existing_path:
+            logger.debug(f"PDF already exists for {case_number}: {existing_path}")
+            result["pdf_path"] = str(existing_path)
+            return result
+
+        new_context = None
+        new_page = None
+        try:
+            new_context = await page.context.browser.new_context(
+                user_agent=USER_AGENT_DESKTOP,
+                accept_downloads=True,
+            )
+            new_page = await new_context.new_page()
+            await apply_stealth(new_page)
+
+            # Navigate to ORI site so fetch() works (same-origin)
+            await new_page.goto(
+                "https://publicaccess.hillsclerk.com/oripublicaccess/",
+                timeout=30000,
+            )
+            await asyncio.sleep(2)
+
+            # Call the case-number search API
+            logger.info(f"ORI case search for {case_number}")
+            api_result = await new_page.evaluate(
+                """async (caseNum) => {
+                    const r = await fetch('/Public/ORIUtilities/DocumentSearch/api/Search', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({"CaseNum": caseNum})
+                    });
+                    return await r.json();
+                }""",
+                case_number,
+            )
+
+            results = api_result.get("ResultList") or []
+            if not results:
+                logger.warning(
+                    f"ORI case search returned 0 results for {case_number}"
+                )
+                return result
+
+            # Find the Final Judgment – prefer (JUD) JUDGMENT, fall back to (FJ)
+            judgment_rec = None
+            for rec in results:
+                doc_type = rec.get("DocType", "")
+                if "(JUD)" in doc_type or "(FJ)" in doc_type:
+                    judgment_rec = rec
+                    break
+
+            if not judgment_rec:
+                logger.warning(
+                    f"No judgment document in ORI results for {case_number}: "
+                    f"{[r.get('DocType') for r in results]}"
+                )
+                return result
+
+            instrument = judgment_rec.get("Instrument")
+            doc_id = judgment_rec.get("ID")
+            logger.info(
+                f"Found judgment for {case_number}: "
+                f"instrument={instrument}, pages={judgment_rec.get('PageCount')}"
+            )
+
+            # Extract party info
+            parties_one = judgment_rec.get("PartiesOne") or []
+            parties_two = judgment_rec.get("PartiesTwo") or []
+            if parties_one:
+                result["plaintiff"] = parties_one[0]
+            if parties_two:
+                result["defendant"] = parties_two[0]
+
+            if not doc_id:
+                logger.warning(f"No document ID for judgment in {case_number}")
+                return result
+
+            # Download the PDF
+            encoded_id = urllib.parse.quote(doc_id)
+            download_url = (
+                f"https://publicaccess.hillsclerk.com"
+                f"/PAVDirectSearch/api/Document/{encoded_id}/"
+                f"?OverlayMode=View"
+            )
+
+            logger.info(f"Downloading judgment PDF for {case_number}...")
+            async with new_page.expect_download(timeout=60000) as download_info:
+                await new_page.evaluate(
+                    f"window.location.href = '{download_url}'"
+                )
+
+            download = await download_info.value
+            pdf_path = await download.path()
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+
+            doc_id_for_storage = str(instrument) if instrument else case_number
+            saved_path = self.storage.save_document(
+                property_id=storage_id,
+                file_data=pdf_bytes,
+                doc_type="final_judgment",
+                doc_id=doc_id_for_storage,
+                extension="pdf",
+            )
+            full_path = self.storage.get_full_path(storage_id, saved_path)
+            logger.info(f"Saved judgment PDF to {full_path}")
+            result["pdf_path"] = str(full_path)
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in ORI case search for {case_number}: {e}")
             return result
         finally:
             if new_page:

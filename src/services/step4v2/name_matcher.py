@@ -13,12 +13,11 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-import duckdb
+import sqlite3
 from loguru import logger
 
 from config.step4v2 import (
     GENERIC_NAMES_FILE,
-    NAME_CHANGE_CONFIDENCE,
     NAME_FUZZY_THRESHOLD,
     TRUST_TRANSFER_CONFIDENCE,
 )
@@ -82,7 +81,7 @@ class NameMatcher:
         "SUCCESSOR TRUSTEE",
     ]
 
-    def __init__(self, conn: Optional[duckdb.DuckDBPyConnection] = None):
+    def __init__(self, conn: Optional[sqlite3.Connection] = None):
         """Initialize the name matcher."""
         self.conn = conn
         self._generic_names: set[str] = set()
@@ -360,19 +359,18 @@ class NameMatcher:
         if existing:
             return existing[0]
 
-        # Create new linked identity using RETURNING to get the ID (DuckDB compatible)
-        result = self.conn.execute(
+        # Create new linked identity
+        cursor = self.conn.execute(
             """
             INSERT INTO linked_identities (canonical_name, entity_type, link_type, confidence)
             VALUES (?, ?, ?, ?)
-            RETURNING id
             """,
             [canonical_name, entity_type, link_type, confidence],
-        ).fetchone()
+        )
+        identity_id = cursor.lastrowid
 
-        if not result:
+        if not identity_id:
             raise RuntimeError("Failed to get identity ID after insert")
-        identity_id = result[0]
 
         logger.debug(f"Created linked identity {identity_id}: {canonical_name} ({link_type})")
         return identity_id

@@ -32,66 +32,95 @@ class FinalJudgmentProcessor:
             logger.error(f"PDF not found: {pdf_path}")
             return None
         
+        page_images: list[str] = []
         try:
             logger.info(f"Processing Final Judgment PDF for case {case_number}...")
-            
+
             # Open PDF with PyMuPDF
             doc = fitz.open(pdf_path)
             total_pages = len(doc)
-            num_pages = total_pages  # Process all pages - server has 262k context
+            num_pages = total_pages  # Process all pages; chunked extraction avoids context issues
 
-            logger.info(f"PDF has {total_pages} pages, processing all pages")
-            
+            logger.info(f"PDF has {total_pages} pages, rendering all pages")
+
             # Render all pages to images
-            page_images = []
             for page_num in range(num_pages):
                 page = doc[page_num]
                 temp_image_path = self.temp_dir / f"{case_number}_page_{page_num + 1}.png"
-                pix = page.get_pixmap(dpi=200)
+                pix = page.get_pixmap(dpi=150)
                 pix.save(str(temp_image_path))
                 page_images.append(str(temp_image_path))
 
             doc.close()
 
-            # Single multi-image call for structured extraction
-            logger.info(f"Sending {len(page_images)} pages to vision service in one batch...")
-            merged_json = self.vision_service.extract_final_judgment_multi(page_images)
+            merged_json: Optional[Dict[str, Any]] = None
+            strategies: list[str] = []
 
-            # Also collect raw text per page (separate calls to keep transcript)
-            all_text = []
-            for idx, img_path in enumerate(page_images, start=1):
-                page_text = self.vision_service.extract_text(img_path)
-                if page_text:
-                    all_text.append(f"=== PAGE {idx} ===\n{page_text}")
+            # First pass: prioritize first 3 pages + last 5 pages (often contains Exhibit A)
+            priority_images = self._select_priority_pages(page_images)
+            if priority_images:
+                strategies.append("priority_pages")
+                logger.info(
+                    f"Extracting from {len(priority_images)} prioritized pages..."
+                )
+                merged_json = self._extract_in_batches(priority_images, batch_size=3)
 
-            # Clean up temp images
-            for img_path in page_images:
-                with suppress(Exception):
-                    Path(img_path).unlink()
+            # Second pass: chunk the entire document if critical fields are missing
+            if self._needs_full_pass(merged_json):
+                strategies.append("chunked_full")
+                logger.info(
+                    f"Running chunked extraction across {len(page_images)} pages..."
+                )
+                full_result = self._extract_in_batches(page_images, batch_size=3)
+                if merged_json and full_result:
+                    merged_json = self._merge_page_data([merged_json, full_result])
+                else:
+                    merged_json = merged_json or full_result
+
+            # Final fallback: per-page extraction if still missing critical fields
+            if self._needs_full_pass(merged_json):
+                strategies.append("per_page_fallback")
+                logger.info("Running per-page extraction fallback...")
+                page_data_list: list[Dict[str, Any]] = []
+                if merged_json:
+                    page_data_list.append(merged_json)
+                for image_path in page_images:
+                    page_result = self.vision_service.extract_final_judgment(image_path)
+                    if page_result:
+                        page_data_list.append(page_result)
+                merged_json = (
+                    self._merge_page_data(page_data_list)
+                    if page_data_list
+                    else merged_json
+                )
 
             if not merged_json:
-                pages_with_text = len(all_text)
                 logger.warning(
-                    "No structured data extracted for case {} (OCR text on {}/{} pages)",
+                    "No structured data extracted for case {} ({} pages)",
                     case_number,
-                    pages_with_text,
                     total_pages,
                 )
                 return None
 
-            merged_json['raw_text'] = "\n\n".join(all_text)
+            merged_json['raw_text'] = ""
             merged_json['_metadata'] = {
                 'case_number': case_number,
                 'pages_processed': num_pages,
-                'total_pages': total_pages
+                'total_pages': total_pages,
+                'extraction_strategies': strategies,
             }
 
             logger.info(f"Successfully processed Final Judgment for case {case_number}")
             return merged_json
-            
+
         except Exception as e:
             logger.error(f"Error processing PDF for case {case_number}: {e}")
             return None
+        finally:
+            # Clean up temp images
+            for img_path in page_images:
+                with suppress(Exception):
+                    Path(img_path).unlink()
     
     def _merge_page_data(self, page_data_list: list) -> Dict[str, Any]:
         """
@@ -117,6 +146,63 @@ class FinalJudgmentProcessor:
                     merged[key] = value
         
         return merged
+
+    def _extract_in_batches(
+        self,
+        image_paths: list[str],
+        batch_size: int = 3,
+    ) -> Optional[Dict[str, Any]]:
+        """Extract final judgment data in smaller batches to reduce timeouts."""
+        if not image_paths:
+            return None
+        page_data_list: list[Dict[str, Any]] = []
+        for i in range(0, len(image_paths), batch_size):
+            batch = image_paths[i:i + batch_size]
+            batch_result = self.vision_service.extract_final_judgment_multi(batch)
+            if batch_result:
+                page_data_list.append(batch_result)
+        return self._merge_page_data(page_data_list) if page_data_list else None
+
+    def _select_priority_pages(self, page_images: list[str]) -> list[str]:
+        """
+        Select priority pages: first 3 pages + last 5 pages (often contains Exhibit A).
+        Deduplicates if the document is short.
+        """
+        if not page_images:
+            return []
+        total = len(page_images)
+        head_count = min(3, total)
+        tail_count = min(5, max(0, total - head_count))
+        selected = page_images[:head_count]
+        if tail_count:
+            selected += page_images[-tail_count:]
+        # Deduplicate while preserving order
+        seen = set()
+        deduped = []
+        for path in selected:
+            if path in seen:
+                continue
+            seen.add(path)
+            deduped.append(path)
+        return deduped
+
+    def _needs_full_pass(self, extracted_data: Optional[Dict[str, Any]]) -> bool:
+        """Determine if we need a deeper pass to capture critical fields."""
+        if not extracted_data:
+            return True
+        defendants = extracted_data.get('defendants') or []
+        has_defendants = any(d.get('name') for d in defendants)
+        legal_description = (extracted_data.get('legal_description') or "").strip()
+        mortgage = extracted_data.get('foreclosed_mortgage') or {}
+        has_mortgage_ref = any(
+            mortgage.get(key)
+            for key in ('instrument_number', 'recording_book', 'recording_page')
+        )
+        has_amount = bool(
+            extracted_data.get('total_judgment_amount')
+            or extracted_data.get('principal_amount')
+        )
+        return not (has_defendants and legal_description and (has_mortgage_ref or has_amount))
     
     def _clean_amount(self, amount_str: Optional[str]) -> Optional[float]:
         """

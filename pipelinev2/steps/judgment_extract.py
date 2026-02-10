@@ -11,7 +11,7 @@ from src.services.final_judgment_processor import FinalJudgmentProcessor
 
 from pipelinev2.state import RunContext, StepResult
 from pipelinev2.steps.base import timed_step
-from pipelinev2.services import get_db
+from pipelinev2.services import get_data_dir, get_db, get_storage
 
 STEP_NAME = "judgment_extract"
 
@@ -19,7 +19,11 @@ STEP_NAME = "judgment_extract"
 def run(context: RunContext) -> StepResult:
     with timed_step(STEP_NAME) as elapsed_ms:
         db = get_db(context)
+        storage = get_storage(context, db=db)
+        data_dir = get_data_dir(context)
         judgment_processor = FinalJudgmentProcessor()
+        judgment_processor.temp_dir = data_dir / "temp" / "doc_images"
+        judgment_processor.temp_dir.mkdir(parents=True, exist_ok=True)
 
         params: list[object] = [context.retry_failed, context.max_retries]
         auctions = db.execute_query(
@@ -44,7 +48,7 @@ def run(context: RunContext) -> StepResult:
         processing_failed = 0
         processed_since_checkpoint = 0
         judgment_rows: list[dict] = []
-        judgment_dir = Path("data/judgments")
+        judgment_dir = data_dir / "judgments"
         judgment_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_path = judgment_dir / "judgment_extracts_checkpoint.parquet"
         final_path = judgment_dir / "judgment_extracts_final.parquet"
@@ -86,12 +90,18 @@ def run(context: RunContext) -> StepResult:
                 skipped_checkpoint += 1
                 continue
 
-            sanitized_folio = parcel_id.replace("/", "_").replace("\\", "_").replace(":", "_")
-            base_dir = Path("data/properties") / sanitized_folio / "documents"
-            pdf_paths = list(base_dir.glob("final_judgment*.pdf")) if base_dir.exists() else []
+            # Final judgment PDFs are stored under case_number folders (Foreclosure storage)
+            doc_dir = storage.get_full_path(case_number, "documents")
+            pdf_paths = list(doc_dir.glob("final_judgment*.pdf")) if doc_dir.exists() else []
 
             if not pdf_paths:
-                legacy_path = Path(f"data/pdfs/final_judgments/{case_number}_final_judgment.pdf")
+                # Fallback: legacy per-folio documents directory
+                sanitized_folio = parcel_id.replace("/", "_").replace("\\", "_").replace(":", "_")
+                legacy_dir = data_dir / "properties" / sanitized_folio / "documents"
+                pdf_paths = list(legacy_dir.glob("final_judgment*.pdf")) if legacy_dir.exists() else []
+
+            if not pdf_paths:
+                legacy_path = data_dir / "pdfs" / "final_judgments" / f"{case_number}_final_judgment.pdf"
                 if legacy_path.exists():
                     pdf_paths = [legacy_path]
 

@@ -1,21 +1,20 @@
 import asyncio
 import calendar
-import duckdb
-import polars as pl
-from datetime import datetime, date
+import sqlite3
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from loguru import logger
 from rapidfuzz import fuzz
-from src.utils.time import ensure_duckdb_utc
 
 from src.models.property import Property
 from src.history.hcpa_history_scraper import HistoricalHCPAScraper
 from src.history.db_init import ensure_history_schema
+from src.db.sqlite_paths import resolve_sqlite_db_path_str
 from src.utils.logging_config import configure_logger
 
 configure_logger(log_file="history_pipeline.log")
 
-DB_PATH = Path("data/history.db")
+DB_PATH = resolve_sqlite_db_path_str()
 INVALID_PARCELS = {"property appraiser", "n/a", "none", "unknown"}
 PLACEHOLDER_BUYERS = {
     "3rd party bidder",
@@ -27,34 +26,35 @@ PLACEHOLDER_BUYERS = {
 }
 
 class ResaleScanner:
-    def __init__(self, db_path: Path = DB_PATH):
+    def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
         ensure_history_schema(self.db_path)
         self.scraper = HistoricalHCPAScraper(headless=True)
-        
+
     def get_pending_scans(self, limit: int = 50):
         """Get 3rd party purchases that haven't been scanned for resale recently."""
-        conn = duckdb.connect(str(self.db_path), read_only=True)
-        ensure_duckdb_utc(conn)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
         try:
-            # Logic: 
+            # Logic:
             # 1. Must be Third Party buyer
             # 2. Must have minimal fields to query HCPA
             # 3. Has NOT been scanned yet (or scanned long ago)
+            cutoff = (datetime.utcnow() - timedelta(days=30)).isoformat()
             query = """
                 SELECT auction_id, auction_date, case_number, parcel_id, property_address, sold_to, winning_bid
-                FROM auctions
-                WHERE buyer_type = 'Third Party' 
-                AND parcel_id IS NOT NULL 
+                FROM history_auctions
+                WHERE buyer_type = 'Third Party'
+                AND parcel_id IS NOT NULL
                 AND parcel_id != ''
                 AND lower(parcel_id) NOT IN ({invalids})
-                AND (last_resale_scan_at IS NULL OR last_resale_scan_at < now() - INTERVAL 30 DAY)
-                ORDER BY last_resale_scan_at ASC NULLS FIRST
+                AND (last_resale_scan_at IS NULL OR last_resale_scan_at < ?)
+                ORDER BY (last_resale_scan_at IS NULL) DESC, last_resale_scan_at ASC
                 LIMIT ?
             """.format(
                 invalids=",".join([f"'{p}'" for p in INVALID_PARCELS])
             )
-            return conn.execute(query, [limit]).fetchall()
+            return conn.execute(query, [cutoff, limit]).fetchall()
         finally:
             conn.close()
 
@@ -62,57 +62,66 @@ class ResaleScanner:
         """Update last_resale_scan_at for a batch of auctions."""
         if not auction_ids:
             return
-        
-        conn = duckdb.connect(str(self.db_path))
+
+        conn = sqlite3.connect(self.db_path)
         try:
-            # Use DuckDB executemany for efficiency
-            ids = [(aid,) for aid in auction_ids]
+            now = datetime.utcnow().isoformat()
+            ids = [(now, aid) for aid in auction_ids]
             conn.executemany(
-                "UPDATE auctions SET last_resale_scan_at = now() WHERE auction_id = ?",
+                "UPDATE history_auctions SET last_resale_scan_at = ? WHERE auction_id = ?",
                 ids
             )
+            conn.commit()
         except Exception as e:
             logger.error(f"Failed to update scan timestamps: {e}")
         finally:
             conn.close()
 
     def save_batch_resales(self, resales_data: list[dict]):
-        """Insert batch of confirmed resales into database using Polars."""
+        """Insert batch of confirmed resales into database."""
         if not resales_data:
             return
 
-        # Create Polars DataFrame
-        df = pl.DataFrame(resales_data)
-        
-        conn = duckdb.connect(str(self.db_path))
-        ensure_duckdb_utc(conn)
+        conn = sqlite3.connect(self.db_path)
         try:
-            logger.info(f"Writing {len(resales_data)} resales to DB via Polars...")
-            conn.execute("ALTER TABLE resales ADD COLUMN IF NOT EXISTS roi DOUBLE")
-            
-            # Register the DataFrame as a view
-            conn.register('df_batch', df)
-            
-            # Insert using SQL
-            conn.execute("""
-                INSERT INTO resales (
+            logger.info(f"Writing {len(resales_data)} resales to DB...")
+
+            insert_sql = """
+                INSERT INTO history_resales (
                     resale_id, parcel_id, auction_id,
                     sale_date, sale_price, sale_type,
                     hold_time_days, gross_profit, roi, source
-                ) SELECT 
-                    resale_id, parcel_id, auction_id,
-                    sale_date, sale_price, sale_type,
-                    hold_time_days, gross_profit, roi, source
-                FROM df_batch
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (resale_id) DO UPDATE SET
-                    sale_date = EXCLUDED.sale_date,
-                    sale_price = EXCLUDED.sale_price,
-                    sale_type = EXCLUDED.sale_type,
-                    hold_time_days = EXCLUDED.hold_time_days,
-                    gross_profit = EXCLUDED.gross_profit,
-                    roi = EXCLUDED.roi,
-                    source = EXCLUDED.source
-            """)
+                    sale_date = excluded.sale_date,
+                    sale_price = excluded.sale_price,
+                    sale_type = excluded.sale_type,
+                    hold_time_days = excluded.hold_time_days,
+                    gross_profit = excluded.gross_profit,
+                    roi = excluded.roi,
+                    source = excluded.source
+            """
+
+            data = []
+            for r in resales_data:
+                sale_date = r["sale_date"]
+                if isinstance(sale_date, date):
+                    sale_date = sale_date.isoformat()
+                data.append((
+                    r["resale_id"],
+                    r["parcel_id"],
+                    r["auction_id"],
+                    sale_date,
+                    r["sale_price"],
+                    r["sale_type"],
+                    r["hold_time_days"],
+                    r["gross_profit"],
+                    r["roi"],
+                    r["source"],
+                ))
+
+            conn.executemany(insert_sql, data)
+            conn.commit()
         except Exception as e:
             logger.error(f"Failed to save batch: {e}")
         finally:
@@ -139,11 +148,11 @@ class ResaleScanner:
         """Fuzzy match buyer to grantor."""
         if not auction_buyer or not resale_grantor:
             return False
-        
+
         # Simple normalization
         a = auction_buyer.upper().replace(" LLC", "").replace(" INC", "").replace(" TRUST", "").strip()
         b = resale_grantor.upper().replace(" LLC", "").replace(" INC", "").replace(" TRUST", "").strip()
-        
+
         ratio = fuzz.ratio(a, b)
         return ratio > 75 # Lowered threshold slightly
 
@@ -161,9 +170,15 @@ class ResaleScanner:
     async def _process_single_auction(self, row, semaphore: asyncio.Semaphore) -> dict | None:
         """Process a single auction row under semaphore."""
         async with semaphore:
-            auction_id, auction_date_val, case_num, parcel_id, addr, sold_to, winning_bid = row
-            
-            # Map valid date (handle duckdb date vs text)
+            auction_id = row["auction_id"]
+            auction_date_val = row["auction_date"]
+            case_num = row["case_number"]
+            parcel_id = row["parcel_id"]
+            addr = row["property_address"]
+            sold_to = row["sold_to"]
+            winning_bid = row["winning_bid"]
+
+            # Map valid date (handle sqlite text vs date)
             if isinstance(auction_date_val, str):
                 auction_date = datetime.strptime(auction_date_val, "%Y-%m-%d").date()
             else:
@@ -175,11 +190,11 @@ class ResaleScanner:
                 parcel_id=parcel_id,
                 address=addr
             )
-            
+
             try:
                 # Scrape HCPA (No DB write involved)
                 prop = await self.scraper.enrich_property(prop)
-                
+
                 if prop.sales_history:
                     candidates = []
                     for sale in prop.sales_history:
@@ -239,10 +254,10 @@ class ResaleScanner:
                                 "HCPA_UNVERIFIED",
                                 sold_to,
                             )
-                            
+
             except Exception as e:
                 logger.error(f"Error scanning {parcel_id}: {e}")
-            
+
             return None
 
     def _build_resale(
@@ -298,16 +313,16 @@ class ResaleScanner:
             return 0
 
         logger.info(f"Scanning {len(targets)} auctions for resales...")
-        
+
         # Concurrency Control
         sem = asyncio.Semaphore(5) # 5 concurrent browsers
-        
+
         tasks = [self._process_single_auction(row, sem) for row in targets]
         results = await asyncio.gather(*tasks)
-        
+
         # Filter None
         resales_to_save = [r for r in results if r]
-        
+
         # Batch Write Resales
         if resales_to_save:
             self.save_batch_resales(resales_to_save)
@@ -315,7 +330,7 @@ class ResaleScanner:
             logger.info("No flips found in this batch.")
 
         # Batch Update Scan Timestamps (for ALL attempted auctions)
-        auction_ids = [row[0] for row in targets]
+        auction_ids = [row["auction_id"] for row in targets]
         self.update_scan_timestamp(auction_ids)
         return len(targets)
 

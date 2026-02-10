@@ -1,8 +1,7 @@
 """
 SQLite compatibility adapter for HillsInspector.
 
-Provides helper functions to make SQLite work more like DuckDB,
-minimizing changes needed in existing code.
+Provides helper functions for SQLite compatibility in HillsInspector.
 """
 import sqlite3
 from contextlib import suppress
@@ -109,10 +108,10 @@ def execute_with_retry(conn: sqlite3.Connection, sql: str, params=None,
 
 def interval_to_date(interval_str: str) -> str:
     """
-    Convert DuckDB INTERVAL syntax to SQLite date arithmetic.
-    
-    DuckDB: CURRENT_DATE - INTERVAL 7 DAY
-    SQLite: date('now', '-7 days')
+    Convert an INTERVAL-style string to SQLite date arithmetic.
+
+    Input: "7 DAY" or "30 DAY"
+    Output: date('now', '-7 days')
     
     Args:
         interval_str: String like "7 DAY" or "30 DAY"

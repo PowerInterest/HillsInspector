@@ -1,6 +1,6 @@
 import asyncio
 import sys
-import duckdb
+import sqlite3
 import re
 import random
 import time
@@ -12,16 +12,17 @@ import polars as pl
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 from src.utils.time import today_local
-from src.utils.time import ensure_duckdb_utc, now_utc_naive
+from src.utils.time import now_utc_naive
 from src.utils.logging_config import configure_logger
 from src.history.db_init import ensure_history_schema
+from src.db.sqlite_paths import resolve_sqlite_db_path_str
 
 configure_logger(log_file="history_pipeline.log")
 
 # Add project root to path
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-DB_PATH = Path("data/history.db")
+DB_PATH = resolve_sqlite_db_path_str()
 BASE_URL = "https://hillsborough.realforeclose.com"
 CALENDAR_URL = f"{BASE_URL}/index.cfm?zaction=user&zmethod=calendar"
 USER_AGENT_DESKTOP = (
@@ -83,7 +84,7 @@ def _is_forbidden(content: str) -> bool:
 class HistoricalScraper:
     def __init__(
         self,
-        db_path: Path = DB_PATH,
+        db_path: str = DB_PATH,
         max_concurrent: int = 1,
         headless: bool = True,
         browser_names: list[str] | None = None,
@@ -102,7 +103,7 @@ class HistoricalScraper:
         self.max_consecutive_blocks = 3
         self.backoff_seconds = 30
         self.backoff_max_seconds = 300
-        
+
         # Persistent playwright objects
         self.playwright = None
         self.browser = None
@@ -114,15 +115,23 @@ class HistoricalScraper:
         self.flush_interval_seconds = 600  # 10 minutes
 
     def _load_scraped_dates(self):
-        """Load fully processed dates from scraped_dates table."""
-        if not self.db_path.exists():
-            return
+        """Load fully processed dates from history_scraped_dates table."""
         conn = None
         try:
-            conn = duckdb.connect(str(self.db_path))
-            # Load from the tracking table instead of DISTINCT auctions
-            rows = conn.execute("SELECT auction_date FROM scraped_dates WHERE status != 'Failed'").fetchall()
-            self._scraped_dates = {r[0].date() if hasattr(r[0], 'date') else r[0] for r in rows}
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT auction_date FROM history_scraped_dates WHERE status != 'Failed'").fetchall()
+            parsed = set()
+            for r in rows:
+                val = r["auction_date"]
+                if isinstance(val, str):
+                    from datetime import datetime as _dt
+                    parsed.add(_dt.strptime(val, "%Y-%m-%d").date())
+                elif hasattr(val, "date"):
+                    parsed.add(val.date())
+                else:
+                    parsed.add(val)
+            self._scraped_dates = parsed
             logger.info(f"Loaded {len(self._scraped_dates)} fully processed dates.")
         except Exception as e:
             logger.warning(f"Could not load scraped dates: {e}")
@@ -134,7 +143,7 @@ class HistoricalScraper:
         """Initialize a persistent browser and establish a session."""
         if self.browser:
             return
-            
+
         self.playwright = await async_playwright().start()
         await self._launch_browser(headless=headless)
         self.context = await self.browser.new_context(
@@ -359,14 +368,15 @@ class HistoricalScraper:
         """Record that a date has been fully processed."""
         conn = None
         try:
-            conn = duckdb.connect(str(self.db_path))
+            conn = sqlite3.connect(self.db_path)
             conn.execute("""
-                INSERT INTO scraped_dates (auction_date, status) 
-                VALUES (?, ?)
-                ON CONFLICT (auction_date) DO UPDATE SET 
-                    status = EXCLUDED.status,
-                    scraped_at = now()
-            """, [target_date, status])
+                INSERT INTO history_scraped_dates (auction_date, status, scraped_at)
+                VALUES (?, ?, datetime('now'))
+                ON CONFLICT (auction_date) DO UPDATE SET
+                    status = excluded.status,
+                    scraped_at = datetime('now')
+            """, [target_date.isoformat(), status])
+            conn.commit()
         except Exception as e:
             logger.error(f"Failed to mark date {target_date} as done: {e}")
         finally:
@@ -376,58 +386,58 @@ class HistoricalScraper:
     def save_batch(self, auctions: list[dict]):
         if not auctions:
             return
-            
+
         logger.info(f"Saving batch of {len(auctions)} auctions...")
-        
+
         insert_sql = """
-            INSERT INTO auctions (
+            INSERT INTO history_auctions (
                 auction_id, auction_date, case_number, parcel_id, property_address,
                 winning_bid, final_judgment_amount, assessed_value,
                 sold_to, buyer_normalized, buyer_type,
                 auction_url, pdf_url, status, scraped_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (auction_id) DO UPDATE SET
-                winning_bid = COALESCE(EXCLUDED.winning_bid, auctions.winning_bid),
-                sold_to = COALESCE(NULLIF(EXCLUDED.sold_to, ''), auctions.sold_to),
+                winning_bid = COALESCE(excluded.winning_bid, history_auctions.winning_bid),
+                sold_to = COALESCE(NULLIF(excluded.sold_to, ''), history_auctions.sold_to),
                 buyer_type = CASE
-                    WHEN EXCLUDED.buyer_type IS NULL OR EXCLUDED.buyer_type = 'Unknown'
-                        THEN auctions.buyer_type
-                    ELSE EXCLUDED.buyer_type
+                    WHEN excluded.buyer_type IS NULL OR excluded.buyer_type = 'Unknown'
+                        THEN history_auctions.buyer_type
+                    ELSE excluded.buyer_type
                 END,
-                status = EXCLUDED.status,
-                pdf_url = COALESCE(EXCLUDED.pdf_url, auctions.pdf_url),
-                scraped_at = EXCLUDED.scraped_at
+                status = excluded.status,
+                pdf_url = COALESCE(excluded.pdf_url, history_auctions.pdf_url),
+                scraped_at = excluded.scraped_at
         """
-        
+
         data = []
-        now = now_utc_naive()
+        now = now_utc_naive().isoformat()
         for a in auctions:
             # Generate ID
             auction_id = f"{a['case_number']}_{a['auction_date'].strftime('%Y%m%d')}"
-            
+
             data.append((
                 auction_id,
-                a['auction_date'], 
-                a['case_number'], 
-                a['parcel_id'], 
+                a['auction_date'].isoformat(),
+                a['case_number'],
+                a['parcel_id'],
                 a['property_address'],
-                a['winning_bid'], 
-                a['final_judgment_amount'], 
+                a['winning_bid'],
+                a['final_judgment_amount'],
                 a['assessed_value'],
-                a['sold_to'], 
+                a['sold_to'],
                 a['sold_to'].upper() if a['sold_to'] else None, # Simple normalization for now
                 a['buyer_type'],
-                a['auction_url'], 
+                a['auction_url'],
                 a.get('pdf_url'),
                 a.get('status'),
                 now
             ))
 
-        conn = None  
+        conn = None
         try:
-            conn = duckdb.connect(str(self.db_path))
-            ensure_duckdb_utc(conn)
+            conn = sqlite3.connect(self.db_path)
             conn.executemany(insert_sql, data)
+            conn.commit()
         except Exception as e:
             logger.error(f"Failed to save batch: {e}")
         finally:
@@ -437,14 +447,14 @@ class HistoricalScraper:
     async def scrape_date_range(self, start_date: date, end_date: date):
         """Iterate through all dates and scrape with concurrency control."""
         self._load_scraped_dates()
-        
+
         await self.setup_browser(headless=self.headless)
-        
+
         current = start_date
         while current <= end_date:
             # Group into small chunks just for reporting/batching
             chunk_end = min(current + timedelta(days=5), end_date)
-            
+
             tasks = []
             d = current
             while d < chunk_end:
@@ -452,14 +462,14 @@ class HistoricalScraper:
                     if d not in self._scraped_dates:
                         tasks.append(self.scrape_with_semaphore(d))
                 d += timedelta(days=1)
-            
+
             if tasks:
                 try:
                     results = await asyncio.gather(*tasks)
                 except BlockedError as exc:
                     logger.error(f"Stopping history scrape to avoid escalating blocks: {exc}")
                     break
-                
+
                 # 'tasks' was built from dates that weren't in self._scraped_dates
                 # We need the actual dates back to mark them done.
                 # Let's adjust tasks to return (date, results)
@@ -470,16 +480,16 @@ class HistoricalScraper:
                             self.mark_date_done(target_date, 'Success')
                         else:
                             self.mark_date_done(target_date, 'Empty')
-            
+
             current = chunk_end
-            
+
     async def scrape_with_semaphore(self, target_date: date):
         """Wrapper for scrape_single_date with semaphore and jitter."""
         async with self.semaphore:
             # Human-like jitter
             delay = random.uniform(1.0, 3.5)
             await asyncio.sleep(delay)
-            
+
             auctions = await self.scrape_single_date(target_date)
             return (target_date, auctions)
 
@@ -490,14 +500,14 @@ class HistoricalScraper:
         """
         if not self.session_initialized:
             await self.setup_browser(headless=self.headless)
-            
+
         date_str = target_date.strftime("%m/%d/%Y")
         # PREVIEW view contains the sold/walked-away status and sold-to/amount info.
         url = f"{BASE_URL}/index.cfm?zaction=AUCTION&zmethod=PREVIEW&AuctionDate={date_str}"
-        
+
         auctions = []
         page = await self._new_page()
-        
+
         try:
             max_retries = 2
             for attempt in range(max_retries + 1):
@@ -584,7 +594,7 @@ class HistoricalScraper:
                     if count == 0:
                         items = page.locator("div.AUCTION_STATS").locator("xpath=..")
                         count = await items.count()
-                    
+
                     if count == 0:
                         empty_indicators = [
                             "No auctions found",
@@ -593,12 +603,12 @@ class HistoricalScraper:
                             "is not a scheduled auction date"
                         ]
                         is_empty = any(ind.lower() in content.lower() for ind in empty_indicators)
-                        
+
                         if is_empty:
                              logger.info(f"Confirmed no auctions for {date_str}")
                              # Important: break to return empty list [].
                              # We break the retry loop and it will return the 'auctions' list (empty).
-                             break 
+                             break
                         else:
                             if attempt < max_retries:
                                 debug_dir = Path("logs/history_debug")
@@ -622,7 +632,7 @@ class HistoricalScraper:
                         item = items.nth(i)
                         try:
                             text = await item.inner_text()
-                            
+
                             # --- extraction ---
                             sold_to = None
                             status = "Unknown"
@@ -667,7 +677,7 @@ class HistoricalScraper:
 
                             if sold_to and status == "Unknown":
                                 status = "Sold"
-                            
+
                             winning_bid = None
                             bid_text = await cell_after("Winning Bid:")
                             if not bid_text:
@@ -693,9 +703,9 @@ class HistoricalScraper:
                                 bid_match = _extract_text_field(WINNING_BID_PATTERNS, text)
                                 if bid_match:
                                     winning_bid = self._parse_money(bid_match)
-                                 
+
                             # Buyer Type Logic
-                            buyer_type = "Unknown" 
+                            buyer_type = "Unknown"
                             if sold_to:
                                 normalized = sold_to.lower()
                                 if any(term in normalized for term in ("plaintiff", "bank", "mortgage", "financial", "lending", "loan")):
@@ -717,7 +727,7 @@ class HistoricalScraper:
                             case_url = await case_link.get_attribute("href") if await case_link.count() else None
                             if case_url and not case_url.startswith("http"):
                                 case_url = f"{BASE_URL}{case_url}"
-                            
+
                             parcel_row = details.locator("tr:has-text('Parcel ID:')")
                             parcel_id = ""
                             if await parcel_row.count() > 0:
@@ -729,7 +739,7 @@ class HistoricalScraper:
 
                             if parcel_id and parcel_id.lower() in ("property appraiser", "n/a", "none"):
                                 parcel_id = ""
-                            
+
                             addr_row = details.locator("tr:has-text('Property Address:')")
                             address = ""
                             if await addr_row.count() > 0:
@@ -745,7 +755,7 @@ class HistoricalScraper:
                             if await judg_row.count() > 0:
                                 val = await judg_row.locator("td").nth(1).inner_text()
                                 judgment_amount = self._parse_money(val)
-                                 
+
                             assessed_row = details.locator("tr:has-text('Assessed Value:')")
                             assessed_value = None
                             if await assessed_row.count() > 0:
@@ -771,11 +781,11 @@ class HistoricalScraper:
                                 "pdf_url": case_url,
                                 "auction_id": f"{case_number}_{target_date.strftime('%Y%m%d')}",
                             })
-                            
+
                         except Exception as e:
                             logger.error(f"Error parsing item on {date_str}: {e}")
                             continue
-                            
+
                     # If we successfully parsed the page, break the retry loop
                     break
 
@@ -785,7 +795,7 @@ class HistoricalScraper:
                         await asyncio.sleep(random.uniform(2, 5))
                         continue
                     logger.error(f"Failed page {date_str} after {max_retries+1} attempts: {e}")
-            
+
         finally:
             with suppress(Exception):
                 await page.close()
@@ -799,16 +809,21 @@ class HistoricalScraper:
         targets: dict[date, set[str]] = {}
         conn = None
         try:
-            conn = duckdb.connect(str(self.db_path))
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
             rows = conn.execute("""
                 SELECT auction_date, auction_id
-                FROM auctions
+                FROM history_auctions
                 WHERE status = 'Sold' AND winning_bid IS NULL
                 ORDER BY auction_date
             """).fetchall()
-            for auction_date, auction_id in rows:
-                if not auction_date or not auction_id:
+            for row in rows:
+                auction_date_str = row["auction_date"]
+                auction_id = row["auction_id"]
+                if not auction_date_str or not auction_id:
                     continue
+                from datetime import datetime as _dt
+                auction_date = _dt.strptime(auction_date_str, "%Y-%m-%d").date()
                 targets.setdefault(auction_date, set()).add(auction_id)
         except Exception as exc:
             logger.error(f"Failed to load missing winning bid targets: {exc}")
@@ -829,8 +844,7 @@ class HistoricalScraper:
         scanned = 0
         conn = None
         try:
-            conn = duckdb.connect(str(self.db_path))
-            ensure_duckdb_utc(conn)
+            conn = sqlite3.connect(self.db_path)
             for target_date, auction_ids in targets_by_date.items():
                 if limit_dates is not None and scanned >= limit_dates:
                     break
@@ -863,9 +877,10 @@ class HistoricalScraper:
                     )
                     continue
                 conn.executemany(
-                    "UPDATE auctions SET winning_bid = ? WHERE auction_id = ? AND winning_bid IS NULL",
+                    "UPDATE history_auctions SET winning_bid = ? WHERE auction_id = ? AND winning_bid IS NULL",
                     updates,
                 )
+                conn.commit()
                 updated += len(updates)
                 logger.info(
                     "Backfill for %s: %d/%d updated.",
@@ -896,7 +911,7 @@ async def run_scrape():
     end = today_local()
 
     ensure_history_schema(DB_PATH)
-    
+
     scraper = HistoricalScraper(
         max_concurrent=1,
         headless=False,

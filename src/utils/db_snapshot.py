@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import shutil
+import sqlite3
 from pathlib import Path
 
-import duckdb
 from loguru import logger
 
 from src.utils.db_lock import DatabaseLockError, exclusive_db_lock
@@ -41,9 +41,9 @@ def refresh_web_snapshot(
 
     def _do_snapshot() -> Path:
         # Ensure WAL is flushed before snapshot copy.
-        conn = duckdb.connect(str(source_db))
+        conn = sqlite3.connect(str(source_db))
         try:
-            conn.execute("CHECKPOINT")
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
             conn.close()
 

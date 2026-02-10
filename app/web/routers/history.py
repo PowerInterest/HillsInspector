@@ -1,9 +1,8 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
-import duckdb
+import sqlite3
 from pathlib import Path
 from loguru import logger
-from src.utils.time import ensure_duckdb_utc
 
 router = APIRouter()
 
@@ -22,25 +21,22 @@ def _is_lock_error(exc: Exception) -> bool:
     ])
 
 
-def _get_conn() -> duckdb.DuckDBPyConnection | None:
+def _get_conn() -> sqlite3.Connection | None:
     """Try primary history DB, fallback to snapshot if locked."""
     try:
-        conn = duckdb.connect(str(DB_PATH), read_only=True)
-        ensure_duckdb_utc(conn)
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
         return conn
     except Exception as e:
         if _is_lock_error(e) and SNAPSHOT_PATH.exists():
             logger.warning("history.db locked; using snapshot {}", SNAPSHOT_PATH)
-            conn = duckdb.connect(str(SNAPSHOT_PATH), read_only=True)
-            ensure_duckdb_utc(conn)
+            conn = sqlite3.connect(str(SNAPSHOT_PATH))
+            conn.row_factory = sqlite3.Row
             return conn
         raise
 
 def get_history_stats():
     """Query history.db for dashboard stats."""
-    # Connect in read_only mode to avoid locking issues with the scraper?
-    # DuckDB read_only=True might still require lock if not WAL checkpointed.
-    # We will try standard connect.
     conn = None
     try:
         conn = _get_conn()
@@ -49,22 +45,22 @@ def get_history_stats():
         # 1. Total Volume
         row = conn.execute("SELECT COUNT(*) FROM auctions").fetchone()
         total_auctions = row[0] if row else 0
-        
+
         # 2. Third Party Share
         tp_share = conn.execute("""
-            SELECT 
-                COUNT(*) FILTER (WHERE buyer_type = 'Third Party') as tp_count,
+            SELECT
+                SUM(CASE WHEN buyer_type = 'Third Party' THEN 1 ELSE 0 END) as tp_count,
                 COUNT(*) as total
             FROM auctions
         """).fetchone()
-        
+
         tp_pct = (tp_share[0] / tp_share[1] * 100) if tp_share and tp_share[1] > 0 else 0
-        
+
         # 3. Success vs Failure (based on ROI)
         roi_stats = conn.execute("""
-            SELECT 
-                COUNT(*) FILTER (WHERE gross_profit > 0) as profitable,
-                COUNT(*) FILTER (WHERE gross_profit <= 0) as loss,
+            SELECT
+                SUM(CASE WHEN gross_profit > 0 THEN 1 ELSE 0 END) as profitable,
+                SUM(CASE WHEN gross_profit <= 0 THEN 1 ELSE 0 END) as loss,
                 AVG(gross_profit) as avg_profit,
                 AVG(r.roi) as avg_roi
             FROM resales r
@@ -82,7 +78,7 @@ def get_history_stats():
             ORDER BY buys DESC
             LIMIT 10
         """).fetchall()
-        
+
         return {
             "total_auctions": total_auctions,
             "tp_share_pct": round(tp_pct, 1),
@@ -107,7 +103,7 @@ def get_history_stats():
 async def history_page(request: Request):
     """Render the historical analysis dashboard."""
     from app.web.main import templates
-    
+
     stats = get_history_stats()
     return templates.TemplateResponse("history.html", {
         "request": request,
@@ -123,10 +119,10 @@ async def history_data(limit: int = 100):
         conn = _get_conn()
         if conn is None:
             raise RuntimeError("Unable to open history DB")
-        
+
         query = """
-            SELECT 
-                a.auction_date, a.case_number, a.property_address, a.sold_to, 
+            SELECT
+                a.auction_date, a.case_number, a.property_address, a.sold_to,
                 a.winning_bid, a.final_judgment_amount,
                 r.sale_date, r.sale_price, r.gross_profit, r.roi, r.hold_time_days,
                 a.status,
@@ -135,12 +131,12 @@ async def history_data(limit: int = 100):
             LEFT JOIN resales r ON a.auction_id = r.auction_id
             ORDER BY
                 CASE WHEN r.sale_date IS NULL THEN 1 ELSE 0 END,
-                r.sale_date DESC NULLS LAST,
+                (r.sale_date IS NULL), r.sale_date DESC,
                 a.auction_date DESC
             LIMIT ?
         """
         rows = conn.execute(query, [limit]).fetchall()
-        
+
         data = []
         for r in rows:
             data.append({

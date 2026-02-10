@@ -1,147 +1,153 @@
-import duckdb
+import sqlite3
 from pathlib import Path
-import os
-from src.utils.time import ensure_duckdb_utc
+from src.db.sqlite_paths import resolve_sqlite_db_path_str
 
-DB_PATH = Path("data/history.db")
+DB_PATH = resolve_sqlite_db_path_str()
 
-def ensure_history_schema(db_path: Path = DB_PATH) -> None:
+def ensure_history_schema(db_path: str = DB_PATH) -> None:
     """Create history tables/columns without destructive resets."""
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Ensure parent directory exists
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    conn = duckdb.connect(str(db_path))
-    ensure_duckdb_utc(conn)
+    conn = sqlite3.connect(db_path)
     try:
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS auctions (
-                auction_id VARCHAR PRIMARY KEY, -- (case_number + date)
-                auction_date DATE,
-                case_number VARCHAR,
-                parcel_id VARCHAR,
-                property_address VARCHAR,
+            CREATE TABLE IF NOT EXISTS history_auctions (
+                auction_id TEXT PRIMARY KEY,
+                auction_date TEXT,
+                case_number TEXT,
+                parcel_id TEXT,
+                property_address TEXT,
 
                 -- Financials at Auction
-                winning_bid DOUBLE,             -- Acquisition Cost
-                final_judgment_amount DOUBLE,   -- Debt Load
-                assessed_value DOUBLE,          -- Gov Value at Auction Time
+                winning_bid REAL,
+                final_judgment_amount REAL,
+                assessed_value REAL,
 
                 -- The Buyer
-                sold_to VARCHAR,                -- Raw Name
-                buyer_normalized VARCHAR,       -- Cleaned Name
-                buyer_type VARCHAR,             -- 'Third Party', 'Plaintiff', 'Individual'
+                sold_to TEXT,
+                buyer_normalized TEXT,
+                buyer_type TEXT,
 
                 -- Source Data
-                auction_url VARCHAR,
-                pdf_url VARCHAR,
-                pdf_path VARCHAR,
+                auction_url TEXT,
+                pdf_url TEXT,
+                pdf_path TEXT,
 
-                status VARCHAR,
-                scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT,
+                scraped_at TEXT DEFAULT (datetime('now')),
 
                 -- Pipeline Scans
-                last_resale_scan_at TIMESTAMP,
-                last_judgment_scan_at TIMESTAMP,
+                last_resale_scan_at TEXT,
+                last_judgment_scan_at TEXT,
 
                 -- Judgment Fields
-                pdf_judgment_amount DOUBLE,
-                pdf_principal_amount DOUBLE,
-                pdf_interest_amount DOUBLE,
-                pdf_attorney_fees DOUBLE,
-                pdf_court_costs DOUBLE,
-                judgment_red_flags JSON,
-                judgment_data_json JSON
+                pdf_judgment_amount REAL,
+                pdf_principal_amount REAL,
+                pdf_interest_amount REAL,
+                pdf_attorney_fees REAL,
+                pdf_court_costs REAL,
+                judgment_red_flags TEXT,
+                judgment_data_json TEXT
             );
         """)
 
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS resales (
-                resale_id VARCHAR PRIMARY KEY,
-                parcel_id VARCHAR,
-                auction_id VARCHAR, -- Foreign Key to auctions.auction_id
+            CREATE TABLE IF NOT EXISTS history_resales (
+                resale_id TEXT PRIMARY KEY,
+                parcel_id TEXT,
+                auction_id TEXT,
 
                 -- Sale Details
-                sale_date DATE,
-                sale_price DOUBLE,
-                sale_type VARCHAR,
+                sale_date TEXT,
+                sale_price REAL,
+                sale_type TEXT,
 
                 -- Performance Metrics
                 hold_time_days INTEGER,
-                gross_profit DOUBLE,
-                roi DOUBLE,
+                gross_profit REAL,
+                roi REAL,
 
                 -- Validation
-                source VARCHAR,
+                source TEXT,
 
-                FOREIGN KEY (auction_id) REFERENCES auctions(auction_id)
+                FOREIGN KEY (auction_id) REFERENCES history_auctions(auction_id)
             );
         """)
 
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS property_details (
-                parcel_id VARCHAR PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS history_property_details (
+                parcel_id TEXT PRIMARY KEY,
 
                 -- Comparables
-                est_market_value DOUBLE,
-                est_resale_value DOUBLE,
-                value_delta DOUBLE,
+                est_market_value REAL,
+                est_resale_value REAL,
+                value_delta REAL,
 
                 -- Media
-                primary_image_url VARCHAR,
-                gallery_json JSON,
+                primary_image_url TEXT,
+                gallery_json TEXT,
                 description TEXT,
 
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TEXT DEFAULT (datetime('now'))
             );
         """)
 
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS scraped_dates (
-                auction_date DATE PRIMARY KEY,
-                scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                status VARCHAR
+            CREATE TABLE IF NOT EXISTS history_scraped_dates (
+                auction_date TEXT PRIMARY KEY,
+                scraped_at TEXT DEFAULT (datetime('now')),
+                status TEXT
             );
         """)
 
-        columns = [
-            ("auctions", "pdf_path", "VARCHAR"),
-            ("auctions", "status", "VARCHAR"),
-            ("auctions", "scraped_at", "TIMESTAMP"),
-            ("auctions", "last_resale_scan_at", "TIMESTAMP"),
-            ("auctions", "last_judgment_scan_at", "TIMESTAMP"),
-            ("auctions", "pdf_judgment_amount", "DOUBLE"),
-            ("auctions", "pdf_principal_amount", "DOUBLE"),
-            ("auctions", "pdf_interest_amount", "DOUBLE"),
-            ("auctions", "pdf_attorney_fees", "DOUBLE"),
-            ("auctions", "pdf_court_costs", "DOUBLE"),
-            ("auctions", "judgment_red_flags", "JSON"),
-            ("auctions", "judgment_data_json", "JSON"),
-            ("resales", "roi", "DOUBLE"),
-            ("scraped_dates", "status", "VARCHAR"),
-        ]
+        # Safely add columns that may not exist yet.
+        # SQLite doesn't support ADD COLUMN IF NOT EXISTS,
+        # so we check pragma table_info first.
+        _safe_add_columns(conn, "history_auctions", [
+            ("pdf_path", "TEXT"),
+            ("status", "TEXT"),
+            ("scraped_at", "TEXT"),
+            ("last_resale_scan_at", "TEXT"),
+            ("last_judgment_scan_at", "TEXT"),
+            ("pdf_judgment_amount", "REAL"),
+            ("pdf_principal_amount", "REAL"),
+            ("pdf_interest_amount", "REAL"),
+            ("pdf_attorney_fees", "REAL"),
+            ("pdf_court_costs", "REAL"),
+            ("judgment_red_flags", "TEXT"),
+            ("judgment_data_json", "TEXT"),
+        ])
+        _safe_add_columns(conn, "history_resales", [
+            ("roi", "REAL"),
+        ])
+        _safe_add_columns(conn, "history_scraped_dates", [
+            ("status", "TEXT"),
+        ])
 
-        for table, column, col_type in columns:
-            conn.execute(
-                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {col_type}"
-            )
+        conn.commit()
     finally:
         conn.close()
 
+
+def _safe_add_columns(conn: sqlite3.Connection, table: str, columns: list[tuple[str, str]]) -> None:
+    """Add columns to a table only if they don't already exist."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for col_name, col_type in columns:
+        if col_name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+
+
 def init_history_db():
     """Initialize the historical auctions database schema."""
-    # Ensure fresh start for schema change
-    if DB_PATH.exists():
-        try:
-            os.remove(DB_PATH)
-            print(f"Removed existing database at {DB_PATH}")
-        except Exception as e:
-            print(f"Warning: Could not remove existing DB: {e}")
-
     ensure_history_schema(DB_PATH)
 
-    conn = duckdb.connect(str(DB_PATH))
+    conn = sqlite3.connect(DB_PATH)
     try:
-        tables = conn.execute("SHOW TABLES").fetchall()
-        print(f"Tables created in {DB_PATH}: {tables}")
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'history_%'"
+        ).fetchall()
+        print(f"History tables in {DB_PATH}: {[t[0] for t in tables]}")
     finally:
         conn.close()
 

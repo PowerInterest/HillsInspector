@@ -1,7 +1,7 @@
 import asyncio
 import sys
 import json
-import duckdb
+import sqlite3
 from pathlib import Path
 from loguru import logger
 from datetime import datetime
@@ -11,14 +11,14 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from src.scrapers.ori_api_scraper import ORIApiScraper
 from src.services.final_judgment_processor import FinalJudgmentProcessor
-from src.utils.time import ensure_duckdb_utc
 from src.history.db_init import ensure_history_schema
+from src.db.sqlite_paths import resolve_sqlite_db_path_str
 
-DB_PATH = Path("data/history.db")
+DB_PATH = resolve_sqlite_db_path_str()
 PDF_STORAGE_DIR = Path("data/history_pdfs")
 
 class JudgmentPipeline:
-    def __init__(self, db_path: Path = DB_PATH):
+    def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
         ensure_history_schema(self.db_path)
         self.scraper = ORIApiScraper()
@@ -27,13 +27,13 @@ class JudgmentPipeline:
 
     def get_pending_judgments(self, limit: int = 10):
         """Get 3rd party auctions that haven't had their judgment processed."""
-        conn = duckdb.connect(str(self.db_path), read_only=True)
-        ensure_duckdb_utc(conn)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
         try:
             # We target Third Party sales with a PDF URL
             query = """
                 SELECT auction_id, case_number, pdf_url, auction_date
-                FROM auctions
+                FROM history_auctions
                 WHERE buyer_type = 'Third Party'
                 AND pdf_url IS NOT NULL
                 AND last_judgment_scan_at IS NULL
@@ -51,10 +51,10 @@ class JudgmentPipeline:
 
     def update_judgment_data(self, auction_id: str, data: dict, amounts: dict):
         """Save extracted judgment data to database."""
-        conn = duckdb.connect(str(self.db_path))
+        conn = sqlite3.connect(self.db_path)
         try:
             conn.execute("""
-                UPDATE auctions SET
+                UPDATE history_auctions SET
                     pdf_judgment_amount = ?,
                     pdf_principal_amount = ?,
                     pdf_interest_amount = ?,
@@ -62,7 +62,7 @@ class JudgmentPipeline:
                     pdf_court_costs = ?,
                     judgment_red_flags = ?,
                     judgment_data_json = ?,
-                    last_judgment_scan_at = now()
+                    last_judgment_scan_at = datetime('now')
                 WHERE auction_id = ?
             """, [
                 amounts.get('total_judgment_amount'),
@@ -74,14 +74,19 @@ class JudgmentPipeline:
                 json.dumps(data),
                 auction_id
             ])
+            conn.commit()
         finally:
             conn.close()
 
     def mark_scanned(self, auction_id: str):
         """Mark as scanned even if failed, to avoid infinite retry."""
-        conn = duckdb.connect(str(self.db_path))
+        conn = sqlite3.connect(self.db_path)
         try:
-            conn.execute("UPDATE auctions SET last_judgment_scan_at = now() WHERE auction_id = ?", [auction_id])
+            conn.execute(
+                "UPDATE history_auctions SET last_judgment_scan_at = datetime('now') WHERE auction_id = ?",
+                [auction_id],
+            )
+            conn.commit()
         finally:
             conn.close()
 
@@ -93,7 +98,12 @@ class JudgmentPipeline:
 
         logger.info(f"Processing {len(targets)} judgments...")
 
-        for auction_id, case_num, pdf_url, auction_date in targets:
+        for row in targets:
+            auction_id = row["auction_id"]
+            case_num = row["case_number"]
+            pdf_url = row["pdf_url"]
+            auction_date = row["auction_date"]
+
             instrument = self._extract_instrument(pdf_url)
             if not instrument:
                 logger.warning(f"Could not extract instrument from {pdf_url}")

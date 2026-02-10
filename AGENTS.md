@@ -1,5 +1,27 @@
 # Repository Guidelines
 
+## Pipeline Success Criteria (READ THIS FIRST)
+
+A successful `--update` run is measured by **data completeness**, not by steps completing without errors. The pipeline's purpose is to produce actionable foreclosure analysis. If the output data is missing, the run has failed regardless of whether the code ran without exceptions.
+
+**After any `--update` run, you MUST validate these thresholds:**
+
+| Metric | Target | Validation Query |
+|--------|--------|-----------------|
+| Final Judgment PDFs | 90%+ of foreclosures | Count `data/Foreclosure/*/documents/*.pdf` vs total auctions |
+| Extracted judgment data | 90%+ of PDFs | `SELECT COUNT(*) FROM auctions WHERE extracted_judgment_data IS NOT NULL` |
+| Chain of title | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM chain_of_title` (V2 DuckDB) |
+| Encumbrances identified | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM encumbrances` (V2 DuckDB) |
+| Lien survival analysis | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM encumbrances WHERE survival_status IS NOT NULL` (V2 DuckDB) |
+
+**If any threshold is not met, the run is a FAILURE.** Do not report success. Instead:
+1. Diagnose why the data is missing (query the `status` table, check logs, read the relevant step code)
+2. Fix the root cause
+3. Re-run the affected steps
+4. Keep iterating until thresholds are met
+
+The chain of title and encumbrance data are the core deliverable. Without them, the pipeline produces no investment-grade analysis. Judgment PDFs and enrichment data are intermediate steps toward that goal.
+
 ## Project Structure & Module Organization
 - Entry point: `main.py` (flags: `--update`, `--web`, `--new`); orchestration in `src/orchestrator.py`.
 - Scrapers in `src/scrapers/`; ingest helpers in `src/ingest/`; transforms/enrichment in `src/services/`; shared utilities in `src/utils/`.

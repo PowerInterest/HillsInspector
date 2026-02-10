@@ -12,8 +12,10 @@ import sqlite3
 from pathlib import Path
 from loguru import logger
 
+from src.db.sqlite_paths import resolve_sqlite_db_path_str
+
 DUCKDB_PATH = "data/property_master.db"
-SQLITE_PATH = "data/property_master_sqlite.db"
+SQLITE_PATH = resolve_sqlite_db_path_str()
 
 
 def setup_wal_mode(conn: sqlite3.Connection) -> None:
@@ -624,8 +626,12 @@ def create_indices(conn: sqlite3.Connection) -> None:
 
 def migrate_data_from_duckdb(sqlite_conn: sqlite3.Connection) -> None:
     """Migrate data from existing DuckDB database to SQLite."""
-    import duckdb
-    
+    try:
+        import duckdb
+    except ImportError:
+        logger.info("duckdb not installed, skipping DuckDB migration")
+        return
+
     duckdb_path = Path(DUCKDB_PATH)
     if not duckdb_path.exists():
         logger.info("No existing DuckDB database found, starting fresh")
@@ -711,6 +717,7 @@ def create_sqlite_database() -> str:
     
     # Remove existing SQLite db if present
     sqlite_path = Path(SQLITE_PATH)
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
     if sqlite_path.exists():
         logger.warning(f"Removing existing SQLite database: {SQLITE_PATH}")
         sqlite_path.unlink()

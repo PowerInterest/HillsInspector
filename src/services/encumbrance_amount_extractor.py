@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from loguru import logger
 import fitz  # PyMuPDF
-import duckdb
-from src.utils.time import ensure_duckdb_utc
+import sqlite3
 
 from src.services.vision_service import VisionService
 from src.scrapers.ori_api_scraper import ORIApiScraper
+from src.db.sqlite_paths import resolve_sqlite_db_path_str
 
 
 class EncumbranceAmountExtractor:
@@ -20,8 +20,8 @@ class EncumbranceAmountExtractor:
     Downloads and analyzes encumbrance documents to extract dollar amounts.
     """
 
-    def __init__(self, db_path: str = "data/property_master.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str | None = None):
+        self.db_path = db_path or resolve_sqlite_db_path_str()
         self.vision_service = VisionService()
         self.ori_scraper = ORIApiScraper()
         self.temp_dir = Path("data/temp/encumbrance_images")
@@ -37,8 +37,8 @@ class EncumbranceAmountExtractor:
         Returns:
             List of encumbrance records with document info
         """
-        conn = duckdb.connect(self.db_path, read_only=True)
-        ensure_duckdb_utc(conn)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
 
         query = """
             SELECT DISTINCT
@@ -61,12 +61,8 @@ class EncumbranceAmountExtractor:
         """
 
         results = conn.execute(query, [limit]).fetchall()
-        cols = ['encumbrance_id', 'folio', 'encumbrance_type', 'instrument',
-                'recording_date', 'creditor', 'document_id', 'extracted_data']
 
-        encumbrances = []
-        for row in results:
-            encumbrances.append(dict(zip(cols, row, strict=True)))
+        encumbrances = [dict(row) for row in results]
 
         conn.close()
         return encumbrances
@@ -200,8 +196,7 @@ class EncumbranceAmountExtractor:
             True if updated successfully
         """
         try:
-            conn = duckdb.connect(self.db_path)
-            ensure_duckdb_utc(conn)
+            conn = sqlite3.connect(self.db_path)
 
             conn.execute("""
                 UPDATE encumbrances
@@ -211,6 +206,7 @@ class EncumbranceAmountExtractor:
                 WHERE id = ?
             """, [amount, confidence.upper(), source_phrase or '', encumbrance_id])
 
+            conn.commit()
             conn.close()
             logger.info(f"Updated encumbrance {encumbrance_id} with amount ${amount:,.2f}")
             return True

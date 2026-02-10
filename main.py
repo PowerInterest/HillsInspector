@@ -18,14 +18,18 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from dotenv import load_dotenv
 from loguru import logger
 
 from src.db.migrations.create_sqlite_database import create_sqlite_database
+from src.db.sqlite_paths import resolve_sqlite_db_path
 from src.ingest.bulk_parcel_ingest import download_and_ingest
 from src.utils.db_lock import DatabaseLockError, exclusive_db_lock
 from src.utils.db_snapshot import DatabaseSnapshotError, refresh_web_snapshot
 from src.utils.time import now_utc
 from src.utils.logging_utils import env_log_level, add_optional_sinks
+
+load_dotenv()
 
 
 class InterceptHandler(logging.Handler):
@@ -77,7 +81,7 @@ for logger_name in ["playwright", "httpx", "httpcore", "asyncio", "urllib3"]:
     logging.getLogger(logger_name).handlers = [InterceptHandler()]
     logging.getLogger(logger_name).propagate = False
 
-DB_PATH = Path("data/property_master_sqlite.db")
+DB_PATH = resolve_sqlite_db_path()
 
 # Global shutdown flag for signal handlers
 _shutdown_requested = False
@@ -138,6 +142,7 @@ def _cleanup_wal_files(db_path: Path) -> None:
 def handle_new():
     """Create new SQLite databases, archiving the old ones."""
     timestamp = now_utc().strftime("%Y%m%d_%H%M%S")
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     # Archive existing SQLite database if it exists
     if DB_PATH.exists():

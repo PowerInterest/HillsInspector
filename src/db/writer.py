@@ -7,7 +7,7 @@ from src.db.operations import PropertyDB
 
 class DatabaseWriter:
     """
-    Single-writer queue for DuckDB operations.
+    Single-writer queue for SQLite operations.
     
     This class manages an asyncio Queue where multiple scrapers/workers can push
     data write requests. A single background task pulls batches from the queue

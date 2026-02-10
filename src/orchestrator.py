@@ -1,6 +1,5 @@
 import asyncio
 import json
-import duckdb
 import re
 import contextlib
 from datetime import date, datetime, timedelta
@@ -23,9 +22,7 @@ from src.services.lien_survival_analyzer import LienSurvivalAnalyzer
 from src.services.homeharvest_service import HomeHarvestService
 
 # Step 4v2 - Iterative Discovery
-from config.step4v2 import USE_STEP4_V2, V2_DB_PATH
 from src.services.step4v2 import IterativeDiscovery, ChainBuilder
-from src.db.v2_database import V2Database
 
 # Database & Storage
 from src.db.operations import PropertyDB
@@ -283,48 +280,21 @@ class PipelineOrchestrator:
         self.sunbiz_semaphore = asyncio.Semaphore(5)
         self.fema_semaphore = asyncio.Semaphore(10)
         self.homeharvest_semaphore = asyncio.Semaphore(1)
-        self.v2_db_semaphore = asyncio.Semaphore(1)  # Serialize v2 DB writes
-
-        # V2 database (lazy-loaded)
-        self._v2_db: Optional[V2Database] = None
-
-    def _get_v2_db(self) -> V2Database:
-        """Get or create the V2Database instance."""
-        if self._v2_db is None:
-            self._v2_db = V2Database()
-        return self._v2_db
-
-    def _get_v2_conn(self) -> duckdb.DuckDBPyConnection:
-        """Get or create a connection to the v2 database."""
-        return self._get_v2_db().connect()
-
-    def _close_v2_conn(self) -> None:
-        """Close the v2 database connection if open."""
-        if self._v2_db is not None:
-            self._v2_db.close()
 
     def folio_has_chain_of_title(self, folio: str) -> bool:
-        """Check if folio has chain of title data (uses v2 when enabled)."""
-        if USE_STEP4_V2:
-            return self._get_v2_db().folio_has_chain_of_title(folio)
+        """Check if folio has chain of title data."""
         return self.db.folio_has_chain_of_title(folio)
 
     def get_chain_of_title(self, folio: str) -> Dict[str, Any]:
-        """Get chain of title records (uses v2 when enabled)."""
-        if USE_STEP4_V2:
-            return self._get_v2_db().get_chain_of_title(folio)
+        """Get chain of title records."""
         return self.db.get_chain_of_title(folio)
 
     def get_encumbrances_by_folio(self, folio: str) -> List[dict]:
-        """Get encumbrances for folio (uses v2 when enabled)."""
-        if USE_STEP4_V2:
-            return self._get_v2_db().get_encumbrances_by_folio(folio)
+        """Get encumbrances for folio."""
         return self.db.get_encumbrances_by_folio(folio)
 
     def encumbrance_exists(self, folio: str, book: str, page: str) -> bool:
-        """Check if encumbrance exists by book/page (uses v2 when enabled)."""
-        if USE_STEP4_V2:
-            return self._get_v2_db().encumbrance_exists(folio, book, page)
+        """Check if encumbrance exists by book/page."""
         return self.db.encumbrance_exists(folio, book, page)
 
     def _gather_and_analyze_survival(self, prop: Property) -> Dict[str, Any]:
@@ -590,7 +560,6 @@ class PipelineOrchestrator:
             prop: Property object
             auction: Pre-fetched auction data (to avoid cross-thread DB access)
         """
-        import duckdb
         from src.services.lien_survival.survival_service import SurvivalService
         from src.services.step4v2.chain_builder import ChainBuilder
 
@@ -601,9 +570,9 @@ class PipelineOrchestrator:
             return {"error": "No auction record for case"}
 
         try:
-            conn = duckdb.connect(V2_DB_PATH)
+            conn = self.db.connect()
 
-            # 1. Fetch data from v2 DB
+            # 1. Fetch data from SQLite DB
             builder = ChainBuilder(conn)
             periods = builder.get_chain(folio)
             encumbrances = builder.get_encumbrances(folio)
@@ -660,11 +629,7 @@ class PipelineOrchestrator:
                         [enc['survival_status'], enc.get('survival_reason'), enc['id']]
                     )
 
-            # Don't CHECKPOINT here - causes write conflicts with concurrent operations
-            # DuckDB handles checkpointing automatically
-            conn.close()
-
-            # Return empty updates - v2 is authoritative, v1 encumbrances not updated
+            # Return updates summary - SQLite is authoritative
             return {
                 "updates": [],
                 "summary": {
@@ -714,9 +679,6 @@ class PipelineOrchestrator:
         logger.info(f"Found {len(auctions)} auctions to process")
         
         await self._process_batch(auctions)
-
-        # Close v2 connection if used
-        self._close_v2_conn()
 
         logger.success("Orchestration complete")
 
@@ -1599,6 +1561,15 @@ class PipelineOrchestrator:
                     )
                     return
 
+                # Save all HCPA data to parcels table (creates row if needed)
+                await self.db_writer.enqueue(
+                    "generic_call",
+                    {
+                        "func": self.db.save_hcpa_to_parcel,
+                        "args": [parcel_id, result],
+                    },
+                )
+
                 # Save Sales History via Writer
                 has_sales = bool(result.get("sales_history"))
                 has_legal = bool(result.get("legal_description"))
@@ -1679,11 +1650,7 @@ class PipelineOrchestrator:
         if self.db.is_status_step_complete(case_number, "step_ori_ingested"):
             return
 
-        if USE_STEP4_V2:
-            async with self.v2_db_semaphore:
-                await self._run_ori_ingestion_v2(case_number, prop)
-        else:
-            await self._run_ori_ingestion_v1(case_number, prop)
+        await self._run_ori_ingestion_v2(case_number, prop)
 
     async def _run_ori_ingestion_v1(self, case_number: str, prop: Property):
         """Run ORI ingestion using v1 (IngestionService)."""
@@ -1705,7 +1672,7 @@ class PipelineOrchestrator:
         """
         Run ORI ingestion using Step 4v2 (IterativeDiscovery).
 
-        This uses the v2 database and iterative discovery algorithm.
+        Uses the SQLite database and iterative discovery algorithm.
         """
 
         folio = prop.parcel_id
@@ -1718,8 +1685,7 @@ class PipelineOrchestrator:
             return
 
         try:
-            # Use shared v2 database connection (semaphore ensures exclusive access)
-            conn = self._get_v2_conn()
+            conn = self.db.connect()
 
             # Get auction data
             auction = self.db.get_auction_by_case(case_number)
@@ -1727,7 +1693,7 @@ class PipelineOrchestrator:
                 logger.error(f"No auction record for {case_number}")
                 return
 
-            # Get HCPA data (from parcels table)
+            # Get HCPA data
             hcpa_data = None
             parcel_row = conn.execute(
                 "SELECT * FROM parcels WHERE folio = ? LIMIT 1", [folio]
@@ -1737,11 +1703,14 @@ class PipelineOrchestrator:
 
             # Get bulk parcel data
             bulk_parcel = None
-            bulk_row = conn.execute(
-                "SELECT * FROM bulk_parcels WHERE folio = ? OR strap = ? LIMIT 1", [folio, folio]
-            ).fetchone()
-            if bulk_row:
-                bulk_parcel = dict(bulk_row)
+            try:
+                bulk_row = conn.execute(
+                    "SELECT * FROM bulk_parcels WHERE folio = ? OR strap = ? LIMIT 1", [folio, folio]
+                ).fetchone()
+                if bulk_row:
+                    bulk_parcel = dict(bulk_row)
+            except Exception:
+                pass  # bulk_parcels may not exist
 
             # Get final judgment data
             final_judgment = auction.get("extracted_judgment_data") or {}
@@ -1765,8 +1734,6 @@ class PipelineOrchestrator:
             # Build chain of title from discovered documents
             chain_builder = ChainBuilder(conn)
             chain_result = chain_builder.build(folio)
-
-            # Don't close - using shared connection managed by _get_v2_conn()
 
             logger.info(
                 f"Step 4v2 complete for {folio}: {result.documents_found} docs, "
@@ -1799,21 +1766,11 @@ class PipelineOrchestrator:
             return
 
         # Validate address - can't search permits without a real address
-        if not address or address.lower() in ("unknown", "n/a", "none", ""):
+        if not address or address.strip().lower() in ("unknown", "n/a", "none", ""):
             logger.warning(f"Skipping permit check for {case_number}: invalid address '{address}'")
             await self.db_writer.enqueue(
                 "generic_call",
                 {"func": self.db.mark_status_step_complete, "args": [case_number, "step_permits_checked", 7]},
-            )
-            return
-
-        if not address or address.strip().upper() == "UNKNOWN":
-            await self.db_writer.enqueue(
-                "generic_call",
-                {
-                    "func": self.db.mark_status_failed,
-                    "args": [case_number, "Missing address for permit search", 7],
-                },
             )
             return
 
@@ -1870,18 +1827,11 @@ class PipelineOrchestrator:
             # Logic is heavy and synchronous (DB reads, potential ORI lookup). Run in executor.
             loop = asyncio.get_running_loop()
 
-            if USE_STEP4_V2:
-                # Pre-fetch auction data in main thread to avoid cross-thread DB access
-                auction = self.db.get_auction_by_case(case_number)
-                # Serialize v2 DB access to prevent write conflicts
-                async with self.v2_db_semaphore:
-                    # Close shared connection before executor thread opens its own
-                    self._close_v2_conn()
-                    result = await loop.run_in_executor(
-                        None, self._gather_and_analyze_survival_v2, prop, auction
-                    )
-            else:
-                result = await loop.run_in_executor(None, self._gather_and_analyze_survival, prop)
+            # Pre-fetch auction data in main thread to avoid cross-thread DB access
+            auction = self.db.get_auction_by_case(case_number)
+            result = await loop.run_in_executor(
+                None, self._gather_and_analyze_survival_v2, prop, auction
+            )
 
             if not result:
                 logger.warning(
@@ -2087,8 +2037,114 @@ async def run_full_update(
         logger.info("STEP 2: DOWNLOADING & EXTRACTING FINAL JUDGMENT DATA")
         logger.info("=" * 60)
 
-        # Invalid parcel_id values that should be treated as missing
-        invalid_parcel_ids = {"property appraiser", "n/a", "none", ""}
+        # Mark step_pdf_downloaded for any case that has a PDF on disk but wasn't marked
+        try:
+            unmarked = db.execute_query(
+                """
+                SELECT s.case_number, COALESCE(a.parcel_id, a.folio) AS parcel_id
+                FROM status s
+                JOIN auctions a ON a.case_number = s.case_number
+                WHERE s.step_pdf_downloaded IS NULL
+                  AND s.auction_date >= ? AND s.auction_date <= ?
+                """,
+                (start_date, end_date),
+            )
+            marked = 0
+            for row in unmarked:
+                case = row["case_number"]
+                pid = row["parcel_id"] or case
+                pdf_dir = Path(f"data/Foreclosure/{case}/documents")
+                if pdf_dir.exists() and any(pdf_dir.glob("*.pdf")):
+                    db.mark_status_step_complete(case, "step_pdf_downloaded", 1)
+                    marked += 1
+            if marked:
+                logger.info(f"Marked {marked} cases with existing PDFs as step_pdf_downloaded")
+                db.checkpoint()
+        except Exception as exc:
+            logger.warning(f"PDF status scan failed (non-fatal): {exc}")
+
+        # Backfill: download Final Judgment PDFs for cases missing instrument numbers
+        # Uses ORI case-number search API as fallback
+        try:
+            missing_pdf_cases = db.execute_query(
+                """
+                SELECT s.case_number
+                FROM status s
+                WHERE s.step_pdf_downloaded IS NULL
+                  AND s.auction_date >= ? AND s.auction_date <= ?
+                """,
+                (start_date, end_date),
+            )
+            if missing_pdf_cases:
+                logger.info(
+                    f"Attempting ORI case search for {len(missing_pdf_cases)} "
+                    f"cases missing judgment PDFs..."
+                )
+                from src.scrapers.auction_scraper import AuctionScraper
+                from playwright.async_api import async_playwright as ap
+                import asyncio as _aio
+
+                async def _backfill_pdfs(cases):
+                    downloaded = 0
+                    async with ap() as pw:
+                        _browser = await pw.chromium.launch(headless=True)
+                        _ctx = await _browser.new_context(
+                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/119.0.0.0 Safari/537.36",
+                            accept_downloads=True,
+                        )
+                        _page = await _ctx.new_page()
+                        from playwright_stealth import Stealth
+                        await Stealth().apply_stealth_async(_page)
+
+                        scraper = AuctionScraper()
+                        for row in cases:
+                            cn = row["case_number"]
+                            try:
+                                res = await scraper._search_judgment_by_case_number(
+                                    _page, cn, ""
+                                )
+                                if res.get("pdf_path"):
+                                    db.mark_status_step_complete(
+                                        cn, "step_pdf_downloaded", 1
+                                    )
+                                    downloaded += 1
+                                    logger.info(
+                                        f"Backfill: downloaded judgment for {cn}"
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"Backfill: no judgment found for {cn}"
+                                    )
+                            except Exception as be:
+                                logger.warning(
+                                    f"Backfill: error for {cn}: {be}"
+                                )
+                        await _browser.close()
+                    return downloaded
+
+                loop = _aio.get_event_loop()
+                if loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        backfilled = pool.submit(
+                            lambda: _aio.run(_backfill_pdfs(missing_pdf_cases))
+                        ).result()
+                else:
+                    backfilled = loop.run_until_complete(
+                        _backfill_pdfs(missing_pdf_cases)
+                    )
+
+                if backfilled:
+                    logger.info(
+                        f"Backfilled {backfilled}/{len(missing_pdf_cases)} "
+                        f"judgment PDFs via ORI case search"
+                    )
+                    db.checkpoint()
+        except Exception as exc:
+            logger.warning(f"PDF backfill via ORI case search failed (non-fatal): {exc}")
+
         import time
         import polars as pl
 
@@ -2099,8 +2155,7 @@ async def run_full_update(
                 """
                 SELECT a.* FROM auctions a
                 LEFT JOIN status s ON s.case_number = a.case_number
-                WHERE a.parcel_id IS NOT NULL
-                  AND a.extracted_judgment_data IS NULL
+                WHERE a.extracted_judgment_data IS NULL
                   AND COALESCE(s.pipeline_status, 'pending') != 'skipped'
                   AND s.step_judgment_extracted IS NULL
                   AND s.step_pdf_downloaded IS NOT NULL
@@ -2129,9 +2184,12 @@ async def run_full_update(
             def _flush_checkpoint() -> None:
                 if not judgment_rows:
                     return
-                df = pl.DataFrame(judgment_rows)
-                _atomic_write_parquet(df, checkpoint_path)
-                logger.info(f"Wrote judgment checkpoint: {checkpoint_path}")
+                try:
+                    df = pl.DataFrame(judgment_rows, infer_schema_length=None)
+                    _atomic_write_parquet(df, checkpoint_path)
+                    logger.info(f"Wrote judgment checkpoint: {checkpoint_path}")
+                except Exception as exc:
+                    logger.warning(f"Checkpoint parquet write failed (DB already updated): {exc}")
 
             if checkpoint_path.exists():
                 try:
@@ -2151,8 +2209,6 @@ async def run_full_update(
                 case_number = auction["case_number"]
                 parcel_id = (auction.get("parcel_id") or "").strip()
 
-                if parcel_id.lower() in invalid_parcel_ids:
-                    continue
                 if case_number in processed_case_numbers:
                     continue
 
@@ -2174,6 +2230,7 @@ async def run_full_update(
                         pdf_paths = [legacy_path]
 
                 if not pdf_paths:
+                    logger.debug(f"No final judgment PDF on disk for {case_number}")
                     db.mark_status_failed(
                         case_number,
                         "Final judgment PDF not found on disk",
@@ -2187,17 +2244,41 @@ async def run_full_update(
                     result = judgment_processor.process_pdf(str(pdf_path), case_number)
                     if result:
                         amounts = judgment_processor.extract_key_amounts(result)
-                        payload = {
-                            **result,
-                            **amounts,
+                        # Build DB payload from known scalar fields only
+                        # (avoid spreading result dict which has nested lists/dicts
+                        # and a case_number in VLM format that would overwrite ours)
+                        db_payload = {
+                            "plaintiff": result.get("plaintiff"),
+                            "defendant": "; ".join(
+                                d.get("name", "") if isinstance(d, dict) else str(d)
+                                for d in (result.get("defendants") or [])
+                            ) or result.get("defendant"),
+                            "foreclosure_type": result.get("foreclosure_type"),
+                            "judgment_date": result.get("judgment_date"),
+                            "lis_pendens_date": (result.get("lis_pendens") or {}).get("recording_date"),
+                            "foreclosure_sale_date": result.get("foreclosure_sale_date"),
+                            "total_judgment_amount": result.get("total_judgment_amount"),
+                            "principal_amount": result.get("principal_amount"),
+                            "interest_amount": result.get("interest_amount"),
+                            "attorney_fees": result.get("attorney_fees"),
+                            "court_costs": result.get("court_costs"),
+                            "original_mortgage_amount": amounts.get("original_mortgage_amount"),
+                            "original_mortgage_date": amounts.get("original_mortgage_date"),
+                            "monthly_payment": result.get("monthly_payment"),
+                            "default_date": result.get("default_date"),
                             "extracted_judgment_data": json.dumps(result),
                             "raw_judgment_text": result.get("raw_text", ""),
                         }
+                        # Write to DB immediately (don't defer to fragile batch)
+                        db.update_judgment_data(case_number, db_payload)
+                        db.mark_step_complete(case_number, "needs_judgment_extraction")
+                        db.mark_status_step_complete(case_number, "step_judgment_extracted", 2)
+
                         judgment_rows.append(
                             {
                                 "case_number": case_number,
                                 "parcel_id": parcel_id,
-                                **payload,
+                                **db_payload,
                             }
                         )
                         processed_case_numbers.add(case_number)
@@ -2227,38 +2308,15 @@ async def run_full_update(
                         raise
                     last_flush = time.monotonic()
 
+            # DB writes already happened per-row above.
+            # Write final parquet as a backup/export (best-effort).
             if judgment_rows:
-                final_df = pl.DataFrame(judgment_rows)
                 try:
+                    final_df = pl.DataFrame(judgment_rows, infer_schema_length=None)
                     _atomic_write_parquet(final_df, final_path)
+                    logger.info(f"Wrote final judgment parquet: {final_path}")
                 except Exception as exc:
-                    logger.error(f"Final judgment parquet write failed: {exc}")
-                    raise
-                logger.info(f"Wrote final judgment parquet: {final_path}")
-                for row in final_df.iter_rows(named=True):
-                    case_number = row["case_number"]
-                    payload = {
-                        "plaintiff": row.get("plaintiff"),
-                        "defendant": row.get("defendant"),
-                        "foreclosure_type": row.get("foreclosure_type"),
-                        "judgment_date": row.get("judgment_date"),
-                        "lis_pendens_date": row.get("lis_pendens_date"),
-                        "foreclosure_sale_date": row.get("foreclosure_sale_date"),
-                        "total_judgment_amount": row.get("total_judgment_amount"),
-                        "principal_amount": row.get("principal_amount"),
-                        "interest_amount": row.get("interest_amount"),
-                        "attorney_fees": row.get("attorney_fees"),
-                        "court_costs": row.get("court_costs"),
-                        "original_mortgage_amount": row.get("original_mortgage_amount"),
-                        "original_mortgage_date": row.get("original_mortgage_date"),
-                        "monthly_payment": row.get("monthly_payment"),
-                        "default_date": row.get("default_date"),
-                        "extracted_judgment_data": row.get("extracted_judgment_data"),
-                        "raw_judgment_text": row.get("raw_judgment_text"),
-                    }
-                    db.update_judgment_data(case_number, payload)
-                    db.mark_step_complete(case_number, "needs_judgment_extraction")
-                    db.mark_status_step_complete(case_number, "step_judgment_extracted", 2)
+                    logger.warning(f"Final judgment parquet write failed (DB already updated): {exc}")
             logger.success(f"Extracted data from {extracted_count} Final Judgments")
         except Exception as exc:
             logger.error(f"Judgment extraction failed: {exc}")
@@ -2275,8 +2333,23 @@ async def run_full_update(
         logger.info("=" * 60)
 
         try:
-            # Pass orchestrator's connection to avoid write-write conflicts
-            enrichment_stats = enrich_auctions_from_bulk(conn=db.conn)
+            # Retry bulk enrichment with backoff (often fails transiently on locked DB)
+            import time as _time
+            for _attempt in range(3):
+                try:
+                    enrichment_stats = enrich_auctions_from_bulk(conn=db.conn)
+                    break
+                except Exception as _e:
+                    if "locked" in str(_e).lower() and _attempt < 2:
+                        wait = 2 ** _attempt
+                        logger.warning(
+                            f"Bulk enrichment locked "
+                            f"(attempt {_attempt + 1}/3), "
+                            f"retrying in {wait}s..."
+                        )
+                        _time.sleep(2 ** _attempt)
+                        continue
+                    raise
             logger.success(f"Bulk enrichment: {enrichment_stats}")
             # Mark all auctions in date range as bulk enriched
             auctions_in_range = db.get_auctions_by_date_range(start_date, end_date)

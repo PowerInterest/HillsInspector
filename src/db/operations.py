@@ -3,6 +3,7 @@ Database operations for property data.
 Provides high-level functions for inserting and querying data.
 Uses SQLite with WAL mode for concurrent write support.
 """
+
 import sqlite3
 import threading
 from contextlib import suppress
@@ -11,13 +12,14 @@ from typing import List, Optional, Dict, Any
 import json
 from loguru import logger
 
-from config.step4v2 import USE_STEP4_V2, V2_DB_PATH
 from src.models.property import Property, Lien
 from src.utils.time import now_utc_naive, parse_date, today_local
+from src.db.sqlite_paths import resolve_sqlite_db_path_str
+
 
 class PropertyDB:
     def __init__(self, db_path: Optional[str] = None):
-        self.db_path = db_path or "data/property_master_sqlite.db"
+        self.db_path = db_path or resolve_sqlite_db_path_str()
         self._local = threading.local()
         self._local.conn = None
         self._schema_migrations_applied = False
@@ -35,7 +37,7 @@ class PropertyDB:
     @conn.setter
     def conn(self, value):
         self._local.conn = value
-    
+
     def connect(self):
         """Open database connection with SQLite WAL mode."""
         conn = self._get_conn()
@@ -47,20 +49,15 @@ class PropertyDB:
             conn.execute("PRAGMA busy_timeout=30000")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA cache_size=-64000")
-            
+
             def _sqlite_normalize_date(date_val):
                 if not date_val:
                     return None
                 date_str = str(date_val).strip()
-                formats = [
-                    '%Y-%m-%d',
-                    '%m/%d/%Y', 
-                    '%Y-%m-%d %H:%M:%S',
-                    '%m/%d/%Y %H:%M:%S'
-                ]
+                formats = ["%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%d %H:%M:%S", "%m/%d/%Y %H:%M:%S"]
                 for fmt in formats:
                     try:
-                        return datetime.strptime(date_str, fmt).strftime('%Y-%m-%d')
+                        return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
                     except ValueError:
                         continue
                 return None
@@ -80,8 +77,10 @@ class PropertyDB:
         Call this after completing each major pipeline step to ensure data is
         persisted to disk.
         """
-        # Filesystem is now the checkpoint (Parquet/PDFs).
-        # Disabling explicit WAL checkpointing to avoid locking.
+        conn = self._get_conn()
+        if conn is not None:
+            with suppress(Exception):
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
 
     def _safe_exec(self, conn, sql, params=()):
         """Execute SQL ignoring errors (for schema updates)."""
@@ -149,13 +148,16 @@ class PropertyDB:
         if table_exists("parcels"):
             add_column_if_not_exists("parcels", "tax_status", "TEXT")
             add_column_if_not_exists("parcels", "tax_warrant", "INTEGER")
+            add_column_if_not_exists("parcels", "legal_description", "TEXT")
+            add_column_if_not_exists("parcels", "judgment_legal_description", "TEXT")
+            add_column_if_not_exists("parcels", "last_analyzed_case_number", "TEXT")
 
         if table_exists("encumbrances"):
             add_column_if_not_exists("encumbrances", "is_joined", "INTEGER", "0")
             add_column_if_not_exists("encumbrances", "is_inferred", "INTEGER", "0")
 
         if not table_exists("market_data"):
-            conn.execute("DROP TABLE IF EXISTS market_data") 
+            conn.execute("DROP TABLE IF EXISTS market_data")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS market_data (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,6 +182,15 @@ class PropertyDB:
             add_column_if_not_exists("chain_of_title", "confidence_score", "REAL")
             add_column_if_not_exists("chain_of_title", "mrta_status", "TEXT")
             add_column_if_not_exists("chain_of_title", "years_covered", "REAL")
+
+        if table_exists("encumbrances"):
+            add_column_if_not_exists("encumbrances", "survival_reason", "TEXT")
+
+        if table_exists("auctions"):
+            add_column_if_not_exists("auctions", "hcpa_scrape_failed", "INTEGER", "0")
+            add_column_if_not_exists("auctions", "hcpa_scrape_error", "TEXT")
+            add_column_if_not_exists("auctions", "ori_party_fallback_used", "INTEGER", "0")
+            add_column_if_not_exists("auctions", "ori_party_fallback_note", "TEXT")
 
         self._schema_migrations_applied = True
         # Note: We intentionally do NOT checkpoint here. Checkpointing requires
@@ -218,28 +229,28 @@ class PropertyDB:
         except Exception:
             pass
         return None
-    
+
     def close(self):
         """Close database connection."""
         conn = self._get_conn()
         if conn:
             conn.close()
             self._local.conn = None
-    
+
     def __enter__(self):
         self.connect()
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
-    
+
     def initialize_pipeline_flags(self):
         """
         Initialize boolean flags on the auctions table to track pipeline progress.
         Backfills state based on existing data.
         """
         conn = self.connect()
-        
+
         # 1. Add columns if they don't exist
         flags = [
             "needs_judgment_extraction",
@@ -252,14 +263,14 @@ class PropertyDB:
             "needs_market_data",
             "needs_tax_check",
             "needs_homeharvest_enrichment",
-            "has_valid_parcel_id"
+            "has_valid_parcel_id",
         ]
-        
+
         for flag in flags:
             self._safe_exec(conn, f"ALTER TABLE auctions ADD COLUMN {flag} INTEGER DEFAULT 1")
-            
+
         # 2. Backfill state based on existing data
-        
+
         # Step 2: Judgment Extraction
         # If we have extracted data, we don't need to run it again
         conn.execute("""
@@ -267,7 +278,7 @@ class PropertyDB:
             SET needs_judgment_extraction = FALSE 
             WHERE extracted_judgment_data IS NOT NULL
         """)
-        
+
         # Step 4/12: HCPA Enrichment
         # If we have an owner name in parcels table, we likely ran enrichment
         # Note: We join on parcel_id/folio
@@ -278,31 +289,26 @@ class PropertyDB:
                 SELECT folio FROM parcels WHERE owner_name IS NOT NULL
             )
         """)
-        
+
         # Step 5: ORI Ingestion
-        # Only mark complete if chain_of_title exists in V2 database
-        if USE_STEP4_V2:
-            try:
-                v2_conn = duckdb.connect(V2_DB_PATH, read_only=True)
-                folios_with_chain = v2_conn.execute(
-                    "SELECT DISTINCT folio FROM chain_of_title"
-                ).fetchall()
-                v2_conn.close()
-                if folios_with_chain:
-                    folio_list = [f[0] for f in folios_with_chain]
-                    placeholders = ",".join(["?"] * len(folio_list))
-                    
-                    conn.execute(
-                        f"""
-                        UPDATE auctions
-                        SET needs_ori_ingestion = FALSE
-                        WHERE parcel_id IN ({placeholders})
-                        """,
-                        folio_list,
-                    )
-            except Exception as e:
-                logger.debug(f"V2 chain check failed in initialize_pipeline_flags: {e}")
-        
+        # Mark complete if chain_of_title exists in SQLite
+        try:
+            folios_with_chain = conn.execute("SELECT DISTINCT folio FROM chain_of_title").fetchall()
+            if folios_with_chain:
+                folio_list = [f[0] for f in folios_with_chain]
+                placeholders = ",".join(["?"] * len(folio_list))
+
+                conn.execute(
+                    f"""
+                    UPDATE auctions
+                    SET needs_ori_ingestion = FALSE
+                    WHERE parcel_id IN ({placeholders})
+                    """,
+                    folio_list,
+                )
+        except Exception as e:
+            logger.debug(f"Chain check failed in initialize_pipeline_flags: {e}")
+
         # Step 6: Lien Survival
         # If status is ANALYZED or FLAGGED, we ran analysis
         conn.execute("""
@@ -310,7 +316,7 @@ class PropertyDB:
             SET needs_lien_survival = FALSE
             WHERE status IN ('ANALYZED', 'FLAGGED')
         """)
-        
+
         # Step 8: Permits
         # If we have permits for this folio
         conn.execute("""
@@ -320,12 +326,12 @@ class PropertyDB:
                 SELECT DISTINCT folio FROM permits
             )
         """)
-        
+
         # Step 9: Flood Check
         # Flood data would be stored separately - for now, skip this backfill
         # as the flood_zone column doesn't exist yet in parcels
         # TODO: Create flood_data table or add column when implementing FEMA lookup
-        
+
         # Step 10/11: Market Data
         # If we have market data rows
         conn.execute("""
@@ -345,7 +351,7 @@ class PropertyDB:
                 WHERE created_at >= date('now', '-\1 days')
             )
         """)
-        
+
         # Step 13: Tax Check
         # If we have tax liens
         conn.execute("""
@@ -355,13 +361,13 @@ class PropertyDB:
                 SELECT DISTINCT folio FROM liens WHERE document_type LIKE 'TAX%'
             )
         """)
-        
+
         print("Pipeline flags initialized and backfilled.")
 
     def mark_step_complete(self, case_number: str, step_flag: str):
         """
         Mark a specific pipeline step as complete for an auction.
-        
+
         Args:
             case_number: Case number of the auction
             step_flag: Name of the flag column (e.g., 'needs_permit_check')
@@ -378,16 +384,19 @@ class PropertyDB:
             "needs_flood_check",
             "needs_market_data",
             "needs_tax_check",
-            "needs_homeharvest_enrichment" # New flag
+            "needs_homeharvest_enrichment",  # New flag
         }
         if step_flag not in valid_flags:
             raise ValueError(f"Invalid flag name: {step_flag}")
-            
-        conn.execute(f"""
+
+        conn.execute(
+            f"""
             UPDATE auctions
             SET {step_flag} = FALSE, updated_at = CURRENT_TIMESTAMP
             WHERE case_number = ?
-        """, [case_number])
+        """,
+            [case_number],
+        )
 
     def mark_step_complete_by_folio(self, folio: str, step_flag: str):
         """
@@ -412,22 +421,23 @@ class PropertyDB:
             "needs_flood_check",
             "needs_market_data",
             "needs_tax_check",
-            "needs_homeharvest_enrichment"
+            "needs_homeharvest_enrichment",
         }
         if step_flag not in valid_flags:
             raise ValueError(f"Invalid flag name: {step_flag}")
 
-        conn.execute(f"""
+        conn.execute(
+            f"""
             UPDATE auctions
             SET {step_flag} = FALSE, updated_at = CURRENT_TIMESTAMP
             WHERE parcel_id = ?
-        """, [folio])
+        """,
+            [folio],
+        )
 
     def mark_hcpa_scrape_failed(self, case_number: str, error: str) -> None:
         """Record an HCPA scrape failure on the auction row."""
         conn = self.connect()
-        self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN hcpa_scrape_failed INTEGER DEFAULT 0")
-        self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN hcpa_scrape_error TEXT")
         conn.execute(
             """
             UPDATE auctions
@@ -442,8 +452,6 @@ class PropertyDB:
     def mark_ori_party_fallback_used(self, case_number: str, note: str = "") -> None:
         """Record that ORI party-search fallback was used (for review)."""
         conn = self.connect()
-        self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN ori_party_fallback_used INTEGER DEFAULT 0")
-        self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN ori_party_fallback_note TEXT")
         conn.execute(
             """
             UPDATE auctions
@@ -471,14 +479,12 @@ class PropertyDB:
         self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN has_valid_parcel_id INTEGER DEFAULT 1")
 
         # Check if auction already exists
-        existing = conn.execute(
-            "SELECT id FROM auctions WHERE case_number = ?",
-            [prop.case_number]
-        ).fetchone()
+        existing = conn.execute("SELECT id FROM auctions WHERE case_number = ?", [prop.case_number]).fetchone()
 
         if existing:
             # Update existing record
-            conn.execute("""
+            conn.execute(
+                """
                 UPDATE auctions SET
                     folio = ?,
                     parcel_id = ?,
@@ -494,7 +500,36 @@ class PropertyDB:
                     has_valid_parcel_id = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE case_number = ?
-            """, [
+            """,
+                [
+                    prop.parcel_id,
+                    prop.parcel_id,
+                    prop.certificate_number,
+                    prop.auction_type,
+                    prop.auction_date,
+                    prop.address,
+                    prop.assessed_value,
+                    prop.final_judgment_amount,
+                    prop.opening_bid,
+                    getattr(prop, "plaintiff", None),
+                    getattr(prop, "defendant", None),
+                    getattr(prop, "has_valid_parcel_id", True),
+                    prop.case_number,
+                ],
+            )
+            return existing[0]
+        conn.execute(
+            """
+                INSERT INTO auctions (
+                    case_number, folio, parcel_id, certificate_number,
+                    auction_type, auction_date, property_address,
+                    assessed_value, final_judgment_amount, opening_bid,
+                    plaintiff, defendant, has_valid_parcel_id,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            [
+                prop.case_number,
                 prop.parcel_id,
                 prop.parcel_id,
                 prop.certificate_number,
@@ -504,54 +539,30 @@ class PropertyDB:
                 prop.assessed_value,
                 prop.final_judgment_amount,
                 prop.opening_bid,
-                getattr(prop, 'plaintiff', None),
-                getattr(prop, 'defendant', None),
-                getattr(prop, 'has_valid_parcel_id', True),
-                prop.case_number
-            ])
-            return existing[0]
-        conn.execute("""
-                INSERT INTO auctions (
-                    case_number, folio, parcel_id, certificate_number,
-                    auction_type, auction_date, property_address,
-                    assessed_value, final_judgment_amount, opening_bid,
-                    plaintiff, defendant, has_valid_parcel_id,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, [
-            prop.case_number,
-            prop.parcel_id,
-            prop.parcel_id,
-            prop.certificate_number,
-            prop.auction_type,
-            prop.auction_date,
-            prop.address,
-            prop.assessed_value,
-            prop.final_judgment_amount,
-            prop.opening_bid,
-            getattr(prop, 'plaintiff', None),
-            getattr(prop, 'defendant', None),
-            getattr(prop, 'has_valid_parcel_id', True),
-        ])
+                getattr(prop, "plaintiff", None),
+                getattr(prop, "defendant", None),
+                getattr(prop, "has_valid_parcel_id", True),
+            ],
+        )
 
         # Fetch the new ID
-        result = conn.execute(
-            "SELECT id FROM auctions WHERE case_number = ?",
-            [prop.case_number]
-        ).fetchone()
+        result = conn.execute("SELECT id FROM auctions WHERE case_number = ?", [prop.case_number]).fetchone()
 
         conn.commit()
         return result[0] if result else 0
-    
+
     def update_parcel_tax_status(self, folio: str, tax_status: str, tax_warrant: bool):
         """Update tax status and warrant info for a parcel."""
         conn = self.connect()
         conn.execute("INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio])
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE parcels 
             SET tax_status = ?, tax_warrant = ?
             WHERE parcel_id = ? OR folio = ?
-        """, [tax_status, tax_warrant, folio, folio])
+        """,
+            [tax_status, tax_warrant, folio, folio],
+        )
 
     def upsert_parcel(self, prop: Property) -> str:
         """
@@ -573,33 +584,37 @@ class PropertyDB:
 
         # Use ON CONFLICT for atomic upsert
         # 1. Try to insert (ignore if exists)
-        conn.execute("""
+        conn.execute(
+            """
             INSERT OR IGNORE INTO parcels (
                 folio, parcel_id, owner_name, property_address,
                 city, zip_code, year_built, beds, baths,
                 heated_area, assessed_value, image_url, market_analysis_content,
                 legal_description, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, [
-            folio,
-            prop.parcel_id,
-            prop.owner_name,
-            prop.address,
-            prop.city,
-            prop.zip_code,
-            prop.year_built,
-            prop.beds,
-            prop.baths,
-            prop.heated_area,
-            prop.assessed_value,
-            prop.image_url,
-            prop.market_analysis_content,
-            prop.legal_description,
-            now_utc_naive(),
-        ])
+        """,
+            [
+                folio,
+                prop.parcel_id,
+                prop.owner_name,
+                prop.address,
+                prop.city,
+                prop.zip_code,
+                prop.year_built,
+                prop.beds,
+                prop.baths,
+                prop.heated_area,
+                prop.assessed_value,
+                prop.image_url,
+                prop.market_analysis_content,
+                prop.legal_description,
+                now_utc_naive(),
+            ],
+        )
 
         # 2. Update (in case it already existed and we have new data)
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE parcels SET
                 owner_name = COALESCE(?, owner_name),
                 property_address = COALESCE(?, property_address),
@@ -615,22 +630,24 @@ class PropertyDB:
                 legal_description = COALESCE(?, legal_description),
                 updated_at = ?
             WHERE folio = ?
-        """, [
-            prop.owner_name,
-            prop.address,
-            prop.city,
-            prop.zip_code,
-            prop.year_built,
-            prop.beds,
-            prop.baths,
-            prop.heated_area,
-            prop.assessed_value,
-            prop.image_url,
-            prop.market_analysis_content,
-            prop.legal_description,
-            now_utc_naive(),
-            folio
-        ])
+        """,
+            [
+                prop.owner_name,
+                prop.address,
+                prop.city,
+                prop.zip_code,
+                prop.year_built,
+                prop.beds,
+                prop.baths,
+                prop.heated_area,
+                prop.assessed_value,
+                prop.image_url,
+                prop.market_analysis_content,
+                prop.legal_description,
+                now_utc_naive(),
+                folio,
+            ],
+        )
 
         # Save sales history if available
         if prop.sales_history:
@@ -658,28 +675,32 @@ class PropertyDB:
         for sale in sales:
             try:
                 # Parse sale price - handle both 'price' and 'sale_price' keys
-                price_str = str(sale.get('price', sale.get('sale_price', ''))).replace('$', '').replace(',', '')
+                price_str = str(sale.get("price", sale.get("sale_price", ""))).replace("$", "").replace(",", "")
                 try:
                     sale_price = float(price_str) if price_str else None
                 except (ValueError, TypeError):
                     sale_price = None
 
                 # Get instrument number
-                instrument = sale.get('instrument', '')
+                instrument = sale.get("instrument", "")
 
                 # Skip if no instrument number (can't dedupe without it)
                 if not instrument:
                     continue
 
                 # Check if record already exists by folio + instrument
-                existing = conn.execute("""
+                existing = conn.execute(
+                    """
                     SELECT id FROM sales_history
                     WHERE folio = ? AND instrument = ?
-                """, [folio, instrument]).fetchone()
+                """,
+                    [folio, instrument],
+                ).fetchone()
 
                 if existing:
                     # Update existing record
-                    conn.execute("""
+                    conn.execute(
+                        """
                         UPDATE sales_history SET
                             sale_date = ?,
                             doc_type = ?,
@@ -687,93 +708,113 @@ class PropertyDB:
                             grantor = ?,
                             grantee = ?
                         WHERE folio = ? AND instrument = ?
-                    """, [
-                        sale.get('date'),
-                        sale.get('deed_type', sale.get('doc_type')),
-                        sale_price,
-                        sale.get('grantor'),
-                        sale.get('grantee'),
-                        folio,
-                        instrument
-                    ])
+                    """,
+                        [
+                            sale.get("date"),
+                            sale.get("deed_type", sale.get("doc_type")),
+                            sale_price,
+                            sale.get("grantor"),
+                            sale.get("grantee"),
+                            folio,
+                            instrument,
+                        ],
+                    )
                 else:
                     # Insert new record
-                    conn.execute("""
+                    conn.execute(
+                        """
                         INSERT INTO sales_history (
                             folio, instrument, sale_date, doc_type,
                             sale_price, grantor, grantee
                         ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, [
-                        folio,
-                        instrument,
-                        sale.get('date'),
-                        sale.get('deed_type', sale.get('doc_type')),
-                        sale_price,
-                        sale.get('grantor'),
-                        sale.get('grantee')
-                    ])
+                    """,
+                        [
+                            folio,
+                            instrument,
+                            sale.get("date"),
+                            sale.get("deed_type", sale.get("doc_type")),
+                            sale_price,
+                            sale.get("grantor"),
+                            sale.get("grantee"),
+                        ],
+                    )
                 saved_count += 1
             except Exception as e:
                 logger.warning(f"Error saving HCPA sale record for {folio}: {e}")
 
         if saved_count > 0:
             logger.info(f"Saved {saved_count} sales history records for {folio}")
-    
+
     def get_auctions_by_date(self, auction_date: date) -> List[Dict[str, Any]]:
         """Get all auctions for a specific date."""
         conn = self.connect()
-        
-        results = conn.execute("""
+
+        results = conn.execute(
+            """
             SELECT * FROM auctions
             WHERE auction_date = ?
             ORDER BY case_number
-        """, [auction_date]).fetchall()
-        
+        """,
+            [auction_date],
+        ).fetchall()
+
         return [dict(row) for row in results]
-    
+
     def get_pending_analysis(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get auctions that need lien analysis."""
         conn = self.connect()
-        
-        results = conn.execute("""
+
+        results = conn.execute(
+            """
             SELECT * FROM auctions
             WHERE status = 'PENDING'
             ORDER BY auction_date
             LIMIT ?
-        """, [limit]).fetchall()
-        
+        """,
+            [limit],
+        ).fetchall()
+
         return [dict(row) for row in results]
-    
+
     def mark_as_analyzed(self, case_number: str):
         """Mark an auction as analyzed."""
         conn = self.connect()
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE auctions
             SET status = 'ANALYZED', updated_at = CURRENT_TIMESTAMP
             WHERE case_number = ?
-        """, [case_number])
-    
+        """,
+            [case_number],
+        )
+
     def mark_as_toxic(self, case_number: str, reason: str = ""):
         """Flag an auction as toxic title."""
         conn = self.connect()
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE auctions
             SET is_toxic_title = TRUE, status = 'FLAGGED', updated_at = CURRENT_TIMESTAMP
             WHERE case_number = ?
-        """, [case_number])
+        """,
+            [case_number],
+        )
 
     def save_judgment_text(self, case_number: str, text: str):
         """Save the OCR'd text of the Final Judgment."""
         conn = self.connect()
-        
+
         # Ensure column exists (DuckDB supportsnatively)
         self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN final_judgment_content TEXT")
-            
-        conn.execute("""
+
+        conn.execute(
+            """
             UPDATE auctions
             SET final_judgment_content = ?, updated_at = CURRENT_TIMESTAMP
             WHERE case_number = ?
-        """, [text, case_number])
+        """,
+            [text, case_number],
+        )
 
     def update_judgment_data(self, case_number: str, data: Dict[str, Any]):
         """Update auction row with extracted Final Judgment data."""
@@ -813,7 +854,7 @@ class PropertyDB:
         params.append(case_number)
         sql = f"""
             UPDATE auctions
-            SET {', '.join(set_parts)}, updated_at = CURRENT_TIMESTAMP
+            SET {", ".join(set_parts)}, updated_at = CURRENT_TIMESTAMP
             WHERE case_number = ?
         """
         conn.execute(sql, params)
@@ -858,6 +899,7 @@ class PropertyDB:
 
             # Add folio column if it doesn't exist (migration)
             import contextlib
+
             with contextlib.suppress(Exception):
                 self._safe_exec(conn, "ALTER TABLE liens ADD COLUMN folio TEXT")
 
@@ -888,43 +930,52 @@ class PropertyDB:
                     is_surviving = getattr(lien, "is_surviving", None)
 
                 # Check for duplicate before inserting
-                existing = conn.execute("""
+                existing = conn.execute(
+                    """
                     SELECT id FROM liens
                     WHERE folio = ? AND document_type = ? AND
                           ((book = ? AND page = ?) OR instrument_number = ?)
-                """, [folio, document_type, book, page, instrument_number]).fetchone()
+                """,
+                    [folio, document_type, book, page, instrument_number],
+                ).fetchone()
 
                 if existing:
                     # Update existing record
-                    conn.execute("""
+                    conn.execute(
+                        """
                         UPDATE liens SET
                             amount = COALESCE(?, amount),
                             grantor = COALESCE(?, grantor),
                             grantee = COALESCE(?, grantee),
                             is_surviving = COALESCE(?, is_surviving)
                         WHERE id = ?
-                    """, [amount, grantor, grantee, is_surviving, existing[0]])
+                    """,
+                        [amount, grantor, grantee, is_surviving, existing[0]],
+                    )
                 else:
-                    conn.execute("""
+                    conn.execute(
+                        """
                         INSERT INTO liens (
                             folio, case_number, document_type, recording_date,
                             amount, grantor, grantee, book, page, description,
                             instrument_number, is_surviving
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, [
-                        folio,
-                        case_number,
-                        document_type,
-                        rec_date,
-                        amount,
-                        grantor,
-                        grantee,
-                        book,
-                        page,
-                        description,
-                        instrument_number,
-                        is_surviving
-                    ])
+                    """,
+                        [
+                            folio,
+                            case_number,
+                            document_type,
+                            rec_date,
+                            amount,
+                            grantor,
+                            grantee,
+                            book,
+                            page,
+                            description,
+                            instrument_number,
+                            is_surviving,
+                        ],
+                    )
 
         except Exception as e:
             print(f"Error in save_liens: {e}")
@@ -933,10 +984,13 @@ class PropertyDB:
     def get_liens_by_case(self, case_number: str) -> List[Dict[str, Any]]:
         """Fetch liens by case number."""
         conn = self.connect()
-        rows = conn.execute("""
+        rows = conn.execute(
+            """
             SELECT * FROM liens
             WHERE case_number = ?
-        """, [case_number]).fetchall()
+        """,
+            [case_number],
+        ).fetchall()
         if not rows:
             return []
         return [dict(r) for r in rows]
@@ -972,26 +1026,59 @@ class PropertyDB:
         self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN longitude REAL")
 
     def update_legal_description(self, folio: str, legal_description: str):
-        """Update the legal description for a parcel."""
+        """Update (or insert) the legal description for a parcel."""
         conn = self.connect()
-        conn.execute("""
+        # Ensure row exists first (UPSERT pattern)
+        conn.execute("INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio])
+        conn.execute(
+            """
             UPDATE parcels
             SET legal_description = ?, updated_at = CURRENT_TIMESTAMP
             WHERE folio = ?
-        """, [legal_description, folio])
+        """,
+            [legal_description, folio],
+        )
+
+    def save_hcpa_to_parcel(self, folio: str, hcpa_result: dict):
+        """Save HCPA GIS scrape data to the parcels table (UPSERT)."""
+        conn = self.connect()
+        prop_info = hcpa_result.get("property_info") or {}
+        building = hcpa_result.get("building_info") or {}
+
+        address = prop_info.get("site_address")
+        year_built = building.get("year_built")
+        image_url = hcpa_result.get("image_url")
+        legal_desc = hcpa_result.get("legal_description")
+
+        # Ensure row exists
+        conn.execute("INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio])
+        # Update with available HCPA data (COALESCE preserves existing non-null values)
+        conn.execute(
+            """
+            UPDATE parcels SET
+                property_address = COALESCE(?, property_address),
+                year_built = COALESCE(?, year_built),
+                image_url = COALESCE(?, image_url),
+                legal_description = COALESCE(?, legal_description),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE folio = ?
+        """,
+            [address, year_built, image_url, legal_desc, folio],
+        )
 
     def update_flood_data(self, folio: str, flood_data: Dict[str, Any]):
         """Update flood zone information for a parcel."""
         conn = self.connect()
-        
+
         # Ensure columns exist
         self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_zone TEXT")
         self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_zone_subtype TEXT")
         self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_risk_level TEXT")
         self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_insurance_required INTEGER")
         self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_base_elevation REAL")
-        
-        conn.execute("""
+
+        conn.execute(
+            """
             UPDATE parcels SET
                 flood_zone = ?,
                 flood_zone_subtype = ?,
@@ -1000,14 +1087,16 @@ class PropertyDB:
                 flood_base_elevation = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE folio = ?
-        """, [
-            flood_data.get("flood_zone"),
-            flood_data.get("zone_subtype"),
-            flood_data.get("risk_level"),
-            flood_data.get("insurance_required"),
-            flood_data.get("static_bfe"),
-            folio
-        ])
+        """,
+            [
+                flood_data.get("flood_zone"),
+                flood_data.get("zone_subtype"),
+                flood_data.get("risk_level"),
+                flood_data.get("insurance_required"),
+                flood_data.get("static_bfe"),
+                folio,
+            ],
+        )
         self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN latitude REAL")
         self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN longitude REAL")
 
@@ -1030,6 +1119,40 @@ class PropertyDB:
         """Create tables for chain of title and encumbrances."""
         conn = self.connect()
 
+        # Documents table (ORI documents discovered by step4v2)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folio TEXT,
+                case_number TEXT,
+                document_type TEXT,
+                file_path TEXT,
+                ocr_text TEXT,
+                extracted_data TEXT,
+                recording_date TEXT,
+                book TEXT,
+                page TEXT,
+                instrument_number TEXT,
+                party1 TEXT,
+                party2 TEXT,
+                legal_description TEXT,
+                sales_price REAL,
+                page_count INTEGER,
+                ori_uuid TEXT,
+                ori_id TEXT,
+                book_type TEXT,
+                party2_resolution_method TEXT,
+                is_self_transfer INTEGER DEFAULT 0,
+                self_transfer_type TEXT,
+                party2_confidence REAL DEFAULT 1.0,
+                party2_resolved_at TEXT,
+                triggered_by_search_id INTEGER,
+                parties_one TEXT,
+                parties_two TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Legal variations table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS legal_variations (
@@ -1038,6 +1161,7 @@ class PropertyDB:
                 variation_text TEXT,
                 source_instrument TEXT,
                 source_type TEXT,
+                priority INTEGER,
                 is_canonical INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -1057,6 +1181,8 @@ class PropertyDB:
                 acquisition_price REAL,
                 link_status TEXT,
                 confidence_score REAL,
+                mrta_status TEXT DEFAULT 'pending',
+                years_covered REAL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -1081,6 +1207,7 @@ class PropertyDB:
                 satisfaction_instrument TEXT,
                 satisfaction_date DATE,
                 survival_status TEXT,
+                survival_reason TEXT,
                 party2_resolution_method TEXT,
                 is_self_transfer INTEGER DEFAULT 0,
                 self_transfer_type TEXT,
@@ -1110,25 +1237,102 @@ class PropertyDB:
             )
         """)
 
+        # ORI Search Queue table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ori_search_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folio TEXT NOT NULL,
+                search_type TEXT NOT NULL,
+                search_term TEXT NOT NULL,
+                search_operator TEXT DEFAULT '',
+                priority INTEGER DEFAULT 50,
+                status TEXT DEFAULT 'pending',
+                attempt_count INTEGER DEFAULT 0,
+                max_attempts INTEGER DEFAULT 3,
+                date_from TEXT,
+                date_to TEXT,
+                triggered_by_instrument TEXT,
+                triggered_by_search_id INTEGER,
+                result_count INTEGER,
+                new_documents_found INTEGER,
+                error_message TEXT,
+                queued_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                completed_at TEXT,
+                next_retry_at TEXT,
+                UNIQUE(folio, search_type, search_term, search_operator)
+            )
+        """)
+
+        # Linked Identities table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS linked_identities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                canonical_name TEXT NOT NULL,
+                entity_type TEXT,
+                link_type TEXT,
+                confidence REAL DEFAULT 1.0,
+                sunbiz_doc_number TEXT,
+                sunbiz_status TEXT,
+                notes TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Property Parties table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS property_parties (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                folio TEXT NOT NULL,
+                party_name TEXT NOT NULL,
+                party_name_normalized TEXT,
+                party_role TEXT,
+                linked_identity_id INTEGER,
+                active_from TEXT,
+                active_to TEXT,
+                source_instrument TEXT,
+                source_document_type TEXT,
+                recording_date TEXT,
+                search_attempted INTEGER DEFAULT 0,
+                search_result_count INTEGER,
+                last_searched_at TEXT,
+                is_generic INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(folio, party_name, source_instrument)
+            )
+        """)
+
+        # Add unique constraint on legal_variations if missing
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_legal_variations_folio_text
+            ON legal_variations(folio, variation_text)
+        """)
+
         logger.info("Chain of title tables created successfully")
 
-    def save_legal_variation(self, folio: str, variation_text: str,
-                             source_instrument: str, source_type: str,
-                             is_canonical: bool = False):
+    def save_legal_variation(
+        self, folio: str, variation_text: str, source_instrument: str, source_type: str, is_canonical: bool = False
+    ):
         """Save a legal description variation."""
         conn = self.connect()
 
         # Check if already exists
-        existing = conn.execute("""
+        existing = conn.execute(
+            """
             SELECT id FROM legal_variations
             WHERE folio = ? AND variation_text = ?
-        """, [folio, variation_text]).fetchone()
+        """,
+            [folio, variation_text],
+        ).fetchone()
 
         if not existing:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO legal_variations (folio, variation_text, source_instrument, source_type, is_canonical)
                 VALUES (?, ?, ?, ?, ?)
-            """, [folio, variation_text, source_instrument, source_type, is_canonical])
+            """,
+                [folio, variation_text, source_instrument, source_type, is_canonical],
+            )
 
     def save_document(self, folio: str, doc_data: Dict[str, Any]) -> int:
         """
@@ -1147,11 +1351,14 @@ class PropertyDB:
         inst = doc_data.get("instrument_number")
         existing = None
         if inst:
-            existing = conn.execute("""
+            existing = conn.execute(
+                """
                 SELECT id FROM documents 
                 WHERE folio = ? AND instrument_number = ?
-            """, [folio, inst]).fetchone()
-        
+            """,
+                [folio, inst],
+            ).fetchone()
+
         if existing:
             # Update file_path, ocr_text, and Party 2 resolution data if provided
             updates = []
@@ -1184,8 +1391,9 @@ class PropertyDB:
                 params.append(existing[0])
                 conn.execute(f"UPDATE documents SET {', '.join(updates)} WHERE id = ?", params)
             return existing[0]
-            
-        conn.execute("""
+
+        conn.execute(
+            """
             INSERT INTO documents (
                 folio, case_number, document_type, file_path, ocr_text,
                 extracted_data, recording_date, book, page,
@@ -1193,40 +1401,41 @@ class PropertyDB:
                 party2_resolution_method, is_self_transfer, self_transfer_type,
                 sales_price, page_count, ori_uuid, ori_id, book_type
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, [
-            folio,
-            doc_data.get("case_number"),
-            doc_data.get("document_type"),
-            doc_data.get("file_path"),
-            doc_data.get("ocr_text"),
-            json.dumps(
-                doc_data.get("extracted_data")
-                or doc_data.get("vision_extracted_data")
-                or {}
-            ),
-            doc_data.get("recording_date"),
-            doc_data.get("book"),
-            doc_data.get("page"),
-            doc_data.get("instrument_number"),
-            doc_data.get("party1"),
-            doc_data.get("party2"),
-            doc_data.get("legal_description"),
-            doc_data.get("party2_resolution_method"),
-            doc_data.get("is_self_transfer", False),
-            doc_data.get("self_transfer_type"),
-            doc_data.get("sales_price"),
-            doc_data.get("page_count"),
-            doc_data.get("ori_uuid"),
-            doc_data.get("ori_id"),
-            doc_data.get("book_type"),
-        ])
+        """,
+            [
+                folio,
+                doc_data.get("case_number"),
+                doc_data.get("document_type"),
+                doc_data.get("file_path"),
+                doc_data.get("ocr_text"),
+                json.dumps(doc_data.get("extracted_data") or doc_data.get("vision_extracted_data") or {}),
+                doc_data.get("recording_date"),
+                doc_data.get("book"),
+                doc_data.get("page"),
+                doc_data.get("instrument_number"),
+                doc_data.get("party1"),
+                doc_data.get("party2"),
+                doc_data.get("legal_description"),
+                doc_data.get("party2_resolution_method"),
+                doc_data.get("is_self_transfer", False),
+                doc_data.get("self_transfer_type"),
+                doc_data.get("sales_price"),
+                doc_data.get("page_count"),
+                doc_data.get("ori_uuid"),
+                doc_data.get("ori_id"),
+                doc_data.get("book_type"),
+            ],
+        )
 
         # Get the inserted ID (DuckDB compatible)
-        result = conn.execute("""
+        result = conn.execute(
+            """
             SELECT id FROM documents
             WHERE folio = ? AND instrument_number = ?
             ORDER BY id DESC LIMIT 1
-        """, [folio, doc_data.get("instrument_number")]).fetchone()
+        """,
+            [folio, doc_data.get("instrument_number")],
+        ).fetchone()
         return result[0] if result else 0
 
     def save_chain_of_title(self, folio: str, chain_data: Dict[str, Any]):
@@ -1277,7 +1486,8 @@ class PropertyDB:
 
         for period in chain_data.get("ownership_timeline", []):
             # Insert chain record and get the ID using RETURNING clause
-            result = conn.execute("""
+            result = conn.execute(
+                """
                 INSERT INTO chain_of_title (
                     folio, owner_name, acquired_from, acquisition_date,
                     disposition_date, acquisition_instrument, acquisition_doc_type,
@@ -1285,20 +1495,22 @@ class PropertyDB:
                     mrta_status, years_covered
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
-            """, [
-                folio,
-                period.get("owner"),
-                period.get("acquired_from"),
-                period.get("acquisition_date"),
-                period.get("disposition_date"),
-                period.get("acquisition_instrument"),
-                period.get("acquisition_doc_type"),
-                period.get("acquisition_price"),
-                period.get("link_status"),
-                period.get("confidence_score"),
-                mrta_status,
-                years_covered
-            ])
+            """,
+                [
+                    folio,
+                    period.get("owner"),
+                    period.get("acquired_from"),
+                    period.get("acquisition_date"),
+                    period.get("disposition_date"),
+                    period.get("acquisition_instrument"),
+                    period.get("acquisition_doc_type"),
+                    period.get("acquisition_price"),
+                    period.get("link_status"),
+                    period.get("confidence_score"),
+                    mrta_status,
+                    years_covered,
+                ],
+            )
 
             # Get the chain period ID from the RETURNING clause
             chain_id = result.fetchone()[0]
@@ -1327,7 +1539,8 @@ class PropertyDB:
                     if is_inferred is None:
                         is_inferred = match.get("is_inferred")
 
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT INTO encumbrances (
                         folio, chain_period_id, encumbrance_type, creditor,
                         debtor, amount, amount_confidence, amount_flags, recording_date,
@@ -1335,29 +1548,31 @@ class PropertyDB:
                         satisfaction_date, survival_status, is_joined, is_inferred,
                         party2_resolution_method, is_self_transfer, self_transfer_type
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, [
-                    folio,
-                    chain_id,
-                    enc.get("type"),
-                    enc.get("creditor"),
-                    enc.get("debtor"), # Now capturing debtor
-                    enc.get("amount"),
-                    enc.get("amount_confidence", "HIGH"),
-                    str(enc.get("amount_flags", [])),
-                    enc.get("recording_date"),
-                    enc.get("instrument"),
-                    enc.get("book"),
-                    enc.get("page"),
-                    enc.get("is_satisfied", False),
-                    enc.get("satisfaction_instrument"),
-                    enc.get("satisfaction_date"),
-                    survival_status,
-                    bool(is_joined) if is_joined is not None else False,
-                    bool(is_inferred) if is_inferred is not None else False,
-                    enc.get("party2_resolution_method"),
-                    enc.get("is_self_transfer", False),
-                    enc.get("self_transfer_type"),
-                ])
+                """,
+                    [
+                        folio,
+                        chain_id,
+                        enc.get("type"),
+                        enc.get("creditor"),
+                        enc.get("debtor"),  # Now capturing debtor
+                        enc.get("amount"),
+                        enc.get("amount_confidence", "HIGH"),
+                        str(enc.get("amount_flags", [])),
+                        enc.get("recording_date"),
+                        enc.get("instrument"),
+                        enc.get("book"),
+                        enc.get("page"),
+                        enc.get("is_satisfied", False),
+                        enc.get("satisfaction_instrument"),
+                        enc.get("satisfaction_date"),
+                        survival_status,
+                        bool(is_joined) if is_joined is not None else False,
+                        bool(is_inferred) if is_inferred is not None else False,
+                        enc.get("party2_resolution_method"),
+                        enc.get("is_self_transfer", False),
+                        enc.get("self_transfer_type"),
+                    ],
+                )
 
         # Chain/encumbrances changed; ensure lien survival can be re-run even if it was previously marked complete.
         try:
@@ -1379,15 +1594,15 @@ class PropertyDB:
         conn = self.connect()
         updates = ["survival_status = ?"]
         params = [status]
-        
+
         if is_joined is not None:
             updates.append("is_joined = ?")
             params.append(is_joined)
-        
+
         if is_inferred is not None:
             updates.append("is_inferred = ?")
             params.append(is_inferred)
-            
+
         params.append(encumbrance_id)
         sql = f"UPDATE encumbrances SET {', '.join(updates)} WHERE id = ?"
         conn.execute(sql, params)
@@ -1396,8 +1611,7 @@ class PropertyDB:
         """Check if an encumbrance with the given book/page already exists for a folio."""
         conn = self.connect()
         result = conn.execute(
-            "SELECT 1 FROM encumbrances WHERE folio = ? AND book = ? AND page = ? LIMIT 1",
-            [folio, book, page]
+            "SELECT 1 FROM encumbrances WHERE folio = ? AND book = ? AND page = ? LIMIT 1", [folio, book, page]
         ).fetchone()
         return result is not None
 
@@ -1421,37 +1635,37 @@ class PropertyDB:
         Returns the ID of the inserted encumbrance.
         """
         conn = self.connect()
-        result = conn.execute("""
+        result = conn.execute(
+            """
             INSERT INTO encumbrances (
                 folio, chain_period_id, encumbrance_type, creditor,
                 amount, recording_date, instrument, book, page,
                 survival_status, is_joined, is_inferred
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
-        """, [
-            folio,
-            chain_period_id,
-            encumbrance_type,
-            creditor,
-            amount,
-            recording_date,
-            instrument,
-            book,
-            page,
-            survival_status,
-            is_joined,
-            is_inferred
-        ])
+        """,
+            [
+                folio,
+                chain_period_id,
+                encumbrance_type,
+                creditor,
+                amount,
+                recording_date,
+                instrument,
+                book,
+                page,
+                survival_status,
+                is_joined,
+                is_inferred,
+            ],
+        )
         return result.fetchone()[0]
 
     def get_legal_description(self, parcel_id: str) -> Optional[str]:
         """Get legal description for a parcel."""
         conn = self.connect()
         # Try parcels table first, then auctions as fallback (though auctions usually stores it in parcels table during ingest)
-        row = conn.execute(
-            "SELECT legal_description FROM parcels WHERE parcel_id = ?",
-            [parcel_id]
-        ).fetchone()
+        row = conn.execute("SELECT legal_description FROM parcels WHERE parcel_id = ?", [parcel_id]).fetchone()
         return row[0] if row else None
 
     def get_chain_of_title(self, folio: str) -> Dict[str, Any]:
@@ -1467,11 +1681,14 @@ class PropertyDB:
         conn = self.connect()
 
         # Get ownership periods
-        periods = conn.execute("""
+        periods = conn.execute(
+            """
             SELECT * FROM chain_of_title
             WHERE folio = ?
             ORDER BY acquisition_date
-        """, [folio]).fetchall()
+        """,
+            [folio],
+        ).fetchall()
 
         ownership_timeline = []
 
@@ -1480,11 +1697,14 @@ class PropertyDB:
             period_id = period["id"]
 
             # Get encumbrances for this period
-            encumbrances = conn.execute("""
+            encumbrances = conn.execute(
+                """
                 SELECT * FROM encumbrances
                 WHERE chain_period_id = ?
                 ORDER BY recording_date
-            """, [period_id]).fetchall()
+            """,
+                [period_id],
+            ).fetchall()
 
             period["encumbrances"] = [dict(e) for e in encumbrances]
 
@@ -1494,7 +1714,7 @@ class PropertyDB:
             "folio": folio,
             "ownership_timeline": ownership_timeline,
             "current_owner": ownership_timeline[-1]["owner_name"] if ownership_timeline else None,
-            "total_transfers": len(ownership_timeline)
+            "total_transfers": len(ownership_timeline),
         }
 
     def create_sources_table(self):
@@ -1513,10 +1733,7 @@ class PropertyDB:
         """)
 
         with suppress(Exception):
-            columns = {
-                row[1]
-                for row in conn.execute("PRAGMA table_info('property_sources')").fetchall()
-            }
+            columns = {row[1] for row in conn.execute("PRAGMA table_info('property_sources')").fetchall()}
             if "source_name" not in columns:
                 self._safe_exec(conn, "ALTER TABLE property_sources ADD COLUMN source_name TEXT")
                 if "source_type" in columns:
@@ -1528,32 +1745,33 @@ class PropertyDB:
             if "description" not in columns:
                 self._safe_exec(conn, "ALTER TABLE property_sources ADD COLUMN description TEXT")
 
-    def save_market_data(self, folio: str, source: str, data: Dict[str, Any],
-                         screenshot_path: Optional[str] = None):
+    def save_market_data(self, folio: str, source: str, data: Dict[str, Any], screenshot_path: Optional[str] = None):
         """Save market data from Zillow/Realtor."""
         conn = self.connect()
 
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO market_data (
                 folio, source, capture_date, listing_status, list_price,
                 zestimate, rent_estimate, hoa_monthly, days_on_market,
                 price_history, raw_json, screenshot_path
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, [
-            folio,
-            source,
-            today_local(),
-            data.get("listing_status"),
-            data.get("list_price") or data.get("price"),
-            data.get("zestimate"),
-            data.get("rent_zestimate") or data.get("rent_estimate"),
-            data.get("hoa_fee") or data.get("hoa_monthly"),
-            data.get("days_on_market"),
-            json.dumps(data.get("price_history", [])),
-            json.dumps(data),
-            screenshot_path
-        ])
-
+        """,
+            [
+                folio,
+                source,
+                today_local(),
+                data.get("listing_status"),
+                data.get("list_price") or data.get("price"),
+                data.get("zestimate"),
+                data.get("rent_zestimate") or data.get("rent_estimate"),
+                data.get("hoa_fee") or data.get("hoa_monthly"),
+                data.get("days_on_market"),
+                json.dumps(data.get("price_history", [])),
+                json.dumps(data),
+                screenshot_path,
+            ],
+        )
 
     def create_sales_history_table(self):
         """Create sales_history table for storing deeds/transactions from HCPA."""
@@ -1599,9 +1817,7 @@ class PropertyDB:
         case_number which is required for Property model.
         """
         conn = self.connect()
-        row = conn.execute(
-            "SELECT * FROM parcels WHERE folio = ?", [folio]
-        ).fetchone()
+        row = conn.execute("SELECT * FROM parcels WHERE folio = ?", [folio]).fetchone()
 
         if not row:
             return None
@@ -1632,26 +1848,18 @@ class PropertyDB:
         conn = self.connect()
 
         # Primary: parcels table (HCPA-enriched data)
-        row = conn.execute(
-            "SELECT * FROM parcels WHERE folio = ?", [folio]
-        ).fetchone()
+        row = conn.execute("SELECT * FROM parcels WHERE folio = ?", [folio]).fetchone()
         parcel = dict(row) if row else {}
 
         # Secondary: bulk_parcels table (bulk county data)
-        bulk_row = conn.execute(
-            "SELECT * FROM bulk_parcels WHERE folio = ? OR strap = ? LIMIT 1",
-            [folio, folio]
-        ).fetchone()
+        bulk_row = conn.execute("SELECT * FROM bulk_parcels WHERE folio = ? OR strap = ? LIMIT 1", [folio, folio]).fetchone()
         bulk = dict(bulk_row) if bulk_row else {}
 
         if not parcel and not bulk:
             return None
 
         # Merge: parcels wins over bulk for every field
-        address = (
-            parcel.get("property_address")
-            or bulk.get("property_address")
-        )
+        address = parcel.get("property_address") or bulk.get("property_address")
         city = parcel.get("city") or bulk.get("city")
         zip_code = parcel.get("zip_code") or bulk.get("zip_code")
         if address and city:
@@ -1682,31 +1890,37 @@ class PropertyDB:
     def get_encumbrances_by_folio(self, folio: str) -> List[Dict[str, Any]]:
         """Get all encumbrances for a folio."""
         conn = self.connect()
-        rows = conn.execute("""
+        rows = conn.execute(
+            """
             SELECT * FROM encumbrances
             WHERE folio = ?
             ORDER BY recording_date DESC
-        """, [folio]).fetchall()
-        
+        """,
+            [folio],
+        ).fetchall()
+
         return [dict(row) for row in rows]
 
     def get_auction_by_case(self, case_number: str) -> Optional[Dict[str, Any]]:
         """Get an auction by case number."""
         conn = self.connect()
-        row = conn.execute("""
+        row = conn.execute(
+            """
             SELECT * FROM auctions
             WHERE case_number = ?
-        """, [case_number]).fetchone()
-        
+        """,
+            [case_number],
+        ).fetchone()
+
         if not row:
             return None
-            
+
         return dict(row)
 
     def save_source(self, folio: str, source_name: str, url: str, description: str = ""):
         """
         Save a data source URL for a property.
-        
+
         Args:
             folio: Property folio/ID
             source_name: Name of source (e.g. "Permits", "Tax Deed")
@@ -1714,10 +1928,10 @@ class PropertyDB:
             description: Optional description
         """
         conn = self.connect()
-        
+
         # Ensure table exists
         self.create_sources_table()
-        
+
         exists = conn.execute(
             """
             SELECT 1 FROM property_sources
@@ -1742,19 +1956,22 @@ class PropertyDB:
                 """,
                 [folio, source_name, url, description, now_utc_naive()],
             )
-        
+
     def get_sources(self, folio: str) -> List[Dict[str, Any]]:
         """Get all sources for a property."""
         conn = self.connect()
-        
+
         # Ensure table exists
         self.create_sources_table()
-        
-        results = conn.execute("""
+
+        results = conn.execute(
+            """
             SELECT * FROM property_sources
             WHERE folio = ?
             ORDER BY created_at DESC
-        """, [folio]).fetchall()
+        """,
+            [folio],
+        ).fetchall()
 
         return [dict(row) for row in results]
 
@@ -1775,14 +1992,15 @@ class PropertyDB:
         for sale in sales:
             try:
                 # Parse sale price
-                price_str = sale.get('sale_price', '').replace('$', '').replace(',', '')
+                price_str = sale.get("sale_price", "").replace("$", "").replace(",", "")
                 try:
                     sale_price = float(price_str) if price_str else None
                 except (ValueError, TypeError):
                     sale_price = None
 
                 # Use INSERT with ON CONFLICT for DuckDB
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT INTO sales_history (
                         folio, strap, book, page, instrument,
                         sale_date, doc_type, qualified, vacant_improved,
@@ -1796,19 +2014,21 @@ class PropertyDB:
                         vacant_improved = EXCLUDED.vacant_improved,
                         sale_price = EXCLUDED.sale_price,
                         ori_link = EXCLUDED.ori_link
-                """, [
-                    folio,
-                    strap,
-                    sale.get('book'),
-                    sale.get('page'),
-                    sale.get('instrument'),
-                    sale.get('date'),
-                    sale.get('doc_type'),
-                    sale.get('qualified'),
-                    sale.get('vacant_improved'),
-                    sale_price,
-                    sale.get('book_page_link')
-                ])
+                """,
+                    [
+                        folio,
+                        strap,
+                        sale.get("book"),
+                        sale.get("page"),
+                        sale.get("instrument"),
+                        sale.get("date"),
+                        sale.get("doc_type"),
+                        sale.get("qualified"),
+                        sale.get("vacant_improved"),
+                        sale_price,
+                        sale.get("book_page_link"),
+                    ],
+                )
             except Exception as e:
                 print(f"Error saving sale record: {e}")
 
@@ -1819,15 +2039,21 @@ class PropertyDB:
         conn = self.connect()
 
         if folio:
-            results = conn.execute("""
+            results = conn.execute(
+                """
                 SELECT * FROM sales_history WHERE folio = ?
                 ORDER BY sale_date DESC
-            """, [folio]).fetchall()
+            """,
+                [folio],
+            ).fetchall()
         elif strap:
-            results = conn.execute("""
+            results = conn.execute(
+                """
                 SELECT * FROM sales_history WHERE strap = ?
                 ORDER BY sale_date DESC
-            """, [strap]).fetchall()
+            """,
+                [strap],
+            ).fetchall()
         else:
             return []
 
@@ -1867,7 +2093,7 @@ class PropertyDB:
                    book, page, file_path, legal_description, ocr_text
             FROM documents
             WHERE {where_sql}
-            ORDER BY recording_date NULLS LAST, created_at DESC
+            ORDER BY (recording_date IS NULL), recording_date ASC, created_at DESC
             """,
             params,
         ).fetchall()
@@ -2045,9 +2271,7 @@ class PropertyDB:
         auction_type_filter = ""
         params: list = [start_date, end_date, include_failed, max_retries]
         if skip_tax_deeds:
-            auction_type_filter = (
-                "AND COALESCE(UPPER(REPLACE(n.auction_type, ' ', '_')), '') != 'TAX_DEED'"
-            )
+            auction_type_filter = "AND COALESCE(UPPER(REPLACE(n.auction_type, ' ', '_')), '') != 'TAX_DEED'"
 
         query = f"""
             WITH normalized AS (
@@ -2088,25 +2312,19 @@ class PropertyDB:
     def folio_has_sales_history(self, folio: str) -> bool:
         """Check if folio has sales history data."""
         conn = self.connect()
-        result = conn.execute(
-            "SELECT COUNT(*) FROM sales_history WHERE folio = ?", [folio]
-        ).fetchone()
+        result = conn.execute("SELECT COUNT(*) FROM sales_history WHERE folio = ?", [folio]).fetchone()
         return result[0] > 0 if result else False
 
     def folio_has_chain_of_title(self, folio: str) -> bool:
         """Check if folio has chain of title data."""
         conn = self.connect()
-        result = conn.execute(
-            "SELECT COUNT(*) FROM chain_of_title WHERE folio = ?", [folio]
-        ).fetchone()
+        result = conn.execute("SELECT COUNT(*) FROM chain_of_title WHERE folio = ?", [folio]).fetchone()
         return result[0] > 0 if result else False
 
     def folio_has_encumbrances(self, folio: str) -> bool:
         """Check if folio has encumbrances."""
         conn = self.connect()
-        result = conn.execute(
-            "SELECT COUNT(*) FROM encumbrances WHERE folio = ?", [folio]
-        ).fetchone()
+        result = conn.execute("SELECT COUNT(*) FROM encumbrances WHERE folio = ?", [folio]).fetchone()
         return result[0] > 0 if result else False
 
     def folio_has_survival_analysis(self, folio: str) -> bool:
@@ -2136,18 +2354,14 @@ class PropertyDB:
         """Get the last analyzed case number for a folio."""
         conn = self.connect()
         self.ensure_last_analyzed_column()
-        result = conn.execute(
-            "SELECT last_analyzed_case_number FROM parcels WHERE folio = ?", [folio]
-        ).fetchone()
+        result = conn.execute("SELECT last_analyzed_case_number FROM parcels WHERE folio = ?", [folio]).fetchone()
         return result[0] if result else None
 
     def set_last_analyzed_case(self, folio: str, case_number: str):
         """Set the last analyzed case number for a folio."""
         conn = self.connect()
         self.ensure_last_analyzed_column()
-        conn.execute(
-            "INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio]
-        )
+        conn.execute("INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio])
         conn.execute(
             "UPDATE parcels SET last_analyzed_case_number = ?, updated_at = CURRENT_TIMESTAMP WHERE folio = ?",
             [case_number, folio],
@@ -2156,15 +2370,13 @@ class PropertyDB:
     def folio_has_permits(self, folio: str) -> bool:
         """Check if folio has permit data."""
         conn = self.connect()
-        result = conn.execute(
-            "SELECT COUNT(*) FROM permits WHERE folio = ?", [folio]
-        ).fetchone()
+        result = conn.execute("SELECT COUNT(*) FROM permits WHERE folio = ?", [folio]).fetchone()
         return result[0] > 0 if result else False
 
     def save_permits(self, folio: str, permits: List[Any]):
         """Save permits to database."""
         conn = self.connect()
-        
+
         saved_count = 0
         for p in permits:
             # Handle both Permit objects and dicts
@@ -2196,14 +2408,22 @@ class PropertyDB:
                         description, contractor, estimated_cost, url, noc_instrument)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [
-                        folio, permit_number, issue_date, status, permit_type,
-                        description, contractor, estimated_cost, url, noc_instrument
+                        folio,
+                        permit_number,
+                        issue_date,
+                        status,
+                        permit_type,
+                        description,
+                        contractor,
+                        estimated_cost,
+                        url,
+                        noc_instrument,
                     ],
                 )
                 saved_count += 1
             except Exception as e:
                 logger.error(f"Failed to save permit {permit_number}: {e}")
-        
+
         return saved_count
 
     def folio_has_flood_data(self, folio: str) -> bool:
@@ -2270,9 +2490,7 @@ class PropertyDB:
     def folio_has_owner_name(self, folio: str) -> bool:
         """Check if folio has owner name in parcels."""
         conn = self.connect()
-        result = conn.execute(
-            "SELECT owner_name FROM parcels WHERE folio = ?", [folio]
-        ).fetchone()
+        result = conn.execute("SELECT owner_name FROM parcels WHERE folio = ?", [folio]).fetchone()
         return result is not None and result[0] is not None
 
     def folio_has_tax_data(self, folio: str) -> bool:
@@ -2294,13 +2512,13 @@ class PropertyDB:
         # Let's check property_sources for 'sunbiz'
         conn = self.connect()
         try:
-             result = conn.execute(
-                "SELECT COUNT(*) FROM property_sources WHERE folio = ? AND source_name = 'sunbiz' AND created_at > date('now', '-\1 days')", 
-                [folio]
-             ).fetchone()
-             return result[0] > 0 if result else False
+            result = conn.execute(
+                "SELECT COUNT(*) FROM property_sources WHERE folio = ? AND source_name = 'sunbiz' AND created_at > date('now', '-\1 days')",
+                [folio],
+            ).fetchone()
+            return result[0] > 0 if result else False
         except Exception:
-             return False
+            return False
 
     def folio_has_homeharvest_data(self, folio: str) -> bool:
         """Check if folio has recent HomeHarvest data (7-day cache)."""
@@ -2308,8 +2526,7 @@ class PropertyDB:
         try:
             # Match 7-day logic from HomeHarvestService
             result = conn.execute(
-                "SELECT COUNT(*) FROM home_harvest WHERE folio = ? AND created_at > date('now', '-\1 days')",
-                [folio]
+                "SELECT COUNT(*) FROM home_harvest WHERE folio = ? AND created_at > date('now', '-\1 days')", [folio]
             ).fetchone()
             return result[0] > 0 if result else False
         except Exception:
@@ -2638,9 +2855,7 @@ class PropertyDB:
             params = [end_date]
 
         # Get total count
-        total_result = conn.execute(
-            f"SELECT COUNT(*) FROM status {date_filter}", params
-        ).fetchone()
+        total_result = conn.execute(f"SELECT COUNT(*) FROM status {date_filter}", params).fetchone()
         total = total_result[0] if total_result else 0
 
         # Get counts by status
@@ -2897,36 +3112,27 @@ class PropertyDB:
 
         # Step 5: ORI ingestion - only mark complete if chain_of_title exists
         # (not just documents - we need the chain to be built)
-        if USE_STEP4_V2:
-            # Check v2 database for chain_of_title (not just documents)
-            # This ensures the discovery loop actually ran and built a chain
-            try:
-                v2_conn = duckdb.connect(V2_DB_PATH, read_only=True)
-                folios_with_chain = v2_conn.execute(
-                    "SELECT DISTINCT folio FROM chain_of_title"
-                ).fetchall()
-                v2_conn.close()
-                if folios_with_chain:
-                    folio_list = [f[0] for f in folios_with_chain]
-                    placeholders = ",".join(["?"] * len(folio_list))
-                    query_params = list(folio_list) + list(params)
-                    
-                    conn.execute(
-                        f"""
-                        UPDATE status SET step_ori_ingested = CURRENT_TIMESTAMP
-                        WHERE status.step_ori_ingested IS NULL
-                          AND status.case_number IN (
-                            SELECT case_number FROM auctions
-                            WHERE COALESCE(parcel_id, folio) IN ({placeholders})
-                          )
-                          {date_clause}
-                        """,
-                        query_params,
-                    )
-            except Exception as e:
-                logger.debug(f"V2 backfill check failed: {e}")
-        # NOTE: V1 documents table fallback removed - when USE_STEP4_V2 is True,
-        # we should only mark ORI complete based on V2 chain_of_title data
+        try:
+            folios_with_chain = conn.execute("SELECT DISTINCT folio FROM chain_of_title").fetchall()
+            if folios_with_chain:
+                folio_list = [f[0] for f in folios_with_chain]
+                placeholders = ",".join(["?"] * len(folio_list))
+                query_params = list(folio_list) + list(params)
+
+                conn.execute(
+                    f"""
+                    UPDATE status SET step_ori_ingested = CURRENT_TIMESTAMP
+                    WHERE status.step_ori_ingested IS NULL
+                      AND status.case_number IN (
+                        SELECT case_number FROM auctions
+                        WHERE COALESCE(parcel_id, folio) IN ({placeholders})
+                      )
+                      {date_clause}
+                    """,
+                    query_params,
+                )
+        except Exception as e:
+            logger.debug(f"ORI backfill check failed: {e}")
 
         # Step 6: Survival analysis (auctions status ANALYZED/FLAGGED)
         conn.execute(

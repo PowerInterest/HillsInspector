@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Optional
 
-import duckdb
+import sqlite3
 from loguru import logger
 
 from config.step4v2 import (
@@ -71,25 +71,26 @@ def _extract_lot_block_from_search(search_term: str) -> tuple[str | None, str | 
     searched for multiple lots so shouldn't filter by a single lot.
     """
     import re
+
     term = search_term.upper().rstrip("*").strip()
 
     # Detect multi-lot patterns that indicate we shouldn't filter by single lot
     # Patterns: "L 1 AND 2", "L 1, 2", "L 1 & 2", "L 1-5", "LOTS 1 AND 2"
-    multi_lot_pattern = r'\bL(?:OT)?S?\s*\d+\s*(?:AND|&|,|-|THRU|THROUGH)\s*\d+'
+    multi_lot_pattern = r"\bL(?:OT)?S?\s*\d+\s*(?:AND|&|,|-|THRU|THROUGH)\s*\d+"
     if re.search(multi_lot_pattern, term):
         # Multi-lot search - don't filter by specific lot
         # Still extract block for filtering
-        block_match = re.search(r'\bB(?:LK|LOCK)?\s*([A-Z]?\d*[A-Z]?)\b', term)
+        block_match = re.search(r"\bB(?:LK|LOCK)?\s*([A-Z]?\d*[A-Z]?)\b", term)
         block = block_match.group(1) if block_match and block_match.group(1) else None
         return (None, block)
 
     # Match patterns like "L 4 B 8", "L4 B8", "L 40 B 1", etc.
     # Lot pattern: L/LOT followed by number/alphanumeric
-    lot_match = re.search(r'\bL(?:OT)?\s*([A-Z]?\d+[A-Z]?)\b', term)
+    lot_match = re.search(r"\bL(?:OT)?\s*([A-Z]?\d+[A-Z]?)\b", term)
     lot = lot_match.group(1) if lot_match else None
 
     # Block pattern: B/BLK/BLOCK followed by number/alphanumeric
-    block_match = re.search(r'\bB(?:LK|LOCK)?\s*([A-Z]?\d*[A-Z]?)\b', term)
+    block_match = re.search(r"\bB(?:LK|LOCK)?\s*([A-Z]?\d*[A-Z]?)\b", term)
     block = block_match.group(1) if block_match and block_match.group(1) else None
 
     return (lot, block)
@@ -101,9 +102,9 @@ def _normalize_subdivision(subdiv: str | None) -> str:
         return ""
     result = subdiv.upper()
     # Normalize common abbreviations
-    result = re.sub(r'\bPH\s*(\d)', r'PHASE \1', result)  # "PH 2" → "PHASE 2"
-    result = re.sub(r'\bPH\b', 'PHASE', result)  # "PH" alone → "PHASE"
-    result = re.sub(r'\s+', ' ', result).strip()  # Normalize whitespace
+    result = re.sub(r"\bPH\s*(\d)", r"PHASE \1", result)  # "PH 2" → "PHASE 2"
+    result = re.sub(r"\bPH\b", "PHASE", result)  # "PH" alone → "PHASE"
+    result = re.sub(r"\s+", " ", result).strip()  # Normalize whitespace
     return result
 
 
@@ -133,8 +134,8 @@ def _subdivisions_match(expected: str | None, actual: str | None) -> bool:
     if norm_actual.startswith(norm_expected) or norm_expected.startswith(norm_actual):
         # But reject if phase numbers differ
         # Extract phase numbers from both
-        expected_phase = re.search(r'PHASE\s*(\d+)', norm_expected)
-        actual_phase = re.search(r'PHASE\s*(\d+)', norm_actual)
+        expected_phase = re.search(r"PHASE\s*(\d+)", norm_expected)
+        actual_phase = re.search(r"PHASE\s*(\d+)", norm_actual)
 
         if expected_phase and actual_phase:
             # Both have phase numbers - they must match
@@ -190,7 +191,7 @@ def _document_matches_lot_block(
     # Check lot match if we have an expected lot
     if expected_lot:
         # Get all lots from the document (handles multi-lot properties)
-        doc_lots = parsed.lots if parsed.lots else ([parsed.lot] if parsed.lot else [])
+        doc_lots = parsed.lots or ([parsed.lot] if parsed.lot else [])
 
         if not doc_lots:
             # Document has no lot info - check if it mentions our subdivision
@@ -205,10 +206,7 @@ def _document_matches_lot_block(
             return True
 
         # Check if expected lot matches any of the document's lots EXACTLY
-        lot_match = any(
-            doc_lot.upper() == expected_lot.upper()
-            for doc_lot in doc_lots
-        )
+        lot_match = any(doc_lot.upper() == expected_lot.upper() for doc_lot in doc_lots)
         if not lot_match:
             return False
 
@@ -222,7 +220,7 @@ def _document_matches_lot_block(
             # Document has NO block but we expect one
             # If document has a specific lot, it should also have a block in a platted subdivision
             # Reject it to prevent cross-property contamination (e.g., LOT 4 from wrong phase)
-            doc_lots = parsed.lots if parsed.lots else ([parsed.lot] if parsed.lot else [])
+            doc_lots = parsed.lots or ([parsed.lot] if parsed.lot else [])
             if doc_lots:
                 # Document specifies a lot but no block - likely wrong property
                 return False
@@ -239,7 +237,7 @@ class IterativeDiscovery:
     processing results to find new search vectors.
     """
 
-    def __init__(self, conn: duckdb.DuckDBPyConnection):
+    def __init__(self, conn: sqlite3.Connection):
         """Initialize the discovery service."""
         self.conn = conn
         self.search_queue = SearchQueue(conn)
@@ -469,7 +467,9 @@ class IterativeDiscovery:
                 doc_legal = doc.get("Legal") or doc.get("legal_description")
                 # Only filter if document HAS a legal description we can verify
                 # Documents without legal (mortgages, assignments) are allowed through
-                if doc_legal and not _document_matches_lot_block(doc_legal, expected_lot, expected_block, self._folio_subdivision):
+                if doc_legal and not _document_matches_lot_block(
+                    doc_legal, expected_lot, expected_block, self._folio_subdivision
+                ):
                     filtered_count += 1
                     continue
 
@@ -479,6 +479,13 @@ class IterativeDiscovery:
 
         if filtered_count > 0:
             logger.debug(f"  Filtered out {filtered_count} docs not matching lot/block")
+
+        # SHORT-CIRCUIT: If a legal search yields valid results matching the property
+        # (even if they are duplicates), we can cancel broader fallback searches.
+        # This saves significant time by skipping redundant wildcard permutations.
+        valid_doc_count = len(documents) - filtered_count
+        if search.search_type == "legal" and valid_doc_count > 0:
+            self.search_queue.cancel_pending_searches(folio, "legal")
 
         self.search_queue.mark_completed(search.id, len(documents), new_count)
         return new_count
@@ -520,9 +527,7 @@ class IterativeDiscovery:
                 if len(parts) == 2:
                     plat_book, plat_page = parts
                     logger.info(f"Searching plat: Book {plat_book} Page {plat_page}")
-                    return self.ori_scraper.search_by_book_page_sync(
-                        plat_book, plat_page, book_type="P"
-                    )
+                    return self.ori_scraper.search_by_book_page_sync(plat_book, plat_page, book_type="P")
                 logger.warning(f"Invalid plat format: {search.search_term}")
                 return []
 
@@ -610,8 +615,8 @@ class IterativeDiscovery:
                     doc.get("ID") or doc.get("ori_id"),
                     doc.get("BookType") or doc.get("book_type"),
                     search_id,
-                    parties_one if parties_one else None,
-                    parties_two if parties_two else None,
+                    parties_one or None,
+                    parties_two or None,
                 ],
             )
             return True
@@ -644,6 +649,7 @@ class IterativeDiscovery:
             return ""
         # Remove parenthetical code like "(MTG)"
         import re
+
         cleaned = re.sub(r"\([^)]+\)\s*", "", doc_type).strip()
         return cleaned or doc_type
 
@@ -721,12 +727,11 @@ class IterativeDiscovery:
             try:
                 self.conn.execute(
                     """
-                    INSERT INTO ori_search_queue (
+                    INSERT OR IGNORE INTO ori_search_queue (
                         folio, search_type, search_term, priority, status,
                         triggered_by_search_id, triggered_by_instrument
                     )
                     VALUES (?, 'instrument', ?, ?, 'ready', ?, ?)
-                    ON CONFLICT DO NOTHING
                     """,
                     [folio, ref_instrument, PRIORITY_INSTRUMENT, search_id, instrument],
                 )
@@ -806,16 +811,15 @@ class IterativeDiscovery:
         text = " ".join(str(f) for f in fields_to_check if f)
 
         # Pattern 1: CLK #NNNNNNNNNN or CLK#NNNNNNNNNN
-        for match in re.finditer(r"CLK\s*#?\s*(\d{7,10})", text, re.IGNORECASE):
-            references.add(match.group(1))
+        references.update(match.group(1) for match in re.finditer(r"CLK\s*#?\s*(\d{7,10})", text, re.IGNORECASE))
 
         # Pattern 2: INST #NNNNNNNNNN or INSTRUMENT NO. NNNNNNNNNN
-        for match in re.finditer(r"INST(?:RUMENT)?\s*(?:#|NO\.?)?\s*(\d{7,10})", text, re.IGNORECASE):
-            references.add(match.group(1))
+        references.update(
+            match.group(1) for match in re.finditer(r"INST(?:RUMENT)?\s*(?:#|NO\.?)?\s*(\d{7,10})", text, re.IGNORECASE)
+        )
 
         # Pattern 3: O.R. NNNNNNNNNN or OR NNNNNNNNNN (direct instrument)
-        for match in re.finditer(r"O\.?R\.?\s+(\d{7,10})", text, re.IGNORECASE):
-            references.add(match.group(1))
+        references.update(match.group(1) for match in re.finditer(r"O\.?R\.?\s+(\d{7,10})", text, re.IGNORECASE))
 
         # Don't include the document's own instrument number
         own_instrument = str(doc.get("Instrument") or doc.get("instrument_number") or "")
@@ -914,10 +918,7 @@ class IterativeDiscovery:
                 logger.debug(f"Could not queue adjacent instrument {adjacent_instrument}: {e}")
 
         if queued > 0:
-            logger.debug(
-                f"  Queued {queued} adjacent instruments for {instrument} "
-                f"(±{ADJACENT_INSTRUMENT_RANGE})"
-            )
+            logger.debug(f"  Queued {queued} adjacent instruments for {instrument} (±{ADJACENT_INSTRUMENT_RANGE})")
 
         return queued
 
@@ -983,10 +984,7 @@ class IterativeDiscovery:
             if current_grantee and next_grantor:
                 match = self.name_matcher.match(current_grantee, next_grantor)
                 if not match.is_match:
-                    logger.debug(
-                        f"Chain break: '{current_grantee}' != '{next_grantor}' "
-                        f"between deed {i + 1} and {i + 2}"
-                    )
+                    logger.debug(f"Chain break: '{current_grantee}' != '{next_grantor}' between deed {i + 1} and {i + 2}")
                     return False
 
         # Check 3: Last grantee should match current owner
@@ -996,10 +994,7 @@ class IterativeDiscovery:
             if last_grantee:
                 match = self.name_matcher.match(last_grantee, current_owner)
                 if not match.is_match:
-                    logger.debug(
-                        f"Chain incomplete: last grantee '{last_grantee}' "
-                        f"!= current owner '{current_owner}'"
-                    )
+                    logger.debug(f"Chain incomplete: last grantee '{last_grantee}' != current owner '{current_owner}'")
                     return False
 
         # Check 4: Log any large gaps (warning only, not failure)
@@ -1013,9 +1008,7 @@ class IterativeDiscovery:
             if date1 and date2:
                 gap_days = (date2 - date1).days
                 if gap_days > MAX_OWNERSHIP_GAP_DAYS:
-                    logger.warning(
-                        f"Large gap of {gap_days} days between deeds for {folio}"
-                    )
+                    logger.warning(f"Large gap of {gap_days} days between deeds for {folio}")
 
         logger.info(f"Chain complete for {folio}: {len(deeds)} deeds from anchor")
         return True
@@ -1112,14 +1105,15 @@ class IterativeDiscovery:
             [folio],
         ).fetchall()
 
-        columns = ["instrument_number", "recording_date", "document_type", "grantor", "grantee"]
-        return [dict(zip(columns, row, strict=True)) for row in result]
+        return [dict(row) for row in result]
 
     def _get_current_owner(self, folio: str) -> Optional[str]:
-        """Get the current owner from HCPA data or status table."""
-        # Try parcels table first (HCPA data) - may be in v1 or v2
+        """Get the current owner from HCPA data or auctions table."""
+        query_conn = self.conn
+
+        # Try parcels table first (HCPA data)
         try:
-            result = self.conn.execute(
+            result = query_conn.execute(
                 """
                 SELECT owner_name
                 FROM parcels
@@ -1136,14 +1130,14 @@ class IterativeDiscovery:
 
         # Try auctions table (defendant is usually the current owner)
         try:
-            result = self.conn.execute(
+            result = query_conn.execute(
                 """
                 SELECT defendant
                 FROM auctions
-                WHERE folio = ?
+                WHERE parcel_id = ? OR folio = ?
                 LIMIT 1
                 """,
-                [folio],
+                [folio, folio],
             ).fetchone()
 
             if result and result[0]:
@@ -1223,24 +1217,28 @@ class IterativeDiscovery:
                 if gap_days > MAX_ANCHOR_GAP_DAYS:
                     # First deed is too far from anchor - need intermediate deed
                     first_grantor = first_deed.get("grantor")
-                    gaps.append(ChainGap(
-                        start_date=anchor_date,
-                        end_date=first_deed_date,
-                        gap_type="anchor_to_first_deed",
-                        expected_grantor=developer,  # Plat developer should be selling
-                        expected_grantee=first_grantor,  # First deed's grantor bought from someone
-                        days=gap_days,
-                    ))
+                    gaps.append(
+                        ChainGap(
+                            start_date=anchor_date,
+                            end_date=first_deed_date,
+                            gap_type="anchor_to_first_deed",
+                            expected_grantor=developer,  # Plat developer should be selling
+                            expected_grantee=first_grantor,  # First deed's grantor bought from someone
+                            days=gap_days,
+                        )
+                    )
         elif anchor_date and not deeds:
             # Have anchor but NO deeds - major gap
-            gaps.append(ChainGap(
-                start_date=anchor_date,
-                end_date=today,
-                gap_type="anchor_to_first_deed",
-                expected_grantor=developer,
-                expected_grantee=current_owner,
-                days=(today - anchor_date).days,
-            ))
+            gaps.append(
+                ChainGap(
+                    start_date=anchor_date,
+                    end_date=today,
+                    gap_type="anchor_to_first_deed",
+                    expected_grantor=developer,
+                    expected_grantee=current_owner,
+                    days=(today - anchor_date).days,
+                )
+            )
 
         # Gap 2: Between consecutive deeds (ownership breaks)
         for i in range(len(deeds) - 1):
@@ -1264,14 +1262,16 @@ class IterativeDiscovery:
 
                     if date1 and date2:
                         gap_days = (date2 - date1).days
-                        gaps.append(ChainGap(
-                            start_date=date1,
-                            end_date=date2,
-                            gap_type="ownership_gap",
-                            expected_grantor=current_grantee,  # Who should be selling
-                            expected_grantee=next_grantor,  # Who should be buying
-                            days=gap_days,
-                        ))
+                        gaps.append(
+                            ChainGap(
+                                start_date=date1,
+                                end_date=date2,
+                                gap_type="ownership_gap",
+                                expected_grantor=current_grantee,  # Who should be selling
+                                expected_grantee=next_grantor,  # Who should be buying
+                                days=gap_days,
+                            )
+                        )
 
         # Gap 3: Last deed to current owner
         if deeds and current_owner:
@@ -1288,14 +1288,16 @@ class IterativeDiscovery:
 
                     if last_date:
                         gap_days = (today - last_date).days
-                        gaps.append(ChainGap(
-                            start_date=last_date,
-                            end_date=today,
-                            gap_type="to_current_owner",
-                            expected_grantor=last_grantee,  # Last known owner
-                            expected_grantee=current_owner,  # Current owner
-                            days=gap_days,
-                        ))
+                        gaps.append(
+                            ChainGap(
+                                start_date=last_date,
+                                end_date=today,
+                                gap_type="to_current_owner",
+                                expected_grantor=last_grantee,  # Last known owner
+                                expected_grantee=current_owner,  # Current owner
+                                days=gap_days,
+                            )
+                        )
 
         if gaps:
             logger.info(f"Found {len(gaps)} chain gaps for {folio}")
@@ -1351,12 +1353,11 @@ class IterativeDiscovery:
                 try:
                     self.conn.execute(
                         """
-                        INSERT INTO ori_search_queue (
+                        INSERT OR IGNORE INTO ori_search_queue (
                             folio, search_type, search_term, priority, status,
                             date_from, date_to, triggered_by_instrument
                         )
                         VALUES (?, 'name', ?, ?, 'ready', ?, ?, ?)
-                        ON CONFLICT DO NOTHING
                         """,
                         [
                             folio,
@@ -1368,10 +1369,7 @@ class IterativeDiscovery:
                         ],
                     )
                     queued += 1
-                    logger.debug(
-                        f"  Queued gap search: {gap.expected_grantor} "
-                        f"({gap.start_date} to {gap.end_date})"
-                    )
+                    logger.debug(f"  Queued gap search: {gap.expected_grantor} ({gap.start_date} to {gap.end_date})")
                 except Exception as e:
                     logger.debug(f"Could not queue gap search: {e}")
 
@@ -1380,12 +1378,11 @@ class IterativeDiscovery:
                 try:
                     self.conn.execute(
                         """
-                        INSERT INTO ori_search_queue (
+                        INSERT OR IGNORE INTO ori_search_queue (
                             folio, search_type, search_term, priority, status,
                             date_from, date_to, triggered_by_instrument
                         )
                         VALUES (?, 'name', ?, ?, 'ready', ?, ?, ?)
-                        ON CONFLICT DO NOTHING
                         """,
                         [
                             folio,
@@ -1397,10 +1394,7 @@ class IterativeDiscovery:
                         ],
                     )
                     queued += 1
-                    logger.debug(
-                        f"  Queued gap search: {gap.expected_grantee} "
-                        f"({gap.start_date} to {gap.end_date})"
-                    )
+                    logger.debug(f"  Queued gap search: {gap.expected_grantee} ({gap.start_date} to {gap.end_date})")
                 except Exception as e:
                     logger.debug(f"Could not queue gap search: {e}")
 
@@ -1492,9 +1486,7 @@ class IterativeDiscovery:
             for member in members:
                 self.name_matcher.link_party_to_identity(folio, member, identity_id)
 
-            logger.info(
-                f"  Linked spelling cluster: {members} → identity {identity_id}"
-            )
+            logger.info(f"  Linked spelling cluster: {members} → identity {identity_id}")
             links_created += len(members) - 1  # Count links, not members
 
         if links_created > 0:
@@ -1553,4 +1545,3 @@ class IterativeDiscovery:
 
 class RateLimitError(Exception):
     """Raised when ORI rate limits our requests."""
-

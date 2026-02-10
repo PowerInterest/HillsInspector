@@ -1,9 +1,11 @@
 
 import sqlite3
+
+from src.db.sqlite_paths import resolve_sqlite_db_path_str
 from pathlib import Path
 from loguru import logger
 
-DB_PATH = "data/property_master_sqlite.db"
+DB_PATH = resolve_sqlite_db_path_str()
 
 def check_stats():
     if not Path(DB_PATH).exists():

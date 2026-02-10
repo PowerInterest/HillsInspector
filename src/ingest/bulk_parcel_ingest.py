@@ -26,6 +26,7 @@ import json
 from pathlib import Path
 from loguru import logger
 from src.utils.time import coerce_datetime_utc, now_utc
+from src.db.sqlite_paths import resolve_sqlite_db_path
 import asyncio
 from src.ingest.bulk_downloader import download_latest_bulk_data
 
@@ -44,7 +45,7 @@ DATA_DIR = Path("data")
 BULK_DATA_DIR = DATA_DIR / "bulk_data"
 PARQUET_DIR = DATA_DIR / "parquet"
 METADATA_FILE = BULK_DATA_DIR / "ingest_metadata.json"
-DB_PATH = DATA_DIR / "property_master_sqlite.db"
+DB_PATH = resolve_sqlite_db_path()
 
 # HCPA download URL pattern
 HCPA_DOWNLOAD_BASE = "https://www.hcpafl.org/Downloads/GIS"
@@ -588,8 +589,9 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH), conn=None) -> dict:
     """
     owns_conn = conn is None
     if owns_conn:
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
 
     # Check if bulk_parcels table exists, if not try to load from parquet
     try:

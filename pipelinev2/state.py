@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 
@@ -42,6 +43,7 @@ class RunContext:
     geocode_limit: int | None = 25
     auction_limit: int | None = None
     run_id: str = ""
+    data_dir: Path = field(default_factory=lambda: Path("datav2"))
     # Allows callers to inject prebuilt services; keep optional to avoid side-effects in prototype.
     services: Dict[str, Any] = field(default_factory=dict)
 

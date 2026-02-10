@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from loguru import logger
 import fitz  # PyMuPDF
-import duckdb
+import sqlite3
 import json
 
 from src.services.vision_service import VisionService
 from src.scrapers.ori_api_scraper import ORIApiScraper
-from src.utils.time import ensure_duckdb_utc
+from src.db.sqlite_paths import resolve_sqlite_db_path_str
 
 
 class DocumentAnalyzer:
@@ -33,8 +33,8 @@ class DocumentAnalyzer:
     AFFIDAVIT_TYPES = {'AFF', 'AFFD'}
     FINAL_JUDGMENT_TYPES = {'FJ'}
 
-    def __init__(self, db_path: str = "data/property_master.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str | None = None):
+        self.db_path = db_path or resolve_sqlite_db_path_str()
         self.vision_service = VisionService()
         self.ori_scraper = ORIApiScraper()
         self.temp_dir = Path("data/temp/doc_images")
@@ -107,7 +107,37 @@ class DocumentAnalyzer:
             category = self._get_doc_category(doc_type)
 
             # Route to appropriate extraction method
-            result = self.vision_service.extract_document_by_type_multi(page_images, normalized_type)
+            if len(page_images) == 1:
+                analysis_strategy = "single_page"
+                result = self.vision_service.extract_document_by_type(
+                    page_images[0], normalized_type
+                )
+            else:
+                analysis_strategy = "multi"
+                result = self.vision_service.extract_document_by_type_multi(
+                    page_images, normalized_type
+                )
+
+            # If multi-image extraction failed, fall back to per-page extraction
+            if not result and analysis_strategy != "single_page":
+                analysis_strategy = "per_page"
+                logger.warning(
+                    f"Document extraction returned no data for {doc_type} {instrument}; "
+                    "falling back to per-page extraction"
+                )
+                page_results: list[dict[str, Any]] = []
+                for image_path in page_images:
+                    page_result = self.vision_service.extract_document_by_type(
+                        image_path, normalized_type
+                    )
+                    if page_result:
+                        page_results.append(page_result)
+
+                if page_results:
+                    merged = page_results[0]
+                    for page_result in page_results[1:]:
+                        merged = self._merge_extracted_data(merged, page_result)
+                    result = merged
 
             # Add category to result
             if result:
@@ -122,7 +152,8 @@ class DocumentAnalyzer:
                     'doc_type': doc_type,
                     'instrument': instrument,
                     'category': category,
-                    'pages_analyzed': len(page_images)
+                    'pages_analyzed': len(page_images),
+                    'analysis_strategy': analysis_strategy,
                 }
 
             return result
@@ -131,8 +162,13 @@ class DocumentAnalyzer:
             logger.error(f"Error analyzing document {pdf_path}: {e}")
             return None
 
-    def _pdf_to_images(self, pdf_path: str, prefix: str,
-                       max_pages: int = 5, dpi: int = 200) -> List[str]:
+    def _pdf_to_images(
+        self,
+        pdf_path: str,
+        prefix: str,
+        max_pages: int = 1,
+        dpi: int = 120,
+    ) -> List[str]:
         """
         Convert PDF pages to images.
 
@@ -173,6 +209,19 @@ class DocumentAnalyzer:
         for path in image_paths:
             with suppress(Exception):
                 Path(path).unlink(missing_ok=True)
+
+    def _merge_extracted_data(self, base: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge extracted data, filling missing fields from the update dict."""
+        merged = dict(base)
+        for key, value in update.items():
+            if value is None:
+                continue
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = self._merge_extracted_data(merged[key], value)
+                continue
+            if not merged.get(key):
+                merged[key] = value
+        return merged
 
     def download_and_analyze(
         self,
@@ -236,8 +285,8 @@ class DocumentAnalyzer:
             'documents': []
         }
 
-        conn = duckdb.connect(self.db_path, read_only=True)
-        ensure_duckdb_utc(conn)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
 
         # Get documents for this folio
         query = """
@@ -292,8 +341,7 @@ class DocumentAnalyzer:
             True if updated successfully
         """
         try:
-            conn = duckdb.connect(self.db_path)
-            ensure_duckdb_utc(conn)
+            conn = sqlite3.connect(self.db_path)
 
             # Extract relevant fields based on document type
             amount = None
@@ -331,6 +379,7 @@ class DocumentAnalyzer:
             query = f"UPDATE encumbrances SET {', '.join(updates)} WHERE id = ?"
 
             conn.execute(query, params)
+            conn.commit()
             conn.close()
 
             logger.info(f"Updated encumbrance {encumbrance_id}: amount=${amount}, creditor={creditor}")
@@ -353,8 +402,7 @@ class DocumentAnalyzer:
             True if updated successfully
         """
         try:
-            conn = duckdb.connect(self.db_path)
-            ensure_duckdb_utc(conn)
+            conn = sqlite3.connect(self.db_path)
 
             updates = []
             params = []
@@ -377,6 +425,7 @@ class DocumentAnalyzer:
             query = f"UPDATE chain_of_title SET {', '.join(updates)} WHERE id = ?"
 
             conn.execute(query, params)
+            conn.commit()
             conn.close()
 
             logger.info(f"Updated chain {chain_id} with deed data")
@@ -400,8 +449,8 @@ def process_missing_amounts(limit: int = 50) -> Dict[str, int]:
     analyzer = DocumentAnalyzer()
     stats = {'processed': 0, 'success': 0, 'failed': 0}
 
-    conn = duckdb.connect(analyzer.db_path, read_only=True)
-    ensure_duckdb_utc(conn)
+    conn = sqlite3.connect(analyzer.db_path)
+    conn.row_factory = sqlite3.Row
 
     # Get encumbrances missing amounts
     query = """

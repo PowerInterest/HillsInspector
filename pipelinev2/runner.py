@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from pathlib import Path
 from typing import Iterable, List
 
 from loguru import logger
@@ -32,6 +33,7 @@ def build_context(
     geocode_missing_parcels: bool = True,
     geocode_limit: int | None = 25,
     auction_limit: int | None = None,
+    data_dir: str | Path = "datav2",
     run_id: str | None = None,
 ) -> RunContext:
     return RunContext(
@@ -44,6 +46,7 @@ def build_context(
         geocode_missing_parcels=geocode_missing_parcels,
         geocode_limit=geocode_limit,
         auction_limit=auction_limit,
+        data_dir=Path(data_dir),
         run_id=run_id or _default_run_id(),
     )
 

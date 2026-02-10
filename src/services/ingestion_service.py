@@ -21,16 +21,76 @@ from src.utils.relevance_checker import verify_document_relevance
 # Maximum party name searches for gap-filling per property
 MAX_PARTY_SEARCHES = 5
 
-# Document types worth analyzing (download PDF and extract data)
+# Document types worth downloading (all recordable docs relevant to title)
 ANALYZABLE_DOC_TYPES = {
-    'D', 'WD', 'QC', 'SWD', 'TD', 'CD', 'PRD', 'CT',  # Deeds
-    'MTG', 'MTGNT', 'MTGNIT', 'DOT', 'HELOC',  # Mortgages
-    'LN', 'LIEN', 'JUD', 'TL', 'ML', 'HOA', 'COD', 'MECH',  # Liens
-    'SAT', 'REL', 'SATMTG', 'RELMTG',  # Satisfactions
-    'ASG', 'ASGN', 'ASGNMTG', 'ASSIGN', 'ASINT',  # Assignments
-    'LP', 'LISPEN',  # Lis Pendens
-    'NOC',  # Notice of Commencement
-    'AFF', 'AFFD',  # Affidavits
+    "D",
+    "WD",
+    "QC",
+    "SWD",
+    "TD",
+    "CD",
+    "PRD",
+    "CT",  # Deeds
+    "MTG",
+    "MTGNT",
+    "MTGNIT",
+    "DOT",
+    "HELOC",  # Mortgages
+    "LN",
+    "LIEN",
+    "JUD",
+    "TL",
+    "ML",
+    "HOA",
+    "COD",
+    "MECH",  # Liens
+    "SAT",
+    "REL",
+    "SATMTG",
+    "RELMTG",  # Satisfactions
+    "ASG",
+    "ASGN",
+    "ASGNMTG",
+    "ASSIGN",
+    "ASINT",  # Assignments
+    "LP",
+    "LISPEN",  # Lis Pendens
+    "NOC",  # Notice of Commencement
+    "AFF",
+    "AFFD",  # Affidavits
+}
+
+# Document types where vision extraction adds financial data (amounts, rates, etc.)
+# Other types in ANALYZABLE_DOC_TYPES are downloaded but skip vision — ORI metadata
+# already provides parties, dates, and instrument numbers which is sufficient.
+VISION_EXTRACT_DOC_TYPES = {
+    "D",
+    "WD",
+    "QC",
+    "SWD",
+    "TD",
+    "CD",
+    "PRD",
+    "CT",  # Deeds (sale price)
+    "MTG",
+    "MTGNT",
+    "MTGNIT",
+    "DOT",
+    "HELOC",  # Mortgages (principal, rate, MERS)
+    "LN",
+    "LIEN",
+    "JUD",
+    "TL",
+    "ML",
+    "HOA",
+    "COD",
+    "MECH",  # Liens (amounts)
+    "SAT",
+    "REL",
+    "SATMTG",
+    "RELMTG",  # Satisfactions (which instrument satisfied)
+    "LP",
+    "LISPEN",  # Lis Pendens (case details)
 }
 
 
@@ -78,7 +138,7 @@ class IngestionService:
 
         if not docs:
             # Get search terms from Property (set by pipeline) or fall back to legal description
-            search_terms = getattr(prop, 'legal_search_terms', None) or []
+            search_terms = getattr(prop, "legal_search_terms", None) or []
 
             # If no pre-built search terms, try to build from legal_description
             if not search_terms:
@@ -282,41 +342,38 @@ class IngestionService:
             # Map grouped ORI doc to our schema
             mapped_doc = self._map_grouped_ori_doc(doc, prop)
 
-            # Download and analyze PDF for ALL document types (not just "analyzable")
-            # This extracts party data from the PDF which is more reliable than ORI indexing
-            if self.analyze_pdfs:
+            # Download and analyze PDF only for analyzable document types.
+            # This extracts party data from the PDF which is more reliable than ORI indexing.
+            if self.analyze_pdfs and self._should_analyze_document(doc):
                 download_result = self._download_and_analyze_document(doc, prop.parcel_id, prefer_browser=docs_from_browser)
                 if download_result:
                     # Always set file_path if download succeeded
-                    mapped_doc['file_path'] = download_result.get('file_path')
+                    mapped_doc["file_path"] = download_result.get("file_path")
                     # Set extracted data if vision analysis succeeded
-                    if download_result.get('extracted_data'):
-                        mapped_doc['vision_extracted_data'] = download_result['extracted_data']
+                    if download_result.get("extracted_data"):
+                        mapped_doc["vision_extracted_data"] = download_result["extracted_data"]
                         # Update party1/party2 from vLLM extraction if missing
-                        mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
+                        mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result["extracted_data"])
 
             # Save to DB (after party updates)
             doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
-            mapped_doc['id'] = doc_id
+            mapped_doc["id"] = doc_id
 
             # Update extracted data in DB if we have it
-            if mapped_doc.get('vision_extracted_data'):
-                self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+            if mapped_doc.get("vision_extracted_data"):
+                self._update_document_with_extracted_data(doc_id, mapped_doc["vision_extracted_data"])
 
             processed_docs.append(mapped_doc)
 
         # Track instruments we've found so far
-        existing_instruments = {
-            str(doc.get('instrument_number', '')) for doc in processed_docs
-            if doc.get('instrument_number')
-        }
+        existing_instruments = {str(doc.get("instrument_number", "")) for doc in processed_docs if doc.get("instrument_number")}
 
         # 2. Build Chain
         logger.info("Building Chain of Title...")
         analysis = self.chain_service.build_chain_and_analyze(processed_docs)
 
         # 3. Gap-filling: If chain has gaps, search by party name
-        gaps = analysis.get('gaps', [])
+        gaps = analysis.get("gaps", [])
         if gaps:
             logger.info(f"Chain has {len(gaps)} gaps, attempting gap-fill...")
             gap_docs = self._fill_chain_gaps(gaps, existing_instruments, filter_info, prop)
@@ -327,19 +384,21 @@ class IngestionService:
                 for doc in new_grouped:
                     mapped_doc = self._map_grouped_ori_doc(doc, prop)
 
-                    if self.analyze_pdfs:
-                        download_result = self._download_and_analyze_document(doc, prop.parcel_id, prefer_browser=docs_from_browser)
+                    if self.analyze_pdfs and self._should_analyze_document(doc):
+                        download_result = self._download_and_analyze_document(
+                            doc, prop.parcel_id, prefer_browser=docs_from_browser
+                        )
                         if download_result:
-                            mapped_doc['file_path'] = download_result.get('file_path')
-                            if download_result.get('extracted_data'):
-                                mapped_doc['vision_extracted_data'] = download_result['extracted_data']
-                                mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
+                            mapped_doc["file_path"] = download_result.get("file_path")
+                            if download_result.get("extracted_data"):
+                                mapped_doc["vision_extracted_data"] = download_result["extracted_data"]
+                                mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result["extracted_data"])
 
                     doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
-                    mapped_doc['id'] = doc_id
+                    mapped_doc["id"] = doc_id
 
-                    if mapped_doc.get('vision_extracted_data'):
-                        self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+                    if mapped_doc.get("vision_extracted_data"):
+                        self._update_document_with_extracted_data(doc_id, mapped_doc["vision_extracted_data"])
 
                     processed_docs.append(mapped_doc)
 
@@ -348,8 +407,8 @@ class IngestionService:
                 analysis = self.chain_service.build_chain_and_analyze(processed_docs)
 
         # 4. Verify current owner against HCPA
-        chain_owner = analysis.get('summary', {}).get('current_owner', '')
-        hcpa_owner = getattr(prop, 'owner_name', None)
+        chain_owner = analysis.get("summary", {}).get("current_owner", "")
+        hcpa_owner = getattr(prop, "owner_name", None)
 
         if chain_owner and chain_owner != "Unknown":
             owner_docs = self._verify_current_owner(chain_owner, hcpa_owner, filter_info, existing_instruments)
@@ -360,19 +419,21 @@ class IngestionService:
                 for doc in new_grouped:
                     mapped_doc = self._map_grouped_ori_doc(doc, prop)
 
-                    if self.analyze_pdfs:
-                        download_result = self._download_and_analyze_document(doc, prop.parcel_id, prefer_browser=docs_from_browser)
+                    if self.analyze_pdfs and self._should_analyze_document(doc):
+                        download_result = self._download_and_analyze_document(
+                            doc, prop.parcel_id, prefer_browser=docs_from_browser
+                        )
                         if download_result:
-                            mapped_doc['file_path'] = download_result.get('file_path')
-                            if download_result.get('extracted_data'):
-                                mapped_doc['vision_extracted_data'] = download_result['extracted_data']
-                                mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
+                            mapped_doc["file_path"] = download_result.get("file_path")
+                            if download_result.get("extracted_data"):
+                                mapped_doc["vision_extracted_data"] = download_result["extracted_data"]
+                                mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result["extracted_data"])
 
                     doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
-                    mapped_doc['id'] = doc_id
+                    mapped_doc["id"] = doc_id
 
-                    if mapped_doc.get('vision_extracted_data'):
-                        self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+                    if mapped_doc.get("vision_extracted_data"):
+                        self._update_document_with_extracted_data(doc_id, mapped_doc["vision_extracted_data"])
 
                     processed_docs.append(mapped_doc)
 
@@ -470,16 +531,16 @@ class IngestionService:
             if self.analyze_pdfs:
                 download_result = self._download_and_analyze_document(doc, property_id)
                 if download_result:
-                    mapped_doc['file_path'] = download_result.get('file_path')
-                    if download_result.get('extracted_data'):
-                        mapped_doc['vision_extracted_data'] = download_result['extracted_data']
-                        mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
+                    mapped_doc["file_path"] = download_result.get("file_path")
+                    if download_result.get("extracted_data"):
+                        mapped_doc["vision_extracted_data"] = download_result["extracted_data"]
+                        mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result["extracted_data"])
 
             if not skip_db_writes:
                 doc_id = self.db.save_document(property_id, mapped_doc)
-                mapped_doc['id'] = doc_id
-                if mapped_doc.get('vision_extracted_data'):
-                    self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+                mapped_doc["id"] = doc_id
+                if mapped_doc.get("vision_extracted_data"):
+                    self._update_document_with_extracted_data(doc_id, mapped_doc["vision_extracted_data"])
 
             processed_docs.append(mapped_doc)
 
@@ -492,17 +553,17 @@ class IngestionService:
             # Return data for caller to queue writes
             logger.info(f"Party-based ingestion prepared {len(processed_docs)} docs for {prop.case_number} (writes deferred)")
             return {
-                'property_id': property_id,
-                'documents': processed_docs,
-                'chain_data': db_data,
+                "property_id": property_id,
+                "documents": processed_docs,
+                "chain_data": db_data,
             }
 
         self.db.save_chain_of_title(property_id, db_data)
         logger.success(f"Party-based ingestion complete for {prop.case_number} ({len(processed_docs)} docs)")
         return {
-            'property_id': property_id,
-            'documents': processed_docs,
-            'chain_data': db_data,
+            "property_id": property_id,
+            "documents": processed_docs,
+            "chain_data": db_data,
         }
 
     def _normalize_party_name_for_search(self, name: str) -> Optional[str]:
@@ -531,39 +592,49 @@ class IngestionService:
 
         # Truncate at A/K/A, F/K/A, D/B/A patterns (keep only the primary name)
         # These indicate aliases - we want the primary name before the alias
-        for pattern in [' A/K/A ', ' AKA ', ' F/K/A ', ' FKA ', ' D/B/A ', ' DBA ']:
+        for pattern in [" A/K/A ", " AKA ", " F/K/A ", " FKA ", " D/B/A ", " DBA "]:
             if pattern in search:
                 search = search.split(pattern)[0].strip()
                 break
 
         # Remove common legal suffixes at the end
         suffixes_to_remove = [
-            " ET AL", " ET AL.", " ET UX", " ET VIR",
-            " A/K/A", " AKA", " F/K/A", " FKA",
-            " D/B/A", " DBA", " AS TRUSTEE",
-            " INDIVIDUALLY", " AND ALL", " AND",
+            " ET AL",
+            " ET AL.",
+            " ET UX",
+            " ET VIR",
+            " A/K/A",
+            " AKA",
+            " F/K/A",
+            " FKA",
+            " D/B/A",
+            " DBA",
+            " AS TRUSTEE",
+            " INDIVIDUALLY",
+            " AND ALL",
+            " AND",
         ]
         for suffix in suffixes_to_remove:
             if search.endswith(suffix):
-                search = search[:-len(suffix)].strip()
+                search = search[: -len(suffix)].strip()
 
         # Remove any content in parentheses
-        search = re.sub(r'\([^)]*\)', '', search).strip()
+        search = re.sub(r"\([^)]*\)", "", search).strip()
 
         # If name has comma (LAST, FIRST format), convert to LAST FIRST
-        if ',' in search:
-            parts = search.split(',', 1)
+        if "," in search:
+            parts = search.split(",", 1)
             search = f"{parts[0].strip()} {parts[1].strip()}"
 
         # Clean up multiple spaces
-        search = ' '.join(search.split())
+        search = " ".join(search.split())
 
         if len(search) < 3:
             return None
 
         # Add wildcard for partial matching
-        if not search.endswith('*'):
-            search += '*'
+        if not search.endswith("*"):
+            search += "*"
 
         return search
 
@@ -617,7 +688,7 @@ class IngestionService:
 
         if not docs:
             # Get search terms from Property (set by pipeline) or fall back to legal description
-            search_terms = getattr(prop, 'legal_search_terms', None) or []
+            search_terms = getattr(prop, "legal_search_terms", None) or []
 
             # If no pre-built search terms, try to build from legal_description
             if not search_terms:
@@ -743,30 +814,28 @@ class IngestionService:
                 owner_search = None
                 if owner_name and not is_institutional_name(owner_name):
                     owner_search = self._normalize_party_name_for_search(owner_name)
-                
-                if owner_search and owner_name:
-                     owner_terms = self._generate_owner_party_search_terms(owner_name)
-                     logger.info(f"No legal results; trying ORI party search by owner: {owner_terms}")
-                     for term in owner_terms:
-                         try:
-                             # Use browser party search async (if available, otherwise wrap sync)
-                             loop = asyncio.get_running_loop()
-                             # Note: ORI Scraper needs search_by_party_browser_async ideally, but we wrap sync
-                             candidate_docs = await loop.run_in_executor(
-                                 None, 
-                                 functools.partial(self.ori_scraper.search_by_party_browser_sync, term, headless=True)
-                             )
-                             
-                             if candidate_docs:
-                                 candidate_docs = self._filter_docs_by_relevance(candidate_docs, prop)
-                                 if candidate_docs:
-                                      docs = candidate_docs
-                                      successful_term = f"OWNER_PARTY:{term}"
-                                      logger.info(f"Owner party search yielded {len(docs)} relevant documents")
-                                      break
-                         except Exception as e:
-                             logger.warning(f"Owner party search failed: {e}")
 
+                if owner_search and owner_name:
+                    owner_terms = self._generate_owner_party_search_terms(owner_name)
+                    logger.info(f"No legal results; trying ORI party search by owner: {owner_terms}")
+                    for term in owner_terms:
+                        try:
+                            # Use browser party search async (if available, otherwise wrap sync)
+                            loop = asyncio.get_running_loop()
+                            # Note: ORI Scraper needs search_by_party_browser_async ideally, but we wrap sync
+                            candidate_docs = await loop.run_in_executor(
+                                None, functools.partial(self.ori_scraper.search_by_party_browser_sync, term, headless=True)
+                            )
+
+                            if candidate_docs:
+                                candidate_docs = self._filter_docs_by_relevance(candidate_docs, prop)
+                                if candidate_docs:
+                                    docs = candidate_docs
+                                    successful_term = f"OWNER_PARTY:{term}"
+                                    logger.info(f"Owner party search yielded {len(docs)} relevant documents")
+                                    break
+                        except Exception as e:
+                            logger.warning(f"Owner party search failed: {e}")
 
             if not docs:
                 logger.warning(f"No documents found after trying {len(actual_search_terms)} search terms.")
@@ -791,52 +860,49 @@ class IngestionService:
             # Map grouped ORI doc to our schema
             mapped_doc = self._map_grouped_ori_doc(doc, prop)
 
-            # Download and analyze PDF for ALL document types
-            # This extracts party data from the PDF which is more reliable than ORI indexing
-            if self.analyze_pdfs:
+            # Download and analyze PDF only for analyzable document types.
+            # This extracts party data from the PDF which is more reliable than ORI indexing.
+            if self.analyze_pdfs and self._should_analyze_document(doc):
                 loop = asyncio.get_running_loop()
                 # Run sync download/analysis in thread pool, guarded by semaphore
                 async with VisionService.global_semaphore():
                     download_result = await loop.run_in_executor(
                         None,
-                        functools.partial(self._download_and_analyze_document, doc, prop.parcel_id, prefer_browser=docs_from_browser)
+                        functools.partial(
+                            self._download_and_analyze_document, doc, prop.parcel_id, prefer_browser=docs_from_browser
+                        ),
                     )
 
                 if download_result:
                     # Always set file_path if download succeeded
-                    mapped_doc['file_path'] = download_result.get('file_path')
+                    mapped_doc["file_path"] = download_result.get("file_path")
                     # Set extracted data if vision analysis succeeded
-                    if download_result.get('extracted_data'):
-                        mapped_doc['vision_extracted_data'] = download_result['extracted_data']
+                    if download_result.get("extracted_data"):
+                        mapped_doc["vision_extracted_data"] = download_result["extracted_data"]
                         # Update party1/party2 from vLLM extraction if missing
-                        mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
+                        mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result["extracted_data"])
 
             # Save to DB (after party updates)
             # Save to DB (via Writer if available)
             if self.db_writer:
-                doc_id = await self.db_writer.execute_with_result(
-                    self.db.save_document, prop.parcel_id, mapped_doc
-                )
+                doc_id = await self.db_writer.execute_with_result(self.db.save_document, prop.parcel_id, mapped_doc)
             else:
                 doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
-            mapped_doc['id'] = doc_id
+            mapped_doc["id"] = doc_id
 
             # Update extracted data in DB if we have it
-            if mapped_doc.get('vision_extracted_data'):
+            if mapped_doc.get("vision_extracted_data"):
                 if self.db_writer:
                     await self.db_writer.execute_with_result(
-                        self._update_document_with_extracted_data, doc_id, mapped_doc['vision_extracted_data']
+                        self._update_document_with_extracted_data, doc_id, mapped_doc["vision_extracted_data"]
                     )
                 else:
-                    self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+                    self._update_document_with_extracted_data(doc_id, mapped_doc["vision_extracted_data"])
 
             processed_docs.append(mapped_doc)
 
         # Track instruments we've found so far (for gap-filling deduplication)
-        existing_instruments = {
-            str(doc.get('instrument_number', '')) for doc in processed_docs
-            if doc.get('instrument_number')
-        }
+        existing_instruments = {str(doc.get("instrument_number", "")) for doc in processed_docs if doc.get("instrument_number")}
 
         # 2. Build Chain
         logger.info("Building Chain of Title...")
@@ -844,12 +910,10 @@ class IngestionService:
         analysis = await loop.run_in_executor(None, self.chain_service.build_chain_and_analyze, processed_docs)
 
         # 3. Gap-filling: If chain has gaps, search by party name (matches sync version)
-        gaps = analysis.get('gaps', [])
+        gaps = analysis.get("gaps", [])
         if gaps:
             logger.info(f"Chain has {len(gaps)} gaps, attempting gap-fill...")
-            gap_docs = await loop.run_in_executor(
-                None, self._fill_chain_gaps, gaps, existing_instruments, filter_info, prop
-            )
+            gap_docs = await loop.run_in_executor(None, self._fill_chain_gaps, gaps, existing_instruments, filter_info, prop)
 
             if gap_docs:
                 # Process new documents
@@ -857,44 +921,44 @@ class IngestionService:
                 for doc in new_grouped:
                     mapped_doc = self._map_grouped_ori_doc(doc, prop)
 
-                    if self.analyze_pdfs:
+                    if self.analyze_pdfs and self._should_analyze_document(doc):
                         async with VisionService.global_semaphore():
                             download_result = await loop.run_in_executor(
                                 None,
-                                functools.partial(self._download_and_analyze_document, doc, prop.parcel_id, prefer_browser=docs_from_browser)
+                                functools.partial(
+                                    self._download_and_analyze_document, doc, prop.parcel_id, prefer_browser=docs_from_browser
+                                ),
                             )
                         if download_result:
-                            mapped_doc['file_path'] = download_result.get('file_path')
-                            if download_result.get('extracted_data'):
-                                mapped_doc['vision_extracted_data'] = download_result['extracted_data']
-                                mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
+                            mapped_doc["file_path"] = download_result.get("file_path")
+                            if download_result.get("extracted_data"):
+                                mapped_doc["vision_extracted_data"] = download_result["extracted_data"]
+                                mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result["extracted_data"])
 
                     if self.db_writer:
-                        doc_id = await self.db_writer.execute_with_result(
-                            self.db.save_document, prop.parcel_id, mapped_doc
-                        )
+                        doc_id = await self.db_writer.execute_with_result(self.db.save_document, prop.parcel_id, mapped_doc)
                     else:
                         doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
-                    mapped_doc['id'] = doc_id
+                    mapped_doc["id"] = doc_id
 
-                    if mapped_doc.get('vision_extracted_data'):
+                    if mapped_doc.get("vision_extracted_data"):
                         if self.db_writer:
                             await self.db_writer.execute_with_result(
-                                self._update_document_with_extracted_data, doc_id, mapped_doc['vision_extracted_data']
+                                self._update_document_with_extracted_data, doc_id, mapped_doc["vision_extracted_data"]
                             )
                         else:
-                            self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+                            self._update_document_with_extracted_data(doc_id, mapped_doc["vision_extracted_data"])
 
                     processed_docs.append(mapped_doc)
-                    existing_instruments.add(str(mapped_doc.get('instrument_number', '')))
+                    existing_instruments.add(str(mapped_doc.get("instrument_number", "")))
 
                 # Rebuild chain with new documents
                 logger.info("Rebuilding chain with gap-fill documents...")
                 analysis = await loop.run_in_executor(None, self.chain_service.build_chain_and_analyze, processed_docs)
 
         # 4. Verify current owner against HCPA (matches sync version)
-        chain_owner = analysis.get('summary', {}).get('current_owner', '')
-        hcpa_owner = getattr(prop, 'owner_name', None)
+        chain_owner = analysis.get("summary", {}).get("current_owner", "")
+        hcpa_owner = getattr(prop, "owner_name", None)
 
         if chain_owner and chain_owner != "Unknown":
             owner_docs = await loop.run_in_executor(
@@ -907,33 +971,33 @@ class IngestionService:
                 for doc in new_grouped:
                     mapped_doc = self._map_grouped_ori_doc(doc, prop)
 
-                    if self.analyze_pdfs:
+                    if self.analyze_pdfs and self._should_analyze_document(doc):
                         async with VisionService.global_semaphore():
                             download_result = await loop.run_in_executor(
                                 None,
-                                functools.partial(self._download_and_analyze_document, doc, prop.parcel_id, prefer_browser=docs_from_browser)
+                                functools.partial(
+                                    self._download_and_analyze_document, doc, prop.parcel_id, prefer_browser=docs_from_browser
+                                ),
                             )
                         if download_result:
-                            mapped_doc['file_path'] = download_result.get('file_path')
-                            if download_result.get('extracted_data'):
-                                mapped_doc['vision_extracted_data'] = download_result['extracted_data']
-                                mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result['extracted_data'])
+                            mapped_doc["file_path"] = download_result.get("file_path")
+                            if download_result.get("extracted_data"):
+                                mapped_doc["vision_extracted_data"] = download_result["extracted_data"]
+                                mapped_doc = self._update_parties_from_extraction(mapped_doc, download_result["extracted_data"])
 
                     if self.db_writer:
-                        doc_id = await self.db_writer.execute_with_result(
-                            self.db.save_document, prop.parcel_id, mapped_doc
-                        )
+                        doc_id = await self.db_writer.execute_with_result(self.db.save_document, prop.parcel_id, mapped_doc)
                     else:
                         doc_id = self.db.save_document(prop.parcel_id, mapped_doc)
-                    mapped_doc['id'] = doc_id
+                    mapped_doc["id"] = doc_id
 
-                    if mapped_doc.get('vision_extracted_data'):
+                    if mapped_doc.get("vision_extracted_data"):
                         if self.db_writer:
                             await self.db_writer.execute_with_result(
-                                self._update_document_with_extracted_data, doc_id, mapped_doc['vision_extracted_data']
+                                self._update_document_with_extracted_data, doc_id, mapped_doc["vision_extracted_data"]
                             )
                         else:
-                            self._update_document_with_extracted_data(doc_id, mapped_doc['vision_extracted_data'])
+                            self._update_document_with_extracted_data(doc_id, mapped_doc["vision_extracted_data"])
 
                     processed_docs.append(mapped_doc)
 
@@ -946,16 +1010,16 @@ class IngestionService:
 
         # 5. Save Analysis
         if self.db_writer:
-             await self.db_writer.execute_with_result(self.db.save_chain_of_title, prop.parcel_id, db_data)
+            await self.db_writer.execute_with_result(self.db.save_chain_of_title, prop.parcel_id, db_data)
         else:
-             self.db.save_chain_of_title(prop.parcel_id, db_data)
+            self.db.save_chain_of_title(prop.parcel_id, db_data)
         logger.success(f"Ingestion complete for {prop.case_number} ({len(processed_docs)} total docs)")
 
     def _should_analyze_document(self, doc: dict) -> bool:
         """Check if document type is worth downloading and analyzing."""
-        doc_type = doc.get('DocType', '')
+        doc_type = doc.get("DocType") or doc.get("doc_type") or doc.get("document_type", "")
         # Extract just the code: "(MTG) MORTGAGE" -> "MTG"
-        code = doc_type.replace('(', '').replace(')', '').split()[0].upper() if doc_type else ''
+        code = doc_type.replace("(", "").replace(")", "").split()[0].upper() if doc_type else ""
         return code in ANALYZABLE_DOC_TYPES
 
     def _download_and_analyze_document(self, doc: dict, folio: str, prefer_browser: bool = False) -> Optional[dict]:
@@ -972,8 +1036,8 @@ class IngestionService:
             Returns None if PDF download failed.
         """
         # Support both grouped doc format (lowercase) and raw ORI format (uppercase)
-        instrument = doc.get('instrument') or doc.get('Instrument', '')
-        doc_type = doc.get('doc_type') or doc.get('DocType', 'UNKNOWN')
+        instrument = doc.get("instrument") or doc.get("Instrument", "")
+        doc_type = doc.get("doc_type") or doc.get("DocType", "UNKNOWN")
 
         if not instrument:
             return None
@@ -985,9 +1049,9 @@ class IngestionService:
 
             # Build ORI doc format for download_pdf (needs ID or instrument)
             ori_doc = {
-                'Instrument': instrument,
-                'DocType': doc_type,
-                'ID': doc.get('ID') or doc.get('id'),  # May not have ID yet
+                "Instrument": instrument,
+                "DocType": doc_type,
+                "ID": doc.get("ID") or doc.get("id"),  # May not have ID yet
             }
 
             # Download PDF - use browser if docs came from browser search
@@ -996,16 +1060,24 @@ class IngestionService:
                 logger.debug(f"Could not download PDF for {instrument}")
                 return None
 
-            logger.info(f"Analyzing PDF: {pdf_path.name}")
-
             # Start result with file path (always set if download succeeded)
-            result = {'file_path': str(pdf_path)}
+            result = {"file_path": str(pdf_path)}
+
+            # Only run vision extraction for doc types where it adds financial data
+            # (amounts, rates, sale prices). For others (NOC, ASG, AFF, etc.),
+            # ORI metadata already provides parties, dates, and instrument numbers.
+            code = doc_type.replace("(", "").replace(")", "").split()[0].upper() if doc_type else ""
+            if code not in VISION_EXTRACT_DOC_TYPES:
+                logger.debug(f"Skipping vision for {doc_type} {instrument} (ORI metadata sufficient)")
+                return result
+
+            logger.info(f"Analyzing PDF: {pdf_path.name}")
 
             # Analyze with vision service
             extracted_data = self.doc_analyzer.analyze_document(str(pdf_path), doc_type, instrument)
             if extracted_data:
                 logger.success(f"Extracted data from {doc_type}: {instrument}")
-                result['extracted_data'] = extracted_data
+                result["extracted_data"] = extracted_data
 
             return result
 
@@ -1021,41 +1093,41 @@ class IngestionService:
         For mortgages: borrower -> party1, lender -> party2
         For liens: debtor -> party1, creditor -> party2
         """
-        doc_type = (mapped_doc.get('document_type') or '').upper()
+        doc_type = (mapped_doc.get("document_type") or "").upper()
 
         # Determine which extraction fields to use based on document type
-        if 'DEED' in doc_type or doc_type in ['D', 'WD', 'QC', 'TD', 'CD']:
-            party1_field = 'grantor'
-            party2_field = 'grantee'
-        elif 'MORTGAGE' in doc_type or 'MTG' in doc_type:
-            party1_field = 'borrower'
-            party2_field = 'lender'
-        elif 'LIEN' in doc_type or 'JUDGMENT' in doc_type:
-            party1_field = 'debtor'
-            party2_field = 'creditor'
-        elif 'SATISFACTION' in doc_type or 'SAT' in doc_type:
-            party1_field = 'releasing_party'
-            party2_field = 'released_party'
-        elif 'ASSIGNMENT' in doc_type or 'ASG' in doc_type:
-            party1_field = 'assignor'
-            party2_field = 'assignee'
+        if "DEED" in doc_type or doc_type in ["D", "WD", "QC", "TD", "CD"]:
+            party1_field = "grantor"
+            party2_field = "grantee"
+        elif "MORTGAGE" in doc_type or "MTG" in doc_type:
+            party1_field = "borrower"
+            party2_field = "lender"
+        elif "LIEN" in doc_type or "JUDGMENT" in doc_type:
+            party1_field = "debtor"
+            party2_field = "creditor"
+        elif "SATISFACTION" in doc_type or "SAT" in doc_type:
+            party1_field = "releasing_party"
+            party2_field = "released_party"
+        elif "ASSIGNMENT" in doc_type or "ASG" in doc_type:
+            party1_field = "assignor"
+            party2_field = "assignee"
         else:
             # Generic fallback
-            party1_field = 'grantor'
-            party2_field = 'grantee'
+            party1_field = "grantor"
+            party2_field = "grantee"
 
         # Update party1 if missing
-        if not mapped_doc.get('party1') or mapped_doc['party1'].strip() == '':
-            extracted_party1 = extracted_data.get(party1_field) or extracted_data.get('party1')
+        if not mapped_doc.get("party1") or mapped_doc["party1"].strip() == "":
+            extracted_party1 = extracted_data.get(party1_field) or extracted_data.get("party1")
             if extracted_party1:
-                mapped_doc['party1'] = extracted_party1
+                mapped_doc["party1"] = extracted_party1
                 logger.info(f"  Updated party1 from vLLM: {extracted_party1[:50]}")
 
         # Update party2 if missing
-        if not mapped_doc.get('party2') or mapped_doc['party2'].strip() == '':
-            extracted_party2 = extracted_data.get(party2_field) or extracted_data.get('party2')
+        if not mapped_doc.get("party2") or mapped_doc["party2"].strip() == "":
+            extracted_party2 = extracted_data.get(party2_field) or extracted_data.get("party2")
             if extracted_party2:
-                mapped_doc['party2'] = extracted_party2
+                mapped_doc["party2"] = extracted_party2
                 logger.info(f"  Updated party2 from vLLM: {extracted_party2[:50]}")
 
         return mapped_doc
@@ -1064,11 +1136,14 @@ class IngestionService:
         """Update document record with vision-extracted data."""
         try:
             # Store as JSON in extracted_data field
-            self.db.conn.execute("""
+            self.db.conn.execute(
+                """
                 UPDATE documents
                 SET extracted_data = ?
                 WHERE id = ?
-            """, [json.dumps(extracted_data), doc_id])
+            """,
+                [json.dumps(extracted_data), doc_id],
+            )
             self.db.conn.commit()
         except Exception as e:
             logger.warning(f"Failed to update document {doc_id} with extracted data: {e}")
@@ -1078,72 +1153,61 @@ class IngestionService:
             # Prefer service-produced timeline (includes inferred/implied links)
             timeline = []
             for period in analysis["ownership_timeline"]:
-                timeline.append(
-                    {
-                        "owner": period.get("owner"),
-                        "acquired_from": period.get("acquired_from"),
-                        "acquisition_date": period.get("acquisition_date"),
-                        "disposition_date": period.get("disposition_date"),
-                        "acquisition_instrument": period.get("acquisition_instrument"),
-                        "acquisition_doc_type": period.get("acquisition_doc_type"),
-                        "acquisition_price": period.get("acquisition_price"),
-                        "link_status": period.get("link_status"),
-                        "confidence_score": period.get("confidence_score"),
-                        "encumbrances": [],
-                    }
-                )
+                timeline.append({
+                    "owner": period.get("owner"),
+                    "acquired_from": period.get("acquired_from"),
+                    "acquisition_date": period.get("acquisition_date"),
+                    "disposition_date": period.get("disposition_date"),
+                    "acquisition_instrument": period.get("acquisition_instrument"),
+                    "acquisition_doc_type": period.get("acquisition_doc_type"),
+                    "acquisition_price": period.get("acquisition_price"),
+                    "link_status": period.get("link_status"),
+                    "confidence_score": period.get("confidence_score"),
+                    "encumbrances": [],
+                })
 
             # Attach encumbrances by date interval (best effort)
             encumbrances = analysis.get("encumbrances", [])
             for i, period in enumerate(timeline):
                 start_date = self._parse_date(period.get("acquisition_date"))
-                end_date = (
-                    self._parse_date(timeline[i + 1].get("acquisition_date"))
-                    if i < len(timeline) - 1
-                    else None
-                )
+                end_date = self._parse_date(timeline[i + 1].get("acquisition_date")) if i < len(timeline) - 1 else None
                 for enc in encumbrances:
                     enc_date = self._parse_date(enc.get("date"))
-                    if (
-                        enc_date
-                        and start_date
-                        and enc_date >= start_date
-                        and (end_date is None or enc_date < end_date)
-                    ):
+                    if enc_date and start_date and enc_date >= start_date and (end_date is None or enc_date < end_date):
                         period["encumbrances"].append(self._map_encumbrance(enc))
 
             return {"ownership_timeline": timeline}
 
-        chain = analysis.get('chain', [])
-        encumbrances = analysis.get('encumbrances', [])
-        
+        chain = analysis.get("chain", [])
+        encumbrances = analysis.get("encumbrances", [])
+
         timeline = []
-        
+
         for i, deed in enumerate(chain):
-            start_date = self._parse_date(deed.get('date'))
+            start_date = self._parse_date(deed.get("date"))
             end_date = None
             if i < len(chain) - 1:
-                end_date = self._parse_date(chain[i+1].get('date'))
-            
+                end_date = self._parse_date(chain[i + 1].get("date"))
+
             # Find encumbrances in this period
             period_encs = []
             for enc in encumbrances:
-                enc_date = self._parse_date(enc.get('date'))
+                enc_date = self._parse_date(enc.get("date"))
                 # If enc_date is None, we can't place it. Maybe put in last period?
                 if enc_date and start_date and enc_date >= start_date and (end_date is None or enc_date < end_date):
                     period_encs.append(self._map_encumbrance(enc))
-            
+
             timeline.append({
-                "owner": deed.get('grantee'),
-                "acquired_from": deed.get('grantor'),
-                "acquisition_date": deed.get('date'),
-                "disposition_date": chain[i+1].get('date') if i < len(chain) - 1 else None,
+                "owner": deed.get("grantee"),
+                "acquired_from": deed.get("grantor"),
+                "acquisition_date": deed.get("date"),
+                "disposition_date": chain[i + 1].get("date") if i < len(chain) - 1 else None,
                 "acquisition_instrument": deed.get("instrument"),
-                "acquisition_doc_type": deed.get('doc_type'),
+                "acquisition_doc_type": deed.get("doc_type"),
                 "acquisition_price": deed.get("sales_price"),
                 "link_status": deed.get("link_status"),
                 "confidence_score": deed.get("confidence_score"),
-                "encumbrances": period_encs
+                "encumbrances": period_encs,
             })
 
         # Handle case where there are encumbrances but no chain (no deeds found)
@@ -1160,7 +1224,7 @@ class IngestionService:
                 "acquisition_price": None,
                 "link_status": "INFERRED",
                 "confidence_score": 0.0,
-                "encumbrances": [self._map_encumbrance(e) for e in encumbrances]
+                "encumbrances": [self._map_encumbrance(e) for e in encumbrances],
             })
 
         return {"ownership_timeline": timeline}
@@ -1168,37 +1232,38 @@ class IngestionService:
     def _map_encumbrance(self, enc: dict) -> dict:
         """Map analysis encumbrance to DB format."""
         bk, pg = None, None
-        if enc.get('book_page'):
-            parts = enc['book_page'].split('/')
+        if enc.get("book_page"):
+            parts = enc["book_page"].split("/")
             if len(parts) == 2:
                 bk, pg = parts
-                
+
         return {
-            "type": enc.get('type'),
-            "creditor": enc.get('creditor'),
-            "debtor": enc.get('debtor'), # Now included
-            "amount": self._parse_amount(enc.get('amount')),
-            "recording_date": enc.get('date'),
+            "type": enc.get("type"),
+            "creditor": enc.get("creditor"),
+            "debtor": enc.get("debtor"),  # Now included
+            "amount": self._parse_amount(enc.get("amount")),
+            "recording_date": enc.get("date"),
             "instrument": enc.get("instrument"),
             "book": bk,
             "page": pg,
-            "is_satisfied": enc.get('status') == 'SATISFIED',
-            "satisfaction_instrument": enc.get('satisfaction_ref'),
-            "satisfaction_date": None, # Not in analysis dict?
+            "is_satisfied": enc.get("status") == "SATISFIED",
+            "satisfaction_instrument": enc.get("satisfaction_ref"),
+            "satisfaction_date": None,  # Not in analysis dict?
             "survival_status": None,
             # Document resolution fields (passed through)
-            "party2_resolution_method": enc.get('party2_resolution_method'),
-            "is_self_transfer": enc.get('is_self_transfer'),
-            "self_transfer_type": enc.get('self_transfer_type'),
+            "party2_resolution_method": enc.get("party2_resolution_method"),
+            "is_self_transfer": enc.get("is_self_transfer"),
+            "self_transfer_type": enc.get("self_transfer_type"),
         }
 
     def _parse_date(self, date_val: Any) -> Optional[datetime]:
-        if not date_val: return None
+        if not date_val:
+            return None
         if isinstance(date_val, datetime):
             return date_val
         if isinstance(date_val, date):
             return datetime.combine(date_val, datetime.min.time())
-            
+
         date_str = str(date_val)
         try:
             return datetime.strptime(date_str, "%m/%d/%Y")
@@ -1209,9 +1274,10 @@ class IngestionService:
                 return None
 
     def _parse_amount(self, amt: Any) -> float:
-        if not amt or amt == 'Unknown': return 0.0
+        if not amt or amt == "Unknown":
+            return 0.0
         try:
-            return float(str(amt).replace('$', '').replace(',', ''))
+            return float(str(amt).replace("$", "").replace(",", ""))
         except ValueError:
             return 0.0
 
@@ -1227,10 +1293,7 @@ class IngestionService:
         return legal[:60]
 
     def _find_matching_ori_legal_from_docs(
-        self,
-        docs: List[Dict],
-        prop_legal: str,
-        filter_info: Optional[Dict] = None
+        self, docs: List[Dict], prop_legal: str, filter_info: Optional[Dict] = None
     ) -> Optional[str]:
         """
         Find a document whose ORI-indexed legal matches our property.
@@ -1254,15 +1317,53 @@ class IngestionService:
         # Extract key tokens from our property's legal description
         # Focus on subdivision name words (skip common words)
         skip_words = {
-            "LOT", "LOTS", "BLOCK", "BLK", "UNIT", "PHASE", "SECTION", "MAP", "OF",
-            "THE", "AND", "TO", "IN", "AT", "A", "AN", "ACCORDING", "PLAT", "BOOK",
-            "PAGE", "PAGES", "PUBLIC", "RECORDS", "HILLSBOROUGH", "COUNTY", "FLORIDA",
-            "LESS", "FEET", "FT", "THEREOF", "NORTH", "SOUTH", "EAST", "WEST",
-            "N", "S", "E", "W", "PT", "PART", "PORTION", "NO", "NUMBER"
+            "LOT",
+            "LOTS",
+            "BLOCK",
+            "BLK",
+            "UNIT",
+            "PHASE",
+            "SECTION",
+            "MAP",
+            "OF",
+            "THE",
+            "AND",
+            "TO",
+            "IN",
+            "AT",
+            "A",
+            "AN",
+            "ACCORDING",
+            "PLAT",
+            "BOOK",
+            "PAGE",
+            "PAGES",
+            "PUBLIC",
+            "RECORDS",
+            "HILLSBOROUGH",
+            "COUNTY",
+            "FLORIDA",
+            "LESS",
+            "FEET",
+            "FT",
+            "THEREOF",
+            "NORTH",
+            "SOUTH",
+            "EAST",
+            "WEST",
+            "N",
+            "S",
+            "E",
+            "W",
+            "PT",
+            "PART",
+            "PORTION",
+            "NO",
+            "NUMBER",
         }
 
         # Get significant words from property legal
-        prop_words = set(re.findall(r'[A-Z]+', prop_upper)) - skip_words
+        prop_words = set(re.findall(r"[A-Z]+", prop_upper)) - skip_words
         # Filter to words with 3+ chars (avoid noise like "II", "1A")
         prop_words = {w for w in prop_words if len(w) >= 3}
 
@@ -1286,16 +1387,16 @@ class IngestionService:
                 continue
 
             ori_upper = ori_legal.upper()
-            ori_words = set(re.findall(r'[A-Z]+', ori_upper)) - skip_words
+            ori_words = set(re.findall(r"[A-Z]+", ori_upper)) - skip_words
 
             # Count matching significant words
             matches = prop_words & ori_words
             score = len(matches)
 
             # Bonus for matching lot/block
-            if target_lot and re.search(rf'\bL(?:OT)?\s*{re.escape(target_lot)}\b', ori_upper):
+            if target_lot and re.search(rf"\bL(?:OT)?\s*{re.escape(target_lot)}\b", ori_upper):
                 score += 3
-            if target_block and re.search(rf'\bB(?:LK|LOCK)?\s*{re.escape(str(target_block))}\b', ori_upper):
+            if target_block and re.search(rf"\bB(?:LK|LOCK)?\s*{re.escape(str(target_block))}\b", ori_upper):
                 score += 3
 
             # Need at least 2 matching words to consider it a match
@@ -1385,12 +1486,12 @@ class IngestionService:
                 lot_hits = 0
                 for lot in lots:
                     # Primary pattern: "L 1" or "LOT 1" at start of lot reference
-                    lot_pattern = rf'\bL(?:OT)?\s*{re.escape(lot)}\b'
+                    lot_pattern = rf"\bL(?:OT)?\s*{re.escape(lot)}\b"
                     # Secondary pattern: "AND 2" or ", 2" for multi-lot (e.g., "L 1 AND 2")
-                    lot_and_pattern = rf'\b(?:AND|,)\s*{re.escape(lot)}\b'
+                    lot_and_pattern = rf"\b(?:AND|,)\s*{re.escape(lot)}\b"
                     # Range pattern: "L 1-3" covers lots 1, 2, 3 (check if lot is in range)
                     range_match = False
-                    range_pattern = re.search(r'\bL(?:OT)?\s*(\d+)-(\d+)\b', legal_upper)
+                    range_pattern = re.search(r"\bL(?:OT)?\s*(\d+)-(\d+)\b", legal_upper)
                     if range_pattern and lot.isdigit():
                         range_start, range_end = int(range_pattern.group(1)), int(range_pattern.group(2))
                         if range_start <= int(lot) <= range_end:
@@ -1403,17 +1504,14 @@ class IngestionService:
             block_match = True
             has_any_block = bool(re.search(r"\bB(?:LK|LOCK)?\s*[A-Z0-9]+\b", legal_upper))
             if block:
-                block_pattern = rf'\bB(?:LK|LOCK)?\s*{re.escape(block)}\b'
+                block_pattern = rf"\bB(?:LK|LOCK)?\s*{re.escape(block)}\b"
                 block_match = bool(re.search(block_pattern, legal_upper))
 
             # If the record doesn't include any BLOCK in the indexed legal, fall back to
             # subdivision token requirements to avoid discarding correct records.
             if block and not has_any_block:
                 if required_subdiv_tokens:
-                    block_match = all(
-                        re.search(rf"\\b{re.escape(tok)}\\b", legal_upper)
-                        for tok in required_subdiv_tokens
-                    )
+                    block_match = all(re.search(rf"\\b{re.escape(tok)}\\b", legal_upper) for tok in required_subdiv_tokens)
                 else:
                     block_match = True
 
@@ -1435,7 +1533,9 @@ class IngestionService:
         }
 
         prop_upper = prop_legal.upper().lstrip()
-        similarity_threshold = 0.90 if prop_upper.startswith(("COM ", "BEG ", "BEGIN", "COMMENCE", "COMMENCING", "TRACT")) else 0.80
+        similarity_threshold = (
+            0.90 if prop_upper.startswith(("COM ", "BEG ", "BEGIN", "COMMENCE", "COMMENCING", "TRACT")) else 0.80
+        )
 
         kept = []
         scored = []
@@ -1460,11 +1560,7 @@ class IngestionService:
         return kept
 
     def _fill_chain_gaps(
-        self,
-        gaps: List,
-        existing_instruments: set,
-        filter_info: Optional[dict],
-        prop: "Property"
+        self, gaps: List, existing_instruments: set, filter_info: Optional[dict], prop: "Property"
     ) -> List[Dict]:
         """
         Attempt to fill gaps in the chain of title by searching ORI by party name.
@@ -1584,7 +1680,7 @@ class IngestionService:
         chain_words = set(chain_clean.replace(",", "").split())
         hcpa_words = set(hcpa_clean.replace(",", "").split())
         common = chain_words & hcpa_words
-        stopwords = {'LLC', 'INC', 'CORP', 'THE', 'OF', 'AND', 'TRUST', 'TRUSTEE'}
+        stopwords = {"LLC", "INC", "CORP", "THE", "OF", "AND", "TRUST", "TRUSTEE"}
         significant = common - stopwords
 
         if len(significant) >= 1:
@@ -1669,9 +1765,9 @@ class IngestionService:
                     "ID": doc.get("ID"),  # API returns document ID for PDF download
                     # Additional ORI API fields
                     "sales_price": doc.get("SalesPrice"),  # Sale price or loan amount
-                    "page_count": doc.get("PageCount"),    # Number of pages in document
-                    "uuid": doc.get("UUID"),               # Unique document identifier
-                    "book_type": doc.get("BookType"),      # Book type (OR, etc.)
+                    "page_count": doc.get("PageCount"),  # Number of pages in document
+                    "uuid": doc.get("UUID"),  # Unique document identifier
+                    "book_type": doc.get("BookType"),  # Book type (OR, etc.)
                 }
 
             if is_api_format:
@@ -1699,7 +1795,11 @@ class IngestionService:
                 if name and ("PARTY 1" in person_type or "GRANTOR" in person_type):
                     if name not in by_instrument[instrument]["party1_names"]:
                         by_instrument[instrument]["party1_names"].append(name)
-                elif name and ("PARTY 2" in person_type or "GRANTEE" in person_type) and name not in by_instrument[instrument]["party2_names"]:
+                elif (
+                    name
+                    and ("PARTY 2" in person_type or "GRANTEE" in person_type)
+                    and name not in by_instrument[instrument]["party2_names"]
+                ):
                     by_instrument[instrument]["party2_names"].append(name)
 
         return list(by_instrument.values())
@@ -1721,8 +1821,14 @@ class IngestionService:
             Updated list with resolved Party 2 data
         """
         # Deed types that need both parties
-        DEED_TYPES = {"(D) DEED", "(WD) WARRANTY DEED", "(QC) QUIT CLAIM",
-                      "(CD) CORRECTIVE DEED", "(TD) TRUSTEE DEED", "(TAXDEED) TAX DEED"}
+        DEED_TYPES = {
+            "(D) DEED",
+            "(WD) WARRANTY DEED",
+            "(QC) QUIT CLAIM",
+            "(CD) CORRECTIVE DEED",
+            "(TD) TRUSTEE DEED",
+            "(TAXDEED) TAX DEED",
+        }
 
         resolved_count = 0
         self_transfer_count = 0
@@ -1761,7 +1867,7 @@ class IngestionService:
                 # Use property-specific documents folder
                 doc_dir = self.storage.get_full_path(prop.parcel_id, "documents")
                 doc_dir.mkdir(parents=True, exist_ok=True)
-                
+
                 result = self.party2_service.resolve_party2(resolution_doc, doc_dir)
 
                 if result.party2:
@@ -1802,8 +1908,14 @@ class IngestionService:
             Updated list with resolved Party 2 data
         """
         # Deed types that need both parties
-        DEED_TYPES = {"(D) DEED", "(WD) WARRANTY DEED", "(QC) QUIT CLAIM",
-                      "(CD) CORRECTIVE DEED", "(TD) TRUSTEE DEED", "(TAXDEED) TAX DEED"}
+        DEED_TYPES = {
+            "(D) DEED",
+            "(WD) WARRANTY DEED",
+            "(QC) QUIT CLAIM",
+            "(CD) CORRECTIVE DEED",
+            "(TD) TRUSTEE DEED",
+            "(TAXDEED) TAX DEED",
+        }
 
         resolved_count = 0
         self_transfer_count = 0
@@ -1885,6 +1997,7 @@ class IngestionService:
         date_val = grouped_doc.get("record_date", "")
         if date_val:
             from datetime import UTC, date, datetime as dt
+
             # Handle date object (from DB/testing)
             if isinstance(date_val, (date, dt)):
                 rec_date = date_val.strftime("%Y-%m-%d")
@@ -1943,13 +2056,14 @@ class IngestionService:
             date_str = ori_doc.get("record_date", "")
             if date_str:
                 try:
-                    # Parse the datetime and convert to ISO format for DuckDB
+                    # Parse the datetime and convert to ISO format for SQLite
                     from datetime import datetime as dt
+
                     # Try parsing with time
                     for fmt in ["%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y"]:
                         try:
                             parsed = dt.strptime(date_str, fmt)
-                            rec_date = parsed.strftime("%Y-%m-%d")  # ISO format for DuckDB
+                            rec_date = parsed.strftime("%Y-%m-%d")  # ISO format for SQLite
                             break
                         except ValueError:
                             continue
@@ -2001,7 +2115,7 @@ class IngestionService:
             "party1": party1,
             "party2": party2,
             "legal_description": str(legal),
-            "extracted_data": ori_doc  # Store raw data too
+            "extracted_data": ori_doc,  # Store raw data too
         }
 
     async def shutdown(self) -> None:

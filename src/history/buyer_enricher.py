@@ -1,17 +1,17 @@
 import asyncio
+import sqlite3
 from datetime import datetime, date
 from pathlib import Path
 from loguru import logger
-import duckdb
 from src.models.property import Property
 from src.history.hcpa_history_scraper import HistoricalHCPAScraper
 from src.history.db_init import ensure_history_schema
-from src.utils.time import ensure_duckdb_utc
+from src.db.sqlite_paths import resolve_sqlite_db_path_str
 from src.utils.logging_config import configure_logger
 
 configure_logger(log_file="history_pipeline.log")
 
-DB_PATH = Path("data/history.db")
+DB_PATH = resolve_sqlite_db_path_str()
 
 PLACEHOLDER_BUYERS = {
     "3rd party bidder",
@@ -27,7 +27,7 @@ INVALID_PARCELS = {"property appraiser", "n/a", "none", "unknown"}
 class BuyerNameEnricher:
     def __init__(
         self,
-        db_path: Path = DB_PATH,
+        db_path: str = DB_PATH,
         headless: bool = True,
         max_concurrent: int = 3,
         max_days_after: int = 365,
@@ -39,12 +39,12 @@ class BuyerNameEnricher:
         self.max_days_after = max_days_after
 
     def get_targets(self, limit: int = 25):
-        conn = duckdb.connect(str(self.db_path), read_only=True)
-        ensure_duckdb_utc(conn)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
         try:
             query = """
                 SELECT auction_id, auction_date, case_number, parcel_id, property_address, sold_to, buyer_type
-                FROM auctions
+                FROM history_auctions
                 WHERE parcel_id IS NOT NULL
                   AND parcel_id != ''
                   AND lower(parcel_id) NOT IN ({invalids})
@@ -63,15 +63,13 @@ class BuyerNameEnricher:
 
     async def _process_single(self, row, semaphore: asyncio.Semaphore):
         async with semaphore:
-            (
-                auction_id,
-                auction_date_val,
-                case_number,
-                parcel_id,
-                address,
-                sold_to,
-                buyer_type,
-            ) = row
+            auction_id = row["auction_id"]
+            auction_date_val = row["auction_date"]
+            case_number = row["case_number"]
+            parcel_id = row["parcel_id"]
+            address = row["property_address"]
+            sold_to = row["sold_to"]
+            buyer_type = row["buyer_type"]
 
             if isinstance(auction_date_val, str):
                 auction_date = datetime.strptime(auction_date_val, "%Y-%m-%d").date()
@@ -157,12 +155,12 @@ class BuyerNameEnricher:
     def _update_buyers(self, updates: list[dict]):
         if not updates:
             return
-        conn = duckdb.connect(str(self.db_path))
+        conn = sqlite3.connect(self.db_path)
         try:
             for upd in updates:
                 conn.execute(
                     """
-                    UPDATE auctions
+                    UPDATE history_auctions
                     SET sold_to = ?,
                         buyer_normalized = ?,
                         buyer_type = ?
@@ -175,6 +173,7 @@ class BuyerNameEnricher:
                         upd["auction_id"],
                     ],
                 )
+            conn.commit()
         finally:
             conn.close()
 

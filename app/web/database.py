@@ -2,7 +2,7 @@
 Database queries for web interface.
 Uses the existing PropertyDB from src/db/operations.py
 """
-import duckdb
+import sqlite3
 import json
 import os
 import time
@@ -11,7 +11,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from loguru import logger
-from src.utils.time import ensure_duckdb_utc, today_local
+from src.utils.time import today_local
 
 
 # =============================================================================
@@ -31,22 +31,17 @@ class DatabaseUnavailableError(Exception):
 # =============================================================================
 
 def _resolve_db_path() -> Path:
-    """Prefer a web-safe snapshot DB if present, else fall back to the main file."""
+    """Resolve the SQLite database path."""
     data_dir = Path(__file__).resolve().parents[2] / "data"
     # Allow override via env for explicit control
-    env_path = os.getenv("HILLS_WEB_DB")
+    env_path = os.getenv("HILLS_SQLITE_DB")
     if env_path:
         return Path(env_path).expanduser().resolve()
 
-    web_path = data_dir / "property_master_web.db"
-    if web_path.exists():
-        return web_path.resolve()
-
-    return (data_dir / "property_master.db").resolve()
+    return (data_dir / "property_master_sqlite.db").resolve()
 
 
 DB_PATH = _resolve_db_path()
-SCRAPER_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "scraper_outputs.db"
 
 
 def _is_lock_error(exc: Exception) -> bool:
@@ -72,7 +67,7 @@ def _is_corruption_error(exc: Exception) -> bool:
     ])
 
 
-def get_connection(retries: int = 2, retry_delay: float = 0.5) -> duckdb.DuckDBPyConnection:
+def get_connection(retries: int = 2, retry_delay: float = 0.5) -> sqlite3.Connection:
     """
     Get a database connection with retry logic for transient lock errors.
 
@@ -81,7 +76,7 @@ def get_connection(retries: int = 2, retry_delay: float = 0.5) -> duckdb.DuckDBP
         retry_delay: Seconds to wait between retries
 
     Returns:
-        DuckDB connection
+        SQLite connection
 
     Raises:
         DatabaseLockedError: If database is locked after all retries
@@ -92,8 +87,8 @@ def get_connection(retries: int = 2, retry_delay: float = 0.5) -> duckdb.DuckDBP
 
     for attempt in range(retries + 1):
         try:
-            conn = duckdb.connect(str(DB_PATH), read_only=True)
-            ensure_duckdb_utc(conn)
+            conn = sqlite3.connect(str(DB_PATH))
+            conn.row_factory = sqlite3.Row
             # Quick validation query
             conn.execute("SELECT 1").fetchone()
             return conn
@@ -121,7 +116,7 @@ def get_connection(retries: int = 2, retry_delay: float = 0.5) -> duckdb.DuckDBP
     raise DatabaseUnavailableError("Failed to connect to database")
 
 
-def get_write_connection(retries: int = 3, retry_delay: float = 1.0) -> duckdb.DuckDBPyConnection:
+def get_write_connection(retries: int = 3, retry_delay: float = 1.0) -> sqlite3.Connection:
     """
     Get a write-enabled database connection.
 
@@ -130,7 +125,7 @@ def get_write_connection(retries: int = 3, retry_delay: float = 1.0) -> duckdb.D
         retry_delay: Seconds to wait between retries
 
     Returns:
-        DuckDB connection (read-write)
+        SQLite connection (read-write)
 
     Raises:
         DatabaseLockedError: If database is locked after all retries
@@ -141,8 +136,8 @@ def get_write_connection(retries: int = 3, retry_delay: float = 1.0) -> duckdb.D
 
     for attempt in range(retries + 1):
         try:
-            conn = duckdb.connect(str(DB_PATH))  # Not read-only
-            ensure_duckdb_utc(conn)
+            conn = sqlite3.connect(str(DB_PATH))
+            conn.row_factory = sqlite3.Row
             return conn
         except Exception as e:
             if _is_corruption_error(e):
@@ -179,6 +174,8 @@ def safe_connection(for_write: bool = False):
         yield conn
     finally:
         with suppress(Exception):
+            if for_write:
+                conn.commit()
             conn.close()
 
 
@@ -344,6 +341,10 @@ def get_auction_map_points(days_ahead: int = 60) -> List[Dict[str, Any]]:
     """Return auctions with lat/lon for map display (with graceful fallbacks)."""
     conn = get_connection()
     try:
+        today = today_local()
+        end_date = today + timedelta(days=days_ahead)
+        past_date = today - timedelta(days=180)
+
         base_query = """
             SELECT
                 a.case_number,
@@ -360,13 +361,13 @@ def get_auction_map_points(days_ahead: int = 60) -> List[Dict[str, Any]]:
             ORDER BY a.auction_date
             LIMIT 200
         """
-        upcoming_clause = f"WHERE a.auction_date >= CURRENT_DATE AND a.auction_date <= CURRENT_DATE + INTERVAL {days_ahead} DAY"
-        results = conn.execute(base_query.format(where_clause=upcoming_clause)).fetchall()
+        upcoming_clause = "WHERE a.auction_date >= ? AND a.auction_date <= ?"
+        results = conn.execute(base_query.format(where_clause=upcoming_clause), [str(today), str(end_date)]).fetchall()
 
         # Fallback: if no upcoming, pull recent/all
         if not results:
-            recent_clause = "WHERE a.auction_date >= CURRENT_DATE - INTERVAL 180 DAY"
-            results = conn.execute(base_query.format(where_clause=recent_clause)).fetchall()
+            recent_clause = "WHERE a.auction_date >= ?"
+            results = conn.execute(base_query.format(where_clause=recent_clause), [str(past_date)]).fetchall()
         if not results:
             results = conn.execute(base_query.format(where_clause="")).fetchall()
 
@@ -624,7 +625,7 @@ def get_nocs_for_property(folio: str) -> List[Dict[str, Any]]:
                   LOWER(COALESCE(document_type, '')) LIKE '%notice of commencement%'
                   OR LOWER(COALESCE(document_type, '')) LIKE '%noc%'
               )
-            ORDER BY recording_date DESC NULLS LAST, created_at DESC
+            ORDER BY (recording_date IS NULL), recording_date DESC, created_at DESC
             """,
             [folio],
         ).fetchall()
@@ -647,7 +648,7 @@ def get_permits_for_property(folio: str) -> List[Dict[str, Any]]:
             """
             SELECT * FROM permits
             WHERE folio = ?
-            ORDER BY issue_date DESC NULLS LAST
+            ORDER BY (issue_date IS NULL), issue_date DESC
             """,
             [folio],
         ).fetchall()
@@ -692,10 +693,10 @@ def search_properties(
             FROM auctions a
             LEFT JOIN bulk_parcels bp ON a.folio = bp.strap
             WHERE
-                a.property_address ILIKE ?
-                OR a.folio ILIKE ?
-                OR a.case_number ILIKE ?
-                OR bp.owner_name ILIKE ?
+                a.property_address LIKE ?
+                OR a.folio LIKE ?
+                OR a.case_number LIKE ?
+                OR bp.owner_name LIKE ?
             ORDER BY a.auction_date DESC
             LIMIT ?
         """
@@ -874,7 +875,7 @@ def get_dashboard_stats() -> Dict[str, Any]:
         try:
             toxic_row = conn.execute("""
                 SELECT COUNT(*) FROM auctions
-                WHERE auction_date >= ? AND is_toxic_title = TRUE
+                WHERE auction_date >= ? AND is_toxic_title = 1
             """, [today]).fetchone()
             stats["toxic_flagged"] = toxic_row[0] if toxic_row else 0
         except Exception:
@@ -1137,10 +1138,10 @@ def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
     folios_unique: List[str] = [str(f) for f in {f for f in folios if f}]
 
     # Batch read scraper_outputs for latest records per scraper/folio
-    if SCRAPER_DB_PATH.exists() and folios_unique:
+    if folios_unique:
         try:
-            conn = duckdb.connect(str(SCRAPER_DB_PATH), read_only=True)
-            ensure_duckdb_utc(conn)
+            conn = sqlite3.connect(str(DB_PATH))
+            conn.row_factory = sqlite3.Row
             placeholders = ",".join(["?"] * len(folios_unique))
 
             for scraper in ["fema", "permits", "sunbiz", "realtor"]:
@@ -1154,14 +1155,16 @@ def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
                             FROM scraper_outputs
                             WHERE property_id IN ({placeholders})
                               AND scraper = ?
-                              AND extraction_success = TRUE
+                              AND extraction_success = 1
                         )
                         SELECT property_id, extracted_summary
                         FROM latest
                         WHERE rn = 1
                     """, [*folios_unique, scraper]).fetchall()
 
-                    for property_id, summary in rows:
+                    for row in rows:
+                        property_id = row[0]
+                        summary = row[1]
                         if property_id not in result:
                             continue
                         data = result[property_id]
@@ -1186,7 +1189,7 @@ def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
                     logger.debug(f"Error getting {scraper} enrichment batch: {e}")
             conn.close()
         except Exception as e:
-            logger.debug(f"Scraper DB not available: {e}")
+            logger.debug(f"Scraper outputs not available: {e}")
 
     # Also get lien data from main DB in one query
     try:
@@ -1306,7 +1309,7 @@ def get_failed_hcpa_scrapes(
             FROM auctions a
             LEFT JOIN parcels p ON a.folio = p.folio
             LEFT JOIN bulk_parcels bp ON a.folio = bp.strap
-            WHERE a.hcpa_scrape_failed = TRUE
+            WHERE a.hcpa_scrape_failed = 1
             ORDER BY a.auction_date ASC
             LIMIT ? OFFSET ?
         """
@@ -1336,7 +1339,7 @@ def get_failed_hcpa_count() -> int:
             return 0
 
         result = conn.execute("""
-            SELECT COUNT(*) FROM auctions WHERE hcpa_scrape_failed = TRUE
+            SELECT COUNT(*) FROM auctions WHERE hcpa_scrape_failed = 1
         """).fetchone()
         return result[0] if result else 0
 
@@ -1414,10 +1417,11 @@ def mark_hcpa_reviewed(case_number: str, notes: str | None = None) -> bool:
     try:
         conn.execute("""
             UPDATE auctions SET
-                hcpa_scrape_failed = FALSE,
+                hcpa_scrape_failed = 0,
                 hcpa_scrape_error = ?
             WHERE case_number = ?
         """, [f"Reviewed: {notes}" if notes else "Reviewed", case_number])
+        conn.commit()
         return True
     except Exception as e:
         logger.error(f"Error marking {case_number} as reviewed: {e}")

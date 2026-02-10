@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, TYPE_CHECKING
 from loguru import logger
 from src.utils.time import now_utc
+from src.db.sqlite_paths import resolve_sqlite_db_path_str
 
 if TYPE_CHECKING:
     from src.db.operations import PropertyDB
@@ -58,7 +59,7 @@ class ScraperStorage:
     """
 
     BASE_DIR = Path("data/Foreclosure")
-    DB_PATH = "data/property_master_sqlite.db"
+    DB_PATH = resolve_sqlite_db_path_str()
 
     def __init__(
         self,
@@ -276,6 +277,20 @@ class ScraperStorage:
         filepath.write_bytes(file_data)
 
         return f"documents/{filename}"
+
+    # -------------------------------------------------------------------------
+    # Cache Stubs (No-ops for Inbox Pattern)
+    # -------------------------------------------------------------------------
+
+    def needs_refresh(
+        self, property_id: str, scraper: str, max_age_days: int = 30
+    ) -> bool:
+        """Always True (no DB cache tracking)."""
+        return True
+
+    def get_latest(self, property_id: str, scraper: str) -> None:
+        """Get latest scrape record. Returns None (no DB cache tracking)."""
+        return None
 
     # -------------------------------------------------------------------------
     # Record Methods (No-ops for Inbox Pattern)

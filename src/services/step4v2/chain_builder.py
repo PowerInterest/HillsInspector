@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
 
-import duckdb
+import sqlite3
 from loguru import logger
 
 from config.step4v2 import (
@@ -85,7 +85,7 @@ class ChainBuilder:
     Constructs ownership timeline and encumbrances from discovered documents.
     """
 
-    def __init__(self, conn: duckdb.DuckDBPyConnection):
+    def __init__(self, conn: sqlite3.Connection):
         """Initialize the chain builder."""
         self.conn = conn
         self.name_matcher = NameMatcher(conn)
@@ -170,18 +170,12 @@ class ChainBuilder:
                 sales_price, is_self_transfer, self_transfer_type
             FROM documents
             WHERE folio = ?
-            ORDER BY recording_date ASC NULLS LAST
+            ORDER BY (recording_date IS NULL), recording_date ASC
             """,
             [folio],
         ).fetchall()
 
-        columns = [
-            "id", "document_type", "instrument_number", "recording_date",
-            "book", "page", "party1", "party2", "legal_description",
-            "sales_price", "is_self_transfer", "self_transfer_type",
-        ]
-
-        return [dict(zip(columns, row, strict=True)) for row in result]
+        return [dict(row) for row in result]
 
     def _build_periods(self, folio: str, documents: list[dict]) -> list[OwnershipPeriod]:
         """Build ownership periods from deed documents."""
@@ -448,7 +442,7 @@ class ChainBuilder:
         self.conn.execute("DELETE FROM chain_of_title WHERE folio = ?", [folio])
 
         for period in periods:
-            result = self.conn.execute(
+            cursor = self.conn.execute(
                 """
                 INSERT INTO chain_of_title (
                     folio, owner_name, acquired_from, acquisition_date,
@@ -457,7 +451,6 @@ class ChainBuilder:
                     mrta_status, years_covered
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                RETURNING id
                 """,
                 [
                     folio,
@@ -473,10 +466,8 @@ class ChainBuilder:
                     period.mrta_status,
                     period.years_covered,
                 ],
-            ).fetchone()
-
-            if result:
-                period.id = result[0]
+            )
+            period.id = cursor.lastrowid
 
     def _save_encumbrances(self, folio: str, encumbrances: list[Encumbrance]) -> None:
         """Save encumbrances to database."""
@@ -484,7 +475,7 @@ class ChainBuilder:
         self.conn.execute("DELETE FROM encumbrances WHERE folio = ?", [folio])
 
         for enc in encumbrances:
-            result = self.conn.execute(
+            cursor = self.conn.execute(
                 """
                 INSERT INTO encumbrances (
                     folio, chain_period_id, encumbrance_type, creditor, debtor,
@@ -492,7 +483,6 @@ class ChainBuilder:
                     book, page, is_satisfied, satisfaction_instrument, satisfaction_date
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                RETURNING id
                 """,
                 [
                     folio,
@@ -510,10 +500,8 @@ class ChainBuilder:
                     enc.satisfaction_instrument,
                     enc.satisfaction_date,
                 ],
-            ).fetchone()
-
-            if result:
-                enc.id = result[0]
+            )
+            enc.id = cursor.lastrowid
 
     def get_chain(self, folio: str) -> list[OwnershipPeriod]:
         """Get existing chain of title from database."""
@@ -526,26 +514,27 @@ class ChainBuilder:
                 mrta_status, years_covered
             FROM chain_of_title
             WHERE folio = ?
-            ORDER BY acquisition_date ASC NULLS LAST
+            ORDER BY (acquisition_date IS NULL), acquisition_date ASC
             """,
             [folio],
         ).fetchall()
 
         periods = []
         for row in result:
+            d = dict(row)
             period = OwnershipPeriod(
-                id=row[0],
-                owner_name=row[1] or "",
-                acquired_from=row[2] or "",
-                acquisition_date=row[3],
-                disposition_date=row[4],
-                acquisition_instrument=row[5] or "",
-                acquisition_doc_type=row[6] or "",
-                acquisition_price=row[7] or 0.0,
-                link_status=row[8] or "unknown",
-                confidence_score=row[9] or 1.0,
-                mrta_status=row[10] or "pending",
-                years_covered=row[11] or 0.0,
+                id=d["id"],
+                owner_name=d["owner_name"] or "",
+                acquired_from=d["acquired_from"] or "",
+                acquisition_date=d["acquisition_date"],
+                disposition_date=d["disposition_date"],
+                acquisition_instrument=d["acquisition_instrument"] or "",
+                acquisition_doc_type=d["acquisition_doc_type"] or "",
+                acquisition_price=d["acquisition_price"] or 0.0,
+                link_status=d["link_status"] or "unknown",
+                confidence_score=d["confidence_score"] or 1.0,
+                mrta_status=d["mrta_status"] or "pending",
+                years_covered=d["years_covered"] or 0.0,
             )
             periods.append(period)
 
@@ -562,29 +551,30 @@ class ChainBuilder:
                 satisfaction_date, survival_status
             FROM encumbrances
             WHERE folio = ?
-            ORDER BY recording_date ASC NULLS LAST
+            ORDER BY (recording_date IS NULL), recording_date ASC
             """,
             [folio],
         ).fetchall()
 
         encumbrances = []
         for row in result:
+            d = dict(row)
             enc = Encumbrance(
-                id=row[0],
-                chain_period_id=row[1],
-                encumbrance_type=row[2] or "",
-                creditor=row[3] or "",
-                debtor=row[4] or "",
-                amount=row[5] or 0.0,
-                amount_confidence=row[6] or "unknown",
-                recording_date=row[7],
-                instrument=row[8] or "",
-                book=row[9] or "",
-                page=row[10] or "",
-                is_satisfied=row[11] or False,
-                satisfaction_instrument=row[12] or "",
-                satisfaction_date=row[13],
-                survival_status=row[14] or "unknown",
+                id=d["id"],
+                chain_period_id=d["chain_period_id"],
+                encumbrance_type=d["encumbrance_type"] or "",
+                creditor=d["creditor"] or "",
+                debtor=d["debtor"] or "",
+                amount=d["amount"] or 0.0,
+                amount_confidence=d["amount_confidence"] or "unknown",
+                recording_date=d["recording_date"],
+                instrument=d["instrument"] or "",
+                book=d["book"] or "",
+                page=d["page"] or "",
+                is_satisfied=d["is_satisfied"] or False,
+                satisfaction_instrument=d["satisfaction_instrument"] or "",
+                satisfaction_date=d["satisfaction_date"],
+                survival_status=d["survival_status"] or "unknown",
             )
             encumbrances.append(enc)
 

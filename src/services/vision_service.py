@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import re
 import requests
 import io
@@ -1037,36 +1038,89 @@ class VisionService:
     # 10.10.0.33 has Qwen3-VL-8B with 262k context
     # 10.10.1.5 has 262k context, 10.10.2.27 only has 11k - prioritize the larger one
     # 192.168.86.26:1234 is LM Studio on Windows (uses different model ID)
-    API_ENDPOINTS = [
+    _LOCAL_ENDPOINTS = [
+        {"url": "http://192.168.86.26:6969/v1/chat/completions", "model": "zai-org/glm-4.6v-flash"},
         {"url": "http://10.10.0.33:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
         {"url": "http://10.10.1.5:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
         {"url": "http://10.10.2.27:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
         {"url": "http://192.168.86.26:1234/v1/chat/completions", "model": "qwen/qwen3-vl-8b"},
     ]
     # Legacy attributes for backwards compatibility
-    API_URLS = [ep["url"] for ep in API_ENDPOINTS]
     MODEL = "Qwen/Qwen3-VL-8B-Instruct"
+
+    @classmethod
+    def _parse_api_keys(cls, env_var: str) -> list[str]:
+        """Parse one or more API keys from an env var.
+
+        Supports formats:
+          - Single key: ``KEY=sk-abc123``
+          - Comma-separated: ``KEY=sk-abc,sk-def``
+          - JSON-ish array: ``KEY=["sk-abc", "sk-def"]``
+        """
+        raw = os.getenv(env_var, "").strip()
+        if not raw:
+            return []
+        # Strip surrounding brackets
+        if raw.startswith("[") and raw.endswith("]"):
+            raw = raw[1:-1]
+        # Split on commas, strip quotes and whitespace
+        keys = []
+        for part in raw.split(","):
+            key = part.strip().strip("'\"")
+            if key:
+                keys.append(key)
+        return keys
+
+    @classmethod
+    def _build_endpoints(cls) -> list[dict]:
+        """Build endpoint list: local first, then cloud fallbacks if API keys are set."""
+        endpoints = list(cls._LOCAL_ENDPOINTS)
+        openai_keys = cls._parse_api_keys("OPENAI_API_KEY")
+        for key in openai_keys:
+            endpoints.append({
+                "url": "https://api.openai.com/v1/chat/completions",
+                "model": "gpt-4o",
+                "api_key": key,
+            })
+        gemini_keys = cls._parse_api_keys("GEMINI_API_KEY")
+        for key in gemini_keys:
+            endpoints.append({
+                "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                "model": "gemini-2.0-flash",
+                "api_key": key,
+            })
+        return endpoints
+
+    API_ENDPOINTS = _LOCAL_ENDPOINTS  # Default; overridden at init via _build_endpoints()
+    API_URLS = [ep["url"] for ep in _LOCAL_ENDPOINTS]
 
     # Class-level storage for healthy endpoints (shared across instances)
     _healthy_endpoints: list[dict] | None = None
     _health_check_done: bool = False
 
+    _endpoints_built = False
+
+    @classmethod
+    def _ensure_endpoints_built(cls):
+        """Build endpoint list once (includes cloud fallbacks if API keys are set)."""
+        if cls._endpoints_built:
+            return
+        cls.API_ENDPOINTS = cls._build_endpoints()
+        cls.API_URLS = [ep["url"] for ep in cls.API_ENDPOINTS]
+        cloud_count = sum(1 for ep in cls.API_ENDPOINTS if ep.get("api_key"))
+        if cloud_count:
+            logger.info("Vision service configured with {} cloud fallback endpoint(s)", cloud_count)
+        cls._endpoints_built = True
+
     def __init__(self):
         """
         Initialize VisionService.
         """
+        VisionService._ensure_endpoints_built()
+
         self.session = requests.Session()
         self.session.headers.update({'Connection': 'keep-alive'})
         self._active_endpoint = None
-        # Limit concurrent vision requests to 1 to prevent GPU OOM/Timeout
-        # Since this service is used across multiple scrapers, we use a class-level semaphore?
-        # No, usually instantiated per scraper.
-        # But if instantiated per scraper, standard asyncio.Semaphore is per instance.
-        # If we want GLOBAL limit, we need a shared semaphore.
-        # Or make it a class attribute.
-
-        # Checking if other instances share state? No.
-        # So we should make it a class attribute if we want global limit.
         if not hasattr(VisionService, "_global_semaphore"):
             VisionService._global_semaphore = asyncio.Semaphore(1)
         self._semaphore = VisionService._global_semaphore
@@ -1089,9 +1143,13 @@ class VisionService:
         Raises:
             RuntimeError: If no vision endpoints are available
         """
+        cls._ensure_endpoints_built()
         import requests as req
 
         def check_endpoint(endpoint: dict) -> tuple[dict, str, str | None]:
+            # Cloud endpoints (with api_key) are always considered available
+            if endpoint.get("api_key"):
+                return endpoint, "cloud", None
             base_url = endpoint["url"].rsplit("/v1/", 1)[0]
             models_url = f"{base_url}/v1/models"
             try:
@@ -1106,31 +1164,41 @@ class VisionService:
             except Exception as e:
                 return endpoint, "failed", f"{models_url} - {e}"
 
-        healthy = []
         import concurrent.futures
 
+        # Check all endpoints in parallel but preserve original order
+        # (local endpoints first, cloud fallbacks last)
+        results: dict[int, tuple[dict, str, str | None]] = {}
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(8, len(cls.API_ENDPOINTS))
         ) as executor:
-            futures = [
-                executor.submit(check_endpoint, endpoint)
-                for endpoint in cls.API_ENDPOINTS
-            ]
-            for future in concurrent.futures.as_completed(futures):
-                endpoint, status, detail = future.result()
-                if status == "healthy":
-                    healthy.append(endpoint)
-                    logger.success(f"Vision endpoint healthy: {endpoint['url']}")
-                elif status == "unhealthy":
-                    logger.warning(
-                        f"Vision endpoint unhealthy ({detail}): {endpoint['url']}"
-                    )
-                elif status == "timeout":
-                    logger.warning(f"Vision endpoint timeout: {detail}")
-                elif status == "connection_error":
-                    logger.warning(f"Vision endpoint connection refused: {detail}")
-                else:
-                    logger.warning(f"Vision endpoint check failed: {detail}")
+            future_to_idx = {
+                executor.submit(check_endpoint, endpoint): idx
+                for idx, endpoint in enumerate(cls.API_ENDPOINTS)
+            }
+            for future in concurrent.futures.as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                results[idx] = future.result()
+
+        healthy = []
+        for idx in sorted(results):
+            endpoint, status, detail = results[idx]
+            if status == "healthy":
+                healthy.append(endpoint)
+                logger.success(f"Vision endpoint healthy: {endpoint['url']}")
+            elif status == "cloud":
+                healthy.append(endpoint)
+                logger.info(f"Cloud vision fallback available: {endpoint['url']} (model: {endpoint['model']})")
+            elif status == "unhealthy":
+                logger.warning(
+                    f"Vision endpoint unhealthy ({detail}): {endpoint['url']}"
+                )
+            elif status == "timeout":
+                logger.warning(f"Vision endpoint timeout: {detail}")
+            elif status == "connection_error":
+                logger.warning(f"Vision endpoint connection refused: {detail}")
+            else:
+                logger.warning(f"Vision endpoint check failed: {detail}")
 
         if healthy:
             cls._healthy_endpoints = healthy
@@ -1159,6 +1227,7 @@ class VisionService:
         """Reset health check state to allow re-checking endpoints."""
         cls._healthy_endpoints = None
         cls._health_check_done = False
+        cls._endpoints_built = False
 
     @classmethod
     def global_semaphore(cls) -> asyncio.Semaphore:
@@ -1188,6 +1257,9 @@ class VisionService:
             return self.API_ENDPOINTS[0]  # Fallback to first configured
         # Find first available server from healthy list
         for endpoint in available:
+            # Cloud endpoints don't need a health probe - they're always reachable
+            if endpoint.get("api_key"):
+                continue  # Skip cloud endpoints for active selection; prefer local
             try:
                 base_url = endpoint["url"].rsplit('/v1/', 1)[0]
                 response = self.session.get(f"{base_url}/v1/models", timeout=3)
@@ -1198,6 +1270,12 @@ class VisionService:
             except Exception as exc:
                 logger.debug("Vision endpoint {} unavailable: {}", endpoint["url"], exc)
                 continue
+        # If no local endpoints available, use first cloud endpoint
+        for endpoint in available:
+            if endpoint.get("api_key"):
+                self._active_endpoint = endpoint
+                logger.info("Using cloud vision endpoint: {} (model: {})", endpoint["url"], endpoint["model"])
+                return endpoint
         # Default to first available endpoint
         return available[0]
 
@@ -1214,30 +1292,88 @@ class VisionService:
             return None
 
         errors = []
-        for endpoint in available:
-            try:
-                logger.info("Trying vision endpoint: {} (model: {})", endpoint["url"], endpoint["model"])
-                # Update model in payload for this endpoint
-                payload_copy = payload.copy()
-                payload_copy["model"] = endpoint["model"]
-                response = self.session.post(endpoint["url"], json=payload_copy, timeout=timeout)
-                if response.ok:
-                    # Cache this endpoint as the working one
-                    self._active_endpoint = endpoint
+        tried_urls: set[str] = set()
+
+        def _attempt(endpoints: list[dict], request_timeout: int) -> Optional[requests.Response]:
+            for endpoint in endpoints:
+                if endpoint["url"] in tried_urls:
+                    continue
+                tried_urls.add(endpoint["url"])
+                try:
+                    is_cloud = bool(endpoint.get("api_key"))
+                    label = "cloud" if is_cloud else "local"
+                    logger.info(
+                        "Trying {} vision endpoint: {} (model: {})",
+                        label,
+                        endpoint["url"],
+                        endpoint["model"],
+                    )
+                    payload_copy = payload.copy()
+                    payload_copy["model"] = endpoint["model"]
+                    headers = {}
+                    if endpoint.get("api_key"):
+                        headers["Authorization"] = f"Bearer {endpoint['api_key']}"
+                    response = self.session.post(
+                        endpoint["url"],
+                        json=payload_copy,
+                        headers=headers,
+                        timeout=request_timeout,
+                    )
+                    if response.ok:
+                        self._active_endpoint = endpoint
+                        return response
+                    try:
+                        err_body = response.text[:300]
+                    except Exception:
+                        err_body = "(unreadable)"
+                    logger.warning(
+                        "Vision endpoint {} returned HTTP {}: {}",
+                        endpoint["url"],
+                        response.status_code,
+                        err_body,
+                    )
+                    errors.append(
+                        f"{endpoint['url']}: HTTP {response.status_code}"
+                    )
+                except requests.exceptions.Timeout as e:
+                    logger.warning("Timeout on endpoint {}: {}", endpoint["url"], e)
+                    errors.append(f"{endpoint['url']}: Timeout")
+                    continue
+                except requests.exceptions.ConnectionError as e:
+                    logger.warning(
+                        "Connection error on endpoint {}: {}", endpoint["url"], e
+                    )
+                    errors.append(f"{endpoint['url']}: Connection error")
+                    continue
+                except Exception as e:
+                    logger.warning("Error on endpoint {}: {}", endpoint["url"], e)
+                    errors.append(f"{endpoint['url']}: {e}")
+                    continue
+            return None
+
+        response = _attempt(available, timeout)
+        if response is not None:
+            return response
+
+        # If healthy endpoints failed, try remaining endpoints with a shorter timeout.
+        if (
+            VisionService._health_check_done
+            and VisionService._healthy_endpoints is not None
+        ):
+            extras = [
+                ep for ep in self.API_ENDPOINTS
+                if ep["url"] not in tried_urls
+            ]
+            if extras:
+                fallback_timeout = min(timeout, 60)
+                logger.warning(
+                    "Healthy endpoints failed; trying {} fallback endpoint(s)",
+                    len(extras),
+                )
+                response = _attempt(extras, fallback_timeout)
+                if response is not None:
                     return response
-                errors.append(f"{endpoint['url']}: HTTP {response.status_code}")
-            except requests.exceptions.Timeout as e:
-                logger.warning("Timeout on endpoint {}: {}", endpoint["url"], e)
-                errors.append(f"{endpoint['url']}: Timeout")
-                continue
-            except requests.exceptions.ConnectionError as e:
-                logger.warning("Connection error on endpoint {}: {}", endpoint["url"], e)
-                errors.append(f"{endpoint['url']}: Connection error")
-                continue
-            except Exception as e:
-                logger.warning("Error on endpoint {}: {}", endpoint["url"], e)
-                errors.append(f"{endpoint['url']}: {e}")
-                continue
+
         logger.error("All vision endpoints failed: {}", errors)
         return None
 
@@ -1286,14 +1422,14 @@ class VisionService:
             except Exception:
                 return False
         
-    def _encode_image(self, image_path: str, max_dimension: int = 1280) -> str:
+    def _encode_image(self, image_path: str, max_dimension: int = 1024) -> str:
         """
         Encode image to base64 string, resizing if necessary.
         
         Qwen2-VL Recommendation:
-        - 1024-1280px is optimal for balancing document legibility and token usage.
+        - 1024-1280px balances document legibility and token usage.
         - Higher resolutions exponentially increase token count and VRAM usage.
-        - 1280px is a safe upper limit for most consumer GPUs (approx 1200-1600 tokens).
+        - 1024px is a safe default for most document pages.
         """
         try:
             with Image.open(image_path) as img:
@@ -1402,7 +1538,9 @@ class VisionService:
                 "temperature": 0.1
             }
 
-            response = self._try_all_endpoints(payload, timeout=180)  # Longer timeout for multi-image
+            # Scale timeout with page count: 60s base + 60s per image (local GLM is slow)
+            timeout = 60 + 60 * len(image_paths)
+            response = self._try_all_endpoints(payload, timeout=timeout)
             if response is None:
                 logger.error("All vision endpoints failed for multi-image request ({} images)", len(image_paths))
                 return None
