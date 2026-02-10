@@ -62,6 +62,11 @@ class SurvivalService:
         lp_date = judgment_data.get('lis_pendens_date')
         defendants = judgment_data.get('defendants') or []
         fc_refs = judgment_data.get('foreclosing_refs')
+        mortgage_count = sum(
+            1
+            for e in encumbrances
+            if e.get('encumbrance_type', '').lower() == 'mortgage'
+        )
         
         # 3. Find the foreclosing lien
         foreclosing_doc = None
@@ -95,7 +100,18 @@ class SurvivalService:
 
         if not foreclosing_doc:
             self.uncertainty_flags.append("FORECLOSING_LIEN_NOT_FOUND")
-            logger.warning(f"Could not identify foreclosing lien for {self.property_id}")
+            logger.warning(
+                "Could not identify foreclosing lien for {prop_id} "
+                "(plaintiff={plaintiff}, foreclosing_refs={refs}, "
+                "encumbrances={enc_count}, mortgages={mortgage_count}, "
+                "foreclosure_type={fc_type})",
+                prop_id=self.property_id,
+                plaintiff=plaintiff,
+                refs=fc_refs,
+                enc_count=len(encumbrances),
+                mortgage_count=mortgage_count,
+                fc_type=judgment_data.get('foreclosure_type'),
+            )
 
         # 4. Process all other encumbrances
         for enc in encumbrances:

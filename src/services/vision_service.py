@@ -26,10 +26,10 @@ def _extract_json_candidate(text: str) -> Optional[str]:
                 escape = False
             elif ch == "\\":
                 escape = True
-            elif ch == "\"":
+            elif ch == '"':
                 in_string = False
             continue
-        if ch == "\"":
+        if ch == '"':
             in_string = True
             continue
         if ch == "{":
@@ -55,7 +55,7 @@ def _sanitize_json_text(text: str) -> str:
                 escape = True
                 out.append(ch)
                 continue
-            if ch == "\"":
+            if ch == '"':
                 in_string = False
                 out.append(ch)
                 continue
@@ -70,7 +70,7 @@ def _sanitize_json_text(text: str) -> str:
                 continue
             out.append(ch)
             continue
-        if ch == "\"":
+        if ch == '"':
             in_string = True
         out.append(ch)
     return "".join(out)
@@ -86,10 +86,10 @@ def _append_missing_braces(text: str) -> str:
                 escape = False
             elif ch == "\\":
                 escape = True
-            elif ch == "\"":
+            elif ch == '"':
                 in_string = False
             continue
-        if ch == "\"":
+        if ch == '"':
             in_string = True
             continue
         if ch == "{":
@@ -131,12 +131,12 @@ def robust_json_parse(text: str, context: str = "") -> Optional[Dict[str, Any]]:
     try:
         repaired = repair_json(cleaned)
         return json.loads(repaired)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"JSON repair attempt 1 failed: {e}")
 
     # Try to fix missing commas between properties
     # Pattern: "value"\n\n  "key" or "value"\n  "key" (missing comma)
-    fixed = re.sub(r'([\"\d\]\}])\s*\n+\s*(\")', r'\1,\n  \2', cleaned)
+    fixed = re.sub(r"([\"\d\]\}])\s*\n+\s*(\")", r"\1,\n  \2", cleaned)
 
     try:
         return json.loads(fixed)
@@ -144,7 +144,7 @@ def robust_json_parse(text: str, context: str = "") -> Optional[Dict[str, Any]]:
         pass
 
     # Try removing trailing commas before } or ]
-    fixed2 = re.sub(r',\s*([}\]])', r'\1', fixed)
+    fixed2 = re.sub(r",\s*([}\]])", r"\1", fixed)
 
     try:
         return json.loads(fixed2)
@@ -1119,7 +1119,7 @@ class VisionService:
         VisionService._ensure_endpoints_built()
 
         self.session = requests.Session()
-        self.session.headers.update({'Connection': 'keep-alive'})
+        self.session.headers.update({"Connection": "keep-alive"})
         self._active_endpoint = None
         if not hasattr(VisionService, "_global_semaphore"):
             VisionService._global_semaphore = asyncio.Semaphore(1)
@@ -1169,13 +1169,8 @@ class VisionService:
         # Check all endpoints in parallel but preserve original order
         # (local endpoints first, cloud fallbacks last)
         results: dict[int, tuple[dict, str, str | None]] = {}
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(8, len(cls.API_ENDPOINTS))
-        ) as executor:
-            future_to_idx = {
-                executor.submit(check_endpoint, endpoint): idx
-                for idx, endpoint in enumerate(cls.API_ENDPOINTS)
-            }
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(cls.API_ENDPOINTS))) as executor:
+            future_to_idx = {executor.submit(check_endpoint, endpoint): idx for idx, endpoint in enumerate(cls.API_ENDPOINTS)}
             for future in concurrent.futures.as_completed(future_to_idx):
                 idx = future_to_idx[future]
                 results[idx] = future.result()
@@ -1190,9 +1185,7 @@ class VisionService:
                 healthy.append(endpoint)
                 logger.info(f"Cloud vision fallback available: {endpoint['url']} (model: {endpoint['model']})")
             elif status == "unhealthy":
-                logger.warning(
-                    f"Vision endpoint unhealthy ({detail}): {endpoint['url']}"
-                )
+                logger.warning(f"Vision endpoint unhealthy ({detail}): {endpoint['url']}")
             elif status == "timeout":
                 logger.warning(f"Vision endpoint timeout: {detail}")
             elif status == "connection_error":
@@ -1261,7 +1254,7 @@ class VisionService:
             if endpoint.get("api_key"):
                 continue  # Skip cloud endpoints for active selection; prefer local
             try:
-                base_url = endpoint["url"].rsplit('/v1/', 1)[0]
+                base_url = endpoint["url"].rsplit("/v1/", 1)[0]
                 response = self.session.get(f"{base_url}/v1/models", timeout=3)
                 if response.status_code == 200:
                     self._active_endpoint = endpoint
@@ -1332,17 +1325,13 @@ class VisionService:
                         response.status_code,
                         err_body,
                     )
-                    errors.append(
-                        f"{endpoint['url']}: HTTP {response.status_code}"
-                    )
+                    errors.append(f"{endpoint['url']}: HTTP {response.status_code}")
                 except requests.exceptions.Timeout as e:
                     logger.warning("Timeout on endpoint {}: {}", endpoint["url"], e)
                     errors.append(f"{endpoint['url']}: Timeout")
                     continue
                 except requests.exceptions.ConnectionError as e:
-                    logger.warning(
-                        "Connection error on endpoint {}: {}", endpoint["url"], e
-                    )
+                    logger.warning("Connection error on endpoint {}: {}", endpoint["url"], e)
                     errors.append(f"{endpoint['url']}: Connection error")
                     continue
                 except Exception as e:
@@ -1356,14 +1345,8 @@ class VisionService:
             return response
 
         # If healthy endpoints failed, try remaining endpoints with a shorter timeout.
-        if (
-            VisionService._health_check_done
-            and VisionService._healthy_endpoints is not None
-        ):
-            extras = [
-                ep for ep in self.API_ENDPOINTS
-                if ep["url"] not in tried_urls
-            ]
+        if VisionService._health_check_done and VisionService._healthy_endpoints is not None:
+            extras = [ep for ep in self.API_ENDPOINTS if ep["url"] not in tried_urls]
             if extras:
                 fallback_timeout = min(timeout, 60)
                 logger.warning(
@@ -1384,12 +1367,12 @@ class VisionService:
     async def process_async(self, func, *args, **kwargs):
         """
         Run a synchronous vision method in a thread pool with concurrency limiting.
-        
+
         Args:
             func: The synchronous method to call (e.g., self.analyze_image)
             *args: Positional arguments for func
             **kwargs: Keyword arguments for func
-            
+
         Returns:
             The result of func(*args, **kwargs)
         """
@@ -1406,26 +1389,24 @@ class VisionService:
         """
         try:
             # Try a simple models endpoint or health check
-            base_url = self.API_URL.rsplit('/v1/', 1)[0]
+            base_url = self.API_URL.rsplit("/v1/", 1)[0]
             response = self.session.get(f"{base_url}/v1/models", timeout=5)
             return response.status_code == 200
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Vision health check primary failed for {base_url}: {e}")
             # Fallback: try a minimal completion request
             try:
-                payload = {
-                    "model": self.active_model,
-                    "messages": [{"role": "user", "content": "test"}],
-                    "max_tokens": 1
-                }
+                payload = {"model": self.active_model, "messages": [{"role": "user", "content": "test"}], "max_tokens": 1}
                 response = self.session.post(self.API_URL, json=payload, timeout=10)
                 return response.status_code == 200
-            except Exception:
+            except Exception as e2:
+                logger.debug(f"Vision health check fallback failed: {e2}")
                 return False
-        
+
     def _encode_image(self, image_path: str, max_dimension: int = 1024) -> str:
         """
         Encode image to base64 string, resizing if necessary.
-        
+
         Qwen2-VL Recommendation:
         - 1024-1280px balances document legibility and token usage.
         - Higher resolutions exponentially increase token count and VRAM usage.
@@ -1434,9 +1415,9 @@ class VisionService:
         try:
             with Image.open(image_path) as img:
                 # Convert to RGB if needed (e.g. for RGBA or P modes)
-                if img.mode not in ('RGB', 'L'):
-                    img = img.convert('RGB')
-                
+                if img.mode not in ("RGB", "L"):
+                    img = img.convert("RGB")
+
                 # Resize if too large
                 width, height = img.size
                 if width > max_dimension or height > max_dimension:
@@ -1444,7 +1425,7 @@ class VisionService:
                     new_size = (int(width * ratio), int(height * ratio))
                     img = img.resize(new_size, Image.Resampling.LANCZOS)
                     # logger.debug(f"Resized image {image_path} from {width}x{height} to {new_size[0]}x{new_size[1]}")
-                
+
                 # Save to buffer
                 buffer = io.BytesIO()
                 img.save(buffer, format="JPEG", quality=85)
@@ -1476,16 +1457,13 @@ class VisionService:
                     {
                         "role": "user",
                         "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/png;base64,{base64_image}"}
-                            },
-                            {"type": "text", "text": prompt}
-                        ]
+                            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}},
+                            {"type": "text", "text": prompt},
+                        ],
                     }
                 ],
                 "max_tokens": 2000,
-                "temperature": 0.1
+                "temperature": 0.1,
             }
 
             response = self._try_all_endpoints(payload, timeout=120)
@@ -1520,22 +1498,14 @@ class VisionService:
             content_blocks = []
             for path in image_paths:
                 base64_image = self._encode_image(path)
-                content_blocks.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/png;base64,{base64_image}"}
-                })
+                content_blocks.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_image}"}})
             content_blocks.append({"type": "text", "text": prompt})
 
             payload = {
                 "model": "",  # Will be set by _try_all_endpoints
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": content_blocks
-                    }
-                ],
+                "messages": [{"role": "user", "content": content_blocks}],
                 "max_tokens": max_tokens,  # Use parameter (default 4000) - multi-page docs need more
-                "temperature": 0.1
+                "temperature": 0.1,
             }
 
             # Scale timeout with page count: 60s base + 60s per image (local GLM is slow)
@@ -1559,7 +1529,7 @@ class VisionService:
         """
         prompt = "Transcribe all visible text in this image exactly as it appears. Do not summarize or describe the image, just output the text."
         result = self.analyze_image(image_path, prompt)
-        return result if result else ""
+        return result or ""
 
     def extract_json(self, image_path: str, prompt: str) -> Optional[Dict[str, Any]]:
         """
@@ -1707,10 +1677,10 @@ class VisionService:
         """
         result = self.extract_json(image_path, CAPTCHA_PROMPT)
 
-        if result and result.get('confidence', 0) >= confidence_threshold:
+        if result and result.get("confidence", 0) >= confidence_threshold:
             return result
         if result:
-            print(f"CAPTCHA confidence {result.get('confidence', 0)} below threshold {confidence_threshold}")
+            logger.warning(f"CAPTCHA confidence {result.get('confidence', 0)} below threshold {confidence_threshold}")
             return result  # Return anyway so caller can decide
         return None
 
@@ -1728,31 +1698,31 @@ class VisionService:
         doc_type = doc_type.upper()
 
         # Deed types
-        if doc_type in ['WD', 'QC', 'D', 'DEED', 'CD', 'TD', 'SD', 'SWD', 'PRD', 'CT']:
+        if doc_type in ["WD", "QC", "D", "DEED", "CD", "TD", "SD", "SWD", "PRD", "CT"]:
             return self.extract_deed(image_path)
         # Mortgage types
-        if doc_type in ['MTG', 'MORTGAGE', 'DOT', 'MTGNT', 'MTGNIT', 'HELOC']:
+        if doc_type in ["MTG", "MORTGAGE", "DOT", "MTGNT", "MTGNIT", "HELOC"]:
             return self.extract_mortgage(image_path)
         # Lien types (not lis pendens - that's separate)
-        if doc_type in ['LN', 'LIEN', 'JUD', 'TL', 'ML', 'HOA', 'COD', 'MECH']:
+        if doc_type in ["LN", "LIEN", "JUD", "TL", "ML", "HOA", "COD", "MECH"]:
             return self.extract_lien(image_path)
         # Lis Pendens - foreclosure notice
-        if doc_type in ['LP', 'LIS PENDENS', 'LISPEN']:
+        if doc_type in ["LP", "LIS PENDENS", "LISPEN"]:
             return self.extract_lis_pendens(image_path)
         # Final Judgment
-        if doc_type in ['FJ', 'FINAL JUDGMENT', 'JUDGMENT']:
+        if doc_type in ["FJ", "FINAL JUDGMENT", "JUDGMENT"]:
             return self.extract_final_judgment(image_path)
         # Satisfaction/Release
-        if doc_type in ['SAT', 'REL', 'SATISFACTION', 'RELEASE', 'SATMTG', 'RELMTG']:
+        if doc_type in ["SAT", "REL", "SATISFACTION", "RELEASE", "SATMTG", "RELMTG"]:
             return self.extract_satisfaction(image_path)
         # Assignment
-        if doc_type in ['ASGN', 'ASSIGNMENT', 'ASGNMTG', 'ASSIGN']:
+        if doc_type in ["ASGN", "ASSIGNMENT", "ASGNMTG", "ASSIGN"]:
             return self.extract_assignment(image_path)
         # Notice of Commencement
-        if doc_type in ['NOC', 'NOTICE OF COMMENCEMENT', 'COMMENCE']:
+        if doc_type in ["NOC", "NOTICE OF COMMENCEMENT", "COMMENCE"]:
             return self.extract_noc(image_path)
         # Affidavit
-        if doc_type in ['AFF', 'AFFIDAVIT', 'AFFD']:
+        if doc_type in ["AFF", "AFFIDAVIT", "AFFD"]:
             return self.extract_affidavit(image_path)
         # Generic extraction - just OCR text
         return {"document_type": doc_type, "ocr_text": self.extract_text(image_path)}
@@ -1762,31 +1732,31 @@ class VisionService:
         doc_type = doc_type.upper()
 
         # Deed types
-        if doc_type in ['WD', 'QC', 'D', 'DEED', 'CD', 'TD', 'SD', 'SWD', 'PRD', 'CT']:
+        if doc_type in ["WD", "QC", "D", "DEED", "CD", "TD", "SD", "SWD", "PRD", "CT"]:
             return self.extract_deed_multi(image_paths)
         # Mortgage types
-        if doc_type in ['MTG', 'MORTGAGE', 'DOT', 'MTGNT', 'MTGNIT', 'HELOC']:
+        if doc_type in ["MTG", "MORTGAGE", "DOT", "MTGNT", "MTGNIT", "HELOC"]:
             return self.extract_mortgage_multi(image_paths)
         # Lien types (not lis pendens)
-        if doc_type in ['LN', 'LIEN', 'JUD', 'TL', 'ML', 'HOA', 'COD', 'MECH']:
+        if doc_type in ["LN", "LIEN", "JUD", "TL", "ML", "HOA", "COD", "MECH"]:
             return self.extract_lien_multi(image_paths)
         # Lis Pendens - foreclosure notice
-        if doc_type in ['LP', 'LIS PENDENS', 'LISPEN']:
+        if doc_type in ["LP", "LIS PENDENS", "LISPEN"]:
             return self.extract_lis_pendens_multi(image_paths)
         # Final Judgment
-        if doc_type in ['FJ', 'FINAL JUDGMENT', 'JUDGMENT']:
+        if doc_type in ["FJ", "FINAL JUDGMENT", "JUDGMENT"]:
             return self.extract_final_judgment_multi(image_paths)
         # Satisfaction/Release
-        if doc_type in ['SAT', 'REL', 'SATISFACTION', 'RELEASE', 'SATMTG', 'RELMTG']:
+        if doc_type in ["SAT", "REL", "SATISFACTION", "RELEASE", "SATMTG", "RELMTG"]:
             return self.extract_satisfaction_multi(image_paths)
         # Assignment
-        if doc_type in ['ASGN', 'ASSIGNMENT', 'ASGNMTG', 'ASSIGN']:
+        if doc_type in ["ASGN", "ASSIGNMENT", "ASGNMTG", "ASSIGN"]:
             return self.extract_assignment_multi(image_paths)
         # Notice of Commencement
-        if doc_type in ['NOC', 'NOTICE OF COMMENCEMENT', 'COMMENCE']:
+        if doc_type in ["NOC", "NOTICE OF COMMENCEMENT", "COMMENCE"]:
             return self.extract_noc_multi(image_paths)
         # Affidavit
-        if doc_type in ['AFF', 'AFFIDAVIT', 'AFFD']:
+        if doc_type in ["AFF", "AFFIDAVIT", "AFFD"]:
             return self.extract_affidavit_multi(image_paths)
         # Fallback: just OCR the first page for unknown types
         text = self.extract_text(image_paths[0])

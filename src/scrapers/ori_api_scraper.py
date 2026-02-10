@@ -506,6 +506,14 @@ class ORIApiScraper:
             # Rotate UA to reduce fingerprinting issues
             self.HEADERS["User-Agent"] = random.choice(USER_AGENTS)  # noqa: S311
             logger.error(f"Error searching ORI (status={status}, consecutive={self.consecutive_api_errors}): {e}")
+            # Include payload + response body for 400s to diagnose malformed requests
+            try:
+                resp_text = e.response.text if e.response is not None else None
+            except Exception as exc:
+                resp_text = f"<unreadable response body: {exc}>"
+            logger.error(f"ORI API payload (error): {payload}")
+            if resp_text:
+                logger.error(f"ORI API response body (truncated): {resp_text[:500]}")
             return []
         except Exception as e:
             self.consecutive_api_errors += 1
@@ -518,6 +526,7 @@ class ORIApiScraper:
                 logger.warning(f"ORI API entering cool-down mode for {self.API_COOLDOWN_DURATION}s after {self.consecutive_api_errors} consecutive errors")
 
             logger.error(f"Error searching ORI (consecutive={self.consecutive_api_errors}): {e}")
+            logger.error(f"ORI API payload (exception): {payload}")
             return []
 
     def download_pdf(self, doc: Dict, output_dir: Path, prefer_browser: bool = False) -> Optional[Path]:

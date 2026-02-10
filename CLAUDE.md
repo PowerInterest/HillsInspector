@@ -12,9 +12,9 @@ A successful `--update` run is measured by **data completeness**, not by steps c
 |--------|--------|-----------------|
 | Final Judgment PDFs | 90%+ of foreclosures | Count `data/Foreclosure/*/documents/*.pdf` vs total auctions |
 | Extracted judgment data | 90%+ of PDFs | `SELECT COUNT(*) FROM auctions WHERE extracted_judgment_data IS NOT NULL` |
-| Chain of title | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM chain_of_title` (V2 DuckDB) |
-| Encumbrances identified | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM encumbrances` (V2 DuckDB) |
-| Lien survival analysis | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM encumbrances WHERE survival_status IS NOT NULL` (V2 DuckDB) |
+| Chain of title | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM chain_of_title` |
+| Encumbrances identified | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM encumbrances` |
+| Lien survival analysis | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM encumbrances WHERE survival_status IS NOT NULL` |
 
 **If any threshold is not met, the run is a FAILURE.** Do not report success. Instead:
 1. Diagnose why the data is missing (query the `status` table, check logs, read the relevant step code)
@@ -23,6 +23,25 @@ A successful `--update` run is measured by **data completeness**, not by steps c
 4. Keep iterating until thresholds are met
 
 The chain of title and encumbrance data are the core deliverable. Without them, the pipeline produces no investment-grade analysis. Judgment PDFs and enrichment data are intermediate steps toward that goal.
+
+## Final Judgment PDF — The Critical Document
+
+The Final Judgment PDF is **THE** critical piece of information for this entire project. Every downstream analysis (chain of title, encumbrances, lien survival) depends on it. The auction website sometimes has incorrect or missing links to the actual judgment document. **The pipeline must make all attempts to locate the Final Judgment**, including:
+
+1. **Primary**: Download from the clerk link on the auction page
+2. **Fallback**: Search ORI by case number (`_search_judgment_by_case_number`) when the instrument number is empty or the primary link fails
+3. **Recovery (CC cases / thin extractions)**: When extracted judgment data is missing critical fields (legal description, mortgage details) — especially for County Court (CC) cases — the downloaded PDF may be a fee order, not the real Final Judgment. Recovery strategy:
+   - Extract party names from whatever PDF was downloaded (even if thin)
+   - Search ORI by party name to find related recorded documents
+   - Look for **(LP) LIS PENDENS** — the LP is filed at the start of a foreclosure and is recorded under the **real CA (Circuit Court) case number**
+   - Any other documents found (liens, assignments, etc.) provide property identifiers (address, legal description, parcel number) as a bonus
+   - Search ORI by the LP's case number for **(JUD) JUDGMENT** documents
+   - Download and extract the **real** Final Judgment with full mortgage/lien data
+4. If all strategies fail, log clearly and flag the case for manual review — do not silently skip it
+
+**Case number format**: `29YYYYCCNNNNNN` = County Court (HOA liens, code enforcement, small claims). `29YYYYCANNNNNN` = Circuit Court (mortgage foreclosure). CC cases often reference or are related to a CA case for the same property. Do NOT dismiss CC cases as low-value — follow the chain to the real foreclosure judgment.
+
+Never treat a missing judgment as acceptable. If a case has no PDF, investigate why and add new retrieval strategies as needed. Never suggest skipping CC cases or lowering success thresholds — find the real judgment instead.
 
 ## Project Overview
 
@@ -63,7 +82,7 @@ uv run playwright install chromium
 
 **DataFrames**: Only `polars` - never pandas
 
-**Database**: Only `duckdb` (OLAP columnar) - never SQLite
+**Database**: SQLite (WAL mode) at `data/property_master_sqlite.db` — single unified database. Always access through `PropertyDB` class (`src/db/operations.py`), never open the file directly with `sqlite3.connect()` (PropertyDB sets row_factory, WAL mode, and runs migrations).
 
 **Web**: FastAPI + Jinja2 SSR + HTMX (no React/SPA/client-side JS)
 
@@ -84,19 +103,13 @@ page = await context.new_page()
 await apply_stealth(page)
 ```
 
-## DuckDB Critical Pattern
+## SQLite Critical Patterns
 
-DuckDB is columnar OLAP. Row-by-row operations are catastrophically slow.
-
-```python
-# NEVER do this:
-for row in data:
-    conn.execute("INSERT INTO table VALUES (?)", [row])
-
-# ALWAYS do this:
-conn.register("df_temp", polars_df)
-conn.execute("INSERT INTO table SELECT * FROM df_temp")
-```
+- **Row factory**: `PropertyDB` sets `sqlite3.Row` — use `dict(row)` to convert rows, never `dict(zip(columns, row))`
+- **WAL mode**: Requires explicit `conn.commit()` for writes to be visible to other connections
+- **UNIQUE constraints**: SQLite treats NULL as distinct — use `COALESCE` in expression indexes for nullable columns
+- **No RETURNING**: Use `cursor.lastrowid` instead of `INSERT ... RETURNING id`
+- **Date arithmetic**: Use `date('now', '-7 days')` not `CURRENT_DATE - INTERVAL 7 DAY`
 
 ## Architecture
 
@@ -127,7 +140,7 @@ conn.execute("INSERT INTO table SELECT * FROM df_temp")
 - `src/scrapers/` - Data acquisition from county websites (auction, tax deed, HCPA, ORI, permits)
 - `src/services/` - Business logic (ingestion, chain building, lien analysis, vision/OCR)
 - `src/analyzers/` - Lien survival rules, encumbrance calculations
-- `src/db/` - DuckDB operations and schema
+- `src/db/` - SQLite operations and schema
 - `app/web/` - FastAPI web interface with Jinja2 templates
 - `data/properties/{folio}/` - Raw data per property (PDFs, images, parquet)
 
@@ -141,28 +154,25 @@ conn.execute("INSERT INTO table SELECT * FROM df_temp")
 - `HCPAScraper` - Hillsborough County Property Appraiser data
 
 ### Data Flow
-Scrapers -> IngestionService -> PropertyDB (DuckDB) -> Analyzers -> Web UI
+Scrapers -> IngestionService -> PropertyDB (SQLite) -> Analyzers -> Web UI
 
 ### Database Architecture
 
-**Dual Database System** (when `USE_STEP4_V2=True` in `config/step4v2.py`):
+**Single SQLite Database**: `data/property_master_sqlite.db` (WAL mode)
 
-| Database | Path | Purpose |
-|----------|------|---------|
-| V1 | `data/property_master.db` | Auctions, status tracking, HCPA, permits, market data |
-| V2 | `data/property_master_v2.db` | ORI documents, chain of title, encumbrances (Step 4-6) |
+Always access via `PropertyDB` class — never `sqlite3.connect()` directly.
+The DB is accessible through `PropertyDB` (`src/db/operations.py`).
 
-The orchestrator automatically routes reads/writes to the appropriate database based on `USE_STEP4_V2`.
-
-**V1 Tables** (auctions & enrichment):
+**Tables** (auctions & enrichment):
 - `auctions` - Foreclosure/tax deed auction listings
 - `status` - Pipeline step completion tracking
 - `parcels` - Property details (owner, specs, coords)
+- `bulk_parcels` - HCPA bulk parcel data (strap, folio, address, legal desc)
 - `permits` - Building permit data
 - `market_data` - Zillow/listing data
 - `sales_history` - HCPA sales history
 
-**V2 Tables** (ORI & title chain):
+**Tables** (ORI & title chain):
 - `documents` - ORI document metadata
 - `chain_of_title` - Ownership history periods
 - `encumbrances` - Liens, mortgages with survival status
@@ -171,7 +181,7 @@ The orchestrator automatically routes reads/writes to the appropriate database b
 
 **Creating New Databases:**
 ```bash
-uv run main.py --new  # Archives old v1 & v2, creates fresh databases
+uv run main.py --new  # Archives old, creates fresh database
 ```
 
 ## Logging

@@ -201,9 +201,9 @@ class HomeHarvestService:
             LEFT JOIN home_harvest h ON COALESCE(a.parcel_id, a.folio) = h.folio
             WHERE COALESCE(a.property_address, p.property_address) IS NOT NULL 
               AND COALESCE(a.property_address, p.property_address) != ''
-              AND (a.hcpa_scrape_failed IS NULL OR a.hcpa_scrape_failed = FALSE) -- Only good properties
-              AND (h.folio IS NULL OR h.created_at < CURRENT_DATE - INTERVAL 7 DAY) -- No recent data
-              AND a.needs_homeharvest_enrichment = TRUE -- Flag to be enriched
+              AND (a.hcpa_scrape_failed IS NULL OR a.hcpa_scrape_failed = 0) -- Only good properties
+              AND (h.folio IS NULL OR h.created_at < date('now', '-7 days')) -- No recent data
+              AND a.needs_homeharvest_enrichment = 1 -- Flag to be enriched
         """
         params = []
 

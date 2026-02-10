@@ -31,7 +31,11 @@ def geocode_missing(limit: int | None = None):
 
     updated = 0
     for folio, parcel_id, address in rows:
-        coords = geocode_address(address)
+        coords = geocode_address(
+            address,
+            source="tools/geocode_missing_parcels",
+            folio=str(folio),
+        )
         if coords:
             lat, lon = coords
             db.update_parcel_coordinates(parcel_id or folio, lat, lon)

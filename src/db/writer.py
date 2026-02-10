@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 from loguru import logger
 from src.db.operations import PropertyDB
+from src.db.sqlite_paths import resolve_sqlite_db_path_str
 
 class DatabaseWriter:
     """
@@ -14,7 +15,9 @@ class DatabaseWriter:
     and executes them against the database, preventing concurrent write contention.
     """
     
-    def __init__(self, db_path: Path = Path("data/property_master.db"), db: PropertyDB | None = None):
+    def __init__(self, db_path: Path = None, db: PropertyDB | None = None):
+        if db_path is None:
+            db_path = Path(resolve_sqlite_db_path_str())
         self.db_path = Path(db.db_path) if db else db_path
         self.queue = asyncio.Queue()
         self.running = False

@@ -8,6 +8,7 @@ This module provides:
 - Progress tracking and statistics
 """
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -348,8 +349,10 @@ class IterativeDiscovery:
                         logger.debug(f"  Gap-search iteration {iteration}: found {new_docs} new docs")
                     except RateLimitError:
                         self.search_queue.mark_rate_limited(search.id)
+                        logger.warning(f"Rate limited on gap-search {search.id} for {folio}")
                     except Exception as e:
                         self.search_queue.mark_failed(search.id, str(e))
+                        logger.error(f"Gap-search {search.id} failed for {folio}: {e}")
 
         # Link name variations across documents (e.g., "ROSRIGUEZ" <-> "RODRIGUEZ")
         self._link_party_variations(folio)
@@ -541,13 +544,27 @@ class IterativeDiscovery:
             return []
 
         except Exception as e:
-            logger.error(f"Search error: {e}")
+            logger.error(
+                "Search error for folio={folio} id={search_id} type={stype} term={term} "
+                "date_from={date_from} date_to={date_to}: {err}",
+                folio=search.folio,
+                search_id=search.id,
+                stype=search.search_type,
+                term=search.search_term,
+                date_from=search.date_from,
+                date_to=search.date_to,
+                err=e,
+            )
             raise
 
-    def _format_date(self, d: Optional[date]) -> Optional[str]:
-        """Format date for ORI API."""
+    def _format_date(self, d: Optional[date | str]) -> Optional[str]:
+        """Format date for ORI API. Handles both date objects and ISO strings from SQLite."""
         if not d:
             return None
+        if isinstance(d, str):
+            d = parse_date(d)
+            if not d:
+                return None
         return d.strftime("%m/%d/%Y")
 
     def _save_document(self, folio: str, doc: dict, search_id: int) -> bool:
@@ -615,13 +632,24 @@ class IterativeDiscovery:
                     doc.get("ID") or doc.get("ori_id"),
                     doc.get("BookType") or doc.get("book_type"),
                     search_id,
-                    parties_one or None,
-                    parties_two or None,
+                    json.dumps(parties_one) if parties_one else None,
+                    json.dumps(parties_two) if parties_two else None,
                 ],
             )
             return True
         except Exception as e:
-            logger.error(f"Failed to save document: {e}")
+            logger.error(
+                "Failed to save document for folio={folio} search_id={search_id} "
+                "instrument={instrument} doc_type={doc_type} "
+                "parties_one_type={p1_type} parties_two_type={p2_type}: {err}",
+                folio=folio,
+                search_id=search_id,
+                instrument=instrument,
+                doc_type=doc_type,
+                p1_type=type(parties_one).__name__,
+                p2_type=type(parties_two).__name__,
+                err=e,
+            )
             return False
 
     def _parse_ori_date(self, date_val: Any) -> Optional[date]:
@@ -638,7 +666,8 @@ class IterativeDiscovery:
                 # The ORI API uses seconds, but we handle both for safety
                 ts = date_val / 1000 if date_val > 4_000_000_000 else date_val
                 return datetime.fromtimestamp(ts, tz=UTC).date()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"_parse_ori_date failed for value {date_val!r} (type={type(date_val).__name__}): {e}")
                 return None
 
         return parse_date(date_val)

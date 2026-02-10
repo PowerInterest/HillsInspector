@@ -2,6 +2,7 @@ from typing import Optional, Any, List, Dict
 from pathlib import Path
 from datetime import UTC, date, datetime
 import json
+import re
 from loguru import logger
 
 from src.models.property import Property
@@ -2006,8 +2007,8 @@ class IngestionService:
                 try:
                     parsed = dt.fromtimestamp(date_val, tz=UTC)
                     rec_date = parsed.strftime("%Y-%m-%d")
-                except (ValueError, OSError):
-                    pass
+                except (ValueError, OSError) as e:
+                    logger.debug(f"Could not parse timestamp {date_val!r} for document: {e}")
             elif isinstance(date_val, str):
                 # Try string date formats
                 for fmt in ["%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %H:%M:%S", "%m/%d/%Y"]:

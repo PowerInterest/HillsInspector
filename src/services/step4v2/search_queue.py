@@ -210,8 +210,8 @@ class SearchQueue:
             ).fetchall()
 
             return [dict(row) for row in result]
-        except Exception:
-            # sales_history may not exist
+        except Exception as e:
+            logger.debug(f"_get_sales_history({folio}) failed (table may not exist): {e}")
             return []
 
     def queue_legal_search(

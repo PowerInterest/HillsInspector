@@ -20,7 +20,6 @@ import json
 import re
 import argparse
 import asyncio
-from contextlib import suppress
 from pathlib import Path
 from urllib.parse import quote
 import requests
@@ -83,7 +82,8 @@ async def _wait_for_page_load(page) -> bool:
             except (asyncio.CancelledError, Exception):
                 pass
         return len(done) > 0
-    except Exception:
+    except Exception as e:
+        logger.error(f"_wait_for_content failed: {e}")
         # Cancel all tasks on error
         for task in tasks:
             task.cancel()
@@ -241,7 +241,7 @@ async def _scrape_hcpa_property_impl(
                         _wait_for_page_load(page),
                         timeout=50000 # 15s wait for content
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning(f"Timeout waiting for property image/content for {url}")
                 
             except Exception as e:
@@ -353,15 +353,19 @@ async def _scrape_hcpa_property_impl(
                             book_page_link = cells[0].locator("a").first
                             link_href = None
                             if book_page_link:
-                                with suppress(Exception):
+                                try:
                                     link_href = await book_page_link.get_attribute("href")
+                                except Exception as e:
+                                    logger.debug(f"Failed to extract book_page link href: {e}")
 
                             # Also get the instrument link
                             instrument_link = cells[1].locator("a").first
                             instrument_href = None
                             if instrument_link:
-                                with suppress(Exception):
+                                try:
                                     instrument_href = await instrument_link.get_attribute("href")
+                                except Exception as e:
+                                    logger.debug(f"Failed to extract instrument link href: {e}")
 
                             # Parse book/page
                             book_page_match = re.search(r'(\d+)\s*/\s*(\d+)', book_page)
@@ -379,11 +383,11 @@ async def _scrape_hcpa_property_impl(
                                     "instrument_link": instrument_href,
                                 }
                                 result["sales_history"].append(sale_record)
-                                print(f"  Sale: Book {sale_record['book']}/{sale_record['page']} - {sale_record['date']} - {sale_record['sale_price']}")
+                                logger.debug(f"  Sale: Book {sale_record['book']}/{sale_record['page']} - {sale_record['date']} - {sale_record['sale_price']}")
                                 if link_href:
-                                    print(f"    Link: {link_href}")
+                                    logger.debug(f"    Link: {link_href}")
         except Exception as e:
-            print(f"Error extracting sales history: {e}")
+            logger.error(f"Error extracting sales history: {e}")
 
         # Extract Legal Description from Legal Lines section
         try:
@@ -512,13 +516,15 @@ async def _scrape_hcpa_property_impl(
             # Look for permit section or permit links
             permit_links = await page.locator("a[href*='permit'], a[href*='accela']").all()
             for permit_link in permit_links[:10]:  # Limit to 10 permits
-                with suppress(Exception):
+                try:
                     permit_href = await permit_link.get_attribute("href")
                     permit_text = (await permit_link.inner_text()).strip()
                     result["permits"].append({
                         "permit_number": permit_text,
                         "link": permit_href,
                     })
+                except Exception as e:
+                    logger.debug(f"Failed to extract permit link: {e}")
 
             # Also look for permits in a table
             permit_table = page.locator("table").filter(has_text="Permit").first
@@ -562,7 +568,7 @@ async def _scrape_hcpa_property_impl(
             
             try:
                 await asyncio.wait_for(_safe_cleanup(), timeout=10.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("Browser cleanup timed out after 10s - forcing termination")
                 try:
                     if browser and hasattr(browser, '_impl_obj') and browser._impl_obj:

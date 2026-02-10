@@ -573,7 +573,7 @@ class PermitScraper:
                     )
                     
                     if date_str:
-                        with suppress(Exception):
+                        with suppress(ValueError, TypeError):
                             permit.issue_date = datetime.strptime(date_str.strip(), "%m/%d/%Y").date()
                             
                     permits.append(permit)

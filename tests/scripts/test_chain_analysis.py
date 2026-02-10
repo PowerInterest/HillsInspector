@@ -20,7 +20,7 @@ def run_test():
     import shutil
     import time
     
-    db_path = "data/property_master.db"
+    db_path = "data/property_master_sqlite.db"
     temp_db_path = f"data/property_master_copy_{int(time.time())}.db"
     
     print(f"Copying DB to {temp_db_path} to avoid locks...")
@@ -69,8 +69,7 @@ def run_test():
             SELECT * FROM documents WHERE folio = ?
         """, [folio]).fetchall()
         
-        columns = [desc[0] for desc in conn.description]
-        docs = [dict(zip(columns, r, strict=True)) for r in docs_rows]
+        docs = [dict(r) for r in docs_rows]
         print(f"Found {len(docs)} documents.")
         
         try:

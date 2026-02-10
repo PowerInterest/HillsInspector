@@ -204,6 +204,53 @@ class FinalJudgmentProcessor:
         )
         return not (has_defendants and legal_description and (has_mortgage_ref or has_amount))
     
+    @staticmethod
+    def is_thin_extraction(result: Optional[Dict[str, Any]]) -> bool:
+        """
+        Check if extraction result is missing critical foreclosure fields.
+
+        A "thin" extraction means the PDF probably isn't the real Final Judgment
+        (e.g. a fee order from a CC case).  Recovery should be attempted.
+        """
+        if not result:
+            return True
+        legal_desc = (result.get("legal_description") or "").strip()
+        mortgage = result.get("foreclosed_mortgage") or {}
+        has_mortgage_ref = any(
+            mortgage.get(k)
+            for k in ("instrument_number", "recording_book", "recording_page")
+        )
+        return not legal_desc and not has_mortgage_ref
+
+    @staticmethod
+    def dump_pdf_text(pdf_path: str, case_number: str) -> Optional[str]:
+        """
+        Extract full text from PDF via PyMuPDF and dump to a debug file.
+
+        Returns the path to the dump file, or None on failure.
+        """
+        try:
+            dump_dir = Path("data/Foreclosure") / case_number / "debug"
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            dump_path = dump_dir / "pdf_full_text.txt"
+
+            doc = fitz.open(pdf_path)
+            lines = []
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                text = page.get_text("text")
+                lines.append(f"--- PAGE {page_num + 1} ---")
+                lines.append(text)
+            doc.close()
+
+            full_text = "\n".join(lines)
+            dump_path.write_text(full_text, encoding="utf-8")
+            logger.info(f"Dumped PDF text ({len(full_text)} chars) to {dump_path}")
+            return str(dump_path)
+        except Exception as e:
+            logger.warning(f"Failed to dump PDF text for {case_number}: {e}")
+            return None
+
     def _clean_amount(self, amount_str: Optional[str]) -> Optional[float]:
         """
         Clean and parse dollar amount strings.

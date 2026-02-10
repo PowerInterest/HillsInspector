@@ -29,6 +29,7 @@ Key tables:
 | 1 | Foreclosure Auctions | Scrape auction calendar | `src/scrapers/auction_scraper.py` |
 | 1.5 | Tax Deed Auctions | Scrape tax deed sales | `src/scrapers/tax_deed_scraper.py` |
 | 2 | Final Judgment | Download & extract PDFs | `src/services/final_judgment_processor.py` |
+| 2.5 | Resolve Parcel IDs | Resolve missing parcel_id from judgment/bulk data | `docs/steps/02_5_resolve_parcel_ids.md` |
 | 3 | Bulk Enrichment | Match to HCPA parcel data | `src/ingest/bulk_parcel_ingest.py` |
 | 3.5 | HomeHarvest | Fetch MLS photos & data | `src/services/homeharvest_service.py` |
 
@@ -80,6 +81,11 @@ main.py --update
 +-------------------+
 | Step 2: Judgments |  Download/extract final judgment PDFs
 +-------------------+
+    |
+    v
++--------------------+
+| Step 2.5: Resolve  |  Resolve missing parcel_id values
++--------------------+
     |
     v
 +-------------------+

@@ -2,6 +2,7 @@ import fitz  # PyMuPDF
 import easyocr
 import os
 from contextlib import suppress
+from loguru import logger
 
 class DocumentAnalyzer:
     def __init__(self):
@@ -60,7 +61,7 @@ class DocumentAnalyzer:
             doc.close()
             
         except Exception as e:
-            print(f"Error processing PDF {pdf_path}: {e}")
+            logger.error(f"Error processing PDF {pdf_path}: {e}")
             return f"Error extracting text: {e}"
 
         return "\n\n".join(full_text)

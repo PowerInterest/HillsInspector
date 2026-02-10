@@ -18,7 +18,6 @@ Reference: archive/legalSearchdirect.md
 """
 import re
 import time
-from contextlib import suppress
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
@@ -28,6 +27,7 @@ from src.utils.time import today_local
 from src.scrapers.ori_scraper import ORIScraper
 from src.scrapers.ori_api_scraper import ORIApiScraper
 from src.db.operations import PropertyDB
+from src.db.sqlite_paths import resolve_sqlite_db_path_str
 from src.services.scraper_storage import ScraperStorage
 from pathlib import Path
 
@@ -41,7 +41,9 @@ class BatchTitleSearch:
     SCRAPER_NAME = "ori_title"  # Used for scraper_outputs tracking
     BASE_SEARCH_URL = "https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html"
 
-    def __init__(self, db_path: str = "data/property_master.db", max_age_days: int = 30):
+    def __init__(self, db_path: str | None = None, max_age_days: int = 30):
+        if db_path is None:
+            db_path = resolve_sqlite_db_path_str()
         self.db = PropertyDB(db_path)
         self.storage = ScraperStorage(db_path)
         self.ori_scraper = ORIScraper()
@@ -203,8 +205,10 @@ class BatchTitleSearch:
         rec_date = None
         date_str = result.get("Recording Date Time", "")
         if date_str:
-            with suppress(Exception):
+            try:
                 rec_date = datetime.strptime(date_str.split()[0], "%m/%d/%Y").date()
+            except Exception as e:
+                logger.debug(f"Could not parse ORI recording date: {date_str!r}: {e}")
 
         doc_data = {
             "document_type": result.get("ORI - Doc Type", ""),
@@ -579,8 +583,10 @@ class BatchTitleSearch:
             rec_date = None
             date_str = doc.get("record_date", "")
             if date_str:
-                with suppress(Exception):
+                try:
                     rec_date = datetime.strptime(date_str.split()[0], "%m/%d/%Y").date()
+                except Exception as e:
+                    logger.debug(f"Could not parse ORI recording date: {date_str!r}: {e}")
 
             # Get party1 and party2 from parties list
             parties = doc.get("parties", [])

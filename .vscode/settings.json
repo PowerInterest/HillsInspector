@@ -86,6 +86,9 @@
     "mcp.configFiles": [
         "${workspaceFolder}/.vscode/mcp.json"
     ],
+    "workbench.editorAssociations": {
+        "*.pdf": "default"
+    },
     "python.pythonPath": ".venv/bin/python",
     "[python]": {
         "editor.defaultFormatter": "charliermarsh.ruff",

@@ -20,6 +20,7 @@ def _load_cache() -> dict:
         try:
             return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
+            logger.warning(f"Corrupt geocode cache at {CACHE_PATH}, starting fresh")
             return {}
     return {}
 
@@ -29,7 +30,13 @@ def _save_cache(cache: dict) -> None:
     CACHE_PATH.write_text(json.dumps(cache, indent=2), encoding="utf-8")
 
 
-def geocode_address(address: str) -> Optional[Tuple[float, float]]:
+def geocode_address(
+    address: str,
+    *,
+    source: str | None = None,
+    folio: str | None = None,
+    case_number: str | None = None,
+) -> Optional[Tuple[float, float]]:
     """Return (lat, lon) for an address, cached to avoid repeat lookups."""
     if not address:
         return None
@@ -43,7 +50,13 @@ def geocode_address(address: str) -> Optional[Tuple[float, float]]:
         with request.urlopen(req, timeout=10) as resp:  # noqa: S310
             data = json.loads(resp.read().decode("utf-8"))
             if not data:
-                logger.warning("Geocode: no result for {addr}", addr=address)
+                logger.warning(
+                    "Geocode: no result for {addr} (source={source}, folio={folio}, case={case})",
+                    addr=address,
+                    source=source,
+                    folio=folio,
+                    case=case_number,
+                )
                 return None
             lat = float(data[0]["lat"])
             lon = float(data[0]["lon"])
@@ -53,5 +66,12 @@ def geocode_address(address: str) -> Optional[Tuple[float, float]]:
             time.sleep(1.0)
             return lat, lon
     except (error.URLError, TimeoutError, OSError) as exc:
-        logger.error("Geocode failed for {addr}: {err}", addr=address, err=exc)
+        logger.error(
+            "Geocode failed for {addr} (source={source}, folio={folio}, case={case}): {err}",
+            addr=address,
+            source=source,
+            folio=folio,
+            case=case_number,
+            err=exc,
+        )
         return None

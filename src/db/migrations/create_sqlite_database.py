@@ -572,11 +572,12 @@ def create_tables(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS property_sources (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            property_id TEXT NOT NULL,
-            source_type TEXT NOT NULL,
-            source_url TEXT,
+            folio TEXT NOT NULL,
+            source_name TEXT NOT NULL,
+            url TEXT,
+            description TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(property_id, source_type)
+            UNIQUE(folio, url)
         )
     """)
 

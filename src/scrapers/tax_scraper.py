@@ -208,7 +208,8 @@ class TaxScraper:
                         # Wait for content
                         try:
                             await page.wait_for_selector("h2:has-text('Amount Due'), h3:has-text('Amount Due'), text=Your account is", timeout=20000)
-                        except Exception:
+                        except Exception as e:
+                            logger.debug(f"Tax detail page selector not found, falling back: {e}")
                             await asyncio.sleep(5)
                             
                         await asyncio.sleep(3)

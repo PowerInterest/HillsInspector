@@ -112,6 +112,7 @@ class MarketScraper:
 
         zillow_error = None
         realtor_error = None
+        zillow_shot: Optional[str] = None
 
         async with async_playwright() as p:
             browser, _context, page = await self._setup_stealth_context(p)
@@ -129,7 +130,10 @@ class MarketScraper:
                             details.screenshot_path = zillow_shot
                         logger.success(f"Successfully scraped Zillow for {address}")
                 except Exception as e:
-                    logger.warning(f"Zillow scrape failed: {e}")
+                    logger.warning(
+                        f"Zillow scrape failed for {prop_id} "
+                        f"(url={zillow_url}, screenshot={zillow_shot}): {e}"
+                    )
                     zillow_error = e
 
                 # 2. Realtor.com is handled by HomeHarvestService in parallel

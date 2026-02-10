@@ -38,9 +38,30 @@ This step downloads the Final Judgment of Foreclosure PDF and extracts structure
     - This ensures cases scraped before the fallback was implemented still get their PDFs.
 
 5.  **Extraction**:
-    - `VisionService` converts the PDF pages to images.
-    - All pages are sent in a single batch to the vision endpoint with the `FINAL_JUDGMENT_PROMPT`.
+    - `FinalJudgmentProcessor` renders PDF pages to images via PyMuPDF.
+    - Priority pages (first 3 + last 5) are sent first; full document chunked if critical fields are missing.
     - The LLM extracts amounts, parties, dates, and legal descriptions into JSON.
+
+6.  **Thin Extraction Detection**:
+    - After extraction, `FinalJudgmentProcessor.is_thin_extraction()` checks for missing `legal_description` AND missing `foreclosed_mortgage` references.
+    - If thin: the full PDF text is dumped to `data/Foreclosure/{case_number}/debug/pdf_full_text.txt` for manual review.
+    - The case is queued for recovery (see below).
+    - If no structured data at all: PDF text is also dumped and the case is marked failed.
+
+7.  **Recovery (CC Cases / Wrong PDFs)**:
+    - The auction website sometimes links to the wrong document (e.g. a fee order from a County Court case instead of the real Final Judgment of Foreclosure from the Circuit Court case).
+    - **Case number format**: `29YYYYCC...` = County Court (HOA, code enforcement); `29YYYYCA...` = Circuit Court (mortgage foreclosure).
+    - Recovery runs as a batch after the main extraction loop, using a single Playwright session.
+    - **Recovery strategy** (`AuctionScraper._recover_judgment_via_party_search()`):
+      1. Extract party names (plaintiff + defendants) from the thin extraction result.
+      2. Search ORI by each party name via `POST /Public/ORIUtilities/DocumentSearch/api/Search` with `{"PartyName": "..."}`.
+      3. Find **(LP) LIS PENDENS** documents in results — the LP is filed at the start of the real foreclosure and is recorded under the **CA (Circuit Court) case number**.
+      4. Extract the CA case number from the LP record's `CaseNum` field.
+      5. Search ORI by that CA case number for **(JUD) JUDGMENT** documents.
+      6. Download the real Final Judgment PDF, saved as `final_judgment_recovered_{instrument}.pdf`.
+      7. Re-run `FinalJudgmentProcessor.process_pdf()` on the recovered PDF.
+    - If recovery succeeds: the real extraction replaces the thin one (tagged with `_recovery` metadata).
+    - If recovery fails: the thin result is stored anyway (better than nothing), with the debug text dump available.
 
 ## Extracted Data
 
@@ -78,7 +99,28 @@ When the instrument number is missing, we use the ORI Public Access case search,
 ### Coverage
 As of 2026-02-08: 180/186 cases (96.8%) have Final Judgment PDFs. The remaining 6 cases have no judgment recorded in the ORI system yet (only Lis Pendens or Orders exist).
 
+### CC vs CA Case Numbers
+- **CA** (Circuit Court/Circuit Civil): Mortgage foreclosures. Judgments contain property address, legal description, parcel ID, mortgage instrument details, defendant list, and financial breakdown. These are the high-value cases.
+- **CC** (County Court): HOA liens, code enforcement, small claims. The PDF linked on the auction page may be a fee order or other minor document, NOT the real Final Judgment of Foreclosure.
+- **Critical insight**: A CC case on the auction site often corresponds to an HOA or code enforcement lien on a property that ALSO has a CA mortgage foreclosure case. The LP (Lis Pendens) filed by the mortgage lender connects the two. Never dismiss CC cases — follow the chain to the real judgment.
+
+### Debug Text Dumps
+When extraction fails or yields thin results, the full PyMuPDF text is dumped to:
+```
+data/Foreclosure/{case_number}/debug/pdf_full_text.txt
+```
+This allows manual inspection to determine:
+- Whether the PDF is actually a Final Judgment or a different document type
+- Whether the vision model missed extractable data
+- What party names are available for recovery searches
+
 ### Vision Prompt
 The extraction uses `zai-org/glm-4.6v-flash` (local vLLM endpoint). The prompt is designed to be extremely precise, instructing the model to transcribe legal descriptions verbatim and capture every defendant. Cloud fallbacks (OpenAI gpt-4o, Gemini 2.0 flash) are available if the local endpoint is down.
 
 See `src/services/vision_service.py` for the full prompt text.
+
+## Key Files
+- `src/orchestrator.py` — Step 2 main loop, recovery batch, `_store_judgment_result()` helper
+- `src/services/final_judgment_processor.py` — PDF rendering, vision extraction, `is_thin_extraction()`, `dump_pdf_text()`
+- `src/scrapers/auction_scraper.py` — `_search_judgment_by_case_number()`, `_recover_judgment_via_party_search()`
+- `src/services/vision_service.py` — Vision API calls and prompt

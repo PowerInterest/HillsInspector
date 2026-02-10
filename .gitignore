@@ -147,3 +147,4 @@ node_modules/
 /playwright/.cache/
 /playwright/.auth/
 datav2/
+pipelinev2/

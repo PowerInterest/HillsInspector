@@ -337,7 +337,8 @@ def ingest_to_sqlite(df: pl.DataFrame, db_path: str = str(DB_PATH)) -> dict:
     try:
         result = conn.execute("SELECT COUNT(*) FROM bulk_parcels").fetchone()
         before_count = result[0] if result else 0
-    except Exception:
+    except Exception as e:
+        logger.debug(f"bulk_parcels count query failed (table may not exist): {e}")
         before_count = 0
 
     # Clear existing data
@@ -593,6 +594,15 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH), conn=None) -> dict:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
 
+    def _exec_sql(sql: str, label: str) -> None:
+        try:
+            conn.execute(sql)
+        except Exception as exc:
+            snippet = " ".join(line.strip() for line in sql.strip().splitlines()[:8])
+            logger.error(f"{label} failed: {exc}")
+            logger.error(f"{label} SQL (truncated): {snippet}")
+            raise
+
     # Check if bulk_parcels table exists, if not try to load from parquet
     try:
         result = conn.execute("SELECT COUNT(*) FROM bulk_parcels").fetchone()
@@ -600,7 +610,8 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH), conn=None) -> dict:
         if count == 0:
             raise Exception("Empty table")
         logger.info(f"bulk_parcels table has {count:,} records")
-    except Exception:
+    except Exception as e:
+        logger.warning(f"bulk_parcels DB query failed, falling back to parquet: {e}")
         # Try to load from parquet file
         parquet_candidates = [
             PARQUET_DIR / "bulk_parcels_latest.parquet",
@@ -642,8 +653,10 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH), conn=None) -> dict:
     for col, col_type in columns_to_add:
         try:
             conn.execute(f"ALTER TABLE parcels ADD COLUMN {col} {col_type}")
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if "duplicate column name" not in msg:
+                logger.warning(f"Failed to add parcels.{col} ({col_type}): {e}")
 
     # Count auctions without parcel data
     result = conn.execute("""
@@ -655,7 +668,7 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH), conn=None) -> dict:
 
     # Insert parcels for all auctions that don't have them yet
     # Use ROW_NUMBER() to handle duplicates (simulating DISTINCT ON)
-    conn.execute("""
+    _exec_sql("""
         INSERT INTO parcels (
             folio, parcel_id, bulk_folio, owner_name, property_address, city, zip_code,
             land_use, year_built, beds, baths, heated_area, lot_size,
@@ -686,11 +699,11 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH), conn=None) -> dict:
         ) t
         WHERE rn = 1
         ON CONFLICT (folio) DO NOTHING
-    """)
+    """, "bulk_enrich.insert_missing_parcels")
 
     # Update existing parcels missing data
     # SQLite update ... from syntax
-    conn.execute("""
+    _exec_sql("""
         UPDATE parcels 
         SET
             bulk_folio = b.folio,
@@ -722,7 +735,7 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH), conn=None) -> dict:
         WHERE parcels.folio = b.strap
           AND (parcels.owner_name IS NULL OR parcels.year_built IS NULL
                OR parcels.beds IS NULL OR parcels.legal_description IS NULL)
-    """)
+    """, "bulk_enrich.update_parcels_from_bulk")
 
     # Count after
     result = conn.execute("""
@@ -740,6 +753,7 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH), conn=None) -> dict:
     with_legal = result[0] if result else 0
 
     enriched = before - after
+    conn.commit()
     if owns_conn:
         conn.close()
 
@@ -761,7 +775,8 @@ def get_parcel_by_folio(folio: str, db_path: str = str(DB_PATH)) -> dict | None:
         result = conn.execute("""
             SELECT * FROM bulk_parcels WHERE folio = ?
         """, [folio]).fetchone()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as e:
+        logger.debug(f"bulk_parcels lookup failed for {folio}: {e}")
         conn.close()
         return None
 
@@ -793,7 +808,8 @@ def validate_bulk_data(db_path: str = str(DB_PATH)) -> dict:
         try:
             result = conn.execute(query).fetchone()
             return result[0] if result else 0
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as e:
+            logger.debug(f"Validation query failed: {e}")
             return 0
 
     stats["total_records"] = get_count(
@@ -832,7 +848,8 @@ def validate_bulk_data(db_path: str = str(DB_PATH)) -> dict:
             GROUP BY city
             ORDER BY cnt DESC
         """).fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as e:
+        logger.debug(f"Validation query failed: {e}")
         stats["land_use_distribution"] = []
         stats["city_distribution"] = []
 

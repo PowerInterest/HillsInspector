@@ -79,15 +79,18 @@ class PropertyDB:
         """
         conn = self._get_conn()
         if conn is not None:
-            with suppress(Exception):
+            try:
                 conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except Exception as e:
+                logger.warning(f"WAL checkpoint failed: {e}")
 
     def _safe_exec(self, conn, sql, params=()):
         """Execute SQL ignoring errors (for schema updates)."""
         try:
             conn.execute(sql, params)
-        except Exception:
-            pass
+        except Exception as e:
+            snippet = " ".join(line.strip() for line in str(sql).splitlines()[:3])
+            logger.warning(f"_safe_exec failed: {e} (sql='{snippet}', params={params})")
 
     def _apply_schema_migrations(self, conn) -> None:
         """
@@ -98,13 +101,15 @@ class PropertyDB:
             return
 
         def table_exists(table_name: str) -> bool:
-            with suppress(Exception):
+            try:
                 row = conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
                     (table_name,),
                 ).fetchone()
                 return row is not None
-            return False
+            except Exception as e:
+                logger.warning(f"table_exists({table_name}) failed: {e}")
+                return False
 
         def add_column_if_not_exists(table: str, column: str, col_type: str, default: str = None):
             """Helper to add column if it doesn't exist (SQLite compatible)."""
@@ -192,6 +197,156 @@ class PropertyDB:
             add_column_if_not_exists("auctions", "ori_party_fallback_used", "INTEGER", "0")
             add_column_if_not_exists("auctions", "ori_party_fallback_note", "TEXT")
 
+        # Migrate sales_history: replace broken UNIQUE(folio, book, page) with
+        # expression-based unique index that handles NULLs via COALESCE.
+        # SQLite treats NULLs as distinct in UNIQUE constraints, so rows with
+        # book=NULL, page=NULL bypass the constraint and cause massive duplication.
+        if table_exists("sales_history"):
+            idx_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_sales_history_unique' LIMIT 1"
+            ).fetchone()
+            if not idx_exists:
+                # Remove duplicate rows keeping only the one with the lowest id
+                conn.execute("""
+                    DELETE FROM sales_history
+                    WHERE id NOT IN (
+                        SELECT MIN(id)
+                        FROM sales_history
+                        GROUP BY folio, COALESCE(book, ''), COALESCE(page, '')
+                    )
+                """)
+                conn.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_history_unique
+                    ON sales_history(folio, COALESCE(book, ''), COALESCE(page, ''))
+                """)
+
+        # Normalize non-ISO sale_date values in sales_history (e.g. "08/1995" → "1995-08-01")
+        if table_exists("sales_history"):
+            try:
+                # Fix MM/YYYY format
+                conn.execute("""
+                    UPDATE sales_history
+                    SET sale_date = SUBSTR(sale_date, 4, 4) || '-' || SUBSTR(sale_date, 1, 2) || '-01'
+                    WHERE sale_date LIKE '__/____'
+                """)
+                # Fix MM/DD/YYYY format
+                conn.execute("""
+                    UPDATE sales_history
+                    SET sale_date = SUBSTR(sale_date, 7, 4) || '-' || SUBSTR(sale_date, 1, 2) || '-' || SUBSTR(sale_date, 4, 2)
+                    WHERE sale_date LIKE '__/__/____'
+                """)
+            except Exception as e:
+                logger.warning(f"Migration: sales_history date normalization failed: {e}")
+
+        # Fix has_valid_parcel_id inconsistency: auctions with empty parcel_id
+        # should have has_valid_parcel_id=0
+        if table_exists("auctions"):
+            try:
+                conn.execute("""
+                    UPDATE auctions
+                    SET has_valid_parcel_id = 0
+                    WHERE (parcel_id IS NULL OR parcel_id = '')
+                      AND has_valid_parcel_id = 1
+                """)
+            except Exception as e:
+                logger.warning(f"Migration: auctions has_valid_parcel_id fix failed: {e}")
+
+        # Backfill judgment_legal_description from extracted_judgment_data
+        # (was blocked by invalid ALTER TABLE IF NOT EXISTS syntax, now fixed)
+        if table_exists("parcels") and table_exists("auctions"):
+            try:
+                conn.execute("""
+                    UPDATE parcels
+                    SET judgment_legal_description = json_extract(a.extracted_judgment_data, '$.legal_description')
+                    FROM auctions a
+                    WHERE (parcels.folio = a.parcel_id OR parcels.folio = a.folio)
+                      AND a.extracted_judgment_data IS NOT NULL
+                      AND parcels.judgment_legal_description IS NULL
+                      AND json_extract(a.extracted_judgment_data, '$.legal_description') IS NOT NULL
+                """)
+            except Exception as e:
+                logger.warning(f"Migration: parcels judgment_legal_description backfill failed: {e}")
+
+        # Migrate property_sources from old schema (property_id, source_type,
+        # source_url) to new schema (folio, source_name, url, description).
+        # SQLite 3.25+ supports ALTER TABLE RENAME COLUMN.
+        if table_exists("property_sources"):
+            columns = {row[1] for row in conn.execute("PRAGMA table_info('property_sources')").fetchall()}
+            if "property_id" in columns and "folio" not in columns:
+                with suppress(Exception):
+                    conn.execute("ALTER TABLE property_sources RENAME COLUMN property_id TO folio")
+            if "source_type" in columns and "source_name" not in columns:
+                with suppress(Exception):
+                    conn.execute("ALTER TABLE property_sources RENAME COLUMN source_type TO source_name")
+            if "source_url" in columns and "url" not in columns:
+                with suppress(Exception):
+                    conn.execute("ALTER TABLE property_sources RENAME COLUMN source_url TO url")
+            if "description" not in columns:
+                self._safe_exec(conn, "ALTER TABLE property_sources ADD COLUMN description TEXT")
+
+        # Unique index on documents to prevent duplicate inserts by instrument_number
+        if table_exists("documents"):
+            with suppress(Exception):
+                conn.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_folio_instrument
+                    ON documents(folio, instrument_number)
+                    WHERE instrument_number IS NOT NULL AND instrument_number != ''
+                """)
+            # Unique index on ori_uuid to prevent duplicates from ORI API results
+            with suppress(Exception):
+                conn.execute("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_ori_uuid
+                    ON documents(ori_uuid)
+                    WHERE ori_uuid IS NOT NULL AND ori_uuid != ''
+                """)
+            # Dedup documents with NULL/empty instrument_number using ori_uuid
+            idx_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_documents_ori_uuid' LIMIT 1"
+            ).fetchone()
+            if idx_exists:
+                # Remove dupes where ori_uuid is populated but duplicated
+                try:
+                    conn.execute("""
+                        DELETE FROM documents
+                        WHERE id NOT IN (
+                            SELECT MIN(id)
+                            FROM documents
+                            WHERE ori_uuid IS NOT NULL AND ori_uuid != ''
+                            GROUP BY ori_uuid
+                        )
+                        AND ori_uuid IS NOT NULL AND ori_uuid != ''
+                    """)
+                except Exception as e:
+                    logger.error(f"Document dedup (ori_uuid) failed: {e}")
+                # Remove dupes with NULL instrument AND NULL ori_uuid:
+                # dedup on (folio, document_type, recording_date, book, page)
+                try:
+                    conn.execute("""
+                        DELETE FROM documents
+                        WHERE id NOT IN (
+                            SELECT MIN(id)
+                            FROM documents
+                            WHERE (instrument_number IS NULL OR instrument_number = '')
+                              AND (ori_uuid IS NULL OR ori_uuid = '')
+                            GROUP BY folio, COALESCE(document_type, ''),
+                                     COALESCE(recording_date, ''),
+                                     COALESCE(book, ''), COALESCE(page, '')
+                        )
+                        AND (instrument_number IS NULL OR instrument_number = '')
+                        AND (ori_uuid IS NULL OR ori_uuid = '')
+                    """)
+                except Exception as e:
+                    logger.error(f"Document dedup (composite key) failed: {e}")
+
+        # Commit all pending DML from migrations (DELETE dedup, UPDATE backfills).
+        # Python sqlite3's default isolation_level="" wraps DML in implicit
+        # transactions that only auto-commit before DDL.  If the final migration
+        # step was DML (no trailing DDL), changes stay uncommitted without this.
+        try:
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Migration commit failed on {self.db_path}: {e}")
+
         self._schema_migrations_applied = True
         # Note: We intentionally do NOT checkpoint here. Checkpointing requires
         # exclusive access and will spin-wait if another connection has pending
@@ -217,8 +372,8 @@ class PropertyDB:
             ).fetchone()
             if row and row[0]:
                 return str(row[0])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"get_folio_from_strap({strap}) bulk_parcels query failed: {e}")
         try:
             row = conn.execute(
                 "SELECT bulk_folio FROM parcels WHERE folio = ? LIMIT 1",
@@ -226,8 +381,8 @@ class PropertyDB:
             ).fetchone()
             if row and row[0]:
                 return str(row[0])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"get_folio_from_strap({strap}) parcels query failed: {e}")
         return None
 
     def close(self):
@@ -286,7 +441,7 @@ class PropertyDB:
             UPDATE auctions
             SET needs_hcpa_enrichment = FALSE
             WHERE parcel_id IN (
-                SELECT folio FROM parcels WHERE owner_name IS NOT NULL
+                SELECT folio FROM parcels WHERE owner_name IS NOT NULL AND owner_name != ''
             )
         """)
 
@@ -348,7 +503,7 @@ class PropertyDB:
             SET needs_homeharvest_enrichment = FALSE
             WHERE folio IN (
                 SELECT DISTINCT folio FROM home_harvest
-                WHERE created_at >= date('now', '-\1 days')
+                WHERE created_at >= date('now', '-7 days')
             )
         """)
 
@@ -362,7 +517,7 @@ class PropertyDB:
             )
         """)
 
-        print("Pipeline flags initialized and backfilled.")
+        logger.info("Pipeline flags initialized and backfilled.")
 
     def mark_step_complete(self, case_number: str, step_flag: str):
         """
@@ -978,7 +1133,7 @@ class PropertyDB:
                     )
 
         except Exception as e:
-            print(f"Error in save_liens: {e}")
+            logger.error(f"Error in save_liens: {e}")
             raise
 
     def get_liens_by_case(self, case_number: str) -> List[Dict[str, Any]]:
@@ -1347,16 +1502,19 @@ class PropertyDB:
         self._safe_exec(conn, "ALTER TABLE documents ADD COLUMN ori_id TEXT")
         self._safe_exec(conn, "ALTER TABLE documents ADD COLUMN book_type TEXT")
 
-        # Check if exists by instrument number
+        # Check if exists by instrument number, then by ori_uuid
         inst = doc_data.get("instrument_number")
+        ori_uuid = doc_data.get("ori_uuid")
         existing = None
         if inst:
             existing = conn.execute(
-                """
-                SELECT id FROM documents 
-                WHERE folio = ? AND instrument_number = ?
-            """,
+                "SELECT id FROM documents WHERE folio = ? AND instrument_number = ?",
                 [folio, inst],
+            ).fetchone()
+        if not existing and ori_uuid:
+            existing = conn.execute(
+                "SELECT id FROM documents WHERE ori_uuid = ?",
+                [ori_uuid],
             ).fetchone()
 
         if existing:
@@ -1374,7 +1532,7 @@ class PropertyDB:
                 updates.append("extracted_data = ?")
                 params.append(json.dumps(extracted_data))
             # Update Party 2 resolution data if provided
-            if doc_data.get("party2") and not existing:  # Only update party2 if not already set
+            if doc_data.get("party2"):  # Update party2 if provided
                 updates.append("party2 = ?")
                 params.append(doc_data.get("party2"))
             if doc_data.get("party2_resolution_method"):
@@ -1456,7 +1614,7 @@ class PropertyDB:
 
         # Preserve existing lien survival annotations across chain rebuilds (best-effort).
         prior_survival: dict[str, dict[str, Any]] = {}
-        with suppress(Exception):
+        try:
             rows = conn.execute(
                 """
                 SELECT instrument, book, page, survival_status, is_joined, is_inferred
@@ -1475,17 +1633,43 @@ class PropertyDB:
                     prior_survival[f"INST:{inst}"] = rec
                 if book and page:
                     prior_survival[f"BKPG:{book}/{page}"] = rec
+        except Exception as e:
+            logger.error(f"Failed to preserve prior survival data for {folio}: {e}")
 
         # Delete existing chain data for this folio
         conn.execute("DELETE FROM chain_of_title WHERE folio = ?", [folio])
         conn.execute("DELETE FROM encumbrances WHERE folio = ?", [folio])
 
         # Insert ownership periods
+        # Compute per-period years_covered and chain-level mrta_status if not provided
+        timeline = chain_data.get("ownership_timeline", [])
         mrta_status = chain_data.get("mrta_status")
-        years_covered = chain_data.get("years_covered")
 
-        for period in chain_data.get("ownership_timeline", []):
-            # Insert chain record and get the ID using RETURNING clause
+        if not mrta_status and timeline:
+            total_years = 0.0
+            for p in timeline:
+                acq = p.get("acquisition_date")
+                disp = p.get("disposition_date")
+                if acq:
+                    try:
+                        from datetime import UTC as _UTC
+                        from datetime import date as _date
+                        from datetime import datetime as _dt
+
+                        acq_d = _date.fromisoformat(acq) if isinstance(acq, str) else acq
+                        if disp:
+                            end_d = _date.fromisoformat(disp) if isinstance(disp, str) else disp
+                        else:
+                            end_d = _dt.now(tz=_UTC).date()
+                        yrs = max(0, (end_d - acq_d).days / 365.25)
+                        p["_years_covered"] = yrs
+                        total_years += yrs
+                    except (ValueError, TypeError):
+                        p["_years_covered"] = None
+            mrta_status = "complete" if total_years >= 30 else "incomplete"
+
+        for period in timeline:
+            per_years = period.pop("_years_covered", None) or chain_data.get("years_covered")
             result = conn.execute(
                 """
                 INSERT INTO chain_of_title (
@@ -1508,7 +1692,7 @@ class PropertyDB:
                     period.get("link_status"),
                     period.get("confidence_score"),
                     mrta_status,
-                    years_covered,
+                    per_years,
                 ],
             )
 
@@ -1611,7 +1795,8 @@ class PropertyDB:
         """Check if an encumbrance with the given book/page already exists for a folio."""
         conn = self.connect()
         result = conn.execute(
-            "SELECT 1 FROM encumbrances WHERE folio = ? AND book = ? AND page = ? LIMIT 1", [folio, book, page]
+            "SELECT 1 FROM encumbrances WHERE folio = ? AND COALESCE(book, '') = COALESCE(?, '') AND COALESCE(page, '') = COALESCE(?, '') LIMIT 1",
+            [folio, book, page],
         ).fetchone()
         return result is not None
 
@@ -1720,6 +1905,24 @@ class PropertyDB:
     def create_sources_table(self):
         """Create table for tracking data sources."""
         conn = self.connect()
+
+        # Migrate old schema (property_id/source_type/source_url) → new (folio/source_name/url)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info('property_sources')").fetchall()}
+        if columns and "folio" not in columns:
+            # Old schema — rebuild (table is typically empty)
+            row_count = conn.execute("SELECT COUNT(*) FROM property_sources").fetchone()[0]
+            if row_count == 0:
+                conn.execute("DROP TABLE property_sources")
+            else:
+                # Migrate existing data
+                self._safe_exec(conn, "ALTER TABLE property_sources ADD COLUMN folio TEXT")
+                self._safe_exec(conn, "ALTER TABLE property_sources ADD COLUMN source_name TEXT")
+                self._safe_exec(conn, "ALTER TABLE property_sources ADD COLUMN url TEXT")
+                self._safe_exec(conn, "ALTER TABLE property_sources ADD COLUMN description TEXT")
+                conn.execute(
+                    "UPDATE property_sources SET folio = property_id, source_name = source_type, url = source_url WHERE folio IS NULL"
+                )
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS property_sources (
                 id INTEGER PRIMARY KEY,
@@ -1731,19 +1934,6 @@ class PropertyDB:
                 UNIQUE(folio, url)
             )
         """)
-
-        with suppress(Exception):
-            columns = {row[1] for row in conn.execute("PRAGMA table_info('property_sources')").fetchall()}
-            if "source_name" not in columns:
-                self._safe_exec(conn, "ALTER TABLE property_sources ADD COLUMN source_name TEXT")
-                if "source_type" in columns:
-                    conn.execute("""
-                        UPDATE property_sources
-                        SET source_name = source_type
-                        WHERE source_name IS NULL
-                    """)
-            if "description" not in columns:
-                self._safe_exec(conn, "ALTER TABLE property_sources ADD COLUMN description TEXT")
 
     def save_market_data(self, folio: str, source: str, data: Dict[str, Any], screenshot_path: Optional[str] = None):
         """Save market data from Zillow/Realtor."""
@@ -1793,9 +1983,15 @@ class PropertyDB:
                 sale_price REAL,
                 ori_link TEXT,
                 pdf_path TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(folio, book, page)
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+        """)
+
+        # Expression-based unique index: COALESCE handles NULL values which SQLite
+        # treats as distinct in plain UNIQUE constraints, causing duplicate rows
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_history_unique
+            ON sales_history(folio, COALESCE(book, ''), COALESCE(page, ''))
         """)
 
         # Create index for faster lookups
@@ -1998,41 +2194,75 @@ class PropertyDB:
                 except (ValueError, TypeError):
                     sale_price = None
 
-                # Use INSERT with ON CONFLICT for DuckDB
-                conn.execute(
-                    """
-                    INSERT INTO sales_history (
-                        folio, strap, book, page, instrument,
-                        sale_date, doc_type, qualified, vacant_improved,
-                        sale_price, ori_link
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT (folio, book, page) DO UPDATE SET
-                        instrument = EXCLUDED.instrument,
-                        sale_date = EXCLUDED.sale_date,
-                        doc_type = EXCLUDED.doc_type,
-                        qualified = EXCLUDED.qualified,
-                        vacant_improved = EXCLUDED.vacant_improved,
-                        sale_price = EXCLUDED.sale_price,
-                        ori_link = EXCLUDED.ori_link
-                """,
-                    [
-                        folio,
-                        strap,
-                        sale.get("book"),
-                        sale.get("page"),
-                        sale.get("instrument"),
-                        sale.get("date"),
-                        sale.get("doc_type"),
-                        sale.get("qualified"),
-                        sale.get("vacant_improved"),
-                        sale_price,
-                        sale.get("book_page_link"),
-                    ],
-                )
-            except Exception as e:
-                print(f"Error saving sale record: {e}")
+                book = sale.get("book")
+                page = sale.get("page")
 
-        print(f"Saved {len(sales)} sales history records for {folio}")
+                # Check for existing record using COALESCE to match the unique index
+                # (SQLite treats NULLs as distinct in UNIQUE constraints, so we use
+                # an expression-based unique index with COALESCE)
+                existing = conn.execute(
+                    """
+                    SELECT id FROM sales_history
+                    WHERE folio = ? AND COALESCE(book, '') = ? AND COALESCE(page, '') = ?
+                """,
+                    [folio, book or "", page or ""],
+                ).fetchone()
+
+                if existing:
+                    conn.execute(
+                        """
+                        UPDATE sales_history SET
+                            strap = ?,
+                            instrument = ?,
+                            sale_date = ?,
+                            doc_type = ?,
+                            qualified = ?,
+                            vacant_improved = ?,
+                            sale_price = ?,
+                            ori_link = ?
+                        WHERE id = ?
+                    """,
+                        [
+                            strap,
+                            sale.get("instrument"),
+                            sale.get("date"),
+                            sale.get("doc_type"),
+                            sale.get("qualified"),
+                            sale.get("vacant_improved"),
+                            sale_price,
+                            sale.get("book_page_link"),
+                            existing[0],
+                        ],
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO sales_history (
+                            folio, strap, book, page, instrument,
+                            sale_date, doc_type, qualified, vacant_improved,
+                            sale_price, ori_link
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                        [
+                            folio,
+                            strap,
+                            book,
+                            page,
+                            sale.get("instrument"),
+                            sale.get("date"),
+                            sale.get("doc_type"),
+                            sale.get("qualified"),
+                            sale.get("vacant_improved"),
+                            sale_price,
+                            sale.get("book_page_link"),
+                        ],
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Failed to save sale record for {folio}: book={book}, page={page}, instrument={sale.get('instrument')}: {e}"
+                )
+
+        logger.info(f"Saved {len(sales)} sales history records for {folio}")
 
     def get_sales_history(self, folio: str | None = None, strap: str | None = None) -> List[Dict]:
         """Get sales history for a property by folio or strap."""
@@ -2436,7 +2666,8 @@ class PropertyDB:
                 [folio],
             ).fetchone()
             return result[0] > 0 if result else False
-        except Exception:
+        except Exception as e:
+            logger.debug(f"folio_has_flood_data({folio}) query failed: {e}")
             return False
 
     def save_flood_data(self, folio: str, flood_zone: str, flood_risk: str, insurance_required: bool):
@@ -2513,11 +2744,12 @@ class PropertyDB:
         conn = self.connect()
         try:
             result = conn.execute(
-                "SELECT COUNT(*) FROM property_sources WHERE folio = ? AND source_name = 'sunbiz' AND created_at > date('now', '-\1 days')",
+                "SELECT COUNT(*) FROM property_sources WHERE folio = ? AND source_name = 'sunbiz' AND created_at > date('now', '-30 days')",
                 [folio],
             ).fetchone()
             return result[0] > 0 if result else False
-        except Exception:
+        except Exception as e:
+            logger.debug(f"folio_has_sunbiz_data({folio}) query failed: {e}")
             return False
 
     def folio_has_homeharvest_data(self, folio: str) -> bool:
@@ -2526,10 +2758,11 @@ class PropertyDB:
         try:
             # Match 7-day logic from HomeHarvestService
             result = conn.execute(
-                "SELECT COUNT(*) FROM home_harvest WHERE folio = ? AND created_at > date('now', '-\1 days')", [folio]
+                "SELECT COUNT(*) FROM home_harvest WHERE folio = ? AND created_at > date('now', '-7 days')", [folio]
             ).fetchone()
             return result[0] > 0 if result else False
-        except Exception:
+        except Exception as e:
+            logger.debug(f"folio_has_homeharvest_data({folio}) query failed: {e}")
             return False
 
     # -------------------------------------------------------------------------
@@ -3101,7 +3334,7 @@ class PropertyDB:
                 SELECT a.case_number
                 FROM auctions a
                 WHERE COALESCE(a.parcel_id, a.folio) IN (
-                    SELECT folio FROM parcels WHERE owner_name IS NOT NULL
+                    SELECT folio FROM parcels WHERE owner_name IS NOT NULL AND owner_name != ''
                 )
                 {sales_history_filter}
               )

@@ -1,6 +1,5 @@
 import asyncio
 import json
-import random
 import re
 from contextlib import suppress
 from datetime import date, timedelta
@@ -160,7 +159,8 @@ class AuctionScraper:
                             await page.wait_for_load_state("networkidle")
                             await page.wait_for_timeout(2000)
                             page_num += 1
-                        except Exception:
+                        except Exception as e:
+                            logger.warning(f"Pagination failed on page {page_num} for {date_str}, collected {len(properties)} auctions before stop: {e}")
                             break
                     else:
                         break
@@ -387,7 +387,7 @@ class AuctionScraper:
                     defendant = judgment_result.get("defendant")
                 elif case_href and "CQID=320" in case_href and not instrument_number:
                     logger.info(f"No instrument number for {case_number} - trying ORI case search fallback")
-                    judgment_result = await self._search_judgment_by_case_number(page, case_number, parcel_id_text)
+                    judgment_result = await self.search_judgment_by_case_number(page, case_number, parcel_id_text)
                     pdf_path = judgment_result.get("pdf_path")
                     plaintiff = judgment_result.get("plaintiff")
                     defendant = judgment_result.get("defendant")
@@ -585,7 +585,7 @@ class AuctionScraper:
             if new_context:
                 await new_context.close()
 
-    async def _search_judgment_by_case_number(
+    async def search_judgment_by_case_number(
         self,
         page: Page,
         case_number: str,
@@ -719,6 +719,192 @@ class AuctionScraper:
 
         except Exception as e:
             logger.error(f"Error in ORI case search for {case_number}: {e}")
+            return result
+        finally:
+            if new_page:
+                await new_page.close()
+            if new_context:
+                await new_context.close()
+
+    async def recover_judgment_via_party_search(
+        self,
+        page: Page,
+        case_number: str,
+        party_names: list[str],
+        parcel_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Recovery path for thin/invalid judgments (e.g. CC fee orders).
+
+        Strategy:
+        1. Search ORI by each party name
+        2. Find (LP) LIS PENDENS documents — these are filed under the REAL
+           foreclosure (CA) case number
+        3. Look up the LP instrument to get the associated case number
+        4. Search ORI by that case number for (JUD) JUDGMENT documents
+        5. Download the real Final Judgment PDF
+
+        Returns dict with pdf_path, plaintiff, defendant (same shape as
+        search_judgment_by_case_number).
+        """
+        result: Dict[str, Any] = {"pdf_path": None, "plaintiff": None, "defendant": None}
+        if not party_names:
+            return result
+
+        new_context = None
+        new_page = None
+        try:
+            new_context = await page.context.browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/119.0.0.0 Safari/537.36"
+                ),
+                accept_downloads=True,
+            )
+            new_page = await new_context.new_page()
+            await apply_stealth(new_page)
+
+            # Navigate to ORI so fetch() is same-origin
+            await new_page.goto(
+                "https://publicaccess.hillsclerk.com/oripublicaccess/",
+                timeout=30000,
+            )
+            await asyncio.sleep(2)
+
+            # Search ORI by each party name to find LP documents
+            lp_case_number = None
+            for name in party_names:
+                if not name or len(name) < 3:
+                    continue
+                logger.info(f"Recovery: ORI party search for '{name}' (case {case_number})")
+                try:
+                    api_result = await new_page.evaluate(
+                        """async (partyName) => {
+                            const r = await fetch('/Public/ORIUtilities/DocumentSearch/api/Search', {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({"PartyName": partyName})
+                            });
+                            return await r.json();
+                        }""",
+                        name,
+                    )
+                    results = api_result.get("ResultList") or []
+                    if not results:
+                        continue
+
+                    # Look for Lis Pendens — filed under the real foreclosure case
+                    for rec in results:
+                        doc_type = rec.get("DocType", "")
+                        if "(LP)" in doc_type or "LIS PENDENS" in doc_type.upper():
+                            # The ORI case search API result includes CaseNum
+                            rec_case = rec.get("CaseNum") or ""
+                            if rec_case and "CA" in rec_case.upper():
+                                lp_case_number = rec_case
+                                logger.info(
+                                    f"Recovery: found LP with CA case {lp_case_number} "
+                                    f"(instrument {rec.get('Instrument')})"
+                                )
+                                break
+                    if lp_case_number:
+                        break
+                except Exception as exc:
+                    logger.debug(f"Recovery: party search failed for '{name}': {exc}")
+                    continue
+
+            if not lp_case_number:
+                logger.warning(
+                    f"Recovery: no LP with CA case found for {case_number} "
+                    f"(searched parties: {party_names})"
+                )
+                return result
+
+            # Now search for the real Final Judgment using the CA case number
+            logger.info(
+                f"Recovery: searching for real judgment under {lp_case_number} "
+                f"(original CC case: {case_number})"
+            )
+            api_result = await new_page.evaluate(
+                """async (caseNum) => {
+                    const r = await fetch('/Public/ORIUtilities/DocumentSearch/api/Search', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({"CaseNum": caseNum})
+                    });
+                    return await r.json();
+                }""",
+                lp_case_number,
+            )
+            results = api_result.get("ResultList") or []
+            judgment_rec = None
+            for rec in results:
+                doc_type = rec.get("DocType", "")
+                if "(JUD)" in doc_type or "(FJ)" in doc_type:
+                    judgment_rec = rec
+                    break
+
+            if not judgment_rec:
+                logger.warning(
+                    f"Recovery: no JUD found under {lp_case_number} for {case_number}. "
+                    f"Doc types: {[r.get('DocType') for r in results]}"
+                )
+                return result
+
+            instrument = judgment_rec.get("Instrument")
+            doc_id = judgment_rec.get("ID")
+            logger.info(
+                f"Recovery: found real judgment for {case_number} → "
+                f"{lp_case_number} instrument={instrument}"
+            )
+
+            parties_one = judgment_rec.get("PartiesOne") or []
+            parties_two = judgment_rec.get("PartiesTwo") or []
+            if parties_one:
+                result["plaintiff"] = parties_one[0]
+            if parties_two:
+                result["defendant"] = parties_two[0]
+            result["recovered_case_number"] = lp_case_number
+
+            if not doc_id:
+                return result
+
+            # Download the real judgment PDF
+            encoded_id = urllib.parse.quote(doc_id)
+            download_url = (
+                f"https://publicaccess.hillsclerk.com"
+                f"/PAVDirectSearch/api/Document/{encoded_id}/"
+                f"?OverlayMode=View"
+            )
+            logger.info(f"Recovery: downloading real judgment PDF for {case_number}...")
+            async with new_page.expect_download(timeout=60000) as download_info:
+                await new_page.evaluate(
+                    f"window.location.href = '{download_url}'"
+                )
+
+            download = await download_info.value
+            pdf_path = await download.path()
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+
+            doc_id_for_storage = str(instrument) if instrument else lp_case_number
+            saved_path = self.storage.save_document(
+                property_id=case_number,
+                file_data=pdf_bytes,
+                doc_type="final_judgment_recovered",
+                doc_id=doc_id_for_storage,
+                extension="pdf",
+            )
+            full_path = self.storage.get_full_path(case_number, saved_path)
+            logger.success(
+                f"Recovery: saved real judgment to {full_path} "
+                f"(CC {case_number} → CA {lp_case_number})"
+            )
+            result["pdf_path"] = str(full_path)
+            return result
+
+        except Exception as e:
+            logger.error(f"Recovery failed for {case_number}: {e}")
             return result
         finally:
             if new_page:

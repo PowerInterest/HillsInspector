@@ -367,8 +367,10 @@ class PipelineOrchestrator:
         if isinstance(raw_judgment, dict):
             judgment_data = raw_judgment
         elif isinstance(raw_judgment, str) and raw_judgment.strip():
-            with contextlib.suppress(json.JSONDecodeError, TypeError):
+            try:
                 judgment_data = json.loads(raw_judgment)
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.warning(f"Could not parse judgment data for survival analysis on {folio}: {e}")
 
         foreclosed_mtg = judgment_data.get("foreclosed_mortgage", {})
         mtg_book = foreclosed_mtg.get("recording_book")
@@ -595,8 +597,10 @@ class PipelineOrchestrator:
             if isinstance(raw_judgment, dict):
                 judgment_data = raw_judgment
             elif isinstance(raw_judgment, str) and raw_judgment.strip():
-                with contextlib.suppress(json.JSONDecodeError, TypeError):
+                try:
                     judgment_data = json.loads(raw_judgment)
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.warning(f"Could not parse judgment data for survival analysis on {folio}: {e}")
             
             # Ensure critical context is present
             if not judgment_data.get('plaintiff'):
@@ -628,6 +632,8 @@ class PipelineOrchestrator:
                         "UPDATE encumbrances SET survival_status = ?, survival_reason = ? WHERE id = ?",
                         [enc['survival_status'], enc.get('survival_reason'), enc['id']]
                     )
+
+            conn.commit()
 
             # Return updates summary - SQLite is authoritative
             return {
@@ -1709,8 +1715,8 @@ class PipelineOrchestrator:
                 ).fetchone()
                 if bulk_row:
                     bulk_parcel = dict(bulk_row)
-            except Exception:
-                pass  # bulk_parcels may not exist
+            except Exception as e:
+                logger.debug(f"bulk_parcels query failed for {folio}: {e}")
 
             # Get final judgment data
             final_judgment = auction.get("extracted_judgment_data") or {}
@@ -1718,7 +1724,8 @@ class PipelineOrchestrator:
                 import json
                 try:
                     final_judgment = json.loads(final_judgment)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Corrupt judgment JSON for {folio}: {e}")
                     final_judgment = {}
 
             # Run iterative discovery
@@ -2032,6 +2039,51 @@ async def run_full_update(
     # =========================================================================
     # STEP 2: Judgment Extraction
     # =========================================================================
+    def _store_judgment_result(
+        db, processor, result, case_number, parcel_id,
+        judgment_rows, processed_case_numbers,
+    ):
+        """Store a successful (or best-effort) judgment extraction to DB."""
+        amounts = processor.extract_key_amounts(result)
+        db_payload = {
+            "plaintiff": result.get("plaintiff"),
+            "defendant": "; ".join(
+                d.get("name", "") if isinstance(d, dict) else str(d)
+                for d in (result.get("defendants") or [])
+            ) or result.get("defendant"),
+            "foreclosure_type": result.get("foreclosure_type"),
+            "judgment_date": result.get("judgment_date"),
+            "lis_pendens_date": (result.get("lis_pendens") or {}).get("recording_date"),
+            "foreclosure_sale_date": result.get("foreclosure_sale_date"),
+            "total_judgment_amount": result.get("total_judgment_amount"),
+            "principal_amount": result.get("principal_amount"),
+            "interest_amount": result.get("interest_amount"),
+            "attorney_fees": result.get("attorney_fees"),
+            "court_costs": result.get("court_costs"),
+            "original_mortgage_amount": amounts.get("original_mortgage_amount"),
+            "original_mortgage_date": amounts.get("original_mortgage_date"),
+            "monthly_payment": result.get("monthly_payment"),
+            "default_date": result.get("default_date"),
+            "extracted_judgment_data": json.dumps(result),
+            "raw_judgment_text": result.get("raw_text", ""),
+        }
+        db.update_judgment_data(case_number, db_payload)
+        db.mark_step_complete(case_number, "needs_judgment_extraction")
+        db.mark_status_step_complete(case_number, "step_judgment_extracted", 2)
+
+        legal_desc = result.get("legal_description")
+        if legal_desc and parcel_id:
+            conn = db.connect()
+            conn.execute("INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [parcel_id])
+            conn.execute(
+                "UPDATE parcels SET judgment_legal_description = ? "
+                "WHERE folio = ? AND judgment_legal_description IS NULL",
+                [legal_desc, parcel_id],
+            )
+
+        judgment_rows.append({"case_number": case_number, "parcel_id": parcel_id, **db_payload})
+        processed_case_numbers.add(case_number)
+
     if start_step <= 2:
         logger.info("=" * 60)
         logger.info("STEP 2: DOWNLOADING & EXTRACTING FINAL JUDGMENT DATA")
@@ -2052,7 +2104,6 @@ async def run_full_update(
             marked = 0
             for row in unmarked:
                 case = row["case_number"]
-                pid = row["parcel_id"] or case
                 pdf_dir = Path(f"data/Foreclosure/{case}/documents")
                 if pdf_dir.exists() and any(pdf_dir.glob("*.pdf")):
                     db.mark_status_step_complete(case, "step_pdf_downloaded", 1)
@@ -2102,7 +2153,7 @@ async def run_full_update(
                         for row in cases:
                             cn = row["case_number"]
                             try:
-                                res = await scraper._search_judgment_by_case_number(
+                                res = await scraper.search_judgment_by_case_number(
                                     _page, cn, ""
                                 )
                                 if res.get("pdf_path"):
@@ -2169,6 +2220,7 @@ async def run_full_update(
             extracted_count = 0
             processed_since_checkpoint = 0
             judgment_rows: list[dict] = []
+            thin_cases: list[dict] = []  # Cases needing recovery (thin extraction)
             judgment_dir = Path("data/judgments")
             judgment_dir.mkdir(parents=True, exist_ok=True)
             checkpoint_path = judgment_dir / "judgment_extracts_checkpoint.parquet"
@@ -2242,50 +2294,48 @@ async def run_full_update(
                 logger.info(f"Processing judgment from {pdf_path.name}...")
                 try:
                     result = judgment_processor.process_pdf(str(pdf_path), case_number)
-                    if result:
-                        amounts = judgment_processor.extract_key_amounts(result)
-                        # Build DB payload from known scalar fields only
-                        # (avoid spreading result dict which has nested lists/dicts
-                        # and a case_number in VLM format that would overwrite ours)
-                        db_payload = {
-                            "plaintiff": result.get("plaintiff"),
-                            "defendant": "; ".join(
-                                d.get("name", "") if isinstance(d, dict) else str(d)
-                                for d in (result.get("defendants") or [])
-                            ) or result.get("defendant"),
-                            "foreclosure_type": result.get("foreclosure_type"),
-                            "judgment_date": result.get("judgment_date"),
-                            "lis_pendens_date": (result.get("lis_pendens") or {}).get("recording_date"),
-                            "foreclosure_sale_date": result.get("foreclosure_sale_date"),
-                            "total_judgment_amount": result.get("total_judgment_amount"),
-                            "principal_amount": result.get("principal_amount"),
-                            "interest_amount": result.get("interest_amount"),
-                            "attorney_fees": result.get("attorney_fees"),
-                            "court_costs": result.get("court_costs"),
-                            "original_mortgage_amount": amounts.get("original_mortgage_amount"),
-                            "original_mortgage_date": amounts.get("original_mortgage_date"),
-                            "monthly_payment": result.get("monthly_payment"),
-                            "default_date": result.get("default_date"),
-                            "extracted_judgment_data": json.dumps(result),
-                            "raw_judgment_text": result.get("raw_text", ""),
-                        }
-                        # Write to DB immediately (don't defer to fragile batch)
-                        db.update_judgment_data(case_number, db_payload)
-                        db.mark_step_complete(case_number, "needs_judgment_extraction")
-                        db.mark_status_step_complete(case_number, "step_judgment_extracted", 2)
-
-                        judgment_rows.append(
-                            {
+                    if result and not judgment_processor.is_thin_extraction(result):
+                        # Good extraction — store immediately
+                        _store_judgment_result(
+                            db, judgment_processor, result, case_number, parcel_id,
+                            judgment_rows, processed_case_numbers,
+                        )
+                        extracted_count += 1
+                    elif result:
+                        # Thin extraction — dump PDF text for debugging, queue for recovery
+                        logger.warning(
+                            f"Thin extraction for {case_number} "
+                            f"(no legal_description or mortgage ref) — queuing recovery"
+                        )
+                        judgment_processor.dump_pdf_text(str(pdf_path), case_number)
+                        # Collect party names for ORI recovery search
+                        parties = []
+                        plaintiff = result.get("plaintiff") or ""
+                        if plaintiff:
+                            parties.append(plaintiff)
+                        for d in result.get("defendants") or []:
+                            name = d.get("name", "") if isinstance(d, dict) else str(d)
+                            if name:
+                                parties.append(name)
+                        if parties:
+                            thin_cases.append({
                                 "case_number": case_number,
                                 "parcel_id": parcel_id,
-                                **db_payload,
-                            }
-                        )
-                        processed_case_numbers.add(case_number)
-                        extracted_count += 1
+                                "parties": parties,
+                                "thin_result": result,
+                            })
+                        else:
+                            # No parties at all — can't recover, store what we have
+                            logger.warning(f"No parties extracted for {case_number} — cannot recover")
+                            _store_judgment_result(
+                                db, judgment_processor, result, case_number, parcel_id,
+                                judgment_rows, processed_case_numbers,
+                            )
+                            extracted_count += 1
                     else:
-                        # Vision service returned no structured data - mark as failed to avoid infinite retry
+                        # Vision service returned no structured data
                         logger.warning(f"No structured data extracted for {case_number}")
+                        judgment_processor.dump_pdf_text(str(pdf_path), case_number)
                         db.mark_status_failed(
                             case_number,
                             "Vision service returned no structured data",
@@ -2308,6 +2358,136 @@ async def run_full_update(
                         raise
                     last_flush = time.monotonic()
 
+            # ---------------------------------------------------------------
+            # Recovery: re-attempt thin extractions via ORI party search
+            # ---------------------------------------------------------------
+            if thin_cases:
+                logger.info(
+                    f"RECOVERY: {len(thin_cases)} cases with thin extractions — "
+                    f"searching ORI for real Final Judgments"
+                )
+                import asyncio as _aio
+                from src.scrapers.auction_scraper import AuctionScraper
+
+                async def _run_recovery(cases_to_recover):
+                    recovered = 0
+                    from playwright.async_api import async_playwright
+                    async with async_playwright() as p:
+                        _browser = await p.chromium.launch(headless=True)
+                        _ctx = await _browser.new_context(
+                            user_agent=(
+                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/119.0.0.0 Safari/537.36"
+                            ),
+                            accept_downloads=True,
+                        )
+                        _page = await _ctx.new_page()
+                        from playwright_stealth import Stealth
+                        await Stealth().apply_stealth_async(_page)
+
+                        scraper = AuctionScraper()
+                        for case in cases_to_recover:
+                            cn = case["case_number"]
+                            pid = case["parcel_id"]
+                            parties = case["parties"]
+                            thin_result = case["thin_result"]
+                            try:
+                                res = await scraper.recover_judgment_via_party_search(
+                                    _page, cn, parties, pid,
+                                )
+                                recovered_pdf = res.get("pdf_path")
+                                if recovered_pdf:
+                                    # Re-extract from the real judgment PDF
+                                    new_result = judgment_processor.process_pdf(
+                                        recovered_pdf, cn,
+                                    )
+                                    if new_result and not judgment_processor.is_thin_extraction(new_result):
+                                        # Tag with recovery metadata
+                                        new_result["_recovery"] = {
+                                            "original_case": cn,
+                                            "recovered_via": res.get("recovered_case_number"),
+                                            "original_pdf_was_thin": True,
+                                        }
+                                        _store_judgment_result(
+                                            db, judgment_processor, new_result,
+                                            cn, pid, judgment_rows,
+                                            processed_case_numbers,
+                                        )
+                                        recovered += 1
+                                        logger.success(
+                                            f"Recovery: extracted real judgment for {cn}"
+                                        )
+                                    else:
+                                        # Recovery PDF also thin — store original thin result
+                                        logger.warning(
+                                            f"Recovery PDF also thin for {cn} — "
+                                            f"storing original extraction"
+                                        )
+                                        if new_result:
+                                            judgment_processor.dump_pdf_text(
+                                                recovered_pdf, cn,
+                                            )
+                                        _store_judgment_result(
+                                            db, judgment_processor,
+                                            new_result or thin_result,
+                                            cn, pid, judgment_rows,
+                                            processed_case_numbers,
+                                        )
+                                        extracted_count += 1
+                                else:
+                                    # Recovery found no PDF — store thin result
+                                    logger.warning(
+                                        f"Recovery: no real judgment found for {cn}"
+                                    )
+                                    _store_judgment_result(
+                                        db, judgment_processor, thin_result,
+                                        cn, pid, judgment_rows,
+                                        processed_case_numbers,
+                                    )
+                                    extracted_count += 1
+                            except Exception as re_exc:
+                                logger.warning(
+                                    f"Recovery failed for {cn}: {re_exc}"
+                                )
+                                _store_judgment_result(
+                                    db, judgment_processor, thin_result,
+                                    cn, pid, judgment_rows,
+                                    processed_case_numbers,
+                                )
+                                extracted_count += 1
+                        await _browser.close()
+                    return recovered
+
+                try:
+                    loop = _aio.get_event_loop()
+                    if loop.is_running():
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as pool:
+                            recovered_count = pool.submit(
+                                lambda: _aio.run(_run_recovery(thin_cases))
+                            ).result()
+                    else:
+                        recovered_count = loop.run_until_complete(
+                            _run_recovery(thin_cases)
+                        )
+                    logger.success(
+                        f"Recovery: {recovered_count}/{len(thin_cases)} "
+                        f"cases recovered with real judgments"
+                    )
+                except Exception as rec_exc:
+                    logger.error(f"Recovery batch failed: {rec_exc}")
+                    # Store all thin results so they aren't lost
+                    for case in thin_cases:
+                        if case["case_number"] not in processed_case_numbers:
+                            _store_judgment_result(
+                                db, judgment_processor, case["thin_result"],
+                                case["case_number"], case["parcel_id"],
+                                judgment_rows, processed_case_numbers,
+                            )
+
+                db.checkpoint()
+
             # DB writes already happened per-row above.
             # Write final parquet as a backup/export (best-effort).
             if judgment_rows:
@@ -2325,6 +2505,24 @@ async def run_full_update(
         db.checkpoint()
 
     # =========================================================================
+    # STEP 2.5: Resolve Missing Parcel IDs
+    # =========================================================================
+    if start_step <= 3:
+        logger.info("=" * 60)
+        logger.info("STEP 2.5: Resolve Missing Parcel IDs")
+        logger.info("=" * 60)
+
+        try:
+            from src.services.parcel_resolver import resolve_missing_parcel_ids
+
+            resolution_stats = resolve_missing_parcel_ids(db)
+            logger.success(f"Step 2.5 complete: {resolution_stats}")
+        except Exception as exc:
+            logger.error(f"Parcel ID resolution failed: {exc}")
+
+        db.checkpoint()
+
+    # =========================================================================
     # STEP 3: Bulk Data Enrichment
     # =========================================================================
     if start_step <= 3:
@@ -2333,6 +2531,14 @@ async def run_full_update(
         logger.info("=" * 60)
 
         try:
+            busy_timeout = None
+            journal_mode = None
+            try:
+                busy_timeout = db.conn.execute("PRAGMA busy_timeout").fetchone()[0]
+                journal_mode = db.conn.execute("PRAGMA journal_mode").fetchone()[0]
+            except Exception as _meta_exc:
+                logger.debug(f"Could not read DB settings for bulk enrichment: {_meta_exc}")
+
             # Retry bulk enrichment with backoff (often fails transiently on locked DB)
             import time as _time
             for _attempt in range(3):
@@ -2345,7 +2551,8 @@ async def run_full_update(
                         logger.warning(
                             f"Bulk enrichment locked "
                             f"(attempt {_attempt + 1}/3), "
-                            f"retrying in {wait}s..."
+                            f"retrying in {wait}s... "
+                            f"(db={db.db_path}, busy_timeout={busy_timeout}, journal_mode={journal_mode})"
                         )
                         _time.sleep(2 ** _attempt)
                         continue
@@ -2360,9 +2567,13 @@ async def run_full_update(
                     3,
                 )
         except Exception as exc:
-            logger.error(f"Bulk enrichment failed: {exc}")
+            logger.error(
+                f"Bulk enrichment failed: {exc} "
+                f"(db={db.db_path}, busy_timeout={busy_timeout}, journal_mode={journal_mode})"
+            )
 
         # Update legal descriptions from judgment extractions
+        # (column created by PropertyDB._apply_schema_migrations at init)
         try:
             auctions_with_judgment = db.execute_query(
                 """
@@ -2370,16 +2581,13 @@ async def run_full_update(
                 WHERE parcel_id IS NOT NULL AND extracted_judgment_data IS NOT NULL
                 """
             )
+            conn = db.connect()
             for row in auctions_with_judgment:
                 folio = row["parcel_id"]
                 try:
                     judgment_data = json.loads(row["extracted_judgment_data"])
                     legal_desc = judgment_data.get("legal_description")
                     if legal_desc:
-                        conn = db.connect()
-                        conn.execute(
-                            "ALTER TABLE parcels ADD COLUMN IF NOT EXISTS judgment_legal_description VARCHAR"
-                        )
                         conn.execute(
                             "INSERT OR IGNORE INTO parcels (folio) VALUES (?)",
                             [folio],
@@ -2389,7 +2597,7 @@ async def run_full_update(
                             UPDATE parcels SET
                                 judgment_legal_description = ?,
                                 updated_at = CURRENT_TIMESTAMP
-                            WHERE folio = ?
+                            WHERE folio = ? AND judgment_legal_description IS NULL
                             """,
                             [legal_desc, folio],
                         )
@@ -2491,7 +2699,11 @@ async def run_full_update(
                 zip_code = (row.get("zip_code") or "").strip()
                 full_address = f"{address}, {city}, FL {zip_code}".strip()
 
-            coords = geocode_address(full_address)
+            coords = geocode_address(
+                full_address,
+                source="parcels",
+                folio=str(folio),
+            )
             if not coords:
                 storage.record_scrape(
                     property_id=str(folio),

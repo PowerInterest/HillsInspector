@@ -10,6 +10,7 @@ Handles:
 
 from datetime import date
 from typing import Optional, Dict, Any, List, Tuple
+from loguru import logger
 from src.utils.name_matcher import NameMatcher
 
 def identify_foreclosing_lien(
@@ -77,7 +78,7 @@ def determine_seniority(
                 return "SENIOR"
             return "JUNIOR"
         except (ValueError, TypeError):
-            pass
+            logger.debug(f"Could not compare instruments as integers: {target_inst!r} vs {foreclosing_inst!r}")
     
     # Tie-breaker: LP date vs target recording date if available
     if lis_pendens_date and target_date < lis_pendens_date:

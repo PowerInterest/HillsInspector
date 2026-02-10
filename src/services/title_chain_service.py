@@ -784,4 +784,5 @@ class TitleChainService:
                 dt = datetime.strptime(str(date_val), "%m/%d/%Y")
                 return dt.replace(tzinfo=UTC)
             except ValueError:
+                logger.debug(f"Unparseable date '{date_val}' in chain, using datetime.min sentinel")
                 return datetime.min.replace(tzinfo=UTC)
