@@ -1,0 +1,320 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hillsinspector.local/schemas/market_photo_first_schema.json",
+  "title": "Market Photo-First Record",
+  "description": "Photo-first extraction schema for listing/foreclosure website runs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source",
+    "source_url",
+    "captured_at_utc",
+    "case_number",
+    "folio",
+    "http_status",
+    "result_status",
+    "page_html_path",
+    "page_text_path",
+    "photos_count_expected",
+    "photo_urls_raw",
+    "photo_urls_normalized",
+    "photo_urls_high_res",
+    "photo_capture_success_rate",
+    "photo_missing_flag",
+    "photo_hashes",
+    "gallery_source"
+  ],
+  "properties": {
+    "source": {
+      "type": "string",
+      "enum": [
+        "homeharvest",
+        "auction_com",
+        "realtytrac",
+        "hillsforeclosures",
+        "redfin_county"
+      ]
+    },
+    "source_url": {
+      "type": "string",
+      "minLength": 1
+    },
+    "captured_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "case_number": {
+      "type": "string",
+      "minLength": 1
+    },
+    "folio": {
+      "type": "string",
+      "minLength": 1
+    },
+    "http_status": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 100,
+      "maximum": 599
+    },
+    "result_status": {
+      "type": "string",
+      "enum": [
+        "success",
+        "blocked",
+        "timeout",
+        "not_found",
+        "error"
+      ]
+    },
+    "failure_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "final_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "page_title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "elapsed_sec": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "page_html_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "page_text_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "debugger_network_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "debugger_console_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "photos_count_expected": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "photo_urls_raw": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "photo_urls_normalized": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "photo_urls_high_res": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "primary_photo_url": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "photo_order": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "photo_capture_success_rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "photo_missing_flag": {
+      "type": "boolean"
+    },
+    "photo_hashes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "gallery_source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "address": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "city": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "state": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 2,
+      "maxLength": 2
+    },
+    "zip_code": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "parcel_number": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "property_type": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "property_sub_type": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "beds": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "baths_full": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "baths_half": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "baths_total": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "living_area_sqft": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "lot_size_sqft": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "year_built": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "list_price": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "listing_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "listing_status": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "on_market_date": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date"
+    },
+    "latitude": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": -90,
+      "maximum": 90
+    },
+    "longitude": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": -180,
+      "maximum": 180
+    },
+    "hoa_fee": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "tax_annual_amount": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "tax_year": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    }
+  }
+}

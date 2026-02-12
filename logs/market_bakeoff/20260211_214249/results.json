@@ -1,0 +1,27 @@
+[
+  {
+    "source": "realtytrac",
+    "case_number": "292025CA002108A001HC",
+    "folio": "2031312VU000001000030U",
+    "address": "606 WINTERBROOKE WAY, SUN CITY CENTER, FL- 33573",
+    "request_url": "https://www.realtytrac.com/search/?q=606%20WINTERBROOKE%20WAY%2C%20SUN%20CITY%20CENTER%2C%20FL-%2033573",
+    "final_url": "https://www.realtytrac.com/search/?lat=34.525999999999996&lng=-100.2551&zoom=5",
+    "page_title": ", SEARCH Homes & Investment Properties in",
+    "http_status": 200,
+    "result_status": "success",
+    "failure_reason": null,
+    "canonical_address": null,
+    "list_price": null,
+    "est_value": null,
+    "beds": null,
+    "baths": null,
+    "sqft": null,
+    "listing_status": "for sale",
+    "photo_count": 8,
+    "elapsed_sec": 5.138,
+    "screenshot_path": "logs/market_bakeoff/20260211_214249/realtytrac/292025CA002108A001HC_2031312vu000001000030u.png",
+    "debugger_network_path": null,
+    "debugger_console_path": null,
+    "timestamp_utc": "2026-02-12T02:42:56.409820+00:00"
+  }
+]

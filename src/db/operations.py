@@ -202,27 +202,36 @@ class PropertyDB:
             add_column_if_not_exists("auctions", "ori_party_fallback_used", "INTEGER", "0")
             add_column_if_not_exists("auctions", "ori_party_fallback_note", "TEXT")
 
-        # Migrate sales_history: replace broken UNIQUE(folio, book, page) with
-        # expression-based unique index that handles NULLs via COALESCE.
-        # SQLite treats NULLs as distinct in UNIQUE constraints, so rows with
-        # book=NULL, page=NULL bypass the constraint and cause massive duplication.
+        # Migrate sales_history unique index to include instrument column.
+        # The old index (folio, book, page) caused collisions for HCPA vision-extracted
+        # records that have instrument but no book/page — they all collapsed to
+        # (folio, '', '') and triggered UNIQUE constraint failures.
         if table_exists("sales_history"):
-            idx_exists = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_sales_history_unique' LIMIT 1"
+            # Check if old 3-column index exists (needs upgrade to 4-column)
+            old_idx = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_sales_history_unique' LIMIT 1"
             ).fetchone()
-            if not idx_exists:
+            needs_rebuild = False
+            if old_idx is None:
+                needs_rebuild = True
+            elif "instrument" not in (old_idx[0] or ""):
+                # Old index exists but doesn't include instrument — drop and rebuild
+                conn.execute("DROP INDEX IF EXISTS idx_sales_history_unique")
+                needs_rebuild = True
+
+            if needs_rebuild:
                 # Remove duplicate rows keeping only the one with the lowest id
                 conn.execute("""
                     DELETE FROM sales_history
                     WHERE id NOT IN (
                         SELECT MIN(id)
                         FROM sales_history
-                        GROUP BY folio, COALESCE(book, ''), COALESCE(page, '')
+                        GROUP BY folio, COALESCE(book, ''), COALESCE(page, ''), COALESCE(instrument, '')
                     )
                 """)
                 conn.execute("""
                     CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_history_unique
-                    ON sales_history(folio, COALESCE(book, ''), COALESCE(page, ''))
+                    ON sales_history(folio, COALESCE(book, ''), COALESCE(page, ''), COALESCE(instrument, ''))
                 """)
 
         # Normalize non-ISO sale_date values in sales_history (e.g. "08/1995" → "1995-08-01")
@@ -2078,10 +2087,12 @@ class PropertyDB:
         """)
 
         # Expression-based unique index: COALESCE handles NULL values which SQLite
-        # treats as distinct in plain UNIQUE constraints, causing duplicate rows
+        # treats as distinct in plain UNIQUE constraints, causing duplicate rows.
+        # Includes instrument so HCPA vision-extracted records (which have instrument
+        # but no book/page) don't all collapse to (folio, '', '') and collide.
         conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_history_unique
-            ON sales_history(folio, COALESCE(book, ''), COALESCE(page, ''))
+            ON sales_history(folio, COALESCE(book, ''), COALESCE(page, ''), COALESCE(instrument, ''))
         """)
 
         # Create index for faster lookups

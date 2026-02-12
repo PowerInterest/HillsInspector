@@ -1,0 +1,72 @@
+[
+  {
+    "case_number": "292025CA002108A001HC",
+    "folio": "2031312VU000001000030U",
+    "address": "606 WINTERBROOKE WAY, SUN CITY CENTER, FL- 33573",
+    "auction_date": "2026-02-16",
+    "final_judgment_amount": 290978.48
+  },
+  {
+    "case_number": "292022CA006469A001HC",
+    "folio": "1830053X8000011000140A",
+    "address": "4012 S RENELLIE DR, TAMPA, FL- 33611",
+    "auction_date": "2026-02-13",
+    "final_judgment_amount": 158222.33
+  },
+  {
+    "case_number": "292023CA013967A001HC",
+    "folio": "19283046N000007000230A",
+    "address": "1912 E HAMILTON AVE, TAMPA, FL- 33610",
+    "auction_date": "2026-02-13",
+    "final_judgment_amount": 74745.02
+  },
+  {
+    "case_number": "292024CA005165A001HC",
+    "folio": "21301837Y000006000080U",
+    "address": "4528 RIVER CLOSE BLVD, VALRICO, FL- 33596",
+    "auction_date": "2026-02-13",
+    "final_judgment_amount": 44818.52
+  },
+  {
+    "case_number": "292025CA006550A001HC",
+    "folio": "1931211TJ000022001270U",
+    "address": "604 KINGSTON CT, APOLLO BEACH, FL- 33572",
+    "auction_date": "2026-02-13",
+    "final_judgment_amount": 536055.01
+  },
+  {
+    "case_number": "292025CC037622A001HC",
+    "folio": "193035D0Y000000000500U",
+    "address": "6355 KAY MORGAN LN, GIBSONTON, FL- 33534",
+    "auction_date": "2026-02-13",
+    "final_judgment_amount": 6749.82
+  },
+  {
+    "case_number": "292023CA015562A001HC",
+    "folio": "1927351E1000001000200A",
+    "address": "6710 YARDLEY WAY, TAMPA, FL- 33647",
+    "auction_date": "2026-02-12",
+    "final_judgment_amount": 113747.76
+  },
+  {
+    "case_number": "292024CA000010A001HC",
+    "folio": "2029262GHB00000000020U",
+    "address": "803 BILLS CIR, BRANDON, FL- 33511",
+    "auction_date": "2026-02-12",
+    "final_judgment_amount": 434870.75
+  },
+  {
+    "case_number": "292024CA005004A001HC",
+    "folio": "17282707N000001000500U",
+    "address": "10218 CHARLESTON CORNER RD, TAMPA, FL- 33635",
+    "auction_date": "2026-02-12",
+    "final_judgment_amount": 539559.0
+  },
+  {
+    "case_number": "292024CA006820A001HC",
+    "folio": "1827360SN000002000010U",
+    "address": "15901 DOVER CLIFFE DR, LUTZ, FL- 33548",
+    "auction_date": "2026-02-12",
+    "final_judgment_amount": 1100718.54
+  }
+]

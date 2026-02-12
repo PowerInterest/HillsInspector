@@ -43,6 +43,17 @@ The Final Judgment PDF is **THE** critical piece of information for this entire 
 
 Never treat a missing judgment as acceptable. If a case has no PDF, investigate why and add new retrieval strategies as needed. Never suggest skipping CC cases or lowering success thresholds — find the real judgment instead.
 
+## Foreclosing Lien — Every Foreclosure Has One
+
+Every foreclosure auction has a foreclosing lien — that is how the law works. There must be a lis pendens recorded to initiate a foreclosure. If the survival analysis reports "Could not identify foreclosing lien", **the code is at fault**, not the data. Possible causes:
+
+1. **Encumbrance type mismatch**: The ORI stores doc types like `(MTG) MORTGAGE` but survival code expects normalized `mortgage`. Always match broadly (check for "MORTGAGE" or "MTG" substring, not exact equality).
+2. **ORI didn't find the mortgage**: The iterative discovery search terms may not have matched the property's legal description. Check the search queue for exhaustion vs. success.
+3. **Plaintiff name doesn't match creditor**: The mortgage may have been assigned/transferred. The current servicer (plaintiff) name differs from the original lender (creditor in ORI). Use fuzzy matching.
+4. **Chain builder didn't classify it as an encumbrance**: Check `_classify_encumbrance` and the document type mapping.
+
+Never log "foreclosing lien not found" and move on. Investigate the root cause and fix the matching logic.
+
 ## Project Overview
 
 HillsInspector is a data ingestion and analysis pipeline for Hillsborough County real estate foreclosure and tax deed auctions. It aggregates data from multiple county sources (auction listings, property appraiser, official records, permits) to assess property equity and lien survival.

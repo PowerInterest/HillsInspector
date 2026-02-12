@@ -18,6 +18,12 @@ from src.services.lien_survival import (
     joinder_validator
 )
 
+def _is_mortgage_type(enc_type: str) -> bool:
+    """Check if encumbrance type represents a mortgage (handles ORI format and normalized)."""
+    t = (enc_type or "").upper()
+    return "MORTGAGE" in t or "MTG" in t
+
+
 class SurvivalService:
     """Orchestrates the lien survival analysis process."""
     
@@ -65,7 +71,7 @@ class SurvivalService:
         mortgage_count = sum(
             1
             for e in encumbrances
-            if e.get('encumbrance_type', '').lower() == 'mortgage'
+            if _is_mortgage_type(e.get('encumbrance_type', ''))
         )
         
         # 3. Find the foreclosing lien
@@ -85,7 +91,7 @@ class SurvivalService:
             if 'FIRST' in fc_type or 'MORTGAGE' in fc_type:
                 # Find the most recent unsatisfied mortgage (likely the foreclosing one)
                 mortgages = [e for e in encumbrances
-                             if e.get('encumbrance_type', '').lower() == 'mortgage'
+                             if _is_mortgage_type(e.get('encumbrance_type', ''))
                              and not e.get('is_satisfied')
                              and e.get('survival_status') not in ('SATISFIED', 'EXPIRED', 'HISTORICAL')]
                 if mortgages:

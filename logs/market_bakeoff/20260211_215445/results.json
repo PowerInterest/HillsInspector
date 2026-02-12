@@ -1,0 +1,29 @@
+[
+  {
+    "source": "redfin_county",
+    "case_number": "292025CA002108A001HC",
+    "folio": "2031312VU000001000030U",
+    "address": "606 WINTERBROOKE WAY, SUN CITY CENTER, FL- 33573",
+    "request_url": "https://www.redfin.com/county/464/FL/Hillsborough-County/foreclosures",
+    "final_url": "about:blank",
+    "page_title": "",
+    "http_status": 403,
+    "result_status": "error",
+    "failure_reason": "http 403",
+    "canonical_address": null,
+    "list_price": null,
+    "est_value": null,
+    "beds": null,
+    "baths": null,
+    "sqft": null,
+    "listing_status": null,
+    "photo_count": 0,
+    "elapsed_sec": 11.499,
+    "screenshot_path": null,
+    "page_html_path": "logs/market_bakeoff/20260211_215445/redfin_county/292025CA002108A001HC_2031312vu000001000030u.html",
+    "page_text_path": "logs/market_bakeoff/20260211_215445/redfin_county/292025CA002108A001HC_2031312vu000001000030u.txt",
+    "debugger_network_path": "logs/market_bakeoff/20260211_215445/redfin_county/292025CA002108A001HC_2031312vu000001000030u_network.json",
+    "debugger_console_path": "logs/market_bakeoff/20260211_215445/redfin_county/292025CA002108A001HC_2031312vu000001000030u_console.json",
+    "timestamp_utc": "2026-02-12T02:54:54.486741+00:00"
+  }
+]

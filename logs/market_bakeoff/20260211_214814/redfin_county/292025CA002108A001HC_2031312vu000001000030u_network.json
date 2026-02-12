@@ -1,0 +1,2336 @@
+[
+  {
+    "url": "https://www.redfin.com/county/464/FL/Hillsborough-County/foreclosures",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/7920de80bad50c3c90e3.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/8aa6e3fb8b1de6b56350.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/9b910bff401846029ca0.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/scripttemplates/otSDKStub.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/f1a7d63961618790a831.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/835c01391255cd993908.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/04d622369724288dc291.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/7d9693acb01fd607ea70.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/8f0e8d10a7526c1647cf.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/28694cebb3a46503df6b.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/414366fa4e25dbb774ac.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/878ec390801a91b9ac69.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/b7c886937beb6485cae7.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/e8bff3e3d5db697a9942.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/118/islphoto/377/genIslnoResize.TB8475377_0.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/118/islphoto/025/genIslnoResize.TB8474025_0.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/81/islphoto/570/genIslnoResize.10689570_0.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/81/islphoto/758/genIslnoResize.10685758_0.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/118/islphoto/678/genIslnoResize.TB8474678_0.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/v615.1.0/images/logos/gamls.png",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/v615.1.0/images/logos/stellarmls_small.png",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/vLATEST/images/apple-app-download-badge-284x84.png",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/vLATEST/images/google-app-download-badge-284x84.png",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/consent/7e5bc3d6-ef20-4760-aa0d-c8df4649fae2/7e5bc3d6-ef20-4760-aa0d-c8df4649fae2.json",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/money-aditude-manager/aditude-manager-0.43.0-59863d3f50655dc660c1.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/118/islphoto/377/genIslnoResize.TB8475377_1_0.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/118/islphoto/025/genIslnoResize.TB8474025_1_0.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/81/islphoto/758/genIslnoResize.10685758_1_0.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/81/islphoto/768/genIslnoResize.10685768_0.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/118/islphoto/116/genIslnoResize.TB8473116_0.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/v615.1.0/images/logos/gamls_br.png",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/81/islphoto/570/genIslnoResize.10689570_1_0.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/118/islphoto/678/genIslnoResize.TB8474678_1_0.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/431/islphoto/072/genIslnoResize.130072_0.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/photo/118/islphoto/921/genIslnoResize.TB8468921_1.webp",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/api/js?client=gme-redfin&channel=search&v=quarterly&use_slippy=false&libraries=drawing,geometry,places&callback=gmapsApiPreloaded",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.googletagmanager.com/gtm.js?id=GTM-TZTT5H",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://geolocation.onetrust.com/cookieconsentpub/v1/geo/location",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps-api-v3/api/js/62/13e/log.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps-api-v3/api/js/62/13e/common.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps-api-v3/api/js/62/13e/overlay.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps-api-v3/api/js/62/13e/map.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/scripttemplates/202512.1.0/otBannerSdk.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps-api-v3/api/js/62/13e/util.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/api/mapsjs/gen_204?csp_test=true",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/scripttemplates/otSDKStub.js?did=7e5bc3d6-ef20-4760-aa0d-c8df4649fae2",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.google-analytics.com/analytics.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.googletagmanager.com/gtag/js?id=DC-16107967&cx=c&gtm=4e62a1",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.googletagmanager.com/gtag/js?id=GT-KVJ5LSL6&cx=c&gtm=4e62a1",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.googletagmanager.com/gtag/js?id=AW-950774651&cx=c&gtm=4e62a1",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.googletagmanager.com/gtag/js?id=GT-WV842434&cx=c&gtm=4e62a1",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://bat.bing.com/bat.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.googletagmanager.com/gtag/js?id=G-928P0PZ00X&cx=c&gtm=4e62a1",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://connect.facebook.net/en_US/fbevents.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/consent/7e5bc3d6-ef20-4760-aa0d-c8df4649fae2/7e5bc3d6-ef20-4760-aa0d-c8df4649fae2.json",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.pdst.fm/ping.min.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://js.adsrvr.org/up_loader.1.1.0.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://sb.scorecardresearch.com/cs/15053602/beacon.js",
+    "status": 302,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://geolocation.onetrust.com/cookieconsentpub/v1/geo/location",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://c.hrzn-nxt.com/js/v2.12.0/connect.min.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://sb.scorecardresearch.com/internal-cs/default/beacon.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://22af5ed32a4a.edge.sdk.awswaf.com/22af5ed32a4a/939b6cb0e48b/challenge.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://arttrk.com/pixel/?ad_log=referer&action=misc&pixid=be2b32ae-b0f9-472f-b2b5-316381abc0a4",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://analytics.tiktok.com/i18n/pixel/events.js?sdkid=C95K9BJC77U9N0P94330&lib=ttq",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.0.0/crypto-js.min.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/consent/7e5bc3d6-ef20-4760-aa0d-c8df4649fae2/019a2710-ecc2-777a-b6d7-41f7b6bec48c/en.json",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/eb6213b0bf20fc889801.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps-api-v3/api/js/62/13e/poly.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps-api-v3/api/js/62/13e/onion.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/scripttemplates/202512.1.0/assets/otFlat.json",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.gstatic.com/mapfiles/openhand_8_8.cur",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.gstatic.com/mapfiles/transparent.png",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/scripttemplates/202512.1.0/assets/v2/otPcCenter.json",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/scripttemplates/202512.1.0/assets/otCommonStyles.css",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://22af5ed32a4a.edge.sdk.awswaf.com/22af5ed32a4a/939b6cb0e48b/verify",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://maps.googleapis.com/$rpc/google.internal.maps.mapsjs.v1.MapsJsInternalService/GetViewportInfo",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://maps.gstatic.com/mapfiles/undo_poly.png",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i277!3i429!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cy5lOmx8cC52Om9mZg!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=86860",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i276!3i429!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cy5lOmx8cC52Om9mZg!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=45451",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i278!3i428!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cy5lOmx8cC52Om9mZg!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=14789",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i277!3i428!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cy5lOmx8cC52Om9mZg!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=104451",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i278!3i429!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cy5lOmx8cC52Om9mZg!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=128269",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i278!3i430!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cy5lOmx8cC52Om9mZg!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=18079",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i276!3i428!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cy5lOmx8cC52Om9mZg!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=63042",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i277!3i430!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cy5lOmx8cC52Om9mZg!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=107741",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i276!3i430!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cy5lOmx8cC52Om9mZg!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=66332",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i276!3i427!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cy5lOmx8cC52Om9mZg!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=80633",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i277!3i427!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cy5lOmx8cC52Om9mZg!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=122042",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i278!3i427!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cy5lOmx8cC52Om9mZg!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=32380",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/logos/86222029-6fe7-430a-9571-b81fe6ac20d1/7e5bc3d6-ef20-4760-aa0d-c8df4649fae2/5a4cac3e-8eff-4874-a883-f5d261a1994d/redfin-inline-16px@2x.png",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/logos/static/powered_by_logo.svg",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/baf4c95ab7d349415dc7.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/fcbd307455cd660c3746.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/68bae0e3771b55e10020.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/f654b7d667f35eef1d70.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/f2f5b4b9f30a1d235ba6.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/corv/data/environment/869e46e59648e5ce5cb6eb93184eeef0d897d306/customer-pages-map-dp.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/logos/static/ot_guard_logo.svg",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/0b134d8b1cf2c6a82772.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/efbc88905f5986ae1c88.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://8365807.fls.doubleclick.net/activityi;src=8365807;type=rfuniver;cat=rfsitevs;ord=8962776909215;npa=0;auiddc=703762615.1770864602;u1=centralflorida;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AFA;gtm=45Pe62a1v9190996392z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=2;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938468~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864602_OPeV2SsyQFkPvprKsKG5qjmzWFtWn1rKnA;_dc_test=1;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 302,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://16107967.fls.doubleclick.net/activityi;src=16107967;type=redfi006;cat=redfi0;ord=1;num=9639788798817;npa=0;auiddc=703762615.1770864602;u48=Page%20URL%20-%20Redfin;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AJA;gtm=45fe62a1v9235606006z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=2;tag_exp=103116026~103200004~104527907~104528501~104684208~104684211~115938465~115938468~116185181~116185182~116988316~117447492~117527105;epver=2;dc_random=1770864602_OSLIopQ4cW0TLZUT_HtGURS5xox1-vlT-g;_dc_test=1;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 302,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.googletagmanager.com/static/service_worker/61k0/sw_iframe.html?origin=https%3A%2F%2Fwww.redfin.com",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://16107967.fls.doubleclick.net/activityi;dc_pre=CPnF-sr40pIDFfJDwAYd95krAw;src=16107967;type=redfi006;cat=redfi0;ord=1;num=9639788798817;npa=0;auiddc=703762615.1770864602;u48=Page%20URL%20-%20Redfin;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AJA;gtm=45fe62a1v9235606006z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=2;tag_exp=103116026~103200004~104527907~104528501~104684208~104684211~115938465~115938468~116185181~116185182~116988316~117447492~117527105;epver=2;dc_random=1770864602_OSLIopQ4cW0TLZUT_HtGURS5xox1-vlT-g;_dc_test=1;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://8365807.fls.doubleclick.net/activityi;dc_pre=CMfv-sr40pIDFTdjwAYdq3kaig;src=8365807;type=rfuniver;cat=rfsitevs;ord=8962776909215;npa=0;auiddc=703762615.1770864602;u1=centralflorida;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AFA;gtm=45Pe62a1v9190996392z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=2;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938468~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864602_OPeV2SsyQFkPvprKsKG5qjmzWFtWn1rKnA;_dc_test=1;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://22af5ed32a4a.edge.sdk.awswaf.com/22af5ed32a4a/939b6cb0e48b/telemetry",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.google.com/ccm/collect?frm=0&en=page_view&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&scrsrc=www.googletagmanager.com&rnd=1084683568.1770864602&dt=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&auid=703762615.1770864602&navt=n&npa=0&us_privacy=1---&gdid=dYWJhMj&_tu=KA&gtm=45fe62a1v9235606006z871497926za20gzb71497926zd71497926xec&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528501~104684208~104684211~115938465~115938468~116185181~116185182~116988316~117447492~117527105&apve=1&apvf=f&apvc=0&tids=DC-16107967&tid=DC-16107967&tft=1770864602177&tfd=2042",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.google.com/ccm/collect?frm=0&en=page_view&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&scrsrc=www.googletagmanager.com&rnd=1084683568.1770864602&dt=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&auid=703762615.1770864602&navt=n&npa=0&us_privacy=1---&gdid=dYWJhMj&_tu=KA&gtm=45Pe62a1v9190996392z871497926za20gzb71497926zd71497926xec&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938468~116185181~116185182~116988315~117527105&apve=1&apvf=f&apvc=0&tids=DC-8365807&tid=DC-8365807&tft=1770864602178&tfd=2043",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.google.com/ccm/collect?frm=0&en=page_view&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&scrsrc=www.googletagmanager.com&rnd=1084683568.1770864602&dt=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&auid=703762615.1770864602&navt=n&npa=0&us_privacy=1---&ep.ads_data_redaction=0&gdid=dYWJhMj&gtm=45He62a1v71497926za200zd71497926xea&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528501~104684208~104684211~115616986~115938465~115938468~116185181~116185182~116988316~117527105&apve=1&apvf=f&apvc=1&tft=1770864602176&tfd=2041",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://adservice.google.com/ddm/fls/z/dc_pre=CMfv-sr40pIDFTdjwAYdq3kaig;src=8365807;type=rfuniver;cat=rfsitevs;ord=8962776909215;npa=0;auiddc=*;u1=centralflorida;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AFA;gtm=45Pe62a1v9190996392z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=2;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938468~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864602_OPeV2SsyQFkPvprKsKG5qjmzWFtWn1rKnA;_dc_test=1;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://adservice.google.com/ddm/fls/z/dc_pre=CPnF-sr40pIDFfJDwAYd95krAw;src=16107967;type=redfi006;cat=redfi0;ord=1;num=9639788798817;npa=0;auiddc=*;u48=Page%20URL%20-%20Redfin;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AJA;gtm=45fe62a1v9235606006z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=2;tag_exp=103116026~103200004~104527907~104528501~104684208~104684211~115938465~115938468~116185181~116185182~116988316~117447492~117527105;epver=2;dc_random=1770864602_OSLIopQ4cW0TLZUT_HtGURS5xox1-vlT-g;_dc_test=1;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ampcid.google.com/v1/publisher:getClientId?key=AIzaSyA65lEHUEizIsNtlbNo-l2K18dT680nsaM",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://ad.doubleclick.net/activity;src=16107967;type=redfi006;cat=redfi0;ord=1;num=9639788798817;npa=0;auiddc=703762615.1770864602;u48=Page%20URL%20-%20Redfin;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AJA;gtm=45fe62a1v9235606006z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=3;tag_exp=103116026~103200004~104527907~104528501~104684208~104684211~115938465~115938468~116185181~116185182~116988316~117447492~117527105;epver=2;dc_random=1770864602_OSLIopQ4cW0TLZUT_HtGURS5xox1-vlT-g;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 302,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://ad.doubleclick.net/activity;src=8365807;type=rfuniver;cat=rfsitevs;ord=8962776909215;npa=0;auiddc=703762615.1770864602;u1=centralflorida;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AFA;gtm=45Pe62a1v9190996392z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=3;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938468~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864602_OPeV2SsyQFkPvprKsKG5qjmzWFtWn1rKnA;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 302,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps_api_js_slo/log?hasfast=true",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://connect.facebook.net/en_US/sdk.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ad.doubleclick.net/activity;dc_pre=CL-U-cr40pIDFRXmKAUd_Mo8Tw;src=16107967;type=redfi006;cat=redfi0;ord=1;num=9639788798817;npa=0;auiddc=703762615.1770864602;u48=Page%20URL%20-%20Redfin;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AJA;gtm=45fe62a1v9235606006z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=3;tag_exp=103116026~103200004~104527907~104528501~104684208~104684211~115938465~115938468~116185181~116185182~116988316~117447492~117527105;epver=2;dc_random=1770864602_OSLIopQ4cW0TLZUT_HtGURS5xox1-vlT-g;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://ad.doubleclick.net/activity;dc_pre=CPuN-cr40pIDFczvKAUd1WgWmg;src=8365807;type=rfuniver;cat=rfsitevs;ord=8962776909215;npa=0;auiddc=703762615.1770864602;u1=centralflorida;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AFA;gtm=45Pe62a1v9190996392z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=3;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938468~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864602_OPeV2SsyQFkPvprKsKG5qjmzWFtWn1rKnA;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/consent/7e5bc3d6-ef20-4760-aa0d-c8df4649fae2/019a2710-ecc2-777a-b6d7-41f7b6bec48c/en.json",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://accounts.google.com/gsi/client",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://connect.facebook.net/signals/config/3295135800512448?v=2.9.265&r=stable&domain=www.redfin.com&hme=8faeb0ed09c145bbd9d3213e762abac29e9f76b8e7a9df9d71a3058625e3b7dd&ex_m=96%2C187%2C136%2C21%2C68%2C69%2C129%2C64%2C43%2C130%2C73%2C63%2C10%2C143%2C82%2C15%2C95%2C124%2C117%2C71%2C74%2C123%2C140%2C104%2C145%2C7%2C3%2C4%2C6%2C5%2C2%2C83%2C93%2C146%2C151%2C201%2C57%2C167%2C168%2C50%2C238%2C28%2C70%2C213%2C212%2C211%2C30%2C56%2C9%2C59%2C89%2C90%2C91%2C97%2C120%2C29%2C27%2C122%2C119%2C118%2C137%2C72%2C139%2C138%2C45%2C55%2C113%2C14%2C142%2C40%2C226%2C227%2C225%2C24%2C25%2C26%2C17%2C19%2C39%2C35%2C37%2C36%2C78%2C84%2C88%2C102%2C128%2C131%2C41%2C103%2C22%2C20%2C109%2C65%2C33%2C133%2C132%2C134%2C125%2C23%2C32%2C54%2C101%2C141%2C66%2C16%2C135%2C106%2C77%2C62%2C18%2C31%2C249%2C194%2C181%2C182%2C180%2C252%2C244%2C195%2C99%2C121%2C76%2C111%2C49%2C42%2C44%2C105%2C110%2C116%2C53%2C60%2C115%2C48%2C51%2C47%2C92%2C144%2C0%2C114%2C13%2C112%2C11%2C1%2C52%2C85%2C58%2C61%2C108%2C81%2C80%2C147%2C148%2C86%2C87%2C8%2C94%2C46%2C126%2C79%2C75%2C67%2C107%2C98%2C38%2C127%2C34%2C100%2C12%2C149",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.google-analytics.com/j/collect?v=1&_v=j102&a=429934813&t=pageview&_s=1&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&ul=en-us&dt=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&sr=1440x900&vp=1425x900&_u=aGBAgAABEAQCAC~&jid=817276361&gjid=1894707255&cid=1913264988.1770864603&tid=UA-294985-1&_gid=86856182.1770864603&_slc=1&gtm=45He62a1n71TZTT5Hv71497926za200zd71497926&cd1=Logged%20out&cd2=centralflorida&cd3=map&cd4=(not%20set)&cd5=0o79i2tiSTqo4yepeCVn1A&cd6=(not%20set)&cd7=585&cd8=&cd9=(none)&cd14=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&cd17=464&cd18=5&cd21=(not%20set)&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528501~104684208~104684211~115616986~115938465~115938468~116185181~116185182~116988316~117527105&z=1632524280",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://sb.scorecardresearch.com/b?c1=2&c2=15053602&cs_fpcu=d355ed237b6c40e39caeef759ba99067&cs_it=b1&cv=4.13.1%2B2508250908&ns__t=1770864602903&ns_c=UTF-8&cs_cfg=1111110&cs_fpid=0o79i2tiSTqo4yepeCVn1A&cs_fpit=lo&cs_fpdm=*null&cs_fpdt=*null&c7=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&c8=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&c9=",
+    "status": 302,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://stats.g.doubleclick.net/j/collect?t=dc&aip=1&_r=3&v=1&_v=j102&tid=UA-294985-1&cid=1913264988.1770864603&jid=817276361&gjid=1894707255&_gid=86856182.1770864603&_u=aGBAgAABEAQCAG~&z=930959598",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://sb.scorecardresearch.com/b2?c1=2&c2=15053602&cs_fpcu=d355ed237b6c40e39caeef759ba99067&cs_it=b1&cv=4.13.1%2B2508250908&ns__t=1770864602903&ns_c=UTF-8&cs_cfg=1111110&cs_fpid=0o79i2tiSTqo4yepeCVn1A&cs_fpit=lo&cs_fpdm=*null&cs_fpdt=*null&c7=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&c8=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&c9=",
+    "status": 204,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://bat.bing.com/p/action/5220234.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://pixels.spotify.com/v1/config/122a5ba6a727409682e5977682f68f60",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps-api-v3/api/js/62/13e/controls.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://analytics.tiktok.com/i18n/pixel/static/main.MWIwNzUxMTllMQ.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://pixels.spotify.com/v1/ingest",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://l.hrzn-nxt.com/pxl?stm=1770864602900&e=pv&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&page=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&tv=js-2.12.0&tna=nf0&aid=redfin-1f16611b-6b12-4434-ae6f-b13ed5b043bd&p=web&tz=America%2FNew_York&lang=en-US&cs=UTF-8&f_pdf=1&f_qt=0&f_realp=0&f_wma=0&f_dir=0&f_fla=0&f_java=0&f_gears=0&f_ag=0&res=1440x900&cd=24&eid=dfb1b354-7aa5-4280-a80e-a6fb73ecef74&dtm=1770864602899&vp=1440x900&ds=1440x13971&vid=1&sid=78ddff47-111d-4151-97c6-71f5cfa6af0e&duid=ae4f2c87-675f-4559-a53a-c55c77165505&fp=942876728",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/scripttemplates/202512.1.0/assets/otFlat.json",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/scripttemplates/202512.1.0/assets/v2/otPcCenter.json",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/scripttemplates/202512.1.0/assets/otCommonStyles.css",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/do/get-feed-badge?lastViewedRequestTime=&offset=&cacheId=",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/corvair/v2/resolveBouncerFlags?flags=ACTIVE_BROWSER",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://fonts.googleapis.com/css?family=Roboto:300,400,500,700|Google+Sans:400,500,700|Google+Sans+Text:400,500,700&lang=en",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://fonts.googleapis.com/css?family=Google+Sans+Text:400&text=%E2%86%90%E2%86%92%E2%86%91%E2%86%93&lang=en",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/corvair/v2/resolveBouncerFlags?flags=MWEB_GOOGLE_ONE_TAP_TEST",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://dn0qt3r0xannq.cloudfront.net/redfin-t35oUm0kl8/redfin-search/prebid-load.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/corvair/v2/resolveBouncerFlags?flags=SWITCH_EAGERLY_FETCH_POST_JOIN_CONTENT",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://fonts.gstatic.com/s/roboto/v50/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMaxKUBGEe.woff2",
+    "status": 200,
+    "resource_type": "font",
+    "method": "GET"
+  },
+  {
+    "url": "https://fonts.gstatic.com/s/roboto/v50/KFO7CnqEu92Fr1ME7kSn66aGLdTylUAMa3yUBA.woff2",
+    "status": 200,
+    "resource_type": "font",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/corv/api/cop/placement/map_photosview_item?mapPageType=4&pageType=map&regionId=464&regionType=5&timeoutMs=2000",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://cdn.cookielaw.org/logos/static/ot_guard_logo.svg",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=564ceb51-d2cb-4567-950e-fd298f2ace53&batch_time=1770864603239",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.redfin.com/corv/api/cop/placement/nav_header?pageType=map&timeoutMs=2000",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/do/get-feed-badge?lastViewedRequestTime=&offset=&cacheId=",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.redfin.com/corv/api/cop/placement/above_header?pageType=map&timeoutMs=2000",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=ba79bde4-8f6f-45bb-b0fa-2841a49c0c7c&batch_time=1770864603226",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.redfin.com/corv/api/cop/placement/all_pages?pageType=map&timeoutMs=2000",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=81c4baa0-8f3f-45c1-9e7a-51d4bb1248a4&batch_time=1770864603231",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://9772552.fls.doubleclick.net/activityi;src=9772552;type=2022b0;cat=homep0;npa=0;auiddc=703762615.1770864602;u26=(not%20set);u27=Logged%20out;u28=0o79i2tiSTqo4yepeCVn1A;u30=undefined;u31=%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u36=undefined;u38=centralflorida;u39=undefined;u40=(not%20set);u41=undefined;u42=undefined;u43=undefined;u44=0o79i2tiSTqo4yepeCVn1A%7Cundefined;u45=-5;u46=2026-02-11%2021%3A50%3A01.186%20GMT-0500%20(EST);u47=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u48=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u49=(none);u50=UA-294985-1;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AAAB;gtm=45Pe62a1v9181465623z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=2;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938469~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864603_xUtEk2qblGBq4G_sZgEFIWKWL9ow0bJSag;_dc_test=1;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 302,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://22af5ed32a4a.edge.sdk.awswaf.com/22af5ed32a4a/939b6cb0e48b/telemetry",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Axhr%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=736bc108-c551-45a2-a165-4827ece6f23d&batch_time=1770864603281",
+    "status": 202,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=91ffb30a-d2bd-4c77-a932-78caa005f585&batch_time=1770864603243",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.google.com/ccm/collect?frm=0&en=page_view&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&scrsrc=www.googletagmanager.com&rnd=1084683568.1770864602&dt=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&auid=703762615.1770864602&navt=n&npa=0&us_privacy=1---&did=dYWJhMj&gdid=dYWJhMj&_tu=KA&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xec&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&apve=1&apvf=f&apvc=0&tids=AW-950774651&tid=AW-950774651&tft=1770864603636&tfd=3501",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.google.com/ccm/collect?frm=0&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&scrsrc=www.googletagmanager.com&rnd=1084683568.1770864602&dt=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&auid=703762615.1770864602&navt=n&npa=0&us_privacy=1---&did=dYWJhMj&gdid=dYWJhMj&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xea&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&apve=1&apvf=f&apvc=0&tids=AW-950774651&tid=AW-950774651&tft=1770864603637&tfd=3502",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.google.com/ccm/collect?frm=0&en=page_view&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&scrsrc=www.googletagmanager.com&rnd=1084683568.1770864602&dt=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&auid=703762615.1770864602&navt=n&npa=0&us_privacy=1---&gdid=dYWJhMj&_tu=KA&gtm=45Pe62a1v9181465623z871497926za20gzb71497926zd71497926xec&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938469~116185181~116185182~116988315~117527105&apve=1&apvf=f&apvc=0&tids=DC-9772552&tid=DC-9772552&tft=1770864603638&tfd=3503",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/950774651/?random=1770864602717&cv=11&fst=1770864602717&bg=ffffff&guid=ON&async=1&en=gtag.config&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xec&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&_tu=KA&data=event%3Dgtag.config&rfmt=3&fmt=4",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/950774651/?random=1770864602718&cv=11&fst=1770864602718&bg=ffffff&guid=ON&async=1&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xea&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&rfmt=3&fmt=4",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://9772552.fls.doubleclick.net/activityi;dc_pre=CKKHz8v40pIDFYttwAYdp5E6hw;src=9772552;type=2022b0;cat=homep0;npa=0;auiddc=703762615.1770864602;u26=(not%20set);u27=Logged%20out;u28=0o79i2tiSTqo4yepeCVn1A;u30=undefined;u31=%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u36=undefined;u38=centralflorida;u39=undefined;u40=(not%20set);u41=undefined;u42=undefined;u43=undefined;u44=0o79i2tiSTqo4yepeCVn1A%7Cundefined;u45=-5;u46=2026-02-11%2021%3A50%3A01.186%20GMT-0500%20(EST);u47=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u48=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u49=(none);u50=UA-294985-1;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AAAB;gtm=45Pe62a1v9181465623z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=2;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938469~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864603_xUtEk2qblGBq4G_sZgEFIWKWL9ow0bJSag;_dc_test=1;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://dn0qt3r0xannq.cloudfront.net/redfin-t35oUm0kl8/redfin-search/prebid-wrapper.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ad.doubleclick.net/activity;src=9772552;type=2022b0;cat=homep0;npa=0;auiddc=703762615.1770864602;u26=(not%20set);u27=Logged%20out;u28=0o79i2tiSTqo4yepeCVn1A;u30=undefined;u31=%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u36=undefined;u38=centralflorida;u39=undefined;u40=(not%20set);u41=undefined;u42=undefined;u43=undefined;u44=0o79i2tiSTqo4yepeCVn1A%7Cundefined;u45=-5;u46=2026-02-11%2021%3A50%3A01.186%20GMT-0500%20(EST);u47=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u48=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u49=(none);u50=UA-294985-1;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AAAB;gtm=45Pe62a1v9181465623z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=3;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938469~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864603_xUtEk2qblGBq4G_sZgEFIWKWL9ow0bJSag;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 302,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://geo-location.prebid.cloud/v1/geo",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://securepubads.g.doubleclick.net/tag/js/gpt.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://raven-edge.aditude.io/raven/redfin-main-4P29n/library.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps_api_js_slo/log?hasfast=true",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://ad.doubleclick.net/activity;dc_pre=CNf9y8v40pIDFaeBdwEdgiExhA;src=9772552;type=2022b0;cat=homep0;npa=0;auiddc=703762615.1770864602;u26=(not%20set);u27=Logged%20out;u28=0o79i2tiSTqo4yepeCVn1A;u30=undefined;u31=%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u36=undefined;u38=centralflorida;u39=undefined;u40=(not%20set);u41=undefined;u42=undefined;u43=undefined;u44=0o79i2tiSTqo4yepeCVn1A%7Cundefined;u45=-5;u46=2026-02-11%2021%3A50%3A01.186%20GMT-0500%20(EST);u47=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u48=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u49=(none);u50=UA-294985-1;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AAAB;gtm=45Pe62a1v9181465623z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=3;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938469~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864603_xUtEk2qblGBq4G_sZgEFIWKWL9ow0bJSag;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://adservice.google.com/ddm/fls/z/dc_pre=CKKHz8v40pIDFYttwAYdp5E6hw;src=9772552;type=2022b0;cat=homep0;npa=0;auiddc=*;u26=(not%20set);u27=Logged%20out;u28=0o79i2tiSTqo4yepeCVn1A;u30=undefined;u31=%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u36=undefined;u38=centralflorida;u39=undefined;u40=(not%20set);u41=undefined;u42=undefined;u43=undefined;u44=0o79i2tiSTqo4yepeCVn1A%7Cundefined;u45=-5;u46=2026-02-11%2021%3A50%3A01.186%20GMT-0500%20(EST);u47=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u48=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u49=(none);u50=UA-294985-1;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=AAAB;gtm=45Pe62a1v9181465623z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=2;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938469~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864603_xUtEk2qblGBq4G_sZgEFIWKWL9ow0bJSag;_dc_test=1;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.google.com/pagead/1p-user-list/950774651/?random=1770864602718&cv=11&fst=1770861600000&bg=ffffff&guid=ON&async=1&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xea&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&rfmt=3&fmt=3&is_vtc=1&cid=CAQSjQEA56J1eT_LDIPJBEwl3yU4AblcRwbJm3o_ycIaM4F19OzvUC-umrMMllFiowesro8_lSmaJQfca1UXtXCdIb7KJeUaqCuRW0F0M9u3F60j386cHNEm2nhIggUT3bY9ChYbDiTXzxOI1gIzhnin_cuDHLlMz75U01if_2HyNHoCVvYa-vdMQfOT3UxI9Z4&random=3808780927&rmt_tld=0&ipr=y",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.google.com/pagead/1p-user-list/950774651/?random=1770864602717&cv=11&fst=1770861600000&bg=ffffff&guid=ON&async=1&en=gtag.config&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xec&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&_tu=KA&data=event%3Dgtag.config&rfmt=3&fmt=3&is_vtc=1&cid=CAQSjQEA56J1ebq8L_ZBFhluR6oB8XxtfiCvuv4kL-c4Xlo2em1k9CX_NOf1GOIwXUXwr4hYUqTGZqYC8jTLhXpzZPAcfJ0zOlc44cM8yQBKYdQrMmpvAsvqB1EuZJUfQkWJO6WSlJx-hoOCsxzThH5t87vT738d01GsKph-RNJOSWGHjohA616ROh7n9x5E-lI&random=3292799590&rmt_tld=0&ipr=y",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://edge.aditude.io/prebid/9.19.0.js?fork=1&v=6d07eaf46b07ea9f2983a2cff3aaae79&modules=WyJhZGl0dWRlIiwiYW14QmlkQWRhcHRlciIsImFwcG5leHVzQmlkQWRhcHRlciIsImFzb0JpZEFkYXB0ZXIiLCJhdHNBbmFseXRpY3NBZGFwdGVyIiwiY29uc2VudE1hbmFnZW1lbnQiLCJjb25zZW50TWFuYWdlbWVudFVzcCIsImVucmljaG1lbnRGcGRNb2R1bGUiLCJldWlkSWRTeXN0ZW0iLCJnZHByRW5mb3JjZW1lbnQiLCJncHRQcmVBdWN0aW9uIiwiaWRlbnRpdHlMaW5rSWRTeXN0ZW0iLCJpeEJpZEFkYXB0ZXIiLCJtZWRpYW5ldEJpZEFkYXB0ZXIiLCJvcGVueEJpZEFkYXB0ZXIiLCJwYWlySWRTeXN0ZW0iLCJwZ2Ftc3NwQmlkQWRhcHRlciIsInByZWJpZFNlcnZlckJpZEFkYXB0ZXIiLCJwcmljZUZsb29ycyIsInB1Ym1hdGljQmlkQWRhcHRlciIsInJpc2VCaWRBZGFwdGVyIiwicnViaWNvbkJpZEFkYXB0ZXIiLCJzaGFyZXRocm91Z2hCaWRBZGFwdGVyIiwidHJpcGxlbGlmdEJpZEFkYXB0ZXIiLCJ0dGRCaWRBZGFwdGVyIiwidWlkMklkU3lzdGVtIiwidW5pZmllZElkU3lzdGVtIiwieWFob29BZHNCaWRBZGFwdGVyIl0%3D",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://stats.g.doubleclick.net/g/collect?v=2&tid=G-928P0PZ00X&cid=1913264988.1770864603&gtm=45je62a1v872277869z871497926za20gzb71497926zd71497926&aip=1&dma=0&gcs=G111&gcd=13t3t3t3t6l1&npa=0&frm=0&tag_exp=103116026~103200004~104527907~104528501~104684208~104684211~115616986~115938465~115938469~116185181~116185182~116988316~117447493~117527105",
+    "status": 204,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Axhr%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=a5fb2c70-07de-4bc1-b6e3-cd8b3932fc9a&batch_time=1770864603791",
+    "status": 202,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Axhr%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=e5e0dfee-e0e8-4c36-a35d-8f5a0950703f&batch_time=1770864603788",
+    "status": 202,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Axhr%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=566b30fc-15ab-4dcd-a59b-fb56f43ea828&batch_time=1770864603807",
+    "status": 202,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://analytics.google.com/g/collect?v=2&tid=G-928P0PZ00X&gtm=45je62a1v872277869z871497926za20gzb71497926zd71497926&_p=1770864600708&_gaz=1&gcs=G111&gcd=13t3t3t3t6l1&npa=0&dma=0&gdid=dYWJhMj&ul=en-US&cid=1913264988.1770864603&sr=1440x900&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&are=1&frm=0&pscdl=noapi&_eu=AAAAAGA&_s=1&tag_exp=103116026~103200004~104527907~104528501~104684208~104684211~115616986~115938465~115938469~116185181~116185182~116988316~117447493~117527105&dr=&dt=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&sid=1770864602&sct=1&seg=0&_tu=aAg&en=page_view&_fv=1&_ss=1&ep.allow_Linker=true&ep.gtm_container_id=GTM-TZTT5H&ep.gtm_container_version=585&ep.user_agent=Mozilla%2F5.0%20(Windows%20NT%2010.0%3B%20Win64%3B%20x64)%20AppleWebKit%2F537.36%20(KHTML%2C%20like%20Gecko)%20Chrome%2F122.0.0.0%20Safari%2F537.36&ep.timestamp=2026-02-11%2021%3A50%3A01.171%20GMT-0500%20(EST)&ep.user_id2=(not%20set)&ep.region_id=464&ep.region_type_id=5&ep.RIFT_page_type=map&ep.full_url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&ep.custom_page_url=www.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&ep.responsive_breakpoint=desktop&ep.site_version=(not%20set)&ep.search_market=centralflorida&ep.rf_browser_id=0o79i2tiSTqo4yepeCVn1A&ep.gtm_tag_name=GA4%20-%20Page%20View&epn.pageview_count=1&upn.timezone_offset=-5&up.logged_in=Logged%20out&tfd=3494",
+    "status": 204,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.googleadservices.com/pagead/conversion/950774651/?random=1770864602719&cv=11&fst=1770864602719&bg=ffffff&guid=ON&async=1&en=conversion&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xea&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&label=g7ShCIyIkoEZEPvWrsUD&capi=1&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&edid=dYWJhMj&bttype=purchase&value=0&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&ec_mode=a&gcl_ctr=1~0~0&category=acrcp_v1_512&em=tv.1&fmt=7",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.googleadservices.com/pagead/conversion/950774651/?random=1770864602720&cv=11&fst=1770864602720&bg=ffffff&guid=ON&async=1&en=conversion&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xea&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&label=T_xUCJbd95oaEPvWrsUD&capi=1&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&edid=dYWJhMj&bttype=purchase&value=0&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&ec_mode=a&gcl_ctr=2~0~0&category=acrcp_v1_512&em=tv.1&fmt=7",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=2a9ff231-f854-46ee-812e-57e91ee0e888&batch_time=1770864603924",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://raven-static.aditude.io/prod/1.16.3-l4acou/raven.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://connect.facebook.net/en_US/sdk.js?hash=5034aae347609e2caa45130f0094ac48",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://bat.bing.com/action/0?ti=5220234&tm=gtm002&Ver=2&mid=24e2caf8-20f5-4237-8c1d-634d6e35a61b&bo=4&sid=884bcac007bd11f19fc531e8bca14ac4&vid=884bede007bd11f1a0ac6d74ba4ccda1&vids=1&msclkid=N&uach=pv%3D10.0&pi=918639831&lg=en-US&sw=1440&sh=900&sc=24&tl=Hillsborough%20County,%20FL%20Foreclosures,%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&p=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&r=&lt=832&evt=pageLoad&sv=2&asc=G&cdb=AQET&rn=727884",
+    "status": 204,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://accounts.google.com/gsi/style",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/privacy_sandbox/pixel/register/trigger/?id=3295135800512448&ev=PageView&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&rl=&if=false&ts=1770864604088&sw=1440&sh=900&cud[external_id]=(***%20***)&ncud[external_id]=(******)&ud[external_id]=99cf15c63b09dd3e20729ea2f22acfd4a07f29f8e212c26ca7d578d405a5b677&aud[external_id]=99cf15c63b09dd3e20729ea2f22acfd4a07f29f8e212c26ca7d578d405a5b677&v=2.9.265&r=stable&a=tmgoogletagmanager&ec=0&o=12318&fbp=fb.1.1770864604069.591502551116855561&cs_est=true&ler=empty&cdl=API_unavailable&pmd[title]=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&pmd[description]=Find%20foreclosures%20for%20sale%2C%20bank%20owned%20homes%20%26%20foreclosure%20listings%20in%20Hillsborough%20County%2C%20FL.%20Tour%20foreclosed%20homes%20%26%20make%20offers%20with%20the%20help%20of%20Redfin%20real%20estate%20agents.&pmd[contents]=%5B%7B%22name%22%3A%223415%20N%2051st%20St%2C%20Tampa%2C%20FL%2033619%22%7D%5D&plt=832.2000000476837&it=1770864602842&coo=false&dpo=LDU&dpoco=1&dpost=1000&ap[currency]=USD&ap[contents]=%5B%7B%22item_price%22%3A160000%7D%2C%7B%22item_price%22%3A774900%7D%2C%7B%22item_price%22%3A234650%7D%2C%7B%22item_price%22%3A600000%7D%2C%7B%22item_price%22%3A190000%7D%2C%7B%22item_price%22%3A220000%7D%2C%7B%22item_price%22%3A203000%7D%2C%7B%22item_price%22%3A5000%7D%2C%7B%22item_price%22%3A350000%7D%2C%7B%22item_price%22%3A149900%7D%2C%7B%22item_price%22%3A234900%7D%2C%7B%22item_price%22%3A575000%7D%2C%7B%22item_price%22%3A589900%7D%2C%7B%22item_price%22%3A5000%7D%2C%7B%22item_price%22%3A364750%7D%2C%7B%22item_price%22%3A446900%7D%2C%7B%22item_price%22%3A464999%7D%2C%7B%22item_price%22%3A189900%7D%2C%7B%22item_price%22%3A300000%7D%2C%7B%22item_price%22%3A319900%7D%2C%7B%22item_price%22%3A299900%7D%2C%7B%22item_price%22%3A254900%7D%2C%7B%22item_price%22%3A2195000%7D%2C%7B%22item_price%22%3A330000%7D%2C%7B%22item_price%22%3A349900%7D%2C%7B%22item_price%22%3A265000%7D%2C%7B%22item_price%22%3A375000%7D%2C%7B%22item_price%22%3A211500%7D%2C%7B%22item_price%22%3A229900%7D%2C%7B%22item_price%22%3A259900%7D%2C%7B%22item_price%22%3A380000%7D%2C%7B%22item_price%22%3A225000%7D%2C%7B%22item_price%22%3A355000%7D%2C%7B%22item_price%22%3A465900%7D%2C%7B%22item_price%22%3A159900%7D%2C%7B%22item_price%22%3A314900%7D%2C%7B%22item_price%22%3A415000%7D%2C%7B%22item_price%22%3A299900%7D%2C%7B%22item_price%22%3A229000%7D%2C%7B%22item_price%22%3A459900%7D%2C%7B%22item_price%22%3A200000%7D%5D&expv2[0]=pl0&expv2[1]=el2&expv2[2]=bc1&expv2[3]=ra2&expv2[4]=rp2&expv2[5]=im1&expv2[6]=hf1&rqm=FGET",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/tr/",
+    "status": 200,
+    "resource_type": "document",
+    "method": "POST"
+  },
+  {
+    "url": "https://connect.facebook.net/signals/config/1352392714901574?v=2.9.265&r=stable&domain=www.redfin.com&hme=8faeb0ed09c145bbd9d3213e762abac29e9f76b8e7a9df9d71a3058625e3b7dd&ex_m=96%2C187%2C136%2C21%2C68%2C69%2C129%2C64%2C43%2C130%2C73%2C63%2C10%2C143%2C82%2C15%2C95%2C124%2C117%2C71%2C74%2C123%2C140%2C104%2C145%2C7%2C3%2C4%2C6%2C5%2C2%2C83%2C93%2C146%2C151%2C201%2C57%2C167%2C168%2C50%2C238%2C28%2C70%2C213%2C212%2C211%2C30%2C56%2C9%2C59%2C89%2C90%2C91%2C97%2C120%2C29%2C27%2C122%2C119%2C118%2C137%2C72%2C139%2C138%2C45%2C55%2C113%2C14%2C142%2C40%2C226%2C227%2C225%2C24%2C25%2C26%2C17%2C19%2C39%2C35%2C37%2C36%2C78%2C84%2C88%2C102%2C128%2C131%2C41%2C103%2C22%2C20%2C109%2C65%2C33%2C133%2C132%2C134%2C125%2C23%2C32%2C54%2C101%2C141%2C66%2C16%2C135%2C106%2C77%2C62%2C18%2C31%2C249%2C194%2C181%2C182%2C180%2C252%2C244%2C195%2C99%2C121%2C76%2C111%2C49%2C42%2C44%2C105%2C110%2C116%2C53%2C60%2C115%2C48%2C51%2C47%2C92%2C144%2C0%2C114%2C13%2C112%2C11%2C1%2C52%2C85%2C58%2C61%2C108%2C81%2C80%2C147%2C148%2C86%2C87%2C8%2C94%2C46%2C126%2C79%2C75%2C67%2C107%2C98%2C38%2C127%2C34%2C100%2C12%2C149%2C210%2C209%2C204%2C206%2C207%2C208%2C205%2C193%2C203%2C214%2C174%2C171%2C172%2C166%2C170%2C173%2C169%2C164%2C273%2C240%2C197%2C165%2C163%2C192%2C216%2C188%2C247%2C158%2C157%2C153%2C159%2C156%2C154%2C155%2C152%2C150%2C161%2C162%2C160%2C228%2C272",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://bat.bing.com/actionp/0?ti=5220234&tm=gtm002&Ver=2&mid=24e2caf8-20f5-4237-8c1d-634d6e35a61b&bo=3&evt=consent&src=update&cdb=AQET&asc=G",
+    "status": 204,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://bat.bing.com/actionp/0?ti=5220234&tm=gtm002&Ver=2&mid=24e2caf8-20f5-4237-8c1d-634d6e35a61b&bo=1&evt=consent&src=default&cdb=AQET&asc=G",
+    "status": 204,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://bat.bing.com/actionp/0?ti=5220234&tm=gtm002&Ver=2&mid=24e2caf8-20f5-4237-8c1d-634d6e35a61b&bo=2&evt=consent&src=update&cdb=AQET&asc=G",
+    "status": 204,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://bat.bing.com/p/conversions/t/5220234",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/950774651/?random=203379212&cv=11&fst=1770864602719&bg=ffffff&guid=ON&async=1&en=conversion&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xea&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&label=g7ShCIyIkoEZEPvWrsUD&capi=1&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&edid=dYWJhMj&value=0&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&ec_mode=a&gcl_ctr=1~0~0&category=acrcp_v1_512&em=tv.1&fmt=3&ct_cookie_present=false&crd=CPLOsQIItN6xAgihuLECCLHBsQIIsMGxAgixw7ECCIrFsQIIwsmxAgi0xrECCNvcsQIIh9uxAgjTxbECCOvMsQII7c6xAgjVz7ECCJfUsQIIyduxAkoUdHJpZ2dlcj1ldmVudC1zb3VyY2VaAwoBAWIDCgED&cerd=CgEA&eitems=ChAIgO6wzAYQkZ3YlI-etN4gEh0AFA7JsHhbY-DgMic9sCGEaxayea2ycMnG5JkhTg&fsk=ChAIgO6wzAYQtvuWvdqJ7MdiEiwAc8GvjCCbpb5KLJLBBSptCQQOSWCb-jIWH85dtcBGgPRiAPVnTkGOSJBsJRoCbGI&pscrd=IhMI3bXjy_jSkgMV3JmDCB37aCG0MgwIA2IICAAQABgAIAAyDAgEYggIABAAGAAgADIMCAdiCAgAEAAYACAAMgwICGIICAAQABgAIAAyDAgJYggIABAAGAAgADIMCApiCAgAEAAYACAAMgwIAmIICAAQABgAIAAyDAgLYggIABAAGAAgADIMCBViCAgAEAAYACAAMgwIH2IICAAQABgAIAAyDAgTYggIABAAGAAgADIMCBJiCAgAEAAYACAAOhdodHRwczovL3d3dy5yZWRmaW4uY29tL0JXQ2hFSWdPNnd6QVlRbGNYVmdzbkgxOWpsQVJJc0FQSlFTSnI4QzQxSVFna2ROeURsRldVUThuZjQ5SGl0cHdrOExPc2Z6R3hQM09ZcGczYUpLSEJ6T2RjegwICWIICAAQABgAIAA",
+    "status": 302,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/950774651/?random=313444608&cv=11&fst=1770864602720&bg=ffffff&guid=ON&async=1&en=conversion&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xea&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&label=T_xUCJbd95oaEPvWrsUD&capi=1&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&edid=dYWJhMj&value=0&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&ec_mode=a&gcl_ctr=2~0~0&category=acrcp_v1_512&em=tv.1&fmt=3&ct_cookie_present=false&crd=CPLOsQIItN6xAgihuLECCLHBsQIIsMGxAgixw7ECCIrFsQIIwsmxAgi0xrECCNvcsQIIh9uxAgjTxbECCOvMsQII7c6xAgjVz7ECCJfUsQIIyduxAgiC3rECShl0cmlnZ2VyPW5hdmlnYXRpb24tc291cmNlWgMKAQFiAwoBAw&cerd=CgEA&eitems=ChAIgO6wzAYQkZ3YlI-etN4gEh0AFA7JsPHkpwTsF03dSOaAxg2l3U5EgAFE_l3qAQ&fsk=ChAIgO6wzAYQtvuWvdqJ7MdiEiwAc8GvjLiJm-VvAFcTc1ykWh06c6qwlsXE8j1Dj3yV5NQ2_qKZSnUpu0xYfxoCRAA&pscrd=IhMIgtDjy_jSkgMV_dZlAx3ziyTLMgwIA2IICAAQABgAIAAyDAgEYggIABAAGAAgADIMCAdiCAgAEAAYACAAMgwICGIICAAQABgAIAAyDAgJYggIABAAGAAgADIMCApiCAgAEAAYACAAMgwIAmIICAAQABgAIAAyDAgLYggIABAAGAAgADIMCBViCAgAEAAYACAAMgwIH2IICAAQABgAIAAyDAgTYggIABAAGAAgADIMCBJiCAgAEAAYACAAOhdodHRwczovL3d3dy5yZWRmaW4uY29tL0JXQ2hFSWdPNnd6QVlRbGNYVmdzbkgxOWpsQVJJc0FQSlFTSnFWTWx1RjU3bnlBTUdUY3dmQ3JQZWg4U3FKZy1ndWVmSlI3TDBZMmJ5SXd5OUJPcmF3SXc4egwICWIICAAQABgAIAA",
+    "status": 302,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/privacy_sandbox/topics/registration/?id=3295135800512448",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://analytics.tiktok.com/i18n/pixel/static/identify_31760074.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://accounts.google.com/gsi/log?client_id=597760556696.apps.googleusercontent.com&as=16ECsYtnc9bR7U%2BXf0WsdF4ZZin936CLE8cXUwoDR3E&bs=Mh%2BE0sWVeU0VpVB5%2FNeWRZxYOnQCBoezsIvD%2FBgliFw&event=onetap.card.prompt.apiCall&enable_itp_optimization=16",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=2953eb44-9cc7-4dac-b011-2485abc9b96f&batch_time=1770864604240",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://analytics.tiktok.com/api/v2/pixel",
+    "status": 200,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://analytics.tiktok.com/api/v2/pixel",
+    "status": 200,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://securepubads.g.doubleclick.net/pagead/managed/js/gpt/m202602040101/pubads_impl.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://22af5ed32a4a.edge.sdk.awswaf.com/22af5ed32a4a/939b6cb0e48b/telemetry",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://analytics-ipv6.tiktokw.us/ipv6/enrich_ipv6",
+    "status": 200,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=20007c97-d493-4fec-b2a0-cc48b866b331&batch_time=1770864604566",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i276!3i428!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cC52Om9mZixzLnQ6MzV8cC52Om9mZixzLnQ6NDB8cC52Om9uLHMudDo0MHxzLmU6bHxwLnY6b2Zm!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=93771",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i278!3i430!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cC52Om9mZixzLnQ6MzV8cC52Om9mZixzLnQ6NDB8cC52Om9uLHMudDo0MHxzLmU6bHxwLnY6b2Zm!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=14649",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i278!3i427!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cC52Om9mZixzLnQ6MzV8cC52Om9mZixzLnQ6NDB8cC52Om9uLHMudDo0MHxzLmU6bHxwLnY6b2Zm!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=18450",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i277!3i430!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cC52Om9mZixzLnQ6MzV8cC52Om9mZixzLnQ6NDB8cC52Om9uLHMudDo0MHxzLmU6bHxwLnY6b2Zm!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=16346",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://dn0qt3r0xannq.cloudfront.net/components/activity-refresh-component.059097ebda70e7a1783a.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i278!3i428!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cC52Om9mZixzLnQ6MzV8cC52Om9mZixzLnQ6NDB8cC52Om9uLHMudDo0MHxzLmU6bHxwLnY6b2Zm!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=90377",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i277!3i428!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cC52Om9mZixzLnQ6MzV8cC52Om9mZixzLnQ6NDB8cC52Om9uLHMudDo0MHxzLmU6bHxwLnY6b2Zm!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=92074",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i276!3i427!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cC52Om9mZixzLnQ6MzV8cC52Om9mZixzLnQ6NDB8cC52Om9uLHMudDo0MHxzLmU6bHxwLnY6b2Zm!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=21844",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i277!3i427!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cC52Om9mZixzLnQ6MzV8cC52Om9mZixzLnQ6NDB8cC52Om9uLHMudDo0MHxzLmU6bHxwLnY6b2Zm!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=20147",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps-api-v3/api/js/62/13e/layers.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i276!3i430!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cC52Om9mZixzLnQ6MzV8cC52Om9mZixzLnQ6NDB8cC52Om9uLHMudDo0MHxzLmU6bHxwLnY6b2Zm!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=18043",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i276!3i429!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cC52Om9mZixzLnQ6MzV8cC52Om9mZixzLnQ6NDB8cC52Om9uLHMudDo0MHxzLmU6bHxwLnY6b2Zm!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=34627",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i278!3i429!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cC52Om9mZixzLnQ6MzV8cC52Om9mZixzLnQ6NDB8cC52Om9uLHMudDo0MHxzLmU6bHxwLnY6b2Zm!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=31233",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps/vt?pb=!1m5!1m4!1i10!2i277!3i429!4i256!2m3!1e0!2sm!3i766530006!3m18!2sen-US!3sUS!5e18!12m5!1e68!2m2!1sset!2sRoadmap!4e2!12m3!1e37!2m1!1ssmartmaps!12m4!1e26!2m2!1sstyles!2zcy50OjMzfHMuZTpsfHAudjpvZmYscy50OjJ8cC52Om9mZixzLnQ6MzV8cC52Om9mZixzLnQ6NDB8cC52Om9uLHMudDo0MHxzLmU6bHxwLnY6b2Zm!4e0!5m1!1e3!23i46991212!23i47054750!23i47083502&client=gme-redfin&channel=search&token=32930",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.google.com/pagead/1p-conversion/950774651/?random=313444608&cv=11&fst=1770864602720&bg=ffffff&guid=ON&async=1&en=conversion&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xea&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&label=T_xUCJbd95oaEPvWrsUD&capi=1&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&edid=dYWJhMj&value=0&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&ec_mode=a&gcl_ctr=2~0~0&category=acrcp_v1_512&em=tv.1&fmt=3&ct_cookie_present=false&crd=CPLOsQIItN6xAgihuLECCLHBsQIIsMGxAgixw7ECCIrFsQIIwsmxAgi0xrECCNvcsQIIh9uxAgjTxbECCOvMsQII7c6xAgjVz7ECCJfUsQIIyduxAgiC3rECShl0cmlnZ2VyPW5hdmlnYXRpb24tc291cmNlWgMKAQFiAwoBAw&cerd=CgEA&fsk=ChAIgO6wzAYQtvuWvdqJ7MdiEiwAc8GvjLiJm-VvAFcTc1ykWh06c6qwlsXE8j1Dj3yV5NQ2_qKZSnUpu0xYfxoCRAA&pscrd=IhMIgtDjy_jSkgMV_dZlAx3ziyTLMgwIA2IICAAQABgAIAAyDAgEYggIABAAGAAgADIMCAdiCAgAEAAYACAAMgwICGIICAAQABgAIAAyDAgJYggIABAAGAAgADIMCApiCAgAEAAYACAAMgwIAmIICAAQABgAIAAyDAgLYggIABAAGAAgADIMCBViCAgAEAAYACAAMgwIH2IICAAQABgAIAAyDAgTYggIABAAGAAgADIMCBJiCAgAEAAYACAAOhdodHRwczovL3d3dy5yZWRmaW4uY29tL0JXQ2hFSWdPNnd6QVlRbGNYVmdzbkgxOWpsQVJJc0FQSlFTSnFWTWx1RjU3bnlBTUdUY3dmQ3JQZWg4U3FKZy1ndWVmSlI3TDBZMmJ5SXd5OUJPcmF3SXc4egwICWIICAAQABgAIAA&is_vtc=1&cid=CAQSjQEA56J1eaWWleZES2VDnGocHPWfI_19XtHIhlZ_WtlKUV48lrXNi5ZV6C3mXCWIA6lua8cA5FTWJw4ZRRERqxxhdn1ZF1_9yw6G210hMVZemur7k-xfkBMB64V6_dSdrN7xGv4OFo0w7QGc_ghWL7WO_Z3GZGVFUzjKBVJ5UU0lzDde0YxGZID-s9aZuAQ&eitems=ChAIgO6wzAYQkZ3YlI-etN4gEh0AFA7JsPj6oWb4E1z-s2zQya2mc1XcPoFyGR8MKQ&random=84006569",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://9772552.fls.doubleclick.net/activityi;src=9772552;type=2022b0;cat=mappa0;ord=1913264988.1770864603;npa=0;auiddc=703762615.1770864602;u26=(not%20set);u27=Logged%20out;u28=undefined;u30=map;u32=undefined;u33=undefined;u34=undefined;u35=undefined;u36=undefined;u37=211907834%2C211908558%2C211897769%2C211893426%2C211752068%2C211752618%2C211753852%2C211279895%2C211158580%2C211178962%2C211647917%2C211217792%2C210940280%2C211279896%2C210672413;u38=centralflorida;u39=undefined;u29=undefined;u40=(not%20set);u41=fb.1.1770864604069.591502551116855561;u42=undefined;u43=1770864605005;u44=0o79i2tiSTqo4yepeCVn1A%7C1770864605005;u45=-5;u46=2026-02-11%2021%3A50%3A05.23%20GMT-0500%20(EST);u47=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u48=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u49=(none);u50=UA-294985-1;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=KAIB;gtm=45Pe62a1v9181465623z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=2;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938469~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864605_kSRuhNgqQaPb8KuShup4DX18riY_6dlDTg;_dc_test=1;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 302,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/tr/?id=1352392714901574&ev=PageView&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&rl=&if=false&ts=1770864604807&sw=1440&sh=900&v=2.9.265&r=stable&ec=0&o=12318&fbp=fb.1.1770864604069.591502551116855561&ler=empty&cdl=API_unavailable&plt=832.2000000476837&it=1770864602842&coo=false&dpo=LDU&dpoco=1&dpost=1000&expv2[0]=pl0&expv2[1]=el2&expv2[2]=bc1&expv2[3]=ra2&expv2[4]=rp2&expv2[5]=im1&expv2[6]=hf1&rqm=GET",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.google.com/pagead/1p-conversion/950774651/?random=203379212&cv=11&fst=1770864602719&bg=ffffff&guid=ON&async=1&en=conversion&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xea&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&label=g7ShCIyIkoEZEPvWrsUD&capi=1&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&edid=dYWJhMj&value=0&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&ec_mode=a&gcl_ctr=1~0~0&category=acrcp_v1_512&em=tv.1&fmt=3&ct_cookie_present=false&crd=CPLOsQIItN6xAgihuLECCLHBsQIIsMGxAgixw7ECCIrFsQIIwsmxAgi0xrECCNvcsQIIh9uxAgjTxbECCOvMsQII7c6xAgjVz7ECCJfUsQIIyduxAkoUdHJpZ2dlcj1ldmVudC1zb3VyY2VaAwoBAWIDCgED&cerd=CgEA&fsk=ChAIgO6wzAYQtvuWvdqJ7MdiEiwAc8GvjCCbpb5KLJLBBSptCQQOSWCb-jIWH85dtcBGgPRiAPVnTkGOSJBsJRoCbGI&pscrd=IhMI3bXjy_jSkgMV3JmDCB37aCG0MgwIA2IICAAQABgAIAAyDAgEYggIABAAGAAgADIMCAdiCAgAEAAYACAAMgwICGIICAAQABgAIAAyDAgJYggIABAAGAAgADIMCApiCAgAEAAYACAAMgwIAmIICAAQABgAIAAyDAgLYggIABAAGAAgADIMCBViCAgAEAAYACAAMgwIH2IICAAQABgAIAAyDAgTYggIABAAGAAgADIMCBJiCAgAEAAYACAAOhdodHRwczovL3d3dy5yZWRmaW4uY29tL0JXQ2hFSWdPNnd6QVlRbGNYVmdzbkgxOWpsQVJJc0FQSlFTSnI4QzQxSVFna2ROeURsRldVUThuZjQ5SGl0cHdrOExPc2Z6R3hQM09ZcGczYUpLSEJ6T2RjegwICWIICAAQABgAIAA&is_vtc=1&cid=CAQSjQEA56J1eb8F_mzsw1LLaqa_rmUcuXexExXoFR2UKXDHPnXg4gcIdkKOzMtryUAWuHFqZ8hmipkhem50k70UmB7mdQbD_mn9q6lXCYtfXGCidgHI5Vef1HHKRFO3YSYd_GLgfqk_wbsmBoQ4QGEbE4EXx6mCJk9lyrRVt7mtAqldkdF2cdJWScAR0_OgC2g&eitems=ChAIgO6wzAYQkZ3YlI-etN4gEh0AFA7JsDQ-1quJ04VaeL7a3myofPCfAzHOofM8sg&random=3627663769",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.googleadservices.com/pagead/conversion/950774651/?random=1770864605035&cv=11&fst=1770864605035&bg=ffffff&guid=ON&async=1&en=conversion&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xea&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&label=cOzECMbls40DEPvWrsUD&capi=1&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&edid=dYWJhMj&bttype=purchase&value=0&hn=www.googleadservices.com&rdp=1&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&ec_mode=a&_tu=CAI&gcl_ctr=3~0~0&category=acrcp_v1_512&em=tv.1&fmt=7",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://connect.facebook.net/signals/config/851728468185585?v=2.9.265&r=stable&domain=www.redfin.com&hme=8faeb0ed09c145bbd9d3213e762abac29e9f76b8e7a9df9d71a3058625e3b7dd&ex_m=96%2C187%2C136%2C21%2C68%2C69%2C129%2C64%2C43%2C130%2C73%2C63%2C10%2C143%2C82%2C15%2C95%2C124%2C117%2C71%2C74%2C123%2C140%2C104%2C145%2C7%2C3%2C4%2C6%2C5%2C2%2C83%2C93%2C146%2C151%2C201%2C57%2C167%2C168%2C50%2C238%2C28%2C70%2C213%2C212%2C211%2C30%2C56%2C9%2C59%2C89%2C90%2C91%2C97%2C120%2C29%2C27%2C122%2C119%2C118%2C137%2C72%2C139%2C138%2C45%2C55%2C113%2C14%2C142%2C40%2C226%2C227%2C225%2C24%2C25%2C26%2C17%2C19%2C39%2C35%2C37%2C36%2C78%2C84%2C88%2C102%2C128%2C131%2C41%2C103%2C22%2C20%2C109%2C65%2C33%2C133%2C132%2C134%2C125%2C23%2C32%2C54%2C101%2C141%2C66%2C16%2C135%2C106%2C77%2C62%2C18%2C31%2C249%2C194%2C181%2C182%2C180%2C252%2C244%2C195%2C99%2C121%2C76%2C111%2C49%2C42%2C44%2C105%2C110%2C116%2C53%2C60%2C115%2C48%2C51%2C47%2C92%2C144%2C0%2C114%2C13%2C112%2C11%2C1%2C52%2C85%2C58%2C61%2C108%2C81%2C80%2C147%2C148%2C86%2C87%2C8%2C94%2C46%2C126%2C79%2C75%2C67%2C107%2C98%2C38%2C127%2C34%2C100%2C12%2C149%2C210%2C209%2C204%2C206%2C207%2C208%2C205%2C193%2C203%2C214%2C174%2C171%2C172%2C166%2C170%2C173%2C169%2C164%2C273%2C240%2C197%2C165%2C163%2C192%2C216%2C188%2C247%2C158%2C157%2C153%2C159%2C156%2C154%2C155%2C152%2C150%2C161%2C162%2C160%2C228%2C272",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ad.doubleclick.net/activity;src=9772552;type=2022b0;cat=mappa0;ord=1913264988.1770864603;npa=0;auiddc=703762615.1770864602;u26=(not%20set);u27=Logged%20out;u28=undefined;u30=map;u32=undefined;u33=undefined;u34=undefined;u35=undefined;u36=undefined;u37=211907834%2C211908558%2C211897769%2C211893426%2C211752068%2C211752618%2C211753852%2C211279895%2C211158580%2C211178962%2C211647917%2C211217792%2C210940280%2C211279896%2C210672413;u38=centralflorida;u39=undefined;u29=undefined;u40=(not%20set);u41=fb.1.1770864604069.591502551116855561;u42=undefined;u43=1770864605005;u44=0o79i2tiSTqo4yepeCVn1A%7C1770864605005;u45=-5;u46=2026-02-11%2021%3A50%3A05.23%20GMT-0500%20(EST);u47=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u48=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u49=(none);u50=UA-294985-1;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=KAIB;gtm=45Pe62a1v9181465623z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=3;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938469~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864605_kSRuhNgqQaPb8KuShup4DX18riY_6dlDTg;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 302,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=8c4eaa57-ae4d-4e13-bed8-a01b1c796076&batch_time=1770864605560",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://analytics.tiktok.com/api/v2/pixel/act",
+    "status": 200,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/corvair/v2/resolveBouncerFlags?flags=MONEY_USE_GPT_FOR_GAM",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/api/builder-boost/5/464/county",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/privacy_sandbox/pixel/register/trigger/?id=1352392714901574&ev=PageView&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&rl=&if=false&ts=1770864604807&sw=1440&sh=900&v=2.9.265&r=stable&ec=0&o=12318&fbp=fb.1.1770864604069.591502551116855561&ler=empty&cdl=API_unavailable&plt=832.2000000476837&it=1770864602842&coo=false&dpo=LDU&dpoco=1&dpost=1000&expv2[0]=pl0&expv2[1]=el2&expv2[2]=bc1&expv2[3]=ra2&expv2[4]=rp2&expv2[5]=im1&expv2[6]=hf1&rqm=FGET",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/api/builder-boost/dma-region/zip/33511,33556,33559,33563,33567,33569,33570,33572,33573,33579,33592,33596,33598,33603,33604,33605,33609,33610,33611,33615,33616,33617,33619,33625,33635",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://bat.bing.com/action/0?ti=5220234&tm=gtm002&Ver=2&mid=24e2caf8-20f5-4237-8c1d-634d6e35a61b&bo=6&sid=884bcac007bd11f19fc531e8bca14ac4&vid=884bede007bd11f1a0ac6d74ba4ccda1&vids=0&msclkid=N&ec=View_Content&el=page_view&gc=USD&tpp=1&ea=impression&en=Y&p=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&sw=1440&sh=900&sc=24&evt=custom&asc=G&cdb=AQET&rn=872317",
+    "status": 204,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://analytics.tiktok.com/api/v2/pixel",
+    "status": 200,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://9772552.fls.doubleclick.net/activityi;dc_pre=COr-xcz40pIDFQ92wAYdR4Azcw;src=9772552;type=2022b0;cat=mappa0;ord=1913264988.1770864603;npa=0;auiddc=703762615.1770864602;u26=(not%20set);u27=Logged%20out;u28=undefined;u30=map;u32=undefined;u33=undefined;u34=undefined;u35=undefined;u36=undefined;u37=211907834%2C211908558%2C211897769%2C211893426%2C211752068%2C211752618%2C211753852%2C211279895%2C211158580%2C211178962%2C211647917%2C211217792%2C210940280%2C211279896%2C210672413;u38=centralflorida;u39=undefined;u29=undefined;u40=(not%20set);u41=fb.1.1770864604069.591502551116855561;u42=undefined;u43=1770864605005;u44=0o79i2tiSTqo4yepeCVn1A%7C1770864605005;u45=-5;u46=2026-02-11%2021%3A50%3A05.23%20GMT-0500%20(EST);u47=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u48=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u49=(none);u50=UA-294985-1;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=KAIB;gtm=45Pe62a1v9181465623z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=2;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938469~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864605_kSRuhNgqQaPb8KuShup4DX18riY_6dlDTg;_dc_test=1;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/950774651/?random=2045828645&cv=11&fst=1770864605035&bg=ffffff&guid=ON&async=1&en=conversion&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xea&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&label=cOzECMbls40DEPvWrsUD&capi=1&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&edid=dYWJhMj&value=0&hn=www.googleadservices.com&rdp=1&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&ec_mode=a&_tu=CAI&gcl_ctr=3~0~0&category=acrcp_v1_512&em=tv.1&fmt=3&ct_cookie_present=false&crd=CPLOsQIItN6xAgihuLECCLHBsQIIsMGxAgixw7ECCIrFsQIIwsmxAgi0xrECCNvcsQIIh9uxAgjTxbECCOvMsQII7c6xAgjVz7ECCJfUsQIIyduxAkomdHJpZ2dlcj1uYXZpZ2F0aW9uLXNvdXJjZTtldmVudC1zb3VyY2VaAwoBAWIDCgED&cerd=CgEA&eitems=ChAIgO6wzAYQkZ3YlI-etN4gEh0AFA7JsAghL7bJftJe1IlWIetKYUtB92XDX06r4A&fsk=ChAIgO6wzAYQtvuWvdqJ7MdiEiwAc8GvjDgXqxOKlzIMmEkpUkyq3ZI7q80M_J-QR_6wHk6fD7J5jf4sAHKLIhoC5-M&pscrd=IhMIrZ7DzPjSkgMVaKCDCB2rwBH5MgwIA2IICAAQABgAIAAyDAgEYggIABAAGAAgADIMCAdiCAgAEAAYACAAMgwICGIICAAQABgAIAAyDAgJYggIABAAGAAgADIMCApiCAgAEAAYACAAMgwIAmIICAAQABgAIAAyDAgLYggIABAAGAAgADIMCBViCAgAEAAYACAAMgwIH2IICAAQABgAIAAyDAgTYggIABAAGAAgADIMCBJiCAgAEAAYACAAOhdodHRwczovL3d3dy5yZWRmaW4uY29tL0JXQ2hFSWdPNnd6QVlRbGNYVmdzbkgxOWpsQVJJc0FQSlFTSnFjVFdZazlsM3RzdHg2a0JlLVdiaEtZekZLa1NWcE5fdVl4b1V6RW5WSXVPbEZJVGVzVkcwegwICWIICAAQABgAIAA",
+    "status": 302,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://adservice.google.com/ddm/fls/z/dc_pre=COr-xcz40pIDFQ92wAYdR4Azcw;src=9772552;type=2022b0;cat=mappa0;ord=1913264988.1770864603;npa=0;auiddc=*;u26=(not%20set);u27=Logged%20out;u28=undefined;u30=map;u32=undefined;u33=undefined;u34=undefined;u35=undefined;u36=undefined;u37=211907834%2C211908558%2C211897769%2C211893426%2C211752068%2C211752618%2C211753852%2C211279895%2C211158580%2C211178962%2C211647917%2C211217792%2C210940280%2C211279896%2C210672413;u38=centralflorida;u39=undefined;u29=undefined;u40=(not%20set);u41=fb.1.1770864604069.591502551116855561;u42=undefined;u43=1770864605005;u44=0o79i2tiSTqo4yepeCVn1A%7C1770864605005;u45=-5;u46=2026-02-11%2021%3A50%3A05.23%20GMT-0500%20(EST);u47=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u48=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u49=(none);u50=UA-294985-1;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=KAIB;gtm=45Pe62a1v9181465623z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=2;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938469~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864605_kSRuhNgqQaPb8KuShup4DX18riY_6dlDTg;_dc_test=1;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ad.doubleclick.net/activity;dc_pre=CJLAwsz40pIDFTnoKAUdRlsy-A;src=9772552;type=2022b0;cat=mappa0;ord=1913264988.1770864603;npa=0;auiddc=703762615.1770864602;u26=(not%20set);u27=Logged%20out;u28=undefined;u30=map;u32=undefined;u33=undefined;u34=undefined;u35=undefined;u36=undefined;u37=211907834%2C211908558%2C211897769%2C211893426%2C211752068%2C211752618%2C211753852%2C211279895%2C211158580%2C211178962%2C211647917%2C211217792%2C210940280%2C211279896%2C210672413;u38=centralflorida;u39=undefined;u29=undefined;u40=(not%20set);u41=fb.1.1770864604069.591502551116855561;u42=undefined;u43=1770864605005;u44=0o79i2tiSTqo4yepeCVn1A%7C1770864605005;u45=-5;u46=2026-02-11%2021%3A50%3A05.23%20GMT-0500%20(EST);u47=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u48=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures;u49=(none);u50=UA-294985-1;gdid=dYWJhMj;uaa=x86;uab=64;uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0;uamb=0;uam=;uap=Windows;uapv=10.0;uaw=0;pscdl=noapi;frm=0;_tu=KAIB;gtm=45Pe62a1v9181465623z871497926za20gzb71497926zd71497926xea;gcs=G111;gcd=13t3t3t3t5l1;dma=0;dc_fmt=3;tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115616985~115938465~115938469~116185181~116185182~116988315~117527105;epver=2;dc_random=1770864605_kSRuhNgqQaPb8KuShup4DX18riY_6dlDTg;~oref=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures?",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://geo.aditude.io/raven",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://bat.bing.com/actionp/0?ti=5220234&tm=gtm002&Ver=2&mid=24e2caf8-20f5-4237-8c1d-634d6e35a61b&bo=5&sid=884bcac007bd11f19fc531e8bca14ac4&vid=884bede007bd11f1a0ac6d74ba4ccda1&vids=1&msclkid=N&evt=consent&src=default&cdb=AQET&asc=G",
+    "status": 204,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://22af5ed32a4a.edge.sdk.awswaf.com/22af5ed32a4a/939b6cb0e48b/telemetry",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://bat.bing.com/p/conversions/s/0.8.54",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/privacy_sandbox/pixel/register/trigger/?id=851728468185585&ev=ViewContent&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&rl=&if=false&ts=1770864605841&cd[content_type]=%5B%22product%22%5D&cd[content_ids]=%5B%22undefined%22%5D&cd[home_listing_id]=%5Bnull%5D&sw=1440&sh=900&cud[external_id]=(***%20***)&ncud[external_id]=(******)&ud[external_id]=99cf15c63b09dd3e20729ea2f22acfd4a07f29f8e212c26ca7d578d405a5b677&aud[external_id]=99cf15c63b09dd3e20729ea2f22acfd4a07f29f8e212c26ca7d578d405a5b677&v=2.9.265&r=stable&a=tmgoogletagmanager&ec=1&o=12318&fbp=fb.1.1770864604069.591502551116855561&ler=empty&cdl=API_unavailable&pmd[description]=Find%20foreclosures%20for%20sale%2C%20bank%20owned%20homes%20%26%20foreclosure%20listings%20in%20Hillsborough%20County%2C%20FL.%20Tour%20foreclosed%20homes%20%26%20make%20offers%20with%20the%20help%20of%20Redfin%20real%20estate%20agents.&pmd[contents]=%5B%7B%22name%22%3A%223415%20N%2051st%20St%2C%20Tampa%2C%20FL%2033619%22%7D%5D&plt=832.2000000476837&it=1770864602842&coo=false&dpo=LDU&dpoco=1&dpost=1000&eid=0o79i2tiSTqo4yepeCVn1A%7C1770864605005&tm=1&ap[currency]=USD&ap[contents]=%5B%7B%22item_price%22%3A160000%7D%2C%7B%22item_price%22%3A774900%7D%2C%7B%22item_price%22%3A234650%7D%2C%7B%22item_price%22%3A600000%7D%2C%7B%22item_price%22%3A190000%7D%2C%7B%22item_price%22%3A220000%7D%2C%7B%22item_price%22%3A203000%7D%2C%7B%22item_price%22%3A5000%7D%2C%7B%22item_price%22%3A350000%7D%2C%7B%22item_price%22%3A149900%7D%2C%7B%22item_price%22%3A234900%7D%2C%7B%22item_price%22%3A575000%7D%2C%7B%22item_price%22%3A589900%7D%2C%7B%22item_price%22%3A5000%7D%2C%7B%22item_price%22%3A364750%7D%2C%7B%22item_price%22%3A446900%7D%2C%7B%22item_price%22%3A464999%7D%2C%7B%22item_price%22%3A189900%7D%2C%7B%22item_price%22%3A300000%7D%2C%7B%22item_price%22%3A319900%7D%2C%7B%22item_price%22%3A299900%7D%2C%7B%22item_price%22%3A254900%7D%2C%7B%22item_price%22%3A2195000%7D%2C%7B%22item_price%22%3A330000%7D%2C%7B%22item_price%22%3A349900%7D%2C%7B%22item_price%22%3A265000%7D%2C%7B%22item_price%22%3A375000%7D%2C%7B%22item_price%22%3A211500%7D%2C%7B%22item_price%22%3A229900%7D%2C%7B%22item_price%22%3A259900%7D%2C%7B%22item_price%22%3A380000%7D%2C%7B%22item_price%22%3A225000%7D%2C%7B%22item_price%22%3A355000%7D%2C%7B%22item_price%22%3A465900%7D%2C%7B%22item_price%22%3A159900%7D%2C%7B%22item_price%22%3A314900%7D%2C%7B%22item_price%22%3A415000%7D%2C%7B%22item_price%22%3A299900%7D%2C%7B%22item_price%22%3A229000%7D%2C%7B%22item_price%22%3A459900%7D%2C%7B%22item_price%22%3A200000%7D%5D&expv2[0]=pl0&expv2[1]=el3&expv2[2]=bc1&expv2[3]=ra2&expv2[4]=rp2&expv2[5]=im1&expv2[6]=hf1&rqm=FGET",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/privacy_sandbox/pixel/register/trigger/?id=851728468185585&ev=PageView&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&rl=&if=false&ts=1770864605801&sw=1440&sh=900&cud[external_id]=(***%20***)&ncud[external_id]=(******)&ud[external_id]=99cf15c63b09dd3e20729ea2f22acfd4a07f29f8e212c26ca7d578d405a5b677&aud[external_id]=99cf15c63b09dd3e20729ea2f22acfd4a07f29f8e212c26ca7d578d405a5b677&v=2.9.265&r=stable&a=tmgoogletagmanager&ec=0&o=12318&fbp=fb.1.1770864604069.591502551116855561&cs_est=true&ler=empty&cdl=API_unavailable&pmd[title]=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&pmd[description]=Find%20foreclosures%20for%20sale%2C%20bank%20owned%20homes%20%26%20foreclosure%20listings%20in%20Hillsborough%20County%2C%20FL.%20Tour%20foreclosed%20homes%20%26%20make%20offers%20with%20the%20help%20of%20Redfin%20real%20estate%20agents.&pmd[contents]=%5B%7B%22name%22%3A%223415%20N%2051st%20St%2C%20Tampa%2C%20FL%2033619%22%7D%5D&plt=832.2000000476837&it=1770864602842&coo=false&dpo=LDU&dpoco=1&dpost=1000&ap[currency]=USD&ap[contents]=%5B%7B%22item_price%22%3A160000%7D%2C%7B%22item_price%22%3A774900%7D%2C%7B%22item_price%22%3A234650%7D%2C%7B%22item_price%22%3A600000%7D%2C%7B%22item_price%22%3A190000%7D%2C%7B%22item_price%22%3A220000%7D%2C%7B%22item_price%22%3A203000%7D%2C%7B%22item_price%22%3A5000%7D%2C%7B%22item_price%22%3A350000%7D%2C%7B%22item_price%22%3A149900%7D%2C%7B%22item_price%22%3A234900%7D%2C%7B%22item_price%22%3A575000%7D%2C%7B%22item_price%22%3A589900%7D%2C%7B%22item_price%22%3A5000%7D%2C%7B%22item_price%22%3A364750%7D%2C%7B%22item_price%22%3A446900%7D%2C%7B%22item_price%22%3A464999%7D%2C%7B%22item_price%22%3A189900%7D%2C%7B%22item_price%22%3A300000%7D%2C%7B%22item_price%22%3A319900%7D%2C%7B%22item_price%22%3A299900%7D%2C%7B%22item_price%22%3A254900%7D%2C%7B%22item_price%22%3A2195000%7D%2C%7B%22item_price%22%3A330000%7D%2C%7B%22item_price%22%3A349900%7D%2C%7B%22item_price%22%3A265000%7D%2C%7B%22item_price%22%3A375000%7D%2C%7B%22item_price%22%3A211500%7D%2C%7B%22item_price%22%3A229900%7D%2C%7B%22item_price%22%3A259900%7D%2C%7B%22item_price%22%3A380000%7D%2C%7B%22item_price%22%3A225000%7D%2C%7B%22item_price%22%3A355000%7D%2C%7B%22item_price%22%3A465900%7D%2C%7B%22item_price%22%3A159900%7D%2C%7B%22item_price%22%3A314900%7D%2C%7B%22item_price%22%3A415000%7D%2C%7B%22item_price%22%3A299900%7D%2C%7B%22item_price%22%3A229000%7D%2C%7B%22item_price%22%3A459900%7D%2C%7B%22item_price%22%3A200000%7D%5D&expv2[0]=pl0&expv2[1]=el2&expv2[2]=bc1&expv2[3]=ra2&expv2[4]=rp2&expv2[5]=im1&expv2[6]=hf1&rqm=FGET",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=3c00b4c2-ef88-427f-8e6d-9e45721f832a&batch_time=1770864605746",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/user/segments",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/rift?bv=2&1770864605440&4&ev=web&ss=LARGE&__s=rift-decoder&rf=0o79i2tiSTqo4yepeCVn1A&18&ts&me&map&impression&sr&1440x900&vp&1425x0&click&2142498805&filters_menu&ref_expt&VARIANT&2143742055&photos_view&&1544287505&header_widget&7&s=disengaged_browser&0=-2082&1=1770864603358&-p=2&-a=3&-4=5&-6=7&6&0=458&1=458&-p=2&-a=3&-4=5&-6=7&8&s=google_one_tap_dialog&t=auto-show&0=398&1=398&-p=2&-a=3&-4=5&-6=7&11&p=registration&s=conversion_event&t=attempt&-a=8&platform=Website&registration_reason=google_one_tap&registration_authority=redfin&browser_name=chrome&entrypoint=map%3Agoogle_one_tap_dialog%3Aauto-show%3Aimpression&0=6&1=6&6&-p=2&-a=3&-s=2&t=save_search_button&0=260&1=260&6&-p=2&-a=8&-s=10&t=search_mode_close&0=10&1=10&8&-p=11&-a=3&-s=9&-t=12&-4=5&-6=7&0=8&1=8&6&-p=2&-a=8&-s=10&t=price_close&0=5&1=5&8&-p=11&-a=3&-s=9&-t=12&-4=5&-6=7&0=11&1=11&6&-p=2&-a=8&-s=10&t=beds_and_baths_close&0=5&1=5&8&-p=11&-a=3&-s=9&-t=12&-4=5&-6=7&0=8&1=8&6&-p=2&-a=8&-s=10&t=property_type_close&0=5&1=5&8&-p=11&-a=3&-s=9&-t=12&-4=5&-6=7&0=4&1=4&8&-p=2&-a=3&-s=10&t=search_assistant_MVP_entrypoint&-4=5&-6=7&0=281&1=281&8&-p=11&-a=3&-s=13&-t=12&-4=5&-6=7&0=178&1=178&7&-p=2&content_ids=211907834%2C211908558%2C211897769%2C211893426%2C211752068%2C211752618%2C211753852%2C211279895%2C211158580%2C211178962%2C211647917%2C211217792%2C210940280%2C211279896%2C210672413&-a=3&-s=14&t=aggs_list&0=10&1=10&6&-p=2&-a=3&s=offer_insight_pushpin_eligible&-t=15&0=136&1=136&10&-p=2&-a=3&-s=14&-t=15&list_size=41&page_number=1&-4=5&-6=7&0=74&1=74&7&-p=2&-a=3&s=desktop_nav_exp_start&-4=5&-6=7&0=29&1=29&7&-p=2&-a=3&s=updated_mortgage_header_flyout_exp_start&-4=5&-6=7&0=4&1=4&7&-p=2&-a=3&-s=17&-4=5&-6=7&0=4&1=4&8&-p=11&-a=3&-s=16&t=VARIANT_2&-4=5&-6=7&0=3&1=3&9&-p=2&-a=3&-s=17&t=feed_icon&-badge_count=15&-4=5&-6=7&0=165&1=165",
+    "status": 200,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/corvair/v2/resolveBouncerFlags?flags=TEST_SEARCH_PAGE_REDUCE_DOM_NODES_HOMECARD",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/corvair/v2/resolveBouncerFlags?flags=TEST_WEBP_ON_BROKERAGE_SEARCH_MAP",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/corvair/v2/resolveBouncerFlags?flags=TEST_WEB_SRP_KEY_FACTS_LOGIC",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/corv/beacon/error",
+    "status": 204,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://cw-static.aditude.io/floormachine/prebid/floors_redfin_com.json",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/corvair/v2/resolveBouncerFlags?flags=DESKTOP_SEARCH_WIDER_LIST_PANEL",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://api.rlcdn.com/api/identity/envelope?pid=14452",
+    "status": 204,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://match.adsrvr.org/track/rid?ttd_pid=ny7ksuf&fmt=json",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/b10cc09a6ef388474aaa.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://c.amazon-adsystem.com/aax2/apstag.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/5531c325cbb2028873c8.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/tr/",
+    "status": 200,
+    "resource_type": "document",
+    "method": "POST"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/16ddc2a79a706b472e7f.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/tr/",
+    "status": 200,
+    "resource_type": "document",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.google.com/pagead/1p-conversion/950774651/?random=2045828645&cv=11&fst=1770864605035&bg=ffffff&guid=ON&async=1&en=conversion&gtm=45be62a1v897905239z871497926za20gzb71497926zd71497926xea&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&label=cOzECMbls40DEPvWrsUD&capi=1&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&edid=dYWJhMj&value=0&hn=www.googleadservices.com&rdp=1&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&ec_mode=a&_tu=CAI&gcl_ctr=3~0~0&category=acrcp_v1_512&em=tv.1&fmt=3&ct_cookie_present=false&crd=CPLOsQIItN6xAgihuLECCLHBsQIIsMGxAgixw7ECCIrFsQIIwsmxAgi0xrECCNvcsQIIh9uxAgjTxbECCOvMsQII7c6xAgjVz7ECCJfUsQIIyduxAkomdHJpZ2dlcj1uYXZpZ2F0aW9uLXNvdXJjZTtldmVudC1zb3VyY2VaAwoBAWIDCgED&cerd=CgEA&fsk=ChAIgO6wzAYQtvuWvdqJ7MdiEiwAc8GvjDgXqxOKlzIMmEkpUkyq3ZI7q80M_J-QR_6wHk6fD7J5jf4sAHKLIhoC5-M&pscrd=IhMIrZ7DzPjSkgMVaKCDCB2rwBH5MgwIA2IICAAQABgAIAAyDAgEYggIABAAGAAgADIMCAdiCAgAEAAYACAAMgwICGIICAAQABgAIAAyDAgJYggIABAAGAAgADIMCApiCAgAEAAYACAAMgwIAmIICAAQABgAIAAyDAgLYggIABAAGAAgADIMCBViCAgAEAAYACAAMgwIH2IICAAQABgAIAAyDAgTYggIABAAGAAgADIMCBJiCAgAEAAYACAAOhdodHRwczovL3d3dy5yZWRmaW4uY29tL0JXQ2hFSWdPNnd6QVlRbGNYVmdzbkgxOWpsQVJJc0FQSlFTSnFjVFdZazlsM3RzdHg2a0JlLVdiaEtZekZLa1NWcE5fdVl4b1V6RW5WSXVPbEZJVGVzVkcwegwICWIICAAQABgAIAA&is_vtc=1&vdi=1&cid=CAQSjQEA56J1eeHTxrDpluQyEi9ORSulnTwd86MAQ2lkPOWHSvlwT_ju5ZRJfTY8aCrb33vLr3d81zW6uCcdvqAjsLvbMXUY9I_uCcoUXqhS1oxzzn68JUwu7aH6UuOwXMNcOyEQct46C6Rs2Wm-qpuEFX6TlZFF1DmdjMlz5C0MSveHvotJuK3KNKVslh6x9d8&eitems=ChAIgO6wzAYQkZ3YlI-etN4gEh0AFA7JsNFCbbRO4f2xNLfXq9og0Wddn9Sa8lINwA&random=1405892193",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/do/location-autocomplete?location=&start=0&count=10&v=2&market=centralflorida&al=1&iss=false&ooa=true&mrs=false&region_id=464&region_type=5&lat=27.909190000000002&lng=-82.35261&includeAddressInfo=false",
+    "status": 403,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=cf859b94-fd88-4da2-a4bb-6eea900a90b2&batch_time=1770864604825",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps_api_js_slo/log?hasfast=true",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=b6be0fb0-ee9a-49d6-942c-f0bd81fbe58d&batch_time=1770864605950",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://c.amazon-adsystem.com/cdn/prod/config?src=600&u=https%3A%2F%2Fwww.redfin.com&pubid=d9b54ccb-c63e-4bbb-b328-1fd7d736b814",
+    "status": 204,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://c.amazon-adsystem.com/bao-csm/aps-comm/aps_csm.js",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=d9d84a48-7562-4ac7-af32-9b4a23694afc&batch_time=1770864606086",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://config.aps.amazon-adsystem.com/configs/d9b54ccb-c63e-4bbb-b328-1fd7d736b814",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://raven-edge.aditude.io/api/v1/ravenconfig?ppid=redfin-main-4P29n&geo=US",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://cw-static.aditude.io/floormachine/prebid/floors_redfin_com.json",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Axhr%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=1bfc1084-a382-4981-9c06-163cdd7b1594&batch_time=1770864606231",
+    "status": 202,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://bat.bing.com/p/conversions/c/y",
+    "status": 204,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://raven-edge.aditude.io/api/v1/revenuesourcemaps/cpujJucYEyPY",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://insight.adsrvr.org/track/cei?advertiser_id=fao07tg&cookie_sync=1&upv=3.0.0&upid=gydx6pm&ref=https://www.redfin.com/county/464/FL/Hillsborough-County/foreclosures",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/favicon.ico?v=3",
+    "status": 200,
+    "resource_type": "other",
+    "method": "GET"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=9328ab1c-67d3-435a-a3f0-f95a3e1e6f61&batch_time=1770864606455",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://match.aditude.cloud/loader.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://cm.g.doubleclick.net/partnerpixels?us_privacy=1---&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://4b0ac7dedc1aef71ac12eb3cb17078f8.safeframe.googlesyndication.com/safeframe/1-0-45/html/container.html",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/stingray/do/query-location?al=1&lat=27.909190000000002&lng=-82.35261&location=606%20WINTERBROOKE%20WAY%2C%20SUN%20CITY%20CENTER%2C%20FL-%2033573&market=centralflorida&num_homes=1000&ooa=true&v=2",
+    "status": 403,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://ep1.adtrafficquality.google/getconfig/sodar?sv=200&tid=gpt&tv=m202602040101&st=env&sjk=1474131856796055",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "GET"
+  },
+  {
+    "url": "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/950774651/?random=1770864606718&cv=11&fst=1770864606718&bg=ffffff&guid=ON&async=1&en=form_start&gtm=45be62a1v897905239za20gzb71497926zd71497926xec&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&data=event%3Dform_start&rfmt=3&fmt=4",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.google.com/ccm/form-data/950774651?gtm=45be62a1pfv897905239za20gzb71497926zd71497926xec&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&did=dYWJhMj&gdid=dYWJhMj&npa=0&frm=0&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&ec_mode=a&em=tv.1",
+    "status": 204,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.google.com/pagead/form-data/950774651?gtm=45be62a1v897905239za20gzb71497926zd71497926xec&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&did=dYWJhMj&gdid=dYWJhMj&npa=0&frm=0&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&_tu=KA",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.google.com/ccm/form-data/950774651?gtm=45be62a1pfv897905239za20gzb71497926zd71497926xec&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&did=dYWJhMj&gdid=dYWJhMj&npa=0&frm=0&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&ec_mode=a&em=tv.1",
+    "status": 204,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.google.com/pagead/form-data/950774651?gtm=45be62a1pfv897905239za20gzb71497926zd71497926xec&gcs=G111&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&did=dYWJhMj&gdid=dYWJhMj&npa=0&frm=0&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&ec_mode=a&em=tv.1",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/950774651/?random=1770864606749&cv=11&fst=1770864606749&bg=ffffff&guid=ON&async=1&en=form_submit&gtm=45be62a1v897905239za20gzb71497926zd71497926xec&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&data=event%3Dform_submit&rfmt=3&fmt=4",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://match.aditude.cloud/sync.js?us_privacy=1---",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://22af5ed32a4a.edge.sdk.awswaf.com/22af5ed32a4a/939b6cb0e48b/telemetry",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://maps.googleapis.com/maps_api_js_slo/log?hasfast=true",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://securepubads.g.doubleclick.net/gampad/ads?pvsid=1474131856796055&correlator=3073651913189228&eid=31096592%2C31084130&output=ldjh&gdfp_req=1&vrg=202602040101&ptt=17&impl=fif&us_privacy=1---&iu_parts=23150241437%2CRedfin_Search%2CBrokerage_InResults1_Desktop&enc_prev_ius=%2F0%2F1%2F2&prev_iu_szs=320x50%7C300x250&fluid=height&ifi=1&dids=db-map-first-ad&adfs=3464675325&sfv=1-0-45&fsfs=1&eri=1&sc=1&cookie_enabled=1&abxe=1&dt=1770864606604&lmt=1770864606&adxs=83&adys=730&biw=1425&bih=900&scr_x=0&scr_y=0&btvi=0&ucis=1&oid=2&u_his=2&u_h=900&u_w=1440&u_ah=900&u_aw=1440&u_cd=24&u_sd=1&u_tz=-300&dmc=8&bc=31&nvt=1&uach=WyJXaW5kb3dzIiwiMTAuMCIsIng4NiIsIiIsIjE0My4wLjc0OTkuNDAiLG51bGwsMCxudWxsLCI2NCIsW1siR29vZ2xlIENocm9tZSIsIjE0My4wLjc0OTkuNDAiXSxbIkNocm9taXVtIiwiMTQzLjAuNzQ5OS40MCJdLFsiTm90IEEoQnJhbmQiLCIyNC4wLjAuMCJdXSwwXQ..&uas=3&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&vis=1&psz=300x250&msz=300x0&fws=4&ohw=418&a3p=EjYKDGFkc2VydmVyLm9yZxIkOGNhYzkwOWUtY2U3Mi00YTFjLThiODktNWI2YzI4N2RkNTE2WAE.&psd=WzMxLFtdXQ..&dlt=1770864600451&idt=4425&prev_scp=baseDivId%3Dpb-slot-search-brokerage-inresults-1%26test%3Dprebid%26tude%3Dtrue%26cw%3Dredfin.com%26cw_floor%3D0.11&cust_params=tude_custom_116%3Dcontrol%26tude_custom_10%3Denabled%2540sha256_absent%26tude_custom_101%3Dcontrol%26tude_saf_hf%3Dfalla%26tude_saf_m%3Dmultb%26tude_saf_all%3Dfallamultb%26tude_custom_14%3Dcontrol%26amznbid%3D0%26amznp%3D0%26state%3Dfl%26zip%3D33511%252C33556%252C33559%252C33563%252C33567%252C33569%252C33570%252C33572%252C33573%252C33579%252C33592%252C33596%252C33598%252C33603%252C33604%252C33605%252C33609%252C33610%252C33611%252C33615%252C33616%252C33617%252C33619%252C33625%252C33635%26login_status%3Dlogged_out%26search_mode%3Dsale%26min_price%3D5000%26lazy_load_test%3Dnull%26map_exp%3Dnew_map_exp%26map_page_num%3Dmap_page_one%26city%3Dtampa%26new_construction%3Dfalse%26min_price_bucket%3D1-250000%26max_price_bucket%3D2000001-2250000%26session_track%3Dsession_visit_first%26county%3Dhillsborough%26dmaRegion%3D539%26user_segments%3D%26cw_tracking%3Daaae%2524%26aditude_dynamic_floor%3Da%2524aae&adks=809382297&frm=20&eoidce=1&pgls=CAk.&pbbce=1",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://js.adsrvr.org/universal_pixel.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.google.com/pagead/1p-user-list/950774651/?random=1770864606718&cv=11&fst=1770861600000&bg=ffffff&guid=ON&async=1&en=form_start&gtm=45be62a1v897905239za20gzb71497926zd71497926xec&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&data=event%3Dform_start&rfmt=3&fmt=3&is_vtc=1&cid=CAQSjQEA56J1eaZK1LZb_8IM5vGhHHv513EYsz5t4eOOAKtf8zttZEyaRZA8LpK2xynHyaPzXUGCGheTQ_5oElw09nuIrG-IbE554P_413igBFISF6WEZJlL9PY-DE9i4BRNPZE3Nfk0LUFxo84eNtFRW3OO6LPkgaez1wF7mxmZfTAGAPzQIqiK_Xf5bkijaho&random=1077834829&rmt_tld=0&ipr=y",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://4b0ac7dedc1aef71ac12eb3cb17078f8.safeframe.googlesyndication.com/safeframe/1-0-45/html/container.html",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://dpm.demdex.net/ibs:dpid=903&dpuuid=8cac909e-ce72-4a1c-8b89-5b6c287dd516&gdpr=0&gdpr_consent=&redir=https%3A%2F%2Fmatch.adsrvr.org%2Ftrack%2Fcmf%2Fgeneric%3Fttd_pid%3Daam",
+    "status": 302,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://pixel.rubiconproject.com/tap.php?v=8981&nid=2307&put=8cac909e-ce72-4a1c-8b89-5b6c287dd516&gdpr=0&gdpr_consent=&expires=30&next=https%3A%2F%2Fmatch.adsrvr.org%2Ftrack%2Fcmf%2Frubicon",
+    "status": 302,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.google.com/pagead/1p-user-list/950774651/?random=1770864606749&cv=11&fst=1770861600000&bg=ffffff&guid=ON&async=1&en=form_submit&gtm=45be62a1v897905239za20gzb71497926zd71497926xec&gcd=13t3t3t3t5l1&dma=0&tag_exp=103116026~103200004~104527907~104528500~104684208~104684211~115938465~115938469~116185181~116185182~116988316~117527105&u_w=1440&u_h=900&url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&frm=0&tiba=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&did=dYWJhMj&gdid=dYWJhMj&hn=www.googleadservices.com&npa=0&us_privacy=1---&pscdl=noapi&auid=703762615.1770864602&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&data=event%3Dform_submit&rfmt=3&fmt=3&is_vtc=1&cid=CAQSjQEA56J1eboVak5jpdVmN8QvP-d1FghBdD85iiYoDD2llEjyJM6J9l1vRfIDbvW0OQKVzw3bQCdKNIrp401N473WrPxBu_kNXVqVO8K7OQaoKbk2gg85THXEFEKNGcTHrqhH-mVvSfnhlE9BW8l3pgnpA8zZTi3XuLPje4PjLN9b1EngBuzyuOIb1g7jTqM&random=917527468&rmt_tld=0&ipr=y",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ep2.adtrafficquality.google/sodar/sodar2.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=84966dc7-913f-4b0c-96c4-abcb729880a0&batch_time=1770864606851",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://ib.adnxs.com/getuid?https%3a%2f%2fmatch.adsrvr.org%2ftrack%2fcmf%2fappnexus%3fttd%3d1%26anid%3d%24UID&ttd_tdid=8cac909e-ce72-4a1c-8b89-5b6c287dd516",
+    "status": 307,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://dpm.demdex.net/demconf.jpg?et:ibs%7cdata:dpid=903&dpuuid=8cac909e-ce72-4a1c-8b89-5b6c287dd516&gdpr=0&gdpr_consent=&redir=https%3A%2F%2Fmatch.adsrvr.org%2Ftrack%2Fcmf%2Fgeneric%3Fttd_pid%3Daam",
+    "status": 302,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://ib.adnxs.com/bounce?%2Fgetuid%3Fhttps%253a%252f%252fmatch.adsrvr.org%252ftrack%252fcmf%252fappnexus%253fttd%253d1%2526anid%253d%2524UID%26ttd_tdid%3D8cac909e-ce72-4a1c-8b89-5b6c287dd516",
+    "status": 302,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://match.adsrvr.org/track/cmf/generic?ttd_pid=aam",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://match.adsrvr.org/track/cmf/rubicon?gdpr=0",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://match.adsrvr.org/track/cmf/appnexus?ttd=1&anid=13706935693838093&ttd_tdid=8cac909e-ce72-4a1c-8b89-5b6c287dd516",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=b819458c-98a9-43ed-bede-6506653d15bd&batch_time=1770864606994",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.google.com/recaptcha/api2/aframe",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://ep2.adtrafficquality.google/sodar/sodar2/237/runner.html",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/tr/?id=1352392714901574&ev=Search&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&rl=&if=false&ts=1770864607107&cd[content_type]=%5B%22product%22%5D&cd[content_ids]=%5B211897769%5D&cd[business_market_id]=%5B87%2C126%2C32%2C49%2C86%5D&cd[listing_id]=%5B211897769%5D&sw=1440&sh=900&v=2.9.265&r=stable&ec=1&o=12318&fbp=fb.1.1770864604069.591502551116855561&ler=empty&cdl=API_unavailable&plt=832.2000000476837&it=1770864602842&coo=false&dpo=LDU&dpoco=1&dpost=1000&eid=0o79i2tiSTqo4yepeCVn1A%7C1770864607051&expv2[0]=pl0&expv2[1]=el3&expv2[2]=bc1&expv2[3]=ra2&expv2[4]=rp2&expv2[5]=im1&expv2[6]=hf1&rqm=GET",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/tr/",
+    "status": 200,
+    "resource_type": "document",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.facebook.com/tr/",
+    "status": 200,
+    "resource_type": "document",
+    "method": "POST"
+  },
+  {
+    "url": "https://tpc.googlesyndication.com/pagead/js/r20260210/r20110914/abg_lite_fy2021.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/privacy_sandbox/pixel/register/trigger/?id=3295135800512448&ev=Search&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&rl=&if=false&ts=1770864607075&cd[content_type]=%5B%22product%22%5D&cd[content_ids]=%5B211897769%5D&cd[business_market_id]=%5B87%2C126%2C32%2C49%2C86%5D&cd[listing_id]=%5B211897769%5D&sw=1440&sh=900&cud[external_id]=(***%20***)&ncud[external_id]=(******)&ud[external_id]=99cf15c63b09dd3e20729ea2f22acfd4a07f29f8e212c26ca7d578d405a5b677&aud[external_id]=99cf15c63b09dd3e20729ea2f22acfd4a07f29f8e212c26ca7d578d405a5b677&v=2.9.265&r=stable&a=tmgoogletagmanager&ec=1&o=12318&fbp=fb.1.1770864604069.591502551116855561&ler=empty&cdl=API_unavailable&pmd[description]=Find%20foreclosures%20for%20sale%2C%20bank%20owned%20homes%20%26%20foreclosure%20listings%20in%20Hillsborough%20County%2C%20FL.%20Tour%20foreclosed%20homes%20%26%20make%20offers%20with%20the%20help%20of%20Redfin%20real%20estate%20agents.&pmd[contents]=%5B%7B%22name%22%3A%223415%20N%2051st%20St%2C%20Tampa%2C%20FL%2033619%22%7D%5D&plt=832.2000000476837&it=1770864602842&coo=false&dpo=LDU&dpoco=1&dpost=1000&eid=0o79i2tiSTqo4yepeCVn1A%7C1770864607051&ap[currency]=USD&ap[contents]=%5B%7B%22item_price%22%3A160000%7D%2C%7B%22item_price%22%3A774900%7D%2C%7B%22item_price%22%3A234650%7D%2C%7B%22item_price%22%3A600000%7D%2C%7B%22item_price%22%3A190000%7D%2C%7B%22item_price%22%3A220000%7D%2C%7B%22item_price%22%3A203000%7D%2C%7B%22item_price%22%3A5000%7D%2C%7B%22item_price%22%3A350000%7D%2C%7B%22item_price%22%3A149900%7D%2C%7B%22item_price%22%3A234900%7D%2C%7B%22item_price%22%3A575000%7D%2C%7B%22item_price%22%3A589900%7D%2C%7B%22item_price%22%3A5000%7D%2C%7B%22item_price%22%3A364750%7D%2C%7B%22item_price%22%3A446900%7D%2C%7B%22item_price%22%3A464999%7D%2C%7B%22item_price%22%3A189900%7D%2C%7B%22item_price%22%3A300000%7D%2C%7B%22item_price%22%3A319900%7D%2C%7B%22item_price%22%3A299900%7D%2C%7B%22item_price%22%3A254900%7D%2C%7B%22item_price%22%3A2195000%7D%2C%7B%22item_price%22%3A330000%7D%2C%7B%22item_price%22%3A349900%7D%2C%7B%22item_price%22%3A265000%7D%2C%7B%22item_price%22%3A375000%7D%2C%7B%22item_price%22%3A211500%7D%2C%7B%22item_price%22%3A229900%7D%2C%7B%22item_price%22%3A259900%7D%2C%7B%22item_price%22%3A380000%7D%2C%7B%22item_price%22%3A225000%7D%2C%7B%22item_price%22%3A355000%7D%2C%7B%22item_price%22%3A465900%7D%2C%7B%22item_price%22%3A159900%7D%2C%7B%22item_price%22%3A314900%7D%2C%7B%22item_price%22%3A415000%7D%2C%7B%22item_price%22%3A299900%7D%2C%7B%22item_price%22%3A229000%7D%2C%7B%22item_price%22%3A459900%7D%2C%7B%22item_price%22%3A200000%7D%5D&expv2[0]=pl0&expv2[1]=el2&expv2[2]=bc1&expv2[3]=ra2&expv2[4]=rp2&expv2[5]=im1&expv2[6]=hf1&rqm=FGET",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/privacy_sandbox/pixel/register/trigger/?id=1352392714901574&ev=Search&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&rl=&if=false&ts=1770864607107&cd[content_type]=%5B%22product%22%5D&cd[content_ids]=%5B211897769%5D&cd[business_market_id]=%5B87%2C126%2C32%2C49%2C86%5D&cd[listing_id]=%5B211897769%5D&sw=1440&sh=900&v=2.9.265&r=stable&ec=1&o=12318&fbp=fb.1.1770864604069.591502551116855561&ler=empty&cdl=API_unavailable&plt=832.2000000476837&it=1770864602842&coo=false&dpo=LDU&dpoco=1&dpost=1000&eid=0o79i2tiSTqo4yepeCVn1A%7C1770864607051&expv2[0]=pl0&expv2[1]=el3&expv2[2]=bc1&expv2[3]=ra2&expv2[4]=rp2&expv2[5]=im1&expv2[6]=hf1&rqm=FGET",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://fonts.googleapis.com/css?family=Droid+Sans:400,700|Roboto:400,700&lang=en",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://tpc.googlesyndication.com/safeframe/1-0-45/js/ext.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.facebook.com/privacy_sandbox/pixel/register/trigger/?id=851728468185585&ev=Search&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&rl=&if=false&ts=1770864607120&cd[content_type]=%5B%22product%22%5D&cd[content_ids]=%5B211897769%5D&cd[business_market_id]=%5B87%2C126%2C32%2C49%2C86%5D&cd[listing_id]=%5B211897769%5D&sw=1440&sh=900&cud[external_id]=(***%20***)&ncud[external_id]=(******)&ud[external_id]=99cf15c63b09dd3e20729ea2f22acfd4a07f29f8e212c26ca7d578d405a5b677&aud[external_id]=99cf15c63b09dd3e20729ea2f22acfd4a07f29f8e212c26ca7d578d405a5b677&v=2.9.265&r=stable&a=tmgoogletagmanager&ec=2&o=12318&fbp=fb.1.1770864604069.591502551116855561&ler=empty&cdl=API_unavailable&pmd[description]=Find%20foreclosures%20for%20sale%2C%20bank%20owned%20homes%20%26%20foreclosure%20listings%20in%20Hillsborough%20County%2C%20FL.%20Tour%20foreclosed%20homes%20%26%20make%20offers%20with%20the%20help%20of%20Redfin%20real%20estate%20agents.&pmd[contents]=%5B%7B%22name%22%3A%223415%20N%2051st%20St%2C%20Tampa%2C%20FL%2033619%22%7D%5D&plt=832.2000000476837&it=1770864602842&coo=false&dpo=LDU&dpoco=1&dpost=1000&eid=0o79i2tiSTqo4yepeCVn1A%7C1770864607051&ap[currency]=USD&ap[contents]=%5B%7B%22item_price%22%3A160000%7D%2C%7B%22item_price%22%3A774900%7D%2C%7B%22item_price%22%3A234650%7D%2C%7B%22item_price%22%3A600000%7D%2C%7B%22item_price%22%3A190000%7D%2C%7B%22item_price%22%3A220000%7D%2C%7B%22item_price%22%3A203000%7D%2C%7B%22item_price%22%3A5000%7D%2C%7B%22item_price%22%3A350000%7D%2C%7B%22item_price%22%3A149900%7D%2C%7B%22item_price%22%3A234900%7D%2C%7B%22item_price%22%3A575000%7D%2C%7B%22item_price%22%3A589900%7D%2C%7B%22item_price%22%3A5000%7D%2C%7B%22item_price%22%3A364750%7D%2C%7B%22item_price%22%3A446900%7D%2C%7B%22item_price%22%3A464999%7D%2C%7B%22item_price%22%3A189900%7D%2C%7B%22item_price%22%3A300000%7D%2C%7B%22item_price%22%3A319900%7D%2C%7B%22item_price%22%3A299900%7D%2C%7B%22item_price%22%3A254900%7D%2C%7B%22item_price%22%3A2195000%7D%2C%7B%22item_price%22%3A330000%7D%2C%7B%22item_price%22%3A349900%7D%2C%7B%22item_price%22%3A265000%7D%2C%7B%22item_price%22%3A375000%7D%2C%7B%22item_price%22%3A211500%7D%2C%7B%22item_price%22%3A229900%7D%2C%7B%22item_price%22%3A259900%7D%2C%7B%22item_price%22%3A380000%7D%2C%7B%22item_price%22%3A225000%7D%2C%7B%22item_price%22%3A355000%7D%2C%7B%22item_price%22%3A465900%7D%2C%7B%22item_price%22%3A159900%7D%2C%7B%22item_price%22%3A314900%7D%2C%7B%22item_price%22%3A415000%7D%2C%7B%22item_price%22%3A299900%7D%2C%7B%22item_price%22%3A229000%7D%2C%7B%22item_price%22%3A459900%7D%2C%7B%22item_price%22%3A200000%7D%5D&expv2[0]=pl0&expv2[1]=el2&expv2[2]=bc1&expv2[3]=ra2&expv2[4]=rp2&expv2[5]=im1&expv2[6]=hf1&rqm=FGET",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://analytics.tiktok.com/api/v2/pixel",
+    "status": 200,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://analytics.tiktok.com/api/v2/pixel",
+    "status": 200,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://tpc.googlesyndication.com/simgad/6673294460326305759?",
+    "status": 200,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://pagead2.googlesyndication.com/pagead/managed/js/activeview/current/ufs_web_display.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://analytics-ipv6.tiktokw.us/ipv6/enrich_ipv6",
+    "status": 200,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=36869283-bdc2-4d10-8b57-02698cb23089&batch_time=1770864607268",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://pagead2.googlesyndication.com/pagead/sodar?id=sodar2&v=237&li=gpt_m202602040101&jk=1474131856796055&rc=",
+    "status": 204,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://pagead2.googlesyndication.com/bg/hwnqSUc-FqEdv3MT9lz5IAlKNz0abtQj4TXTAbTnXKE.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://pagead2.googlesyndication.com/pagead/gen_204?id=av-js&type=fle-fetch-start2",
+    "status": 204,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://pagead2.googlesyndication.com/pagead/gen_204?id=av-js&type=colleague-executed&name=4",
+    "status": 204,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://securepubads.g.doubleclick.net/pcs/view?xai=AKAOjsvtnhxgTQzF7Q7L3jxXy2_y6DnEwQtit8yXdE8RjCsK_ri-DXUPfelrpW3FW6_LhO0Qv1bMPnk6RQ6pQ23NbZF2bmUeGhez4Fr3CfIZSlhR1iaXj22R4bPfsSvK2Q-Wv5MNiw6URevkwjIcNxq3YPd8aUY-cR9SuATWOez2Pex6Ed6jSwdSuBq_ajrliIpD5tZ95WPsj-sLTRot2m9b-fJJ4BCxr8v18UOXw3wNwULordQ4GfhSnbZ0suGN0yBgn99ykI_AWDjbfF-HLRX_vdXZTuav6rPVmhy-xTz2X7sCRK5ZvsXS_DNQf63jUAO2oeSZyZ6F2jhm1lCU0h1KO-ot4wYk9ZY9ftnr_cvHfchPzAazuZ9wrW2-KVCYVAuJNMiq3ho-f3bMjuaNuckhcsdSCJa4K28dKlZHYaZDlOldNNxOoDRT-y79V8bMMQPuF-yJRO5UiTL8Uek-AJEmboZX1yaH7_kwmbOh_0G6ajZS-fJEFw&sai=AMfl-YQRRFPnOcreT5Uw06G8Y63co8T4tWbQom102E6D-ckhDJd_xL7HiNPWhwp1M0BvSeWo0sKY7MfhGIlGdLoQITOx7CSx9hwj35o6Gkmhqp-Pnl17MAPHB-jZ6xil46OqB6cUF2wgcLFwz7yLlZbuKQQZiYkTV7jHzxDbIR6ZPCeP_k1gWuBNXEc56rlhJh_-aEZvSIhmGR6kYBNUkMlZ-TCk3WyuQrcEUuT-19beEGEqOrYnwHR2SWgncHVcvG3nq-scYEI&sig=Cg0ArKJSzKTVJeAiEudLEAE&uach_m=%5BUACH%5D&urlfix=1&adurl=",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://22af5ed32a4a.edge.sdk.awswaf.com/22af5ed32a4a/939b6cb0e48b/telemetry",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://securepubads.g.doubleclick.net/pcs/view?xai=AKAOjsuOJCMrpiIt4rQzAFBKJyYn8-c4P4pVysw8ykzGa7P0JxOI5jcIwIkc2Avl4lWlEAkdGL7WnAvIb61wL39gJxmvQTzjR_t_7nSsDZBoRrHHxn0XZ4YTzAsRGOiYoz2eZ036LtdIcfvJ4Cy7vtNgC3T6Vx17TX8LHKJ045D_n3RETTSBxmHWRpOIgqGJHyiJGHstbq47zu7qgD8acAgpQ4-m-r-yBCVseYTVPfkzWoTkDc47Fowe1VoPsOLpvztddxnT85j3XI0uzJwEDkx8vtBARM-mjFA5c6h8ulthBqb25i8JAiF0GEyhv8L7mh1JqpEdP4jnfjswdtV4M4IFfwEjggKuVte8_TWMnJ1L1zwek5_ZhYwC5MTxZzZRQQk0EvlRH91pOmZcHXf5Ejq7HEJem1gib-kbNjfzD4KVat0dSntfUgb1t_QhhkTIdMPLqV0KWcK55l_kqL2J_qAGLz6z1kj2Qopqm1Ew2xIH2Y1THTVoSTFL&sai=AMfl-YTSDXwmrpr_Acxg-EK2J64Ps7YABWZMlZ5QQYKI7koY8jr0ZgRW5motxS829gJXb46NnpJV3350CGRGkxSrWS64lTAU_LttWN-a4-9ng1kPZVGwCAmMLjjXpBwn4_y4F1pQhbDRwJrlVDu3AtLd_GdCckEd2ReFGxTPgYGcO51DHp_BIyAgpypE3cYfsNoZA6NZOIt46lD8BhIUUD7_PUMNmzkuz4xFUY-FPji8oy5tFTX1LTi6cuoqIvfEf6GsSUJPNtk&sig=Cg0ArKJSzCyJo1PCGTKEEAE&uach_m=%5BUACH%5D&urlfix=1&adurl=",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.googleadservices.com/pagead/managed/js/activeview/current/reach_worklet.html",
+    "status": 200,
+    "resource_type": "document",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.redfin.com/rift?bv=2&1770864607372&5&ev=web&__s=rift-decoder&rf=0o79i2tiSTqo4yepeCVn1A&a=impression&ss=LARGE&42&false&listing_id&property_id&property_type&component_id&agent_card_type&rank&key_facts&ts&me&time_on_redfin&6%20hrs&map_home_card&&has_open_house&has_video_open_house&is_new&true&is_hot&is_redfin_listing&is_coming_soon&recommendation_rank&recommendation_score&access_level&total_photos&sort_order&redfin-recommended-asc&is_estimate&x_out&search_status_id&is_key_listing&view_mode&split&has_listing_attribution&sr&1440x900&vp&1425x0&map&listing_agent&main_search_box_for_sale&centralflorida&32&1=211907834&2=47378903&3=13&4=47378903&5=none&6=0&7=2&8=-2171&9=1770864605201&-10=11&-s=12&-t=13&-14=0&-15=0&-16=17&-18=0&-19=0&-20=0&21=0&22=0&23=1&24=0&-25=26&-27=0&-28=0&29=1&-30=0&-31=32&-33=0&-34=35&-36=37&-p=38&32&1=724&2=-282425&3=-7&4=-282425&-5=39&6=1&7=1&8=4&9=4&-10=11&-s=12&-t=13&-14=0&-15=0&-16=17&-18=0&-19=0&-20=0&21=0&22=0&23=0&24=0&-25=26&-27=0&-28=0&29=0&-30=0&-31=32&-33=0&-34=35&-36=37&-p=38&32&1=-10789&2=90557&3=0&10=11%20hrs&4=90557&-5=39&6=1&7=-1&8=3&9=3&-s=12&-t=13&-14=0&-15=0&-16=17&-18=0&-19=0&-20=0&21=0&22=0&23=0&24=0&-25=26&-27=0&-28=0&29=0&-30=0&-31=32&-33=0&-34=35&-36=37&-p=38&13&-s=40&t=default_impression&-sectionOverride=40&search_type=brokerage&-search_market=41&business_market_id=87%2C126%2C32%2C49%2C86&-has_unified_last_search=0&box_type=main&8=207&9=207&-34=35&-36=37&-p=38&21&region_type=5&zoom_level=10&num_pushpins=49&num_clusters=0&-schools_on=0&-has_clusters=0&-has_outline=17&-has_viewport=0&num_filters=2&num_total_listings=49&layer=roadmap&-markets=41&num_markets=1&last_action=page_load&layout=wide&view=photos&-s=38&-t=13&8=30&9=30&-p=38&7&p=ref_expt&s=2145109095&t=VARIANT&-34=35&-36=37&8=142&9=142&7&-p=38&-s=40&t=search_assistant_MVP_entrypoint&-34=35&-36=37&8=181&9=181",
+    "status": 200,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://ep2.adtrafficquality.google/generate_204?q6cy0Q",
+    "status": 204,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.googleadservices.com/pagead/managed/js/activeview/current/reach_worklet.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://insight.adsrvr.org/track/realtimeconversion",
+    "status": 200,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://pagead2.googlesyndication.com/pagead/gen_204?id=av-js&type=colleague-executed&name=1",
+    "status": 204,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://pagead2.googlesyndication.com/pagead/gen_204?id=av-js&type=reach&proto=CAlgAWACYANgBGgD",
+    "status": 204,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://bat.bing.com/p/conversions/c/y",
+    "status": 204,
+    "resource_type": "xhr",
+    "method": "POST"
+  },
+  {
+    "url": "https://pagead2.googlesyndication.com/pagead/gen_204?id=av-js&type=reach&proto=CAESDk9wZXJhdGlvbkVycm9yGpgBc2hhcmVkU3RvcmFnZS53b3JrbGV0LmFkZE1vZHVsZSBpcyBkaXNhYmxlZCBiZWNhdXNlIGVpdGhlciBzaGFyZWRTdG9yYWdlIGlzIGRpc2FibGVkIG9yIGJvdGggc2hhcmVkU3RvcmFnZS5zZWxlY3RVUkwgYW5kIHByaXZhdGVBZ2dyZWdhdGlvbiBhcmUgZGlzYWJsZWQ%3D",
+    "status": 204,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://www.googleadservices.com/.well-known/private-aggregation/report-shared-storage",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.googleadservices.com/.well-known/private-aggregation/report-shared-storage",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.googleadservices.com/.well-known/private-aggregation/report-shared-storage",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.googletagservices.com/agrp/prod/model_person_country_code_US_person_region_code_464c5f353339.json",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://pagead2.googlesyndication.com/pagead/gen_204?id=av-js&type=reach&proto=CAIgATpBbW9kZWxfcGVyc29uX2NvdW50cnlfY29kZV9VU19wZXJzb25fcmVnaW9uX2NvZGVfNDY0YzVmMzUzMzM5Lmpzb25IyAFSGkNJR0toYzM0MHBJREZVMkd5d0VkVk44UHVBWh8ImBYQlqUBGK77PSD%2BhqYEKAIwAjgBXZqZGT9g254M",
+    "status": 204,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://22af5ed32a4a.edge.sdk.awswaf.com/22af5ed32a4a/939b6cb0e48b/telemetry",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=6757551c-76e8-4a82-b966-d3630a08e08b&batch_time=1770864607936",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://ep1.adtrafficquality.google/pagead/sodar?id=sodar2&v=237&t=2&li=gpt_m202602040101&jk=1474131856796055&bg=!BwSlBEvNAAZHBUhSZwU7ADQBe5WfOFALOC4y6zLWiWAFDaraOA3k4AL8azEvY4zbhwyJ2Y08i12Lc_diHKQn6uGeD_1AAgAAAI9SAAAABWgBB34AN6NlcQDPeWVh8DbyhTvBfU01uYCGfWbc9qYHkkOCtmrOSHb-bZUgDWSv00vWc7hvoA38vae5u_UKAFAYp14YnHy2dcFqanxZ2YmKvWhTOkqrSQ4xanU9F8i6JoM0o7hgQyZcHnLhzftITidWMTrRr6HWWwc8MkeqhSnKmYIw19JSoY2QfHbc6_eqj5kCSo2uu97dTkTKgaaey7YffEmrQtWghaoKhoUP21WF_9mTBpgErfz5-63DPHViV8UEHfYH2mrvG95AMLKN3b1MdI6xBZMsogVBClTEhoUXlJYD_IkPK-zeF61Umix9o78W0J_At08Vu6fB665W6mV9M_P1E-V4gOJzo7T5bzxYFrKuqT-snC7xC1mIlMEkXyOkza2peMU3LUoWRc819jEfFTYLCOC2bOT_rqQtvO2FX6a79Bxf_rhVGcZBotlDizCrqdxgU7A2T2FE0YiHWestuJGS6E2OTDZRz9PXBD2kRlW2bE5NyLSrO-zaFfNTqbdQw2lNHAA6JGnlzCCmVXLmSPxmDTPO7dXl_emMZDriYoXwYBcOFE0R5iPRAXsV5n0XD581nQWX9o-dSp1UfntquKXDrfW2LJG91Kq4rG6cQM_ORzUOkNA3ijsgdCgKlJGjQSCvqKZJ_YBCLbfOW3dp8ai6JRpBqDnlQYjcHM7dO5zW-ceozVaBjtuQUBXAb8MQqzfpGPXIUQ-vB64pTMpSm29BPpHX3oyYqVQ2nAtiagx_hwHlBSCPJ53I2-4EVrdHBiGnyEgy5K-kHphpsSeIGf17LCkmlcFMttVqIGgzi5kIZ6YfMQxisscaV0S0YZR9EhwtZ-EpN6odTZ6vIBntNbpLo6HTv_VnFXMPFbMitXDgDsArVXtUSXenmRsPKd7IQbgvma5O68c6hHk5HVqIgWhRTAwLjmg3mGkOjgK7mIwZ44poooKrTZkBvw5KcoAodaYGZH2TEGLqmDU",
+    "status": 204,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/33007d22fb989f836b8c.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/e4abb872ea16114cefb1.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/c7ec1916b3af5a6bb35a.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/67755c52933357de9a87.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/60e4e5cf216b7cafe553.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/0a8b4df69b88f4a14cb0.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/8c202723fd6f0a1fdce8.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/cfbc8fced39762696322.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/0f08a165d3428e090712.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/7ef6df730e3521e1c936.css",
+    "status": 200,
+    "resource_type": "stylesheet",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/873751a570ea10af2eb9.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/9d9e95bf49bcde6a00f1.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/0d846eef7798a6deb1f4.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/1bb6040cd037968dd743.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/a1ce6264ce5134870802.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/850490b57879f2328cf8.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/cf85b8314b3ecf7a9e40.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://securepubads.g.doubleclick.net/pagead/managed/dict/m202602100101/gpt",
+    "status": 200,
+    "resource_type": "other",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/69fd125775b423a60e59.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/80f19789063ed36ff52b.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/5bfcdb6a2384ac3fdad5.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/20ccfe50fc3dd8f74403.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/1d3598a7769ddc93b553.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/dc59859e502c15e4b995.js",
+    "status": 200,
+    "resource_type": "script",
+    "method": "GET"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=d8c67e48-46aa-4eaa-8775-12629932e9d0&batch_time=1770864608349",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://analytics.google.com/g/collect?v=2&tid=G-928P0PZ00X&gtm=45je62a1v872277869z871497926za20gzb71497926zd71497926&_p=1770864600708&gcs=G111&gcd=13t3t3t3t6l1&npa=0&dma=0&gdid=dYWJhMj&ul=en-US&cid=1913264988.1770864603&sr=1440x900&uaa=x86&uab=64&uafvl=Google%2520Chrome%3B143.0.7499.40%7CChromium%3B143.0.7499.40%7CNot%2520A(Brand%3B24.0.0.0&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&are=1&frm=0&pscdl=noapi&_eu=AAAAAGQ&_s=2&tag_exp=103116026~103200004~104527907~104528501~104684208~104684211~115616986~115938465~115938469~116185181~116185182~116988316~117447493~117527105&dr=&dt=Hillsborough%20County%2C%20FL%20Foreclosures%2C%20New%20Foreclosure%20Listings%20%26%20Bank%20Owned%20Homes%20for%20Sale%20%7C%20Redfin&dl=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&sid=1770864602&sct=1&seg=0&_tu=QAg&en=js_headless&ep.allow_Linker=true&ep.gtm_container_id=GTM-TZTT5H&ep.gtm_container_version=585&ep.user_agent=Mozilla%2F5.0%20(Windows%20NT%2010.0%3B%20Win64%3B%20x64)%20AppleWebKit%2F537.36%20(KHTML%2C%20like%20Gecko)%20Chrome%2F122.0.0.0%20Safari%2F537.36&ep.timestamp=2026-02-11%2021%3A50%3A01.171%20GMT-0500%20(EST)&ep.user_id2=(not%20set)&ep.region_id=464&ep.region_type_id=5&ep.RIFT_page_type=map&ep.full_url=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&ep.custom_page_url=www.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&ep.responsive_breakpoint=desktop&ep.site_version=(not%20set)&up.headless_detected=false&tfd=8502",
+    "status": 204,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://pagead2.googlesyndication.com/pcs/activeview?xai=AKAOjssEu24Vegh_aYJhbF9S_nnwLARZ4TWSW6y3NIZaz_nUJSS84VkXQ86oAn2WgV3ixiXW79kzcUxmLKDPH2AAiZONi6f2iccZHztPjwiQiEzaX6S6araK9VZoHt8B_Z9MftsnQOXPt0BkDa4SeSGvlPC9ADvE9chClirMPhW_TQEUm67y53fKi9neRlAy&sig=Cg0ArKJSzKlMhzhF3LkJEAE&id=lidar2&mcvt=1000&p=643,24,1066,442&tm=1338.3999999761581&tu=338.80000001192093&mtos=0,0,1000,1000,1000&tos=0,0,1000,0,0&v=20260211&bin=7&avms=nio&bs=0,0&mc=0.61&if=1&vu=1&app=0&itpl=7&adk=809382297&rs=4&la=0&cr=0&uach=WyJXaW5kb3dzIiwiMTAuMCIsIng4NiIsIiIsIjE0My4wLjc0OTkuNDAiLG51bGwsMCxudWxsLCI2NCIsW1siR29vZ2xlIENocm9tZSIsIjE0My4wLjc0OTkuNDAiXSxbIkNocm9taXVtIiwiMTQzLjAuNzQ5OS40MCJdLFsiTm90IEEoQnJhbmQiLCIyNC4wLjAuMCJdXSwwXQ%3D%3D&vs=4&r=v&co=6679740700&rst=1770864606960&rpt=432&isd=0&lsd=0&met=mue&wmsd=0&pbe=0&fle=0&vae=0&spb=0&sfl=0&ffslot=0&reach=8&io2=0",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "GET"
+  },
+  {
+    "url": "https://22af5ed32a4a.edge.sdk.awswaf.com/22af5ed32a4a/939b6cb0e48b/telemetry",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.redfin.com/corv/beacon/stats",
+    "status": 204,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://browser-intake-datadoghq.com/api/v2/rum?ddsource=browser&ddtags=sdk_version%3A5.29.0%2Capi%3Afetch%2Cenv%3Aprod%2Cservice%3Acustomer-pages-map-dp%2Cversion%3Aunknown&dd-api-key=pubb31149ee0bcfd6564c964f6852283dab&dd-evp-origin-version=5.29.0&dd-evp-origin=browser&dd-request-id=a7fc11c4-330d-4120-a6b0-2c08d47e035d&batch_time=1770864609307",
+    "status": 202,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.redfin.com/rift?bv=2&1770864609369&3&ev=web&__s=rift-decoder&rf=0o79i2tiSTqo4yepeCVn1A&28&2147103272&2145071376&ts&me&ss&LARGE&ref_expt&impression&sr&1440x900&vp&1425x0&2144150464&VARIANT&false&HUGE&map&click&main_search_box_for_sale&search_type&brokerage&search_market&centralflorida&business_market_id&87%2C126%2C32%2C49%2C86&has_unified_last_search&box_type&main&9&-s=0&-t=13&2=-3324&3=1770864606045&-4=5&-p=6&-a=7&-8=9&-10=11&9&-s=1&t=VARIANT_3&2=6&3=6&-4=5&-p=6&-a=7&-8=9&-10=11&9&-s=12&-t=13&2=5&3=5&-4=5&-p=6&-a=7&-8=9&-10=11&13&-4=15&-p=16&-19=20&-21=22&-23=24&-25=14&-26=27&-has_frequently_viewed=14&-a=17&-s=18&t=search_field&2=981&3=981&7&-4=15&-p=16&-a=17&-s=18&t=search_field_search_assistant_MVP&2=8&3=8&15&-4=15&-p=16&-19=20&-21=22&-23=24&-25=14&-26=27&search_string=606%20WINTERBROOKE%20WAY%2C%20SUN%20CITY%20CENTER%2C%20FL-%2033573&action=enter&string_source=user&-a=17&-s=18&t=search_button&2=6&3=6&10&-4=15&-p=16&-a=7&s=playwire_ad&placement=db-map-first-ad&type=pb-slot-search-brokerage-inresults-1&-8=9&-10=11&2=152&3=152&11&-4=15&-p=16&-21=22&-triggered_by_fast_search=14&-23=24&-19=20&-a=17&-s=18&t=search_long_focus&2=388&3=388",
+    "status": 200,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://22af5ed32a4a.edge.sdk.awswaf.com/22af5ed32a4a/939b6cb0e48b/telemetry",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://event-ingestor.judy.pnap.aditude.cloud/v1/",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://www.redfin.com/corv/beacon/stats",
+    "status": 204,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://22af5ed32a4a.edge.sdk.awswaf.com/22af5ed32a4a/939b6cb0e48b/telemetry",
+    "status": 200,
+    "resource_type": "fetch",
+    "method": "POST"
+  },
+  {
+    "url": "https://bat.bing.com/action/0?ti=5220234&tm=gtm002&Ver=2&mid=24e2caf8-20f5-4237-8c1d-634d6e35a61b&bo=7&sid=884bcac007bd11f19fc531e8bca14ac4&vid=884bede007bd11f1a0ac6d74ba4ccda1&vids=0&msclkid=N&gtm_tag_source=ua&ec=Long%20Click&gc=USD&tpp=1&en=Y&p=https%3A%2F%2Fwww.redfin.com%2Fcounty%2F464%2FFL%2FHillsborough-County%2Fforeclosures&sw=1440&sh=900&sc=24&evt=custom&asc=G&cdb=AQET&rn=777765",
+    "status": 204,
+    "resource_type": "image",
+    "method": "GET"
+  },
+  {
+    "url": "https://analytics.tiktok.com/api/v2/pixel/inter",
+    "status": 200,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://analytics.tiktok.com/api/v2/pixel",
+    "status": 200,
+    "resource_type": "ping",
+    "method": "POST"
+  },
+  {
+    "url": "https://bat.bing.com/p/conversions/c/y",
+    "status": 204,
+    "resource_type": "xhr",
+    "method": "POST"
+  }
+]

@@ -1,0 +1,154 @@
+[
+  {
+    "type": "warning",
+    "text": "Google Maps JavaScript API has been loaded directly without loading=async. This can result in suboptimal performance. For best-practice loading patterns please see https://goo.gle/js-api-loading"
+  },
+  {
+    "type": "warning",
+    "text": "[GroupMarkerNotSet(crbug.com/242999)!:A0C0680134070000]Automatic fallback to software WebGL has been deprecated. Please use the --enable-unsafe-swiftshader (about:flags#enable-unsafe-swiftshader) flag to opt in to lower security guarantees for trusted content."
+  },
+  {
+    "type": "debug",
+    "text": "Request Context Extender is using business logic to parse country code"
+  },
+  {
+    "type": "debug",
+    "text": "RedfinRum has not been initialized."
+  },
+  {
+    "type": "info",
+    "text": "RedfinRum has been initialized. Proceeding with action."
+  },
+  {
+    "type": "info",
+    "text": "RedfinRum has been initialized. Proceeding with action."
+  },
+  {
+    "type": "error",
+    "text": "Attestation check for Attribution Reporting on https://www.facebook.com failed."
+  },
+  {
+    "type": "error",
+    "text": "Failed to load resource: the server responded with a status of 403 ()"
+  },
+  {
+    "type": "error",
+    "text": "Attestation check for Attribution Reporting on https://www.facebook.com failed."
+  },
+  {
+    "type": "error",
+    "text": "Attestation check for Attribution Reporting on https://www.facebook.com failed."
+  },
+  {
+    "type": "info",
+    "text": "RedfinRum has been initialized. Proceeding with action."
+  },
+  {
+    "type": "error",
+    "text": "Failed to load resource: the server responded with a status of 403 ()"
+  },
+  {
+    "type": "error",
+    "text": "Attestation check for Attribution Reporting on https://www.facebook.com failed."
+  },
+  {
+    "type": "warning",
+    "text": "[GroupMarkerNotSet(crbug.com/242999)!:A050690134070000]Automatic fallback to software WebGL has been deprecated. Please use the --enable-unsafe-swiftshader (about:flags#enable-unsafe-swiftshader) flag to opt in to lower security guarantees for trusted content."
+  },
+  {
+    "type": "error",
+    "text": "Attestation check for Shared Storage on https://www.googleadservices.com failed."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/20ccfe50fc3dd8f74403.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/850490b57879f2328cf8.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/1bb6040cd037968dd743.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/dc59859e502c15e4b995.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/0d846eef7798a6deb1f4.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/c7ec1916b3af5a6bb35a.css was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/0f08a165d3428e090712.css was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/9d9e95bf49bcde6a00f1.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/1d3598a7769ddc93b553.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/cf85b8314b3ecf7a9e40.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/33007d22fb989f836b8c.css was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/80f19789063ed36ff52b.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/67755c52933357de9a87.css was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/7ef6df730e3521e1c936.css was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/8c202723fd6f0a1fdce8.css was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/0a8b4df69b88f4a14cb0.css was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/873751a570ea10af2eb9.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/cfbc8fced39762696322.css was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/a1ce6264ce5134870802.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/e4abb872ea16114cefb1.css was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/5bfcdb6a2384ac3fdad5.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/60e4e5cf216b7cafe553.css was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  },
+  {
+    "type": "warning",
+    "text": "The resource https://ssl.cdn-redfin.com/bundles/customer-pages-map-dp/69fd125775b423a60e59.js was preloaded using link preload but not used within a few seconds from the window's load event. Please make sure it has an appropriate `as` value and it is preloaded intentionally."
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "overall": {
+    "attempts": 1
+  },
+  "sources": {
+    "redfin_county": {
+      "attempts": 1,
+      "success_rate": 0.0,
+      "blocked_rate": 0.0,
+      "timeout_rate": 0.0,
+      "not_found_rate": 0.0,
+      "error_rate": 1.0,
+      "address_coverage": 0.0,
+      "price_coverage": 0.0,
+      "specs_coverage": 0.0,
+      "photo_coverage": 0.0,
+      "median_elapsed_sec": 11.391
+    }
+  }
+}

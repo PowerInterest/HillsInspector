@@ -11,7 +11,7 @@ Handles:
 from datetime import date
 from typing import Optional, Tuple
 
-from src.utils.time import now_utc
+from src.utils.time import now_utc, parse_date
 
 # Liens that ALWAYS survive any foreclosure (government priority)
 SUPERPRIORITY_TYPES = (
@@ -51,13 +51,19 @@ def is_federal_lien(lien_type: str, creditor: str) -> bool:
     # Other Federal
     return any(kw in creditor_upper for kw in ("USA", "UNITED STATES"))
 
-def is_expired(lien_type: str, recording_date: Optional[date]) -> Tuple[bool, Optional[str]]:
+def is_expired(lien_type: str, recording_date: Optional[date | str]) -> Tuple[bool, Optional[str]]:
     """
     Check if a lien has expired based on Florida statutes.
     Returns (is_expired, reason).
     """
     if not recording_date:
         return False, None
+
+    # SQLite returns dates as strings — convert if needed
+    if isinstance(recording_date, str):
+        recording_date = parse_date(recording_date)
+        if not recording_date:
+            return False, None
 
     age_years = (now_utc().date() - recording_date).days / 365.25
     doc_type = (lien_type or "").upper()
