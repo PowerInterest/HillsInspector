@@ -70,8 +70,11 @@ def resolve_missing_parcel_ids(db) -> dict:
                 "Load bulk data via: python -m src.ingest.bulk_parcel_ingest --download "
                 "and then python -m src.ingest.bulk_parcel_ingest --enrich"
             )
-    except Exception:
-        logger.warning(f"{TAG} Could not verify bulk_parcels row count")
+    except Exception as e:
+        logger.exception(f"{TAG} Could not verify bulk_parcels row count: {e}")
+        raise RuntimeError(
+            f"{TAG} bulk_parcels verification failed. Ensure bulk table exists and is readable."
+        ) from e
 
     for row in candidates:
         case = row["case_number"]

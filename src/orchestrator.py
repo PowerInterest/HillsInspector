@@ -370,7 +370,13 @@ class PipelineOrchestrator:
             try:
                 judgment_data = json.loads(raw_judgment)
             except (json.JSONDecodeError, TypeError) as e:
-                logger.warning(f"Could not parse judgment data for survival analysis on {folio}: {e}")
+                raw_preview = raw_judgment[:200].replace("\n", " ").replace("\r", " ")
+                error_msg = (
+                    f"Invalid extracted_judgment_data JSON for survival analysis "
+                    f"(case={case_number}, folio={folio}): {e}"
+                )
+                logger.error(f"{error_msg}; raw_preview={raw_preview!r}")
+                return {"error": error_msg, "folio": folio, "case_number": case_number}
 
         foreclosed_mtg = judgment_data.get("foreclosed_mortgage", {})
         mtg_book = foreclosed_mtg.get("recording_book")
@@ -418,7 +424,7 @@ class PipelineOrchestrator:
             
             new_enc = {
                 "folio": folio,
-                "encumbrance_type": "(MTG) MORTGAGE",
+                "encumbrance_type": "mortgage",
                 "creditor": mtg_creditor,
                 "amount": mtg_amount,
                 "recording_date": mtg_record_date,
@@ -437,7 +443,7 @@ class PipelineOrchestrator:
                     rec_date_parsed = datetime.strptime(str(mtg_record_date), "%Y-%m-%d").date()
 
             encumbrances.append({
-                 "encumbrance_type": "(MTG) MORTGAGE",
+                 "encumbrance_type": "mortgage",
                  "creditor": mtg_creditor,
                  "amount": mtg_amount,
                  "recording_date": rec_date_parsed,
@@ -600,7 +606,13 @@ class PipelineOrchestrator:
                 try:
                     judgment_data = json.loads(raw_judgment)
                 except (json.JSONDecodeError, TypeError) as e:
-                    logger.warning(f"Could not parse judgment data for survival analysis on {folio}: {e}")
+                    raw_preview = raw_judgment[:200].replace("\n", " ").replace("\r", " ")
+                    error_msg = (
+                        f"Invalid extracted_judgment_data JSON for survival analysis "
+                        f"(case={case_number}, folio={folio}): {e}"
+                    )
+                    logger.error(f"{error_msg}; raw_preview={raw_preview!r}")
+                    return {"error": error_msg, "folio": folio, "case_number": case_number}
             
             # Ensure critical context is present
             if not judgment_data.get('plaintiff'):
@@ -620,24 +632,24 @@ class PipelineOrchestrator:
             service = SurvivalService(folio)
             analysis = service.analyze(enc_dicts, judgment_data, period_dicts, current_period_id)
             
-            # 4. Persistence (Sync to v2 DB)
-            # V2 encumbrances are updated directly - no need to update v1 (IDs don't match)
+            # 4. Collect updates to return (writes happen via DatabaseWriter in caller)
             flat_results = []
             for cat in analysis['results'].values():
                 flat_results.extend(cat)
 
+            survival_updates = []
             for enc in flat_results:
                 if enc.get('id'):
-                    conn.execute(
-                        "UPDATE encumbrances SET survival_status = ?, survival_reason = ? WHERE id = ?",
-                        [enc['survival_status'], enc.get('survival_reason'), enc['id']]
-                    )
+                    survival_updates.append({
+                        'id': enc['id'],
+                        'survival_status': enc['survival_status'],
+                        'survival_reason': enc.get('survival_reason'),
+                    })
 
-            conn.commit()
-
-            # Return updates summary - SQLite is authoritative
+            # Return updates summary — writes happen via DatabaseWriter in caller
             return {
                 "updates": [],
+                "survival_updates": survival_updates,
                 "summary": {
                     "survived_count": len(analysis['results']['survived']),
                     "extinguished_count": len(analysis['results']['extinguished']),
@@ -754,7 +766,11 @@ class PipelineOrchestrator:
         address = auction_dict.get('address') or auction_dict.get('location_address') or auction_dict.get('property_address') or "Unknown"
 
         if not parcel_id:
-            logger.info(f"Skipping enrichment: No parcel_id for case {case_number}")
+            logger.warning(
+                f"Skipping enrichment: No parcel_id for case {case_number}. "
+                "Run Step 2.5 parcel resolution (requires judgment extraction and bulk_parcels) "
+                "to restore downstream enrichment coverage."
+            )
             await self.db_writer.enqueue(
                 "generic_call",
                 {"func": self.db.mark_status_skipped, "args": [case_number, "No parcel_id"]},
@@ -992,6 +1008,11 @@ class PipelineOrchestrator:
                             "func": self.db.mark_status_failed,
                             "args": [case_number, f"Party search failed: {str(e)[:150]}", 5]
                         })
+                        logger.error(
+                            f"Aborting further enrichment for {case_number}: "
+                            "party-based ORI fallback failed and legal description is still missing."
+                        )
+                        return
                 else:
                     # No legal description AND no party data - mark for manual review
                     logger.warning(f"No usable legal description for {parcel_id} (case {case_number}) and no party data, marking for manual review")
@@ -1071,6 +1092,7 @@ class PipelineOrchestrator:
             )
             return
         if not address or address.lower() in ("unknown", "n/a", "none", ""):
+            logger.info(f"Tax: missing address for {case_number}, marking step complete (permanent)")
             await self.db_writer.enqueue(
                 "generic_call",
                 {
@@ -1086,10 +1108,11 @@ class PipelineOrchestrator:
             )
             await self.db_writer.enqueue(
                 "generic_call",
-                {
-                    "func": self.db.mark_status_failed,
-                    "args": [case_number, "Missing address for tax search", 12],
-                },
+                {"func": self.db.mark_status_step_complete, "args": [case_number, "step_tax_checked", 12]},
+            )
+            await self.db_writer.enqueue(
+                "generic_call",
+                {"func": self.db.mark_step_complete, "args": [case_number, "needs_tax_check"]},
             )
             return
         async with self.tax_semaphore:
@@ -1111,10 +1134,7 @@ class PipelineOrchestrator:
                     )
                     await self.db_writer.enqueue(
                         "generic_call",
-                        {
-                            "func": self.db.mark_status_failed,
-                            "args": [case_number, "Tax scraper returned no data", 12],
-                        },
+                        {"func": self.db.mark_status_step_failed, "args": [case_number, "Tax scraper returned no data", 12]},
                     )
                     return
 
@@ -1157,10 +1177,7 @@ class PipelineOrchestrator:
                     )
                     await self.db_writer.enqueue(
                         "generic_call",
-                        {
-                            "func": self.db.mark_status_failed,
-                            "args": [case_number, "Tax search returned no results", 12],
-                        },
+                        {"func": self.db.mark_status_step_failed, "args": [case_number, "Tax search returned no results", 12]},
                     )
                     return
                 # Derive status strings
@@ -1220,7 +1237,7 @@ class PipelineOrchestrator:
                 )
                 await self.db_writer.enqueue(
                     "generic_call",
-                    {"func": self.db.mark_status_failed, "args": [case_number, str(e)[:200], 12]},
+                    {"func": self.db.mark_status_step_failed, "args": [case_number, str(e)[:200], 12]},
                 )
 
     async def _run_market_scraper(self, case_number: str, parcel_id: str, address: str):
@@ -1336,17 +1353,16 @@ class PipelineOrchestrator:
                         {"func": self.db.mark_step_complete, "args": [case_number, "needs_market_data"]},
                     )
                 else:
-                    # No useful data - mark as failed so it can be retried
                     logger.warning(f"Market scrape returned no useful data for {parcel_id}")
                     await self.db_writer.enqueue(
                         "generic_call",
-                        {"func": self.db.mark_status_failed, "args": [case_number, "No useful market data returned", 9]},
+                        {"func": self.db.mark_status_step_failed, "args": [case_number, "No useful market data returned", 9]},
                     )
             except Exception as e:
                 logger.warning(f"Market scraper failed for {parcel_id}: {e}")
                 await self.db_writer.enqueue(
                     "generic_call",
-                    {"func": self.db.mark_status_failed, "args": [case_number, str(e)[:200], 9]},
+                    {"func": self.db.mark_status_step_failed, "args": [case_number, str(e)[:200], 9]},
                 )
 
     async def _run_homeharvest(self, prop: Property):
@@ -1377,7 +1393,7 @@ class PipelineOrchestrator:
                         prop.parcel_id,
                         prop.address,
                         proxy=self.homeharvest_service.proxy,
-                        is_first=True,
+                        is_first=False,  # Prevent auto-upgrade subprocess during pipeline
                     ),
                 )
                 if data:
@@ -1411,16 +1427,21 @@ class PipelineOrchestrator:
                 elif status in {"blocked", "error"}:
                     await self.db_writer.enqueue(
                         "generic_call",
-                        {
-                            "func": self.db.mark_status_failed,
-                            "args": [prop.case_number, f"HomeHarvest {status}", 3],
-                        },
+                        {"func": self.db.mark_status_step_failed, "args": [prop.case_number, f"HomeHarvest {status}", 3]},
                     )
+            except SystemExit as e:
+                # HomeHarvest auto-upgrade spawns a background subprocess and raises SystemExit.
+                # That subprocess races with the pipeline for DB locks — treat as transient failure.
+                logger.warning(f"HomeHarvest triggered upgrade/subprocess for {prop.parcel_id}, treating as transient")
+                await self.db_writer.enqueue(
+                    "generic_call",
+                    {"func": self.db.mark_status_step_failed, "args": [prop.case_number, f"HomeHarvest upgrade: {e}", 3]},
+                )
             except Exception as e:
                 logger.error(f"HomeHarvest failed for {prop.parcel_id}: {e}")
                 await self.db_writer.enqueue(
                     "generic_call",
-                    {"func": self.db.mark_status_failed, "args": [prop.case_number, str(e)[:200], 3]},
+                    {"func": self.db.mark_status_step_failed, "args": [prop.case_number, str(e)[:200], 3]},
                 )
 
     async def _run_fema_checker(self, case_number: str, parcel_id: str, address: str):
@@ -1442,12 +1463,14 @@ class PipelineOrchestrator:
                 # Fetch property to get coords (returns dict, not object)
                 prop = self.db.get_property(parcel_id)
                 if not prop:
+                    logger.info(f"FEMA: no parcel data for {case_number}, marking step complete (permanent)")
                     await self.db_writer.enqueue(
                         "generic_call",
-                        {
-                            "func": self.db.mark_status_failed,
-                            "args": [case_number, "Missing parcel data for flood check", 8],
-                        },
+                        {"func": self.db.mark_status_step_complete, "args": [case_number, "step_flood_checked", 8]},
+                    )
+                    await self.db_writer.enqueue(
+                        "generic_call",
+                        {"func": self.db.mark_step_complete, "args": [case_number, "needs_flood_check"]},
                     )
                     return
 
@@ -1455,12 +1478,14 @@ class PipelineOrchestrator:
                 lon = prop.get("longitude") if isinstance(prop, dict) else getattr(prop, "longitude", None)
 
                 if lat is None or lon is None:
+                    logger.info(f"FEMA: missing coordinates for {case_number}, marking step complete (permanent)")
                     await self.db_writer.enqueue(
                         "generic_call",
-                        {
-                            "func": self.db.mark_status_failed,
-                            "args": [case_number, "Missing coordinates for flood check", 8],
-                        },
+                        {"func": self.db.mark_status_step_complete, "args": [case_number, "step_flood_checked", 8]},
+                    )
+                    await self.db_writer.enqueue(
+                        "generic_call",
+                        {"func": self.db.mark_step_complete, "args": [case_number, "needs_flood_check"]},
                     )
                     return
 
@@ -1468,12 +1493,14 @@ class PipelineOrchestrator:
                     lat_val = float(lat)
                     lon_val = float(lon)
                 except (TypeError, ValueError):
+                    logger.info(f"FEMA: invalid coordinates for {case_number}, marking step complete (permanent)")
                     await self.db_writer.enqueue(
                         "generic_call",
-                        {
-                            "func": self.db.mark_status_failed,
-                            "args": [case_number, "Invalid coordinates for flood check", 8],
-                        },
+                        {"func": self.db.mark_status_step_complete, "args": [case_number, "step_flood_checked", 8]},
+                    )
+                    await self.db_writer.enqueue(
+                        "generic_call",
+                        {"func": self.db.mark_step_complete, "args": [case_number, "needs_flood_check"]},
                     )
                     return
 
@@ -1487,10 +1514,7 @@ class PipelineOrchestrator:
                 if not result:
                     await self.db_writer.enqueue(
                         "generic_call",
-                        {
-                            "func": self.db.mark_status_failed,
-                            "args": [case_number, "FEMA query returned no result", 8],
-                        },
+                        {"func": self.db.mark_status_step_failed, "args": [case_number, "FEMA query returned no result", 8]},
                     )
                     return
 
@@ -1522,11 +1546,15 @@ class PipelineOrchestrator:
                 logger.warning(f"FEMA failed: {e}")
                 await self.db_writer.enqueue(
                     "generic_call",
-                    {"func": self.db.mark_status_failed, "args": [case_number, str(e)[:200], 8]},
+                    {"func": self.db.mark_status_step_failed, "args": [case_number, str(e)[:200], 8]},
                 )
 
     async def _run_sunbiz_scraper(self, parcel_id: str, owner_name: str):
-        if not owner_name: return
+        if not owner_name:
+            logger.info(
+                f"Skipping Sunbiz search for {parcel_id}: owner_name is missing"
+            )
+            return
         # Sunbiz checks owner name
         async with self.sunbiz_semaphore:
             try:
@@ -1558,12 +1586,12 @@ class PipelineOrchestrator:
                     storage_key=case_number
                 )
 
-                # Check errors - mark status so we don't retry forever
+                # Check errors - transient (HCPA site may be down)
                 if result.get("error"):
                     error_msg = result.get("error", "Unknown HCPA error")[:200]
                     await self.db_writer.enqueue(
                         "generic_call",
-                        {"func": self.db.mark_status_failed, "args": [case_number, error_msg, 4]},
+                        {"func": self.db.mark_status_step_failed, "args": [case_number, error_msg, 4]},
                     )
                     return
 
@@ -1641,14 +1669,14 @@ class PipelineOrchestrator:
                         logger.warning(f"HCPA GIS returned no sales_history or legal_description for {parcel_id}")
                         await self.db_writer.enqueue(
                             "generic_call",
-                            {"func": self.db.mark_status_failed, "args": [case_number, "No sales_history or legal_description extracted", 4]},
+                            {"func": self.db.mark_status_step_failed, "args": [case_number, "No sales_history or legal_description extracted", 4]},
                         )
 
             except Exception as e:
                 logger.warning(f"HCPA GIS failed: {e}")
                 await self.db_writer.enqueue(
                     "generic_call",
-                    {"func": self.db.mark_status_failed, "args": [case_number, str(e)[:200], 4]},
+                    {"func": self.db.mark_status_step_failed, "args": [case_number, str(e)[:200], 4]},
                 )
 
     async def _run_ori_ingestion(self, case_number: str, prop: Property):
@@ -1683,10 +1711,14 @@ class PipelineOrchestrator:
 
         folio = prop.parcel_id
         if not folio:
-            logger.warning(f"No folio for {case_number}, skipping Step 4v2")
+            logger.info(f"ORI: no folio for {case_number}, marking step complete (permanent)")
             await self.db_writer.enqueue(
                 "generic_call",
-                {"func": self.db.mark_status_failed, "args": [case_number, "No folio for ORI ingestion", 5]},
+                {"func": self.db.mark_status_step_complete, "args": [case_number, "step_ori_ingested", 5]},
+            )
+            await self.db_writer.enqueue(
+                "generic_call",
+                {"func": self.db.mark_step_complete, "args": [case_number, "needs_ori_ingestion"]},
             )
             return
 
@@ -1802,7 +1834,7 @@ class PipelineOrchestrator:
                 logger.error(f"Permit scraper failed: {e}")
                 await self.db_writer.enqueue(
                     "generic_call",
-                    {"func": self.db.mark_status_failed, "args": [case_number, str(e)[:200], 7]},
+                    {"func": self.db.mark_status_step_failed, "args": [case_number, str(e)[:200], 7]},
                 )
 
     async def _run_survival_analysis(self, case_number: str, prop: Property):
@@ -1830,6 +1862,15 @@ class PipelineOrchestrator:
                     },
                 )
                 return
+
+            # Preflight: ORI must have completed for this case before survival runs.
+            # Without ORI data, survival has nothing to analyze.
+            ori_done = self.db.is_status_step_complete(case_number, "step_ori_ingested")
+            if not ori_done:
+                logger.info(
+                    f"Skipping survival for {prop.parcel_id}: ORI not complete for case {case_number}"
+                )
+                return  # Don't mark step — deferred until ORI completes
 
             # Logic is heavy and synchronous (DB reads, potential ORI lookup). Run in executor.
             loop = asyncio.get_running_loop()
@@ -1869,6 +1910,21 @@ class PipelineOrchestrator:
                     {
                         "func": self.db.update_encumbrance_survival,
                         "kwargs": update,
+                    },
+                )
+
+            # Process survival status updates from v2 analysis (returned, not written in-thread)
+            survival_updates = result.get("survival_updates", [])
+            for upd in survival_updates:
+                await self.db_writer.enqueue(
+                    "generic_call",
+                    {
+                        "func": self.db.update_encumbrance_survival,
+                        "kwargs": {
+                            "encumbrance_id": upd["id"],
+                            "status": upd["survival_status"],
+                            "survival_reason": upd.get("survival_reason"),
+                        },
                     },
                 )
 
@@ -2540,7 +2596,6 @@ async def run_full_update(
                 logger.debug(f"Could not read DB settings for bulk enrichment: {_meta_exc}")
 
             # Retry bulk enrichment with backoff (often fails transiently on locked DB)
-            import time as _time
             for _attempt in range(3):
                 try:
                     enrichment_stats = enrich_auctions_from_bulk(conn=db.conn)
@@ -2554,7 +2609,7 @@ async def run_full_update(
                             f"retrying in {wait}s... "
                             f"(db={db.db_path}, busy_timeout={busy_timeout}, journal_mode={journal_mode})"
                         )
-                        _time.sleep(2 ** _attempt)
+                        await asyncio.sleep(wait)
                         continue
                     raise
             logger.success(f"Bulk enrichment: {enrichment_stats}")

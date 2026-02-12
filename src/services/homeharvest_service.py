@@ -445,7 +445,11 @@ class HomeHarvestService:
                 if dtype == 'int': return int(v)
                 if dtype == 'float': return float(v)
                 return str(v)
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    f"HomeHarvest conversion failed for folio={folio} col={col} "
+                    f"dtype={dtype}: value={v!r} error={e}"
+                )
                 return None
 
         # Helper for dates
@@ -457,8 +461,12 @@ class HomeHarvestService:
                 if hasattr(v, 'isoformat'):
                     return v.isoformat()
                 return datetime.fromisoformat(str(v)).isoformat()
-            except Exception:
-                return str(v)
+            except Exception as e:
+                logger.warning(
+                    f"HomeHarvest date parse failed for folio={folio} col={col}: "
+                    f"value={v!r} error={e}"
+                )
+                return None
 
         # Map fields
         return {

@@ -673,14 +673,11 @@ class IterativeDiscovery:
         return parse_date(date_val)
 
     def _clean_doc_type(self, doc_type: str) -> str:
-        """Clean document type string."""
+        """Normalize document type string to canonical form."""
         if not doc_type:
             return ""
-        # Remove parenthetical code like "(MTG)"
-        import re
-
-        cleaned = re.sub(r"\([^)]+\)\s*", "", doc_type).strip()
-        return cleaned or doc_type
+        from src.db.type_normalizer import normalize_document_type
+        return normalize_document_type(doc_type)
 
     def _extract_new_vectors(self, folio: str, doc: dict, search_id: int) -> None:
         """

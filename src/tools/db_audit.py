@@ -512,8 +512,9 @@ def audit_database():
                 complete = total - pending
                 pct = (complete / total * 100) if total > 0 else 0
                 print(f"{name:<25} {pending:>10} {complete:>10} {pct:>9.1f}%")
-            except Exception:
+            except Exception as e:
                 print(f"{name:<25} {'N/A':>10} {'N/A':>10} {'N/A':>10}")
+                print(f"{'':<25} {'ERR':>10} {'ERR':>10} {'ERR':>10}  ({e})")
 
     except Exception as e:
         print(f"Error: {e}")

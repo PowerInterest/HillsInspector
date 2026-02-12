@@ -458,7 +458,7 @@ def process_missing_amounts(limit: int = 50) -> Dict[str, int]:
         FROM encumbrances e
         WHERE (e.amount IS NULL OR e.amount = 0)
           AND e.instrument IS NOT NULL
-          AND e.encumbrance_type LIKE '%MTG%'
+          AND e.encumbrance_type = 'mortgage'
         LIMIT ?
     """
 

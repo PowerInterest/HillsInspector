@@ -54,7 +54,7 @@ class EncumbranceAmountExtractor:
             LEFT JOIN documents d ON e.folio = d.folio
                 AND e.instrument = d.instrument_number
             WHERE (e.amount IS NULL OR e.amount = 0)
-              AND e.encumbrance_type LIKE '%MTG%'
+              AND e.encumbrance_type = 'mortgage'
               AND e.instrument IS NOT NULL
             ORDER BY e.recording_date DESC
             LIMIT ?

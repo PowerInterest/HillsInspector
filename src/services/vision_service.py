@@ -1317,8 +1317,13 @@ class VisionService:
                         return response
                     try:
                         err_body = response.text[:300]
-                    except Exception:
-                        err_body = "(unreadable)"
+                    except Exception as body_err:
+                        logger.warning(
+                            "Failed to read error body from vision endpoint {}: {}",
+                            endpoint["url"],
+                            body_err,
+                        )
+                        err_body = f"(unreadable: {type(body_err).__name__})"
                     logger.warning(
                         "Vision endpoint {} returned HTTP {}: {}",
                         endpoint["url"],
@@ -1475,8 +1480,13 @@ class VisionService:
             content = result["choices"][0]["message"]["content"]
             return content.strip()
 
-        except Exception:
-            logger.exception("Vision API error while analyzing {}", image_path)
+        except Exception as e:
+            logger.exception("Vision API error while analyzing {}: {}", image_path, e)
+            logger.error(
+                "Vision image analysis returning None for {} after exception; "
+                "caller must treat this as extraction failure.",
+                image_path,
+            )
             return None
 
     def analyze_images(self, image_paths: list[str], prompt: str, max_tokens: int = 4000) -> Optional[str]:

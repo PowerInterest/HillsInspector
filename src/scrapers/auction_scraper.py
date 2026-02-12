@@ -15,6 +15,7 @@ from src.models.property import Property
 from src.services.final_judgment_processor import FinalJudgmentProcessor
 from src.scrapers.hcpa_gis_scraper import scrape_hcpa_property
 from src.utils.logging_utils import log_search, Timer
+from src.utils.time import today_local
 
 if TYPE_CHECKING:
     from src.services.scraper_storage import ScraperStorage
@@ -61,9 +62,16 @@ class AuctionScraper:
                 return props
         return []
 
-    async def scrape_all(self, start_date: date, end_date: date, max_properties: Optional[int] = None) -> List[Property]:
+    async def scrape_all(
+        self,
+        start_date: date,
+        end_date: date,
+        max_properties: Optional[int] = None,
+        fail_on_date_errors: bool = True,
+    ) -> List[Property]:
         """Scrape all auctions within a date range."""
         all_properties = []
+        failed_dates: List[tuple[date, str]] = []
         current = start_date
         while current <= end_date:
             # Skip weekends (5=Saturday, 6=Sunday)
@@ -78,11 +86,29 @@ class AuctionScraper:
                     remaining = max(max_properties - len(all_properties), 0)
                     if remaining <= 0:
                         break
-                props = await self.scrape_date(current, fast_fail=True, max_properties=remaining)
+                try:
+                    props = await self.scrape_date(current, fast_fail=True, max_properties=remaining)
+                except Exception as first_err:
+                    logger.warning(
+                        f"Initial scrape failed for {current}: {first_err}. Retrying once with fast_fail=False."
+                    )
+                    props = await self.scrape_date(current, fast_fail=False, max_properties=remaining)
                 all_properties.extend(props)
             except Exception as e:
-                logger.error(f"Failed to scrape {current}: {e}")
+                failed_dates.append((current, str(e)))
+                logger.exception(f"Failed to scrape {current} after retry: {e}")
             current += timedelta(days=1)
+
+        if failed_dates:
+            failed_dates_str = ", ".join(d.isoformat() for d, _ in failed_dates[:20])
+            error_msg = (
+                f"Auction scrape had {len(failed_dates)} failed date(s) in range "
+                f"{start_date}..{end_date}. Failed dates: {failed_dates_str}"
+            )
+            logger.error(error_msg)
+            if fail_on_date_errors:
+                raise RuntimeError(error_msg)
+
         return all_properties
     
 
@@ -207,7 +233,7 @@ class AuctionScraper:
             "defendant": prop.defendant,
             "instrument_number": prop.instrument_number,
             "legal_description": prop.legal_description,
-            "scraped_at": str(date.today())
+            "scraped_at": str(today_local())
         }
         
         # Create DataFrame and write to parquet
@@ -651,7 +677,7 @@ class AuctionScraper:
                 )
                 return result
 
-            # Find the Final Judgment – prefer (JUD) JUDGMENT, fall back to (FJ)
+            # Find the Final Judgment - prefer (JUD) JUDGMENT, fall back to (FJ)
             judgment_rec = None
             for rec in results:
                 doc_type = rec.get("DocType", "")
@@ -1109,8 +1135,10 @@ class AuctionScraper:
             if hcpa_page:
                 try:
                     await hcpa_page.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to close HCPA page for case {prop.case_number}: {e}"
+                    )
 
         return result
 

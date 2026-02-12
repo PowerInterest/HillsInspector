@@ -301,17 +301,8 @@ class ChainBuilder:
 
     def _classify_encumbrance(self, doc_type: str) -> str:
         """Classify encumbrance type from document type."""
-        doc_type_upper = doc_type.upper()
-
-        if "MORTGAGE" in doc_type_upper or "MTG" in doc_type_upper:
-            return "mortgage"
-        if "JUDGMENT" in doc_type_upper or "JUD" in doc_type_upper:
-            return "judgment"
-        if "LIS PENDENS" in doc_type_upper or "LP" in doc_type_upper:
-            return "lis_pendens"
-        if "LIEN" in doc_type_upper or "LN" in doc_type_upper:
-            return "lien"
-        return "other"
+        from src.db.type_normalizer import normalize_encumbrance_type
+        return normalize_encumbrance_type(doc_type)
 
     def _find_period_for_date(
         self,

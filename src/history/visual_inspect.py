@@ -32,8 +32,8 @@ async def inspect_date(target_date: str):
         try:
             await page.wait_for_selector(".AUCTION_ITEM", timeout=15000)
             logger.info("Auction Items loaded.")
-        except Exception:
-            logger.error("Timed out waiting for .AUCTION_ITEM. Taking debug screenshot...")
+        except Exception as e:
+            logger.error(f"Timed out waiting for .AUCTION_ITEM ({e}). Taking debug screenshot...")
             await page.screenshot(path="debug_timeout.png", full_page=True)
             content = await page.content()
             logger.info(f"Page Content Snippet: {content[:1000]}")

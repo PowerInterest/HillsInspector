@@ -92,8 +92,16 @@ class HCPAScraper:
                     try:
                         await details_container.locator("h4", has_text="PROPERTY RECORD CARD").wait_for(state="visible", timeout=10000)
                         logger.info("HCPA details page loaded (found 'PROPERTY RECORD CARD') for {parcel}", parcel=prop.parcel_id)
-                    except Exception:
-                        logger.warning("Timed out waiting for 'PROPERTY RECORD CARD' header for {parcel}", parcel=prop.parcel_id)
+                    except Exception as e:
+                        logger.error(
+                            "Timed out waiting for 'PROPERTY RECORD CARD' header for {parcel}: {error}",
+                            parcel=prop.parcel_id,
+                            error=e,
+                        )
+                        await page.screenshot(path=f"error_hcpa_timeout_{prop.parcel_id}.png")
+                        raise RuntimeError(
+                            f"HCPA details failed to load PROPERTY RECORD CARD for {prop.parcel_id}"
+                        ) from e
 
                     # Give a brief pause for any dynamic content/images to render
                     await asyncio.sleep(2.0)
@@ -233,6 +241,8 @@ class HCPAScraper:
             except Exception as e:
                 logger.error("Error enriching property {parcel}: {error}", parcel=prop.parcel_id, error=e)
                 await page.screenshot(path=f"error_hcpa_{prop.parcel_id}.png")
+                prop.hcpa_scrape_failed = True
+                prop.hcpa_scrape_error = str(e)[:300]
                 # We don't raise here to allow partial success of the pipeline
                 
             finally:

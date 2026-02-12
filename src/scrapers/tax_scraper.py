@@ -90,9 +90,22 @@ class TaxScraper:
                     # Wait for search results
                     try:
                         await page.wait_for_selector("button:has-text('View'), text=No bills or accounts matched, text=Page", timeout=15000)
-                    except Exception:
-                        logger.debug("Timeout waiting for search results selector, using fallback wait")
-                        await asyncio.sleep(8)
+                    except Exception as wait_err:
+                        logger.warning(
+                            f"Timeout waiting for tax search selectors ({search_type}={search_term}) "
+                            f"at {page.url}: {wait_err}. Retrying selector wait once."
+                        )
+                        try:
+                            await page.wait_for_selector(
+                                "button:has-text('View'), text=No bills or accounts matched, text=Page",
+                                timeout=10000,
+                            )
+                        except Exception as retry_err:
+                            logger.error(
+                                f"Tax search selector retry failed ({search_type}={search_term}) "
+                                f"at {page.url}: {retry_err}. Proceeding with page-text fallback."
+                            )
+                            await asyncio.sleep(2)
 
                     # Check for "No results"
                     text = await page.inner_text("body")
@@ -175,7 +188,11 @@ class TaxScraper:
                         if len(results_table_links) > 0:
                              view_links = results_table_links
                         else:
-                            logger.warning(f"No View buttons or result links found for {property_address}")
+                            body_preview = (await page.inner_text("body"))[:400].replace("\n", " ")
+                            logger.error(
+                                f"Tax search returned no actionable result links for {property_address} "
+                                f"(parcel={parcel_id}, url={page.url}). body_preview={body_preview!r}"
+                            )
                             duration_ms = (time.perf_counter() - search_started) * 1000
                             log_search(
                                 source="TAX",
@@ -186,8 +203,13 @@ class TaxScraper:
                                 parcel_id=parcel_id,
                             )
                             return tax_status
-                    except Exception:
-                        logger.warning(f"No View buttons found for {property_address}")
+                    except Exception as link_err:
+                        body_preview = (await page.inner_text("body"))[:400].replace("\n", " ")
+                        logger.error(
+                            f"Tax result link discovery failed for {property_address} "
+                            f"(parcel={parcel_id}, url={page.url}): {link_err}. "
+                            f"body_preview={body_preview!r}"
+                        )
                         duration_ms = (time.perf_counter() - search_started) * 1000
                         log_search(
                             source="TAX",

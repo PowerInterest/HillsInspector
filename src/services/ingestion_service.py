@@ -148,8 +148,12 @@ class IngestionService:
                     search_terms = [search_term]
 
             if not search_terms:
-                logger.warning(f"No valid legal description for {prop.case_number}")
-                return
+                error_msg = (
+                    f"No valid legal description/search terms for ORI ingestion "
+                    f"(case={prop.case_number}, folio={prop.parcel_id})"
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
 
             # Extract filter info and search terms
             filter_info = None
@@ -698,8 +702,12 @@ class IngestionService:
                     search_terms = [search_term]
 
             if not search_terms:
-                logger.warning(f"No valid legal description for {prop.case_number}")
-                return
+                error_msg = (
+                    f"No valid legal description/search terms for ORI ingestion "
+                    f"(case={prop.case_number}, folio={prop.parcel_id})"
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
 
             # Extract filter info and actual search terms (matches sync version)
             actual_search_terms = []
@@ -1294,7 +1302,7 @@ class IngestionService:
         return legal[:60]
 
     def _find_matching_ori_legal_from_docs(
-        self, docs: List[Dict], prop_legal: str, filter_info: Optional[Dict] = None
+        self, docs: List[Dict], prop_legal: str | None, filter_info: Optional[Dict] = None
     ) -> Optional[str]:
         """
         Find a document whose ORI-indexed legal matches our property.

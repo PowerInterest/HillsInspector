@@ -47,7 +47,7 @@ def link_permits_to_nocs(permits: List[Permit], ori_docs: List[Dict]) -> List[Pe
                     d["_parsed_date"] = rec_date
                     nocs.append(d)
             except Exception as e:
-                logger.debug(f"Failed to parse NOC date '{rec_date_str}': {e}")
+                logger.warning(f"Failed to parse NOC date '{rec_date_str}', skipping NOC record: {e}")
                 continue
                 
     if not nocs:

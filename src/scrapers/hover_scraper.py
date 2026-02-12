@@ -73,11 +73,16 @@ class HoverScraper:
                 # If the value is 'CA', select_option(value='CA') works.
                 try:
                     await page.get_by_label("Court Type").select_option(value=case_type)
-                except Exception:
-                    # Try selecting by label containing the type
-                    # This is risky without knowing the exact options.
-                    # For now, let's assume 'CA' works or log warning.
-                    logger.warning(f"Could not select Court Type '{case_type}'. Trying to proceed.")
+                except Exception as e:
+                    options_sample = []
+                    try:
+                        options_sample = await page.get_by_label("Court Type").locator("option").all_inner_texts()
+                    except Exception as opt_err:
+                        logger.warning(f"Could not inspect Court Type options for {case_number}: {opt_err}")
+                    logger.warning(
+                        f"Could not select Court Type '{case_type}' for case {case_number}: {e}. "
+                        f"Available options sample={options_sample[:10]}. Continuing with best-effort form submission."
+                    )
                 
                 # Sequence
                 await page.get_by_label("Sequence #").fill(seq)

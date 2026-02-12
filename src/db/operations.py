@@ -4,6 +4,7 @@ Provides high-level functions for inserting and querying data.
 Uses SQLite with WAL mode for concurrent write support.
 """
 
+import os
 import sqlite3
 import threading
 from contextlib import suppress
@@ -80,6 +81,10 @@ class PropertyDB:
         conn = self._get_conn()
         if conn is not None:
             try:
+                conn.commit()
+            except Exception as e:
+                logger.warning(f"Commit before WAL checkpoint failed: {e}")
+            try:
                 conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             except Exception as e:
                 logger.warning(f"WAL checkpoint failed: {e}")
@@ -111,7 +116,7 @@ class PropertyDB:
                 logger.warning(f"table_exists({table_name}) failed: {e}")
                 return False
 
-        def add_column_if_not_exists(table: str, column: str, col_type: str, default: str = None):
+        def add_column_if_not_exists(table: str, column: str, col_type: str, default: str | None = None):
             """Helper to add column if it doesn't exist (SQLite compatible)."""
             try:
                 if default is not None:
@@ -337,6 +342,80 @@ class PropertyDB:
                     """)
                 except Exception as e:
                     logger.error(f"Document dedup (composite key) failed: {e}")
+
+        # Normalize raw ORI encumbrance types to standard lowercase format
+        if table_exists("encumbrances"):
+            try:
+                conn.execute("""
+                    UPDATE encumbrances SET encumbrance_type = 'mortgage'
+                    WHERE (UPPER(encumbrance_type) LIKE '%MORTGAGE%' OR UPPER(encumbrance_type) LIKE '%MTG%')
+                      AND encumbrance_type != 'mortgage'
+                """)
+                conn.execute("""
+                    UPDATE encumbrances SET encumbrance_type = 'judgment'
+                    WHERE (UPPER(encumbrance_type) LIKE '%JUDGMENT%' OR UPPER(encumbrance_type) LIKE '%JUD%')
+                      AND encumbrance_type != 'judgment'
+                """)
+                conn.execute("""
+                    UPDATE encumbrances SET encumbrance_type = 'lis_pendens'
+                    WHERE (UPPER(encumbrance_type) LIKE '%LIS PENDENS%' OR UPPER(encumbrance_type) LIKE '%(LP)%')
+                      AND encumbrance_type != 'lis_pendens'
+                """)
+                conn.execute("""
+                    UPDATE encumbrances SET encumbrance_type = 'lien'
+                    WHERE (UPPER(encumbrance_type) LIKE '%(LN)%LIEN%' OR UPPER(encumbrance_type) LIKE '%LIEN%')
+                      AND encumbrance_type NOT IN ('lien', 'mortgage', 'judgment', 'lis_pendens')
+                """)
+                conn.execute("""
+                    UPDATE encumbrances SET encumbrance_type = 'satisfaction'
+                    WHERE (UPPER(encumbrance_type) LIKE '%SATISFACTION%' OR UPPER(encumbrance_type) LIKE '%SAT%')
+                      AND encumbrance_type NOT IN ('satisfaction', 'mortgage', 'judgment', 'lis_pendens', 'lien')
+                """)
+                conn.execute("""
+                    UPDATE encumbrances SET encumbrance_type = 'release'
+                    WHERE (UPPER(encumbrance_type) LIKE '%RELEASE%' OR UPPER(encumbrance_type) LIKE '%REL%')
+                      AND encumbrance_type NOT IN ('release', 'satisfaction', 'mortgage', 'judgment', 'lis_pendens', 'lien')
+                """)
+                conn.execute("""
+                    UPDATE encumbrances SET encumbrance_type = 'assignment'
+                    WHERE (UPPER(encumbrance_type) LIKE '%ASSIGNMENT%' OR UPPER(encumbrance_type) LIKE '%ASG%')
+                      AND encumbrance_type NOT IN ('assignment', 'release', 'satisfaction', 'mortgage', 'judgment', 'lis_pendens', 'lien')
+                """)
+                conn.execute("""
+                    UPDATE encumbrances SET encumbrance_type = 'other'
+                    WHERE encumbrance_type NOT IN ('mortgage', 'judgment', 'lis_pendens', 'lien',
+                                                   'satisfaction', 'release', 'assignment', 'other')
+                      AND encumbrance_type IS NOT NULL
+                """)
+            except Exception as e:
+                logger.warning(f"Migration: encumbrance type normalization failed: {e}")
+
+            # SQLite triggers to enforce normalized encumbrance_type values
+            try:
+                conn.execute("""
+                    CREATE TRIGGER IF NOT EXISTS trg_normalize_encumbrance_type_insert
+                    BEFORE INSERT ON encumbrances
+                    BEGIN
+                        SELECT RAISE(ABORT, 'encumbrance_type must be normalized')
+                        WHERE NEW.encumbrance_type NOT IN (
+                            'mortgage', 'judgment', 'lis_pendens', 'lien',
+                            'satisfaction', 'release', 'assignment', 'other'
+                        ) AND NEW.encumbrance_type IS NOT NULL;
+                    END
+                """)
+                conn.execute("""
+                    CREATE TRIGGER IF NOT EXISTS trg_normalize_encumbrance_type_update
+                    BEFORE UPDATE OF encumbrance_type ON encumbrances
+                    BEGIN
+                        SELECT RAISE(ABORT, 'encumbrance_type must be normalized')
+                        WHERE NEW.encumbrance_type NOT IN (
+                            'mortgage', 'judgment', 'lis_pendens', 'lien',
+                            'satisfaction', 'release', 'assignment', 'other'
+                        ) AND NEW.encumbrance_type IS NOT NULL;
+                    END
+                """)
+            except Exception as e:
+                logger.warning(f"Migration: encumbrance type triggers failed: {e}")
 
         # Commit all pending DML from migrations (DELETE dedup, UPDATE backfills).
         # Python sqlite3's default isolation_level="" wraps DML in implicit
@@ -1596,6 +1675,12 @@ class PropertyDB:
         ).fetchone()
         return result[0] if result else 0
 
+    @staticmethod
+    def _classify_encumbrance_type(doc_type: str) -> str:
+        """Normalize ORI doc type to standard encumbrance type."""
+        from src.db.type_normalizer import normalize_encumbrance_type
+        return normalize_encumbrance_type(doc_type)
+
     def save_chain_of_title(self, folio: str, chain_data: Dict[str, Any]):
         """
         Save chain of title data for a property.
@@ -1736,7 +1821,7 @@ class PropertyDB:
                     [
                         folio,
                         chain_id,
-                        enc.get("type"),
+                        self._classify_encumbrance_type(enc.get("type", "")),
                         enc.get("creditor"),
                         enc.get("debtor"),  # Now capturing debtor
                         enc.get("amount"),
@@ -1773,6 +1858,7 @@ class PropertyDB:
         status: str,
         is_joined: bool | None = None,
         is_inferred: bool | None = None,
+        survival_reason: str | None = None,
     ):
         """Update survival status of an encumbrance."""
         conn = self.connect()
@@ -1786,6 +1872,10 @@ class PropertyDB:
         if is_inferred is not None:
             updates.append("is_inferred = ?")
             params.append(is_inferred)
+
+        if survival_reason is not None:
+            updates.append("survival_reason = ?")
+            params.append(survival_reason)
 
         params.append(encumbrance_id)
         sql = f"UPDATE encumbrances SET {', '.join(updates)} WHERE id = ?"
@@ -2471,13 +2561,9 @@ class PropertyDB:
             FROM auctions a
             LEFT JOIN parcels p
                 ON p.folio = COALESCE(a.parcel_id, a.folio)
-            WHERE COALESCE(
-                TRY_CAST(a.auction_date AS DATE),
-                CAST(TRY_STRPTIME(CAST(a.auction_date AS TEXT), '%m/%d/%Y') AS DATE),
-                CAST(TRY_STRPTIME(CAST(a.auction_date AS TEXT), '%m/%d/%Y %H:%M:%S') AS DATE)
-            ) BETWEEN ? AND ?
+            WHERE date(a.auction_date) BETWEEN ? AND ?
         """
-        results = conn.execute(query, [start_date, end_date]).fetchall()
+        results = conn.execute(query, [str(start_date), str(end_date)]).fetchall()
         return [
             {
                 "case_number": row[0],
@@ -2503,6 +2589,10 @@ class PropertyDB:
         if skip_tax_deeds:
             auction_type_filter = "AND COALESCE(UPPER(REPLACE(n.auction_type, ' ', '_')), '') != 'TAX_DEED'"
 
+        # Retry gating: "processing" auctions are always picked up (they have
+        # incomplete steps but haven't been declared failed).  Only "failed"
+        # auctions are gated by retry_count — they represent cases where a
+        # critical step set pipeline_status='failed'.
         query = f"""
             WITH normalized AS (
                 SELECT
@@ -2532,7 +2622,10 @@ class PropertyDB:
             WHERE n.auction_date_norm BETWEEN ? AND ?
               AND COALESCE(s.pipeline_status, 'pending') NOT IN ('completed', 'skipped')
               AND (COALESCE(s.pipeline_status, 'pending') != 'failed' OR ?)
-              AND COALESCE(s.retry_count, 0) < ?
+              AND (
+                  COALESCE(s.pipeline_status, 'pending') != 'failed'
+                  OR COALESCE(s.retry_count, 0) < ?
+              )
               {auction_type_filter}
             ORDER BY n.auction_date_norm, n.case_number
         """
@@ -2818,10 +2911,8 @@ class PropertyDB:
             cols = [row[1] for row in conn.execute("PRAGMA table_info('status')").fetchall()]
         if "status" in cols and "pipeline_status" in cols:
             conn.execute("UPDATE status SET pipeline_status = COALESCE(pipeline_status, status)")
-            try:
+            with suppress(Exception):
                 conn.execute("ALTER TABLE status DROP COLUMN status")
-            except Exception:
-                pass
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_status_auction_date ON status(auction_date)")
         if "pipeline_status" in cols:
@@ -2929,6 +3020,37 @@ class PropertyDB:
             return "pending"
         return result[0]
 
+    # All known step columns (used for validation)
+    ALL_STEP_COLUMNS: set[str] = {
+        "step_auction_scraped",
+        "step_pdf_downloaded",
+        "step_judgment_extracted",
+        "step_bulk_enriched",
+        "step_homeharvest_enriched",
+        "step_hcpa_enriched",
+        "step_ori_ingested",
+        "step_survival_analyzed",
+        "step_permits_checked",
+        "step_flood_checked",
+        "step_market_fetched",
+        "step_tax_checked",
+    }
+
+    @staticmethod
+    def _get_disabled_steps() -> set[str]:
+        """Parse HILLS_DISABLED_STEPS from env. Default: step_market_fetched."""
+        raw = os.environ.get("HILLS_DISABLED_STEPS", "step_market_fetched")
+        if not raw.strip():
+            return set()
+        configured = {s.strip() for s in raw.split(",") if s.strip()}
+        valid = configured & PropertyDB.ALL_STEP_COLUMNS
+        unknown = configured - PropertyDB.ALL_STEP_COLUMNS
+        if unknown:
+            logger.warning(f"HILLS_DISABLED_STEPS: ignoring unknown step names: {unknown}")
+        if valid:
+            logger.debug(f"Disabled steps (excluded from completion): {valid}")
+        return valid
+
     def _get_applicable_steps(self, auction_type: str | None) -> list[str]:
         """Return status steps required for completion for the given auction type."""
         steps = [
@@ -2948,6 +3070,9 @@ class PropertyDB:
         normalized = self._normalize_auction_type(auction_type)
         if normalized == "TAX_DEED":
             steps = [s for s in steps if s not in {"step_pdf_downloaded", "step_judgment_extracted"}]
+        disabled = self._get_disabled_steps()
+        if disabled:
+            steps = [s for s in steps if s not in disabled]
         return steps
 
     def _maybe_mark_status_completed(self, case_number: str) -> None:
@@ -3017,6 +3142,36 @@ class PropertyDB:
                 retry_count = retry_count + 1,
                 updated_at = CURRENT_TIMESTAMP
             WHERE case_number = ?
+            """,
+            [error_message, error_step, case_number],
+        )
+
+    def mark_status_step_failed(
+        self,
+        case_number: str,
+        error_message: str,
+        error_step: int | None = None,
+    ) -> None:
+        """Record a non-critical step error without poisoning global retry state.
+
+        Updates last_error and error_step for debugging visibility, but does NOT
+        increment retry_count or change pipeline_status.  This prevents transient
+        non-critical failures (FEMA timeout, tax scraper 503, etc.) from blocking
+        the auction's progress through critical steps like ORI and survival.
+
+        If pipeline_status is already 'failed', 'completed', or 'skipped', those
+        states are preserved — this method never overwrites authoritative status.
+        """
+        self.ensure_status_table()
+        conn = self.connect()
+        conn.execute(
+            """
+            UPDATE status SET
+                last_error = ?,
+                error_step = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE case_number = ?
+              AND pipeline_status NOT IN ('failed', 'completed', 'skipped')
             """,
             [error_message, error_step, case_number],
         )
@@ -3236,8 +3391,11 @@ class PropertyDB:
                     [table_name],
                 ).fetchone()
                 return result is not None
-            except Exception:
-                return False
+            except Exception as e:
+                logger.exception(
+                    f"backfill_status_steps table_exists({table_name}) failed: {e}"
+                )
+                raise
 
         # Ensure columns used for backfill exist when optional migrations haven't run.
         for col, col_type in [("bulk_folio", "TEXT"), ("raw_legal1", "TEXT"), ("flood_zone", "TEXT"), ("tax_status", "TEXT")]:
@@ -3343,29 +3501,10 @@ class PropertyDB:
             params,
         )
 
-        # Step 5: ORI ingestion - only mark complete if chain_of_title exists
-        # (not just documents - we need the chain to be built)
-        try:
-            folios_with_chain = conn.execute("SELECT DISTINCT folio FROM chain_of_title").fetchall()
-            if folios_with_chain:
-                folio_list = [f[0] for f in folios_with_chain]
-                placeholders = ",".join(["?"] * len(folio_list))
-                query_params = list(folio_list) + list(params)
-
-                conn.execute(
-                    f"""
-                    UPDATE status SET step_ori_ingested = CURRENT_TIMESTAMP
-                    WHERE status.step_ori_ingested IS NULL
-                      AND status.case_number IN (
-                        SELECT case_number FROM auctions
-                        WHERE COALESCE(parcel_id, folio) IN ({placeholders})
-                      )
-                      {date_clause}
-                    """,
-                    query_params,
-                )
-        except Exception as e:
-            logger.debug(f"ORI backfill check failed: {e}")
+        # Step 5: ORI ingestion — intentionally NOT backfilled from chain_of_title.
+        # Chain data is folio-global and a new case on the same folio must run ORI
+        # independently. ORI completion is set only by actual execution or the
+        # case-specific needs_ori_ingestion flag (handled in the flag backfill below).
 
         # Step 6: Survival analysis (auctions status ANALYZED/FLAGGED)
         conn.execute(

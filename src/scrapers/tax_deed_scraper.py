@@ -74,8 +74,16 @@ class TaxDeedScraper:
                     # Wait for the table to be visible (with try/except for empty pages)
                     try:
                         await page.wait_for_selector(".Head_W", timeout=10000)
-                    except Exception:
-                        logger.info("No auction data found on tax deed page {page_num} for {date}", page_num=page_num, date=date_str)
+                    except Exception as e:
+                        body_preview = (await page.content())[:500].replace("\n", " ")
+                        logger.warning(
+                            "Tax deed page {page_num} missing expected table selector for {date}: {error}. "
+                            "Treating as empty page. body_preview={preview!r}",
+                            page_num=page_num,
+                            date=date_str,
+                            error=e,
+                            preview=body_preview,
+                        )
                         break
 
                     # Scrape current page

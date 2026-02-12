@@ -20,7 +20,9 @@ import json
 import re
 import argparse
 import asyncio
+import contextlib
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 import requests
 from playwright.async_api import async_playwright
@@ -28,6 +30,9 @@ from playwright_stealth import Stealth
 from loguru import logger
 
 from src.services.scraper_storage import ScraperStorage
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
 
 
 async def apply_stealth(page):
@@ -77,10 +82,8 @@ async def _wait_for_page_load(page) -> bool:
         for task in pending:
             task.cancel()
             # Suppress CancelledError from cancelled tasks
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
-            except (asyncio.CancelledError, Exception):
-                pass
         return len(done) > 0
     except Exception as e:
         logger.error(f"_wait_for_content failed: {e}")
@@ -294,8 +297,14 @@ async def _scrape_hcpa_property_impl(
                         prop_info = result.get("property_info")
                         if isinstance(prop_info, dict):
                             prop_info["card_text"] = card_text[:2000]
-                    except Exception:
-                        logger.warning("Could not extract inner text from parcel result container")
+                    except Exception as e:
+                        logger.warning(
+                            "Could not extract inner text from parcel result container "
+                            "(folio={}, parcel_id={}): {}. Continuing without supplemental card_text.",
+                            folio,
+                            parcel_id,
+                            e,
+                        )
 
             # Get specific fields using the page structure
             # Folio
@@ -571,12 +580,12 @@ async def _scrape_hcpa_property_impl(
             except TimeoutError:
                 logger.warning("Browser cleanup timed out after 10s - forcing termination")
                 try:
-                    if browser and hasattr(browser, '_impl_obj') and browser._impl_obj:
-                        proc = getattr(browser._impl_obj, '_process', None)
+                    if browser and hasattr(browser, '_impl_obj') and browser._impl_obj:  # noqa: SLF001
+                        proc = getattr(browser._impl_obj, '_process', None)  # noqa: SLF001
                         if proc:
                             proc.kill()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to force-kill HCPA browser process: {e}")
 
     # Save raw data
     prop_id = folio or parcel_id or "unknown"

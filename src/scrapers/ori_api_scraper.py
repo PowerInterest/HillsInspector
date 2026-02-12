@@ -288,7 +288,7 @@ class ORIApiScraper:
         payload = {
             "RecordDateBegin": "01/01/1900",
             "RecordDateEnd": today_local().strftime("%m/%d/%Y"),
-            "Instrument": instrument,
+            "Instrument": int(instrument) if instrument.isdigit() else instrument,
         }
         # Only add doc type filter if requested (can cause 400 errors on some searches)
         if include_doc_types:
@@ -366,7 +366,7 @@ class ORIApiScraper:
                     )
                     return []
 
-                # Results exist – wait for the Angular table to render
+                # Results exist - wait for the Angular table to render
                 await page_obj.wait_for_selector("table tbody tr", timeout=15000)
                 await asyncio.sleep(2)
 
@@ -557,8 +557,11 @@ class ORIApiScraper:
                     try:
                         parsed = datetime.strptime(raw_date.split()[0], "%m/%d/%Y")
                         return parsed.strftime("%Y%m%d")
-                    except Exception:
-                        return raw_date.replace("/", "").replace(" ", "")[:8]
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not parse record date {raw_date!r} for filename; using 'unknown': {e}"
+                        )
+                        return "unknown"
             except Exception as exc:
                 logger.debug("Could not format record date %s: %s", raw_date, exc)
             return ""
@@ -606,8 +609,11 @@ class ORIApiScraper:
                 try:
                     parsed = datetime.strptime(raw_date.split()[0], "%m/%d/%Y")
                     record_date = parsed.strftime("%Y%m%d")
-                except Exception:
-                    record_date = raw_date.replace("/", "").replace(" ", "")[:8]
+                except Exception as e:
+                    logger.warning(
+                        f"Could not parse record date {raw_date!r} for instrument {instrument}; using 'unknown': {e}"
+                    )
+                    record_date = "unknown"
             else:
                 record_date = "unknown"
         except Exception as exc:
@@ -806,7 +812,7 @@ class ORIApiScraper:
 
                 api_response = await response_info.value
 
-                # Server error (e.g. 500 = clerk timeout) – treat as no results
+                # Server error (e.g. 500 = clerk timeout) - treat as no results
                 if api_response.status != 200:
                     logger.warning(
                         f"PAV API returned {api_response.status} for '{legal_desc}'"
@@ -815,14 +821,14 @@ class ORIApiScraper:
 
                 api_data = await api_response.json()
 
-                # Fast path: zero results – bail immediately
+                # Fast path: zero results - bail immediately
                 if not api_data.get("Data"):
                     logger.info(
                         f"Zero results for legal '{legal_desc}' (API fast-detect)"
                     )
                     return []
 
-                # Results exist – wait for the Angular table to render them
+                # Results exist - wait for the Angular table to render them
                 await page.wait_for_selector("table tbody tr", timeout=15000)
                 await asyncio.sleep(2)  # Give table time to render fully
 
@@ -1008,7 +1014,7 @@ asyncio.run(main())
                 )
                 return []
 
-            # Results exist – wait for the Angular table to render
+            # Results exist - wait for the Angular table to render
             await page.wait_for_selector("table tbody tr", timeout=15000)
             await asyncio.sleep(2)
 
@@ -1172,7 +1178,7 @@ asyncio.run(main())
                 )
                 return []
 
-            # Results exist – wait for the Angular table to render
+            # Results exist - wait for the Angular table to render
             await page.wait_for_selector("table tbody tr", timeout=15000)
             await asyncio.sleep(2)
 
