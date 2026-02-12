@@ -150,13 +150,14 @@ class AuctionScraper:
                     logger.info("Scraping auction results page {page_num} for {date}", page_num=page_num, date=date_str)
                     
                     try:
-                        await page.wait_for_selector(".AUCTION_ITEM", timeout=10000 if fast_fail else 30000)
+                        locator = (
+                            page.locator(".AUCTION_ITEM")
+                            .or_(page.locator("body:has-text('Auction Starts')"))
+                        )
+                        await locator.first.wait_for(timeout=10000 if fast_fail else 30000)
                     except PlaywrightTimeoutError:
-                        try:
-                            await page.wait_for_selector("text=Auction Starts", timeout=5000 if fast_fail else 15000)
-                        except PlaywrightTimeoutError:
-                            logger.info("No auctions found for {date} after load", date=date_str)
-                            break
+                        logger.info("No auctions found for {date} after load", date=date_str)
+                        break
                     
                     remaining = None
                     if max_properties is not None:
@@ -279,7 +280,7 @@ class AuctionScraper:
                 case_href = await case_link.get_attribute("href")
                 instrument_number = None
                 if case_href and "OBKey__1006_1=" in case_href:
-                    instrument_number = case_href.split("OBKey__1006_1=")[-1]
+                    instrument_number = case_href.split("OBKey__1006_1=")[-1].strip()
 
                 parcel_row = details.locator("tr:has-text('Parcel ID:')")
                 parcel_id_text = ""
@@ -374,7 +375,7 @@ class AuctionScraper:
                 case_href = await case_link.get_attribute("href")
                 instrument_number = None
                 if case_href and "OBKey__1006_1=" in case_href:
-                    instrument_number = case_href.split("OBKey__1006_1=")[-1]
+                    instrument_number = case_href.split("OBKey__1006_1=")[-1].strip()
 
                 # Parcel ID and HCPA link
                 parcel_row = details.locator("tr:has-text('Parcel ID:')")

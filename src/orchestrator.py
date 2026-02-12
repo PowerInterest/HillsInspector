@@ -1066,6 +1066,11 @@ class PipelineOrchestrator:
                     "args": [case_number, "needs_ori_ingestion"]
                 })
 
+        # Barrier: flush all pending db_writer writes so Phase 3 reads see Phase 2 data.
+        # Without this, step_ori_ingested and document/chain writes from Phase 2 may
+        # still be in the db_writer queue when survival reads the DB directly.
+        await self.db_writer.execute_with_result(self.db.checkpoint)
+
         # PHASE 3: Dependent Parallel Analysis (Needs ORI Data)
         # Permits needs NOCs (from ORI)
         # Survival needs Encumbrances (from ORI)

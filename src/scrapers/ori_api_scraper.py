@@ -288,7 +288,7 @@ class ORIApiScraper:
         payload = {
             "RecordDateBegin": "01/01/1900",
             "RecordDateEnd": today_local().strftime("%m/%d/%Y"),
-            "Instrument": int(instrument) if instrument.isdigit() else instrument,
+            "Instrument": instrument.strip(),
         }
         # Only add doc type filter if requested (can cause 400 errors on some searches)
         if include_doc_types:

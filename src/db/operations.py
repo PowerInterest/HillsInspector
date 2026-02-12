@@ -95,7 +95,10 @@ class PropertyDB:
             conn.execute(sql, params)
         except Exception as e:
             snippet = " ".join(line.strip() for line in str(sql).splitlines()[:3])
-            logger.warning(f"_safe_exec failed: {e} (sql='{snippet}', params={params})")
+            if "duplicate column name" in str(e):
+                logger.debug(f"_safe_exec: {e} (sql='{snippet}')")
+            else:
+                logger.warning(f"_safe_exec failed: {e} (sql='{snippet}', params={params})")
 
     def _apply_schema_migrations(self, conn) -> None:
         """
@@ -161,6 +164,14 @@ class PropertyDB:
             add_column_if_not_exists("parcels", "legal_description", "TEXT")
             add_column_if_not_exists("parcels", "judgment_legal_description", "TEXT")
             add_column_if_not_exists("parcels", "last_analyzed_case_number", "TEXT")
+            add_column_if_not_exists("parcels", "flood_zone", "TEXT")
+            add_column_if_not_exists("parcels", "flood_zone_subtype", "TEXT")
+            add_column_if_not_exists("parcels", "flood_risk", "TEXT")
+            add_column_if_not_exists("parcels", "flood_risk_level", "TEXT")
+            add_column_if_not_exists("parcels", "flood_insurance_required", "INTEGER")
+            add_column_if_not_exists("parcels", "flood_base_elevation", "REAL")
+            add_column_if_not_exists("parcels", "bulk_folio", "TEXT")
+            add_column_if_not_exists("parcels", "raw_legal1", "TEXT")
 
         if table_exists("encumbrances"):
             add_column_if_not_exists("encumbrances", "is_joined", "INTEGER", "0")
@@ -821,10 +832,6 @@ class PropertyDB:
 
         folio = prop.parcel_id
 
-        # Ensure columns exist (DuckDB supportsnatively)
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN market_analysis_content TEXT")
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN legal_description TEXT")
-
         # Use ON CONFLICT for atomic upsert
         # 1. Try to insert (ignore if exists)
         conn.execute(
@@ -906,13 +913,8 @@ class PropertyDB:
         """
         conn = self.connect()
 
-        # Ensure table exists and has grantor/grantee columns
+        # Ensure table exists (no-op after first init)
         self.create_sales_history_table()
-        self._safe_exec(conn, "ALTER TABLE sales_history ADD COLUMN grantor TEXT")
-        self._safe_exec(conn, "ALTER TABLE sales_history ADD COLUMN grantee TEXT")
-
-        # Create index on instrument for faster lookups
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_history_instrument ON sales_history(folio, instrument)")
 
         saved_count = 0
         for sale in sales:
@@ -1263,10 +1265,8 @@ class PropertyDB:
         )
 
     def ensure_geocode_columns(self):
-        """Add latitude/longitude to parcels if missing."""
-        conn = self.connect()
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN latitude REAL")
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN longitude REAL")
+        """Add latitude/longitude to parcels if missing. No-op: columns in CREATE TABLE."""
+        pass
 
     def update_legal_description(self, folio: str, legal_description: str):
         """Update (or insert) the legal description for a parcel."""
@@ -1313,13 +1313,6 @@ class PropertyDB:
         """Update flood zone information for a parcel."""
         conn = self.connect()
 
-        # Ensure columns exist
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_zone TEXT")
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_zone_subtype TEXT")
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_risk_level TEXT")
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_insurance_required INTEGER")
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_base_elevation REAL")
-
         conn.execute(
             """
             UPDATE parcels SET
@@ -1340,9 +1333,6 @@ class PropertyDB:
                 folio,
             ],
         )
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN latitude REAL")
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN longitude REAL")
-
     def update_parcel_coordinates(self, parcel_id: str, latitude: float, longitude: float):
         """Update parcel lat/lon."""
         if parcel_id is None or latitude is None or longitude is None:
@@ -1583,13 +1573,6 @@ class PropertyDB:
         """
         conn = self.connect()
 
-        # Migration: Add new ORI API fields if they don't exist
-        self._safe_exec(conn, "ALTER TABLE documents ADD COLUMN sales_price REAL")
-        self._safe_exec(conn, "ALTER TABLE documents ADD COLUMN page_count INTEGER")
-        self._safe_exec(conn, "ALTER TABLE documents ADD COLUMN ori_uuid TEXT")
-        self._safe_exec(conn, "ALTER TABLE documents ADD COLUMN ori_id TEXT")
-        self._safe_exec(conn, "ALTER TABLE documents ADD COLUMN book_type TEXT")
-
         # Check if exists by instrument number, then by ori_uuid
         inst = doc_data.get("instrument_number")
         ori_uuid = doc_data.get("ori_uuid")
@@ -1700,11 +1683,7 @@ class PropertyDB:
         """
         conn = self.connect()
 
-        # Schema migrations (idempotent)
-        self._safe_exec(conn, "ALTER TABLE chain_of_title ADD COLUMN link_status TEXT")
-        self._safe_exec(conn, "ALTER TABLE chain_of_title ADD COLUMN confidence_score REAL")
-        self._safe_exec(conn, "ALTER TABLE chain_of_title ADD COLUMN mrta_status TEXT")
-        self._safe_exec(conn, "ALTER TABLE chain_of_title ADD COLUMN years_covered REAL")
+
 
         # Preserve existing lien survival annotations across chain rebuilds (best-effort).
         prior_survival: dict[str, dict[str, Any]] = {}
@@ -2082,6 +2061,8 @@ class PropertyDB:
                 sale_price REAL,
                 ori_link TEXT,
                 pdf_path TEXT,
+                grantor TEXT,
+                grantee TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -2500,9 +2481,8 @@ class PropertyDB:
         return [dict(row) for row in results]
 
     def ensure_last_analyzed_column(self):
-        """Add last_analyzed_case_number column if missing."""
-        conn = self.connect()
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN last_analyzed_case_number TEXT")
+        """Add last_analyzed_case_number column if missing. No-op: column added at init."""
+        pass
 
     def get_auction_count_by_date(self, auction_date: date) -> int:
         """Get count of auctions we have for a specific date."""
@@ -2777,10 +2757,6 @@ class PropertyDB:
     def save_flood_data(self, folio: str, flood_zone: str, flood_risk: str, insurance_required: bool):
         """Save flood zone data to parcels table."""
         conn = self.connect()
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_zone TEXT")
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_risk TEXT")
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_risk_level TEXT")
-        self._safe_exec(conn, "ALTER TABLE parcels ADD COLUMN flood_insurance_required INTEGER")
 
         conn.execute("INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio])
         conn.execute(

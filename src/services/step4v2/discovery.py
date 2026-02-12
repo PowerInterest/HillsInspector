@@ -577,8 +577,8 @@ class IterativeDiscovery:
         if not instrument:
             return False
 
-        # Ensure instrument is a string for VARCHAR column comparison
-        instrument = str(instrument)
+        # Ensure instrument is a clean string for VARCHAR column comparison
+        instrument = str(instrument).strip()
 
         # Check if already exists
         existing = self.conn.execute(
@@ -621,8 +621,8 @@ class IterativeDiscovery:
                     self._clean_doc_type(doc_type),
                     instrument,
                     recording_date,
-                    doc.get("Book") or doc.get("book"),
-                    doc.get("Page") or doc.get("page"),
+                    (doc.get("Book") or doc.get("book") or "").strip() or None,
+                    (doc.get("Page") or doc.get("page") or "").strip() or None,
                     party1,
                     party2,
                     doc.get("Legal") or doc.get("legal_description"),
@@ -887,7 +887,7 @@ class IterativeDiscovery:
 
         # Parse instrument as integer
         try:
-            base_instrument = int(instrument)
+            base_instrument = int(str(instrument).strip())
         except (ValueError, TypeError):
             logger.debug(f"Cannot parse instrument as integer: {instrument}")
             return 0

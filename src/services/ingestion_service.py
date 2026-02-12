@@ -1058,7 +1058,7 @@ class IngestionService:
 
             # Build ORI doc format for download_pdf (needs ID or instrument)
             ori_doc = {
-                "Instrument": instrument,
+                "Instrument": instrument.strip() if isinstance(instrument, str) else instrument,
                 "DocType": doc_type,
                 "ID": doc.get("ID") or doc.get("id"),  # May not have ID yet
             }

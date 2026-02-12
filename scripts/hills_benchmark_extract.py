@@ -41,6 +41,27 @@ SEED_URLS = [
     f"{SITE_ROOT}/featured-results.html",
     f"{SITE_ROOT}/tax-deed-sales.html",
 ]
+HILLSBOROUGH_CITY_SLUGS = {
+    "apollo-beach",
+    "brandon",
+    "citrus-park",
+    "dover",
+    "gibsonton",
+    "lithia",
+    "lutz",
+    "odessa",
+    "plant-city",
+    "riverview",
+    "ruskin",
+    "seffner",
+    "sun-city",
+    "sun-city-center",
+    "tampa",
+    "temple-terrace",
+    "thonotosassa",
+    "valrico",
+    "wimauma",
+}
 NAVIGATION_TIMEOUT_MS = 90000
 REQUEST_TIMEOUT_SEC = 30
 USER_AGENT = (
@@ -146,13 +167,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-properties",
         type=int,
-        default=0,
-        help="Max property pages to extract (0 = no cap)",
+        default=500,
+        help="Max property pages to extract (default 500)",
     )
     parser.add_argument(
         "--download-photos",
         action="store_true",
         help="Download discovered photos to local output folder",
+    )
+    parser.add_argument(
+        "--county",
+        default="Hillsborough",
+        help="County name filter for extracted property pages",
     )
     return parser.parse_args()
 
@@ -182,7 +208,16 @@ def is_property_url(url: str) -> bool:
 
 def is_list_url(url: str) -> bool:
     path = urlsplit(url).path
-    return any(path.startswith(prefix) for prefix in ALLOWED_LIST_PATHS)
+    if path in {"/featured-upcoming.html", "/featured-results.html", "/tax-deed-sales.html"}:
+        return True
+    if not path.startswith("/foreclosure-auctions/"):
+        return False
+    if "/Hillsborough-County/" in path:
+        return True
+    parts = [part for part in path.split("/") if part]
+    if len(parts) == 2 and parts[0] == "foreclosure-auctions":
+        return parts[1].lower() in HILLSBOROUGH_CITY_SLUGS
+    return False
 
 
 def is_challenge_page(title: str, text: str) -> bool:
@@ -604,6 +639,7 @@ def crawl_all(
     out_dir: Path,
     max_pages: int,
     max_properties: int,
+    county_filter: str,
 ) -> tuple[list[ListingRecord], dict[str, Any]]:
     ensure_dir(out_dir)
     raw_pages_dir = out_dir / "pages"
@@ -686,7 +722,13 @@ def crawl_all(
             html_path.write_text(html, encoding="utf-8")
             text_path.write_text(text, encoding="utf-8")
             record = extract_record_from_page(current, title, html, text, html_path, text_path)
-            records.append(record)
+            county_value = (record.county or "").strip().lower()
+            if county_filter.lower() in county_value:
+                records.append(record)
+            else:
+                logger.info(
+                    f"Skipping non-{county_filter} record at {current} (county={record.county})"
+                )
         elif is_list_url(current):
             list_pages_visited += 1
 
@@ -733,6 +775,7 @@ def main() -> None:
             out_dir=run_dir,
             max_pages=args.max_pages,
             max_properties=args.max_properties,
+            county_filter=args.county,
         )
         context.close()
 

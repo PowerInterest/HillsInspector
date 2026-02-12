@@ -74,7 +74,7 @@ async def _wait_for_page_load(page) -> bool:
     tasks = [
         asyncio.create_task(page.wait_for_selector(".parcel-result, #parcel-result, .property-card", timeout=15000)),
         asyncio.create_task(page.wait_for_selector(".property-image, .parcel-image, img[src*='hcpafl.org']", timeout=15000)),
-        asyncio.create_task(page.wait_for_selector("text=no results", timeout=15000)),
+        asyncio.create_task(page.locator("body:has-text('no results')").first.wait_for(timeout=15000)),
     ]
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

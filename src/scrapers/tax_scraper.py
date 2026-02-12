@@ -87,19 +87,21 @@ class TaxScraper:
                     await page.goto(search_url, timeout=60000)
                     await page.wait_for_load_state("domcontentloaded")
 
-                    # Wait for search results
+                    # Wait for search results - use locator OR pattern (text= is only valid in locator, not wait_for_selector)
+                    results_locator = (
+                        page.locator("button:has-text('View')")
+                        .or_(page.locator("body:has-text('No bills or accounts matched')"))
+                        .or_(page.locator("nav:has-text('Page'), .pagination:has-text('Page')"))
+                    )
                     try:
-                        await page.wait_for_selector("button:has-text('View'), text=No bills or accounts matched, text=Page", timeout=15000)
+                        await results_locator.first.wait_for(timeout=15000)
                     except Exception as wait_err:
                         logger.warning(
                             f"Timeout waiting for tax search selectors ({search_type}={search_term}) "
                             f"at {page.url}: {wait_err}. Retrying selector wait once."
                         )
                         try:
-                            await page.wait_for_selector(
-                                "button:has-text('View'), text=No bills or accounts matched, text=Page",
-                                timeout=10000,
-                            )
+                            await results_locator.first.wait_for(timeout=10000)
                         except Exception as retry_err:
                             logger.error(
                                 f"Tax search selector retry failed ({search_type}={search_term}) "
@@ -227,9 +229,14 @@ class TaxScraper:
                         async with page.expect_navigation(timeout=30000):
                             await view_links[0].click()
                         
-                        # Wait for content
+                        # Wait for content - use locator OR pattern (text= is only valid in locator, not wait_for_selector)
+                        detail_locator = (
+                            page.locator("h2:has-text('Amount Due')")
+                            .or_(page.locator("h3:has-text('Amount Due')"))
+                            .or_(page.locator("body:has-text('Your account is')"))
+                        )
                         try:
-                            await page.wait_for_selector("h2:has-text('Amount Due'), h3:has-text('Amount Due'), text=Your account is", timeout=20000)
+                            await detail_locator.first.wait_for(timeout=20000)
                         except Exception as e:
                             logger.debug(f"Tax detail page selector not found, falling back: {e}")
                             await asyncio.sleep(5)
@@ -290,10 +297,17 @@ class TaxScraper:
 
                      if tax_data.get("certificates"):
                          for cert in tax_data["certificates"]:
-                             tax_status.certificates.append(TaxCertificate(
-                                 certificate_number=str(cert.get("certificate_number")),
-                                 face_value=float(cert.get("face_value", 0.0))
-                             ))
+                             if isinstance(cert, dict):
+                                 tax_status.certificates.append(TaxCertificate(
+                                     certificate_number=str(cert.get("certificate_number", "")),
+                                     face_value=float(cert.get("face_value", 0.0))
+                                 ))
+                             elif isinstance(cert, str):
+                                 # Vision model sometimes returns cert as plain string
+                                 tax_status.certificates.append(TaxCertificate(
+                                     certificate_number=cert,
+                                     face_value=0.0
+                                 ))
                      result_found = True
             except Exception as e:
                 logger.exception(f"Error scraping Tax site: {e}")
@@ -591,12 +605,14 @@ class TaxScraper:
             def extract_text(node, texts=None):
                 if texts is None:
                     texts = []
-                if node:
+                if node and isinstance(node, dict):
                     node_name = node.get("name")
                     if node_name:
-                        texts.append(node_name)
+                        texts.append(str(node_name))
                     for child in node.get("children", []):
                         extract_text(child, texts)
+                elif node and isinstance(node, str):
+                    texts.append(node)
                 return texts
 
             all_texts = extract_text(snapshot)
@@ -678,6 +694,9 @@ If there's an amount due, set paid_in_full to false and provide the amount.
                     clean_result = re.sub(r'^```(?:json)?\s*', '', clean_result)
                     clean_result = re.sub(r'\s*```$', '', clean_result)
                 data = json.loads(clean_result)
+                if not isinstance(data, dict):
+                    logger.warning(f"Vision returned non-dict JSON ({type(data).__name__}): {str(data)[:200]}")
+                    raise json.JSONDecodeError("Expected JSON object, got " + type(data).__name__, clean_result, 0)
                 return {
                     "account_number": data.get("account_number"),
                     "owner": data.get("owner"),

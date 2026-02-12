@@ -113,7 +113,7 @@ class JudgmentPipeline:
             try:
                 logger.info(f"Downloading PDF for instrument {instrument} (Case {case_num})...")
                 # Create a minimal doc dict for the downloader
-                doc = {"Instrument": instrument}
+                doc = {"Instrument": instrument.strip() if isinstance(instrument, str) else instrument}
                 pdf_path = self.scraper.download_pdf(doc, PDF_STORAGE_DIR)
 
                 if not pdf_path or not pdf_path.exists():

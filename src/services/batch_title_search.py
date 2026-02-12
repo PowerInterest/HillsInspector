@@ -275,7 +275,7 @@ class BatchTitleSearch:
 
                 # Find matching instrument (note: API returns instrument as int)
                 for r in results:
-                    if str(r.get("Instrument")) == instrument_number:
+                    if str(r.get("Instrument")).strip() == str(instrument_number).strip():
                         logger.debug(f"Found instrument {instrument_number} via legal search")
                         return r
 
@@ -289,13 +289,13 @@ class BatchTitleSearch:
                     "DocType": self.ori_api.TITLE_DOC_TYPES,
                     "RecordDateBegin": start_date,
                     "RecordDateEnd": end_date,
-                    "BookNum": int(book) if book.isdigit() else book,
-                    "PageNum": int(page) if page.isdigit() else page,
+                    "BookNum": int(book.strip()) if book.strip().isdigit() else book.strip(),
+                    "PageNum": int(page.strip()) if page.strip().isdigit() else page.strip(),
                 }
                 results = self.ori_api._execute_search(payload)  # noqa: SLF001
 
                 for r in results:
-                    if str(r.get("Instrument")) == instrument_number:
+                    if str(r.get("Instrument")).strip() == str(instrument_number).strip():
                         logger.debug(f"Found instrument {instrument_number} via book/page search")
                         return r
 

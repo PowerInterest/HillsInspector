@@ -8,7 +8,6 @@ import time
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-from math import isnan
 from loguru import logger
 from homeharvest import scrape_property
 from src.db.operations import PropertyDB
@@ -426,11 +425,13 @@ class HomeHarvestService:
 
     def _build_record_data(self, folio: str, row: Dict[str, Any]) -> Dict[str, Any]:
         def _is_na(v: Any) -> bool:
-            """Check if value is None or NaN."""
+            """Check if value is None, NaN, or pandas NA/NaT."""
             if v is None:
                 return True
             try:
-                return isinstance(v, float) and isnan(v)
+                # pd.isna handles None, float('nan'), pd.NA (NAType), and pd.NaT
+                import pandas as pd
+                return bool(pd.isna(v))
             except (TypeError, ValueError):
                 return False
 
