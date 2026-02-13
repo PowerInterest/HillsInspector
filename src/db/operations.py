@@ -108,6 +108,13 @@ class PropertyDB:
         if self._schema_migrations_applied or conn is None:
             return
 
+        # Ensure migrations can wait for concurrent writers instead of failing
+        # with "database is locked" immediately.
+        try:
+            conn.execute("PRAGMA busy_timeout = 5000")
+        except Exception:
+            pass
+
         def table_exists(table_name: str) -> bool:
             try:
                 row = conn.execute(
@@ -1868,6 +1875,7 @@ class PropertyDB:
         params.append(encumbrance_id)
         sql = f"UPDATE encumbrances SET {', '.join(updates)} WHERE id = ?"
         conn.execute(sql, params)
+        conn.commit()
 
     def encumbrance_exists(self, folio: str, book: str, page: str) -> bool:
         """Check if an encumbrance with the given book/page already exists for a folio."""
@@ -2567,18 +2575,35 @@ class PropertyDB:
 
     def get_auctions_for_processing(
         self,
-        start_date: date,
-        end_date: date,
+        start_date: date | None = None,
+        end_date: date | None = None,
         include_failed: bool = False,
         max_retries: int = 3,
         skip_tax_deeds: bool = False,
     ) -> List[dict]:
-        """Return auctions to process based on status table and retry policy."""
+        """Return auctions to process based on status table and retry policy.
+
+        When start_date/end_date are None, processes all incomplete auctions.
+        """
         conn = self.connect()
         auction_type_filter = ""
-        params: list = [start_date, end_date, include_failed, max_retries]
         if skip_tax_deeds:
             auction_type_filter = "AND COALESCE(UPPER(REPLACE(n.auction_type, ' ', '_')), '') != 'TAX_DEED'"
+
+        # Build date clause conditionally
+        date_clause = ""
+        params: list = []
+        if start_date is not None and end_date is not None:
+            date_clause = "AND n.auction_date_norm BETWEEN ? AND ?"
+            params.extend([start_date, end_date])
+        elif start_date is not None:
+            date_clause = "AND n.auction_date_norm >= ?"
+            params.append(start_date)
+        elif end_date is not None:
+            date_clause = "AND n.auction_date_norm <= ?"
+            params.append(end_date)
+
+        params.extend([include_failed, max_retries])
 
         # Retry gating: "processing" auctions are always picked up (they have
         # incomplete steps but haven't been declared failed).  Only "failed"
@@ -2610,8 +2635,8 @@ class PropertyDB:
                 n.property_address
             FROM normalized n
             LEFT JOIN status s ON s.case_number = n.case_number
-            WHERE n.auction_date_norm BETWEEN ? AND ?
-              AND COALESCE(s.pipeline_status, 'pending') NOT IN ('completed', 'skipped')
+            WHERE COALESCE(s.pipeline_status, 'pending') NOT IN ('completed', 'skipped')
+              {date_clause}
               AND (COALESCE(s.pipeline_status, 'pending') != 'failed' OR ?)
               AND (
                   COALESCE(s.pipeline_status, 'pending') != 'failed'

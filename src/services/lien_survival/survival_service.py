@@ -65,7 +65,9 @@ class SurvivalService:
 
         # 2. Extract context
         plaintiff = judgment_data.get('plaintiff')
-        lp_date = judgment_data.get('lis_pendens_date')
+                # lis_pendens is stored as nested dict: {"recording_date": ..., "instrument_number": ...}
+        lp_data = judgment_data.get('lis_pendens') or {}
+        lp_date = lp_data.get('recording_date') if isinstance(lp_data, dict) else judgment_data.get('lis_pendens_date')
         defendants = judgment_data.get('defendants') or []
         fc_refs = judgment_data.get('foreclosing_refs')
         mortgage_count = sum(

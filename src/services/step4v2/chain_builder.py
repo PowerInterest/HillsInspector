@@ -16,6 +16,7 @@ import sqlite3
 from loguru import logger
 
 from config.step4v2 import (
+    CANONICAL_ENCUMBRANCE_TYPES,
     DEED_TYPES,
     ENCUMBRANCE_TYPES,
     MRTA_YEARS_REQUIRED,
@@ -141,6 +142,7 @@ class ChainBuilder:
         # Save to database
         self._save_chain(folio, periods)
         self._save_encumbrances(folio, encumbrances)
+        self.conn.commit()
 
         result = ChainResult(
             folio=folio,
@@ -297,7 +299,10 @@ class ChainBuilder:
     def _is_encumbrance_doc(self, doc_type: str) -> bool:
         """Check if document type is an encumbrance."""
         doc_type_upper = doc_type.upper()
-        return any(enc_type in doc_type_upper for enc_type in ENCUMBRANCE_TYPES)
+        if any(enc_type in doc_type_upper for enc_type in ENCUMBRANCE_TYPES):
+            return True
+        # Also check canonical normalized forms (handles mixed storage formats)
+        return doc_type.lower().strip() in CANONICAL_ENCUMBRANCE_TYPES
 
     def _classify_encumbrance(self, doc_type: str) -> str:
         """Classify encumbrance type from document type."""

@@ -265,7 +265,33 @@ def _strategy_address_match(conn, address: str | None) -> list[dict[str, Any]] |
         [normalized],
     ).fetchall()
     results = [dict(r) for r in rows]
-    logger.info(f'{TAG}   Strategy 2 (address match): query="{normalized}" → {len(results)} result(s)')
+    logger.info(f'{TAG}   Strategy 2 (address match): exact query="{normalized}" → {len(results)} result(s)')
+
+    if not results:
+        # Fallback: LIKE-based search using street number + first significant word
+        # Handles cases like "815 10TH ST SW" vs "815 SW 10TH ST" ordering differences
+        match = re.match(r"^(\d+)\s+(.+)$", normalized)
+        if match:
+            street_num = match.group(1)
+            rest = match.group(2)
+            # Use first significant word (3+ chars, not a directional)
+            sig_words = [w for w in rest.split()
+                         if len(w) >= 3 and w not in {"N", "S", "E", "W", "NE", "NW", "SE", "SW"}]
+            if sig_words:
+                like_pattern = f"{street_num}%{sig_words[0]}%"
+                rows = conn.execute(
+                    """
+                    SELECT folio, strap, owner_name,
+                           COALESCE(raw_legal1,'') || ' ' || COALESCE(raw_legal2,'') || ' ' ||
+                           COALESCE(raw_legal3,'') || ' ' || COALESCE(raw_legal4,'') AS legal_concat
+                    FROM bulk_parcels
+                    WHERE UPPER(property_address) LIKE ?
+                    """,
+                    [like_pattern],
+                ).fetchall()
+                results = [dict(r) for r in rows]
+                logger.info(f'{TAG}   Strategy 2 (address LIKE): pattern="{like_pattern}" → {len(results)} result(s)')
+
     return results
 
 
@@ -464,17 +490,34 @@ def _best_address(jdata: dict | None, auction_addr: str) -> tuple[str | None, st
     return auction_addr or None, "auction"
 
 
+_STREET_SUFFIX_MAP = {
+    "STREET": "ST", "AVENUE": "AVE", "DRIVE": "DR", "BOULEVARD": "BLVD",
+    "ROAD": "RD", "LANE": "LN", "COURT": "CT", "CIRCLE": "CIR",
+    "PLACE": "PL", "TRAIL": "TRL", "TERRACE": "TER", "PARKWAY": "PKWY",
+    "HIGHWAY": "HWY", "EXPRESSWAY": "EXPY", "LOOP": "LOOP", "WAY": "WAY",
+}
+_DIRECTIONAL_MAP = {
+    "NORTH": "N", "SOUTH": "S", "EAST": "E", "WEST": "W",
+    "NORTHEAST": "NE", "NORTHWEST": "NW", "SOUTHEAST": "SE", "SOUTHWEST": "SW",
+}
+
+
 def _normalize_address(addr: str) -> str:
     """Normalize address: extract street portion, strip city/state/zip, uppercase.
 
     Handles both comma-delimited ("123 MAIN ST, TAMPA, FL 33601") and
     single-line ("123 MAIN ST TAMPA FL 33601") formats.
+    Also normalizes street suffixes (STREET→ST) and directionals (WEST→W)
+    to match bulk_parcels conventions.
     """
     if not addr:
         return ""
     street = addr.strip().upper()
     # Remove extra whitespace
     street = re.sub(r"\s+", " ", street)
+
+    # Strip zip/state first (before comma split, handles "VALRICO FLORIDA 33594")
+    street = re.sub(r"\s+FLORIDA\s*\d{5}(?:-\d{4})?\s*$", "", street)
 
     # If comma present, take first part (most reliable delimiter)
     if "," in street:
@@ -497,6 +540,14 @@ def _normalize_address(addr: str) -> str:
 
     # Remove trailing unit/apt markers
     street = re.sub(r"\s*#\s*\d+\s*$", "", street)
+
+    # Normalize street suffixes (STREET → ST, AVENUE → AVE, etc.)
+    words = street.split()
+    normalized = []
+    for word in words:
+        normalized.append(_STREET_SUFFIX_MAP.get(word, _DIRECTIONAL_MAP.get(word, word)))
+    street = " ".join(normalized)
+
     return street.strip()
 
 
@@ -528,7 +579,7 @@ def _lookup_strap(conn, strap: str) -> tuple[bool, str | None]:
 
 
 def _apply_resolution(conn, case_number: str, strap: str, strategy: str, stats: dict):
-    """Apply a resolved strap to the auction record."""
+    """Apply a resolved strap to the auction record and reset status for re-processing."""
     conn.execute(
         """
         UPDATE auctions
@@ -537,6 +588,23 @@ def _apply_resolution(conn, case_number: str, strap: str, strategy: str, stats: 
         WHERE case_number = ?
         """,
         [strap, strap, case_number],
+    )
+    # Also update the status table so enrichment can proceed:
+    # - Set parcel_id so _enrich_property finds it
+    # - Reset pipeline_status from 'skipped' to 'pending' so it gets picked up
+    conn.execute(
+        """
+        UPDATE status
+        SET parcel_id = ?,
+            pipeline_status = CASE
+                WHEN pipeline_status = 'skipped' THEN 'pending'
+                ELSE pipeline_status
+            END,
+            last_error = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE case_number = ?
+        """,
+        [strap, case_number],
     )
     stats["resolved"] += 1
     stats["by_strategy"][strategy] += 1

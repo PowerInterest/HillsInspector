@@ -102,6 +102,13 @@ class DatabaseWriter:
                 for attempt in range(max_retries):
                     try:
                         result = self._execute_write(operation, data)
+                        # Commit after each successful write — most PropertyDB methods
+                        # don't call conn.commit() themselves, so without this, writes
+                        # stay in an uncommitted transaction and may be lost.
+                        try:
+                            self.db.connect().commit()
+                        except Exception:
+                            pass
                         last_error = None
                         break
                     except Exception as e:

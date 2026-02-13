@@ -31,7 +31,7 @@ def normalize_encumbrance_type(raw: str) -> str:
         return "mortgage"
     if "JUDGMENT" in t or "JUD" in t or "CCJ" in t:
         return "judgment"
-    if "LIS PENDENS" in t or "(LP)" in t or t == "LP":
+    if "LIS PENDENS" in t or "LIS_PENDENS" in t or "(LP)" in t or t == "LP":
         return "lis_pendens"
     if "LIEN" in t or "(LN)" in t or t == "LN" or "MEDLN" in t:
         return "lien"

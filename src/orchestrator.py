@@ -53,8 +53,12 @@ def is_valid_folio(folio: str) -> bool:
     return any(c.isdigit() for c in folio_clean)
 
 
-def _display_status_summary(db: PropertyDB, start_date: date, end_date: date) -> None:
-    """Display a summary of pipeline status for the given date range."""
+def _display_status_summary(
+    db: PropertyDB,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> None:
+    """Display a summary of pipeline status for the given date range (or all)."""
     summary = db.get_status_summary(start_date, end_date)
 
     total = summary["total"]
@@ -63,14 +67,15 @@ def _display_status_summary(db: PropertyDB, start_date: date, end_date: date) ->
     step_counts = summary["step_counts"]
     failures = summary["failures"]
 
-    # Calculate days in range
-    days = (end_date - start_date).days + 1
-
     print()
     print("=" * 70)
     print("PIPELINE STATUS SUMMARY")
     print("=" * 70)
-    print(f"Date Range: {start_date} to {end_date} ({days} days)")
+    if start_date and end_date:
+        days = (end_date - start_date).days + 1
+        print(f"Date Range: {start_date} to {end_date} ({days} days)")
+    else:
+        print("Scope: All auctions")
     print()
 
     if total == 0:
@@ -668,16 +673,20 @@ class PipelineOrchestrator:
 
     async def process_auctions(
         self,
-        start_date: date,
-        end_date: date,
+        start_date: date | None = None,
+        end_date: date | None = None,
         include_failed: bool = False,
         max_retries: int = 3,
         skip_tax_deeds: bool = False,
     ):
         """
-        Main entry point. Enriches auctions within the date range.
+        Main entry point. Enriches auctions, optionally filtered by date range.
+        When dates are None, processes all incomplete auctions.
         """
-        logger.info(f"Starting orchestration for {start_date} to {end_date}")
+        if start_date and end_date:
+            logger.info(f"Starting orchestration for {start_date} to {end_date}")
+        else:
+            logger.info("Starting orchestration for all incomplete auctions")
 
         auctions = self.db.get_auctions_for_processing(
             start_date,
@@ -695,15 +704,15 @@ class PipelineOrchestrator:
             skip_tax_deeds=skip_tax_deeds,
         )
         logger.info(f"Found {len(auctions)} auctions to process")
-        
+
         await self._process_batch(auctions)
 
         logger.success("Orchestration complete")
 
     def _log_resume_stats(
         self,
-        start_date: date,
-        end_date: date,
+        start_date: date | None,
+        end_date: date | None,
         auctions: List[dict],
         include_failed: bool,
         max_retries: int,
@@ -720,9 +729,10 @@ class PipelineOrchestrator:
         retryable_failed = 0
         if failed:
             retryable_failed = len(self.db.get_failed_cases(start_date, end_date, max_retries))
+        date_label = f"{start_date} to {end_date}" if start_date and end_date else "all dates"
         logger.info(
             "Resume stats "
-            f"({start_date} to {end_date}): total={total} "
+            f"({date_label}): total={total} "
             f"pending={pending} processing={processing} completed={completed} "
             f"skipped={skipped} failed={failed} retryable_failed={retryable_failed} "
             f"to_process={len(auctions)} include_failed={include_failed} "
@@ -887,14 +897,22 @@ class PipelineOrchestrator:
 
         # PHASE 1: Independent Parallel Scrapers (Data Gathering)
         # These don't depend on each other and can run immediately
+        # Use gather(return_exceptions=True) instead of TaskGroup so that one
+        # failing scraper (e.g. tax timeout) doesn't cancel all other tasks.
         logger.info(f"Phase 1: Starting parallel gather for {parcel_id}")
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(self._run_tax_scraper(case_number, parcel_id, prop.address))
-            tg.create_task(self._run_market_scraper(case_number, parcel_id, prop.address))
-            tg.create_task(self._run_homeharvest(prop))
-            tg.create_task(self._run_fema_checker(case_number, parcel_id, prop.address))
-            tg.create_task(self._run_sunbiz_scraper(parcel_id, prop.owner_name or ""))
-            tg.create_task(self._run_hcpa_gis(case_number, parcel_id))
+        phase1_results = await asyncio.gather(
+            self._run_tax_scraper(case_number, parcel_id, prop.address),
+            self._run_market_scraper(case_number, parcel_id, prop.address),
+            self._run_homeharvest(prop),
+            self._run_fema_checker(case_number, parcel_id, prop.address),
+            self._run_sunbiz_scraper(parcel_id, prop.owner_name or ""),
+            self._run_hcpa_gis(case_number, parcel_id),
+            return_exceptions=True,
+        )
+        for i, result in enumerate(phase1_results):
+            if isinstance(result, Exception):
+                task_names = ["tax", "market", "homeharvest", "fema", "sunbiz", "hcpa"]
+                logger.warning(f"Phase 1 task {task_names[i]} failed for {parcel_id}: {result}")
 
         # PHASE 2: ORI Ingestion (Depends on Legal Description from HCPA/Bulk)
         # HCPA GIS (Phase 1) might have updated legal description in DB
@@ -1075,9 +1093,15 @@ class PipelineOrchestrator:
         # Permits needs NOCs (from ORI)
         # Survival needs Encumbrances (from ORI)
         logger.info(f"Phase 3: Starting Analysis for {parcel_id}")
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(self._run_permit_scraper(case_number, parcel_id, address))
-            tg.create_task(self._run_survival_analysis(case_number, prop)) # Needs full prop context
+        phase3_results = await asyncio.gather(
+            self._run_permit_scraper(case_number, parcel_id, address),
+            self._run_survival_analysis(case_number, prop),
+            return_exceptions=True,
+        )
+        for i, result in enumerate(phase3_results):
+            if isinstance(result, Exception):
+                task_names = ["permits", "survival"]
+                logger.warning(f"Phase 3 task {task_names[i]} failed for {parcel_id}: {result}")
 
     # -------------------------------------------------------------------------
     # Individual Execution Wrappers
@@ -1920,6 +1944,11 @@ class PipelineOrchestrator:
 
             # Process survival status updates from v2 analysis (returned, not written in-thread)
             survival_updates = result.get("survival_updates", [])
+            if not survival_updates:
+                logger.warning(
+                    f"Survival analysis for {prop.parcel_id} ({case_number}) returned 0 updates "
+                    f"(flags={result.get('uncertainty_flags', [])}, summary={result.get('full_summary', '')})"
+                )
             for upd in survival_updates:
                 await self.db_writer.enqueue(
                     "generic_call",
@@ -2006,22 +2035,22 @@ async def run_full_update(
     if not healthy_endpoints:
         logger.warning("No vision servers available - PDF analysis will be skipped")
 
-    if not start_date:
-        start_date = today_local()
-    if not end_date:
-        end_date = start_date + timedelta(days=40)
+    # Date window only gates Step 1 (scraping new auctions).
+    # Steps 2+ process ALL incomplete auctions regardless of date.
+    scrape_start = start_date if start_date else today_local()
+    scrape_end = end_date if end_date else scrape_start + timedelta(days=40)
 
     db = PropertyDB()
     storage = ScraperStorage(db_path=db.db_path, db=db)
 
-    # Initialize status table and backfill from existing data
+    # Initialize status table and backfill from existing data (all auctions)
     db.ensure_status_table()
     db.initialize_status_from_auctions()
-    db.backfill_status_steps(start_date, end_date)
-    db.refresh_status_completion_for_range(start_date, end_date)
+    db.backfill_status_steps()
+    db.refresh_status_completion_for_range()
 
-    # Display pipeline status summary
-    _display_status_summary(db, start_date, end_date)
+    # Display pipeline status summary (all auctions)
+    _display_status_summary(db)
 
     # =========================================================================
     # STEP 1 & 1.5: Scrape Auctions
@@ -2036,8 +2065,8 @@ async def run_full_update(
                 storage=storage,
                 process_final_judgments=False,
             )
-            current = start_date
-            while current <= end_date:
+            current = scrape_start
+            while current <= scrape_end:
                 if current.weekday() < 5:  # Skip weekends
                     count = db.get_auction_count_by_date(current)
                     if count == 0 and db.was_auction_scraped(current, "foreclosure"):
@@ -2075,7 +2104,7 @@ async def run_full_update(
         else:
             try:
                 tax_deed_scraper = TaxDeedScraper()
-                tax_props = await tax_deed_scraper.scrape_all(start_date, end_date)
+                tax_props = await tax_deed_scraper.scrape_all(scrape_start, scrape_end)
                 for p in tax_props:
                     db.upsert_auction(p)
                     # Track status for tax deed cases
@@ -2158,9 +2187,7 @@ async def run_full_update(
                 FROM status s
                 JOIN auctions a ON a.case_number = s.case_number
                 WHERE s.step_pdf_downloaded IS NULL
-                  AND s.auction_date >= ? AND s.auction_date <= ?
                 """,
-                (start_date, end_date),
             )
             marked = 0
             for row in unmarked:
@@ -2183,9 +2210,7 @@ async def run_full_update(
                 SELECT s.case_number
                 FROM status s
                 WHERE s.step_pdf_downloaded IS NULL
-                  AND s.auction_date >= ? AND s.auction_date <= ?
                 """,
-                (start_date, end_date),
             )
             if missing_pdf_cases:
                 logger.info(
@@ -2618,9 +2643,15 @@ async def run_full_update(
                         continue
                     raise
             logger.success(f"Bulk enrichment: {enrichment_stats}")
-            # Mark all auctions in date range as bulk enriched
-            auctions_in_range = db.get_auctions_by_date_range(start_date, end_date)
-            for auction in auctions_in_range:
+            # Mark all incomplete auctions as bulk enriched
+            unenriched = db.execute_query(
+                """
+                SELECT s.case_number FROM status s
+                WHERE s.step_bulk_enriched IS NULL
+                  AND COALESCE(s.pipeline_status, 'pending') NOT IN ('completed', 'skipped')
+                """
+            )
+            for auction in unenriched:
                 db.mark_status_step_complete(
                     auction["case_number"],
                     "step_bulk_enriched",
@@ -2682,8 +2713,8 @@ async def run_full_update(
     await writer.start()
     try:
         await orchestrator.process_auctions(
-            start_date,
-            end_date,
+            start_date=None,
+            end_date=None,
             include_failed=retry_failed,
             max_retries=max_retries,
             skip_tax_deeds=skip_tax_deeds,
@@ -2707,33 +2738,20 @@ async def run_full_update(
         db.ensure_geocode_columns()
 
         query = """
-            WITH normalized AS (
-                SELECT
-                    p.folio,
-                    p.property_address,
-                    p.city,
-                    p.zip_code,
-                    normalize_date(a.auction_date) AS auction_date_norm,
-                    p.latitude,
-                    p.longitude
-                FROM parcels p
-                JOIN auctions a
-                  ON COALESCE(a.parcel_id, a.folio) = p.folio
-            )
             SELECT DISTINCT
-                folio,
-                property_address,
-                city,
-                zip_code
-            FROM normalized
-            WHERE (latitude IS NULL OR longitude IS NULL)
-              AND property_address IS NOT NULL
-              AND property_address != ''
-              AND LOWER(property_address) NOT IN ('unknown', 'n/a', 'none')
-              AND auction_date_norm >= ?
-              AND auction_date_norm <= ?
+                p.folio,
+                p.property_address,
+                p.city,
+                p.zip_code
+            FROM parcels p
+            JOIN auctions a
+              ON COALESCE(a.parcel_id, a.folio) = p.folio
+            WHERE (p.latitude IS NULL OR p.longitude IS NULL)
+              AND p.property_address IS NOT NULL
+              AND p.property_address != ''
+              AND LOWER(p.property_address) NOT IN ('unknown', 'n/a', 'none')
         """
-        params: list[object] = [start_date, end_date]
+        params: list[object] = []
         if geocode_limit is not None:
             query += " LIMIT ?"
             params.append(geocode_limit)

@@ -285,10 +285,14 @@ class ORIApiScraper:
         Returns:
             List of document dictionaries (usually 0 or 1)
         """
+        try:
+            instr_val = int(instrument.strip())
+        except (ValueError, TypeError):
+            instr_val = instrument.strip()
         payload = {
             "RecordDateBegin": "01/01/1900",
             "RecordDateEnd": today_local().strftime("%m/%d/%Y"),
-            "Instrument": instrument.strip(),
+            "Instrument": instr_val,
         }
         # Only add doc type filter if requested (can cause 400 errors on some searches)
         if include_doc_types:
