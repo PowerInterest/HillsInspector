@@ -1,15 +1,15 @@
 {% extends "base.html" %}
 
-{% block title %}Auctions on {{ auction_date.strftime('%B %d, %Y') }} - HillsInspector{% endblock %}
+{% block title %}Auctions on {{ auction_date|format_date_long }} - HillsInspector{% endblock %}
 
 {% block content %}
 <div class="auctions-date-page">
     <nav class="breadcrumb">
         <a href="/">Dashboard</a> &raquo;
-        <span>{{ auction_date.strftime('%B %d, %Y') }}</span>
+        <span>{{ auction_date|format_date_long }}</span>
     </nav>
 
-    <h1>Auctions on {{ auction_date.strftime('%B %d, %Y') }}</h1>
+    <h1>Auctions on {{ auction_date|format_date_long }}</h1>
 
     <div class="table-container">
         <table class="auction-table">

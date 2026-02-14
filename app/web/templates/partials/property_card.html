@@ -7,6 +7,7 @@
 {% set permits_total = enrich.permits_total | default(0) %}
 {% set liens_surviving = enrich.liens_surviving | default(0) %}
 {% set liens_total_amount = enrich.liens_total_amount | default(0) %}
+{% set liens_total = enrich.liens_total | default(0) %}
 {% set has_enrichments = enrich.has_enrichments | default(false) %}
 
 <div class="property-card {% if auction.is_toxic_title %}toxic{% endif %}" data-folio="{{ auction.folio }}">
@@ -55,14 +56,14 @@
         </span>
         {% endif %}
 
-        <!-- Surviving Liens -->
+        <!-- Encumbrances / Liens -->
         {% if liens_surviving > 0 %}
-        <span class="badge-enrichment badge-liens" title="${:,.0f} in surviving liens".format(liens_total_amount)>
-            ⚠️ {{ liens_surviving }} Liens
+        <span class="badge-enrichment badge-liens" title="{{ liens_total }} encumbrances, {{ liens_surviving }} surviving">
+            ⚠️ {{ liens_surviving }} Surviving
         </span>
-        {% elif auction.est_surviving_debt and auction.est_surviving_debt > 0 %}
-        <span class="badge-enrichment badge-liens" title="Estimated surviving debt">
-            ⚠️ Liens
+        {% elif liens_total > 0 %}
+        <span class="badge-enrichment badge-liens-clear" title="{{ liens_total }} encumbrances analyzed, none surviving">
+            ✓ {{ liens_total }} Liens
         </span>
         {% endif %}
 
@@ -74,7 +75,7 @@
         {% endif %}
 
         <!-- Clear Title (if analyzed and no issues) -->
-        {% if has_enrichments and not auction.is_toxic_title and liens_surviving == 0 %}
+        {% if has_enrichments and not auction.is_toxic_title and liens_surviving == 0 and liens_total > 0 %}
         <span class="badge-enrichment badge-clear" title="No title issues found">
             ✓ Clear
         </span>
@@ -152,7 +153,7 @@
         <div class="card-auction-date">
             <span class="auction-date-icon">📅</span>
             <span class="auction-date-text">
-                {{ auction.auction_date.strftime('%b %d, %Y') if auction.auction_date else 'Date TBD' }}
+                {{ auction.auction_date|format_date if auction.auction_date else 'Date TBD' }}
             </span>
         </div>
 

@@ -1090,10 +1090,16 @@ a:hover {
     color: #065f46;
 }
 
-/* Liens Badge */
+/* Liens Badge - surviving liens found */
 .badge-liens {
     background: #fee2e2;
     color: #991b1b;
+}
+
+/* Liens Badge - analyzed, none surviving */
+.badge-liens-clear {
+    background: #e0e7ff;
+    color: #3730a3;
 }
 
 /* Toxic Title Badge */

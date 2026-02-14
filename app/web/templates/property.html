@@ -30,7 +30,7 @@
                 <span class="badge badge-{{ auction.auction_type|lower }}">
                     {{ auction.auction_type or 'UNKNOWN' }}
                 </span>
-                {% if auction.is_toxic_title %}
+                {% if property.is_toxic_title %}
                 <span class="flag flag-danger">TOXIC TITLE</span>
                 {% endif %}
             </div>
@@ -38,7 +38,7 @@
         {% if auction.auction_date %}
         <div class="auction-date-box">
             <div class="auction-date-label">Auction Date</div>
-            <div class="auction-date-value">{{ auction.auction_date.strftime('%B %d, %Y') }}</div>
+            <div class="auction-date-value">{{ auction.auction_date|format_date_long }}</div>
         </div>
         {% endif %}
         <div class="property-actions" style="margin-left: 20px;">
@@ -138,7 +138,7 @@
                             </div>
                             <div class="equity-line subtract">
                                 <span>Est. Surviving Liens</span>
-                                <span class="money">- {{ "${:,.0f}".format(auction.est_surviving_debt) if auction.est_surviving_debt else '$0' }}</span>
+                                <span class="money">- {{ "${:,.0f}".format(property.est_surviving_debt) if property.est_surviving_debt else '$0' }}</span>
                             </div>
                             <div class="equity-line total">
                                 <span>NET EQUITY</span>

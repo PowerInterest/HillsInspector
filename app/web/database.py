@@ -11,7 +11,10 @@ from datetime import UTC, date, datetime, timedelta
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from loguru import logger
+from dotenv import load_dotenv
 from src.utils.time import today_local
+
+load_dotenv()
 
 
 # =============================================================================
@@ -32,6 +35,8 @@ class DatabaseUnavailableError(Exception):
 
 def _resolve_db_path() -> Path:
     """Resolve the SQLite database path."""
+    # Ensure .env is loaded before checking env vars
+    load_dotenv()
     data_dir = Path(__file__).resolve().parents[2] / "data"
     # Allow override via env for explicit control
     env_path = os.getenv("HILLS_SQLITE_DB")
@@ -258,8 +263,9 @@ def get_upcoming_auctions(
     today = today_local()
     end_date = today + timedelta(days=days_ahead)
 
-    # Build query with optional joins to bulk_parcels
-    # Note: auctions.folio matches bulk_parcels.strap (not folio)
+    # Build query with joins to bulk_parcels + parcels + computed surviving debt
+    # auctions.folio matches bulk_parcels.strap (not folio)
+    # Surviving debt computed from encumbrances table
     query = """
         SELECT
             a.id,
@@ -271,28 +277,39 @@ def get_upcoming_auctions(
             a.assessed_value,
             a.final_judgment_amount,
             a.opening_bid,
-            a.est_surviving_debt,
-            a.is_toxic_title,
             a.status,
             a.plaintiff_max_bid,
-            -- Joined from bulk_parcels (if available)
-            bp.owner_name,
-            bp.beds,
-            bp.baths,
-            bp.heated_area,
-            bp.year_built,
-            bp.market_value as hcpa_market_value,
-            bp.land_use_desc,
-            -- Calculated fields
-            COALESCE(bp.market_value, a.assessed_value, 0) -
+            -- Joined from bulk_parcels / parcels (if available)
+            COALESCE(p.owner_name, bp.owner_name) as owner_name,
+            COALESCE(p.beds, bp.beds) as beds,
+            COALESCE(p.baths, bp.baths) as baths,
+            COALESCE(p.heated_area, bp.heated_area) as heated_area,
+            COALESCE(p.year_built, bp.year_built) as year_built,
+            COALESCE(p.market_value, bp.market_value) as hcpa_market_value,
+            COALESCE(bp.land_use_desc, p.land_use) as land_use_desc,
+            -- Computed surviving debt from encumbrances
+            COALESCE(e.survived_debt, 0) as est_surviving_debt,
+            CASE WHEN COALESCE(e.survived_count, 0) > 2
+                 OR COALESCE(e.survived_debt, 0) > COALESCE(a.final_judgment_amount, 0)
+                 THEN 1 ELSE 0 END as is_toxic_title,
+            -- Net equity
+            COALESCE(p.market_value, bp.market_value, a.assessed_value, 0) -
                 COALESCE(a.final_judgment_amount, 0) -
-                COALESCE(a.est_surviving_debt, 0) as net_equity
+                COALESCE(e.survived_debt, 0) as net_equity
         FROM auctions a
         LEFT JOIN bulk_parcels bp ON a.folio = bp.strap
+        LEFT JOIN parcels p ON a.folio = p.folio
+        LEFT JOIN (
+            SELECT folio,
+                SUM(CASE WHEN survival_status = 'SURVIVED' THEN COALESCE(amount, 0) ELSE 0 END) as survived_debt,
+                SUM(CASE WHEN survival_status = 'SURVIVED' THEN 1 ELSE 0 END) as survived_count
+            FROM encumbrances
+            GROUP BY folio
+        ) e ON a.folio = e.folio
         WHERE a.auction_date >= ? AND a.auction_date <= ?
     """
 
-    params = [today, end_date]
+    params: list = [today, end_date]
 
     if auction_type:
         query += " AND a.auction_type = ?"
@@ -301,7 +318,8 @@ def get_upcoming_auctions(
     # Validate sort column to prevent SQL injection
     valid_sort_cols = [
         "auction_date", "property_address", "assessed_value",
-        "final_judgment_amount", "net_equity", "case_number"
+        "final_judgment_amount", "net_equity", "case_number",
+        "est_surviving_debt"
     ]
     if sort_by not in valid_sort_cols:
         sort_by = "auction_date"
@@ -315,27 +333,7 @@ def get_upcoming_auctions(
         return [dict(row) for row in results]
     except Exception as e:
         logger.error(f"Error fetching auctions: {e}")
-        # Fallback query without bulk_parcels join
-        fallback_query = """
-            SELECT
-                a.*,
-                NULL as owner_name,
-                NULL as beds,
-                NULL as baths,
-                NULL as heated_area,
-                NULL as year_built,
-                NULL as hcpa_market_value,
-                NULL as land_use_desc,
-                COALESCE(a.assessed_value, 0) -
-                    COALESCE(a.final_judgment_amount, 0) -
-                    COALESCE(a.est_surviving_debt, 0) as net_equity
-            FROM auctions a
-            WHERE a.auction_date >= ? AND a.auction_date <= ?
-            ORDER BY auction_date ASC
-            LIMIT ? OFFSET ?
-        """
-        results = conn.execute(fallback_query, [today, end_date, limit, offset]).fetchall()
-        return [dict(row) for row in results]
+        return []
     finally:
         conn.close()
 
@@ -479,20 +477,6 @@ def get_property_detail(folio: str) -> Optional[Dict[str, Any]]:
         except Exception as err:
             logger.debug(f"bulk_parcels lookup failed for {folio}: {err}")
 
-        # Get liens
-        liens = []
-        try:
-            liens_query = """
-                SELECT * FROM liens
-                WHERE case_number = ?
-                ORDER BY recording_date
-            """
-            liens_result = conn.execute(liens_query, [auction.get("case_number")]).fetchall()
-            if liens_result:
-                liens = [dict(row) for row in liens_result]
-        except Exception as err:
-            logger.debug(f"Error fetching liens for {folio}: {err}")
-
         # Get encumbrances (from chain analysis)
         encumbrances = []
         try:
@@ -521,31 +505,57 @@ def get_property_detail(folio: str) -> Optional[Dict[str, Any]]:
         except Exception as err:
             logger.debug(f"Error fetching chain for {folio}: {err}")
 
+        # Get parcels data for enrichments
+        parcels_data = None
+        try:
+            parcels_result = conn.execute("SELECT * FROM parcels WHERE folio = ?", [folio]).fetchone()
+            if parcels_result:
+                parcels_data = dict(parcels_result)
+        except Exception as err:
+            logger.debug(f"parcels lookup failed for {folio}: {err}")
+
+        # Calculate surviving debt from encumbrances
+        survived_debt = sum(
+            (e.get("amount") or 0)
+            for e in encumbrances
+            if (e.get("survival_status") or "").upper() == "SURVIVED"
+        )
+        survived_count = sum(
+            1 for e in encumbrances
+            if (e.get("survival_status") or "").upper() == "SURVIVED"
+        )
+        is_toxic = survived_count > 2 or (
+            survived_debt > (auction.get("final_judgment_amount") or 0)
+            and survived_debt > 0
+        )
+
         # Calculate net equity
         enrichments = get_property_enrichments(folio)
         market = get_market_snapshot(folio)
 
         market_value = (
             market.get("blended_estimate")
+            or (parcels_data or {}).get("market_value")
             or (parcel or {}).get("market_value")
             or auction.get("assessed_value")
             or 0
         )
         judgment = auction.get("final_judgment_amount") or 0
-        surviving = auction.get("est_surviving_debt") or 0
-        net_equity = market_value - judgment - surviving
+        net_equity = market_value - judgment - survived_debt
 
         return {
             "folio": folio,
             "auction": auction,
             "parcel": parcel,
-            "liens": liens,
+            "parcels_data": parcels_data,
             "encumbrances": encumbrances,
             "chain": chain,
             "nocs": get_nocs_for_property(folio),
             "sales": get_sales_history(folio),
             "net_equity": net_equity,
             "market_value": market_value,
+            "est_surviving_debt": survived_debt,
+            "is_toxic_title": is_toxic,
             "market": market,
             "enrichments": enrichments,
             "sources": get_sources_for_property(folio)
@@ -735,40 +745,97 @@ def get_auctions_by_date(auction_date: date) -> List[Dict[str, Any]]:
         conn.close()
 
 
-def get_liens_for_property(case_number: str) -> List[Dict[str, Any]]:
-    """Get all liens for a property by case number."""
+def get_liens_for_property(folio_or_case: str) -> List[Dict[str, Any]]:
+    """Get all encumbrances for a property by folio (or case_number fallback)."""
     conn = get_connection()
 
     try:
-        query = """
-            SELECT * FROM liens
-            WHERE case_number = ?
+        # Try by folio first
+        results = conn.execute("""
+            SELECT * FROM encumbrances
+            WHERE folio = ?
             ORDER BY recording_date
-        """
-        results = conn.execute(query, [case_number]).fetchall()
-        return [dict(row) for row in results]
+        """, [folio_or_case]).fetchall()
+
+        if not results:
+            # Fallback: look up folio from case_number, then query encumbrances
+            row = conn.execute(
+                "SELECT folio FROM auctions WHERE case_number = ? LIMIT 1",
+                [folio_or_case]
+            ).fetchone()
+            if row and row[0]:
+                results = conn.execute("""
+                    SELECT * FROM encumbrances
+                    WHERE folio = ?
+                    ORDER BY recording_date
+                """, [row[0]]).fetchall()
+
+        return [dict(row) for row in results] if results else []
     except Exception as e:
-        logger.error(f"Error fetching liens for {case_number}: {e}")
+        logger.error(f"Error fetching encumbrances for {folio_or_case}: {e}")
         return []
     finally:
         conn.close()
 
 
 def get_documents_for_property(folio: str) -> List[Dict[str, Any]]:
-    """Get all documents for a property."""
+    """Get all documents for a property (DB metadata + filesystem PDFs)."""
     conn = get_connection()
+    docs: List[Dict[str, Any]] = []
 
     try:
-        # Check if documents table exists
-        query = """
-            SELECT * FROM documents
-            WHERE folio = ?
-            ORDER BY recording_date DESC
-        """
-        results = conn.execute(query, [folio]).fetchall()
-        return [dict(row) for row in results]
+        # Get ORI documents from DB
+        try:
+            results = conn.execute("""
+                SELECT * FROM documents
+                WHERE folio = ?
+                ORDER BY recording_date DESC
+            """, [folio]).fetchall()
+            docs = [dict(row) for row in results]
+        except Exception as e:
+            logger.warning(f"Documents query failed: {e}")
+
+        # Also scan filesystem for judgment PDFs
+        # Look up case_number(s) for this folio
+        try:
+            case_rows = conn.execute(
+                "SELECT case_number FROM auctions WHERE folio = ?",
+                [folio]
+            ).fetchall()
+            data_dir = Path(__file__).resolve().parents[2] / "data" / "Foreclosure"
+            seen_files = {d.get("file_path") for d in docs if d.get("file_path")}
+
+            for case_row in case_rows:
+                case_num = case_row[0]
+                if not case_num:
+                    continue
+                doc_dir = data_dir / case_num / "documents"
+                if not doc_dir.is_dir():
+                    continue
+                for pdf_file in doc_dir.glob("*.pdf"):
+                    rel_path = str(pdf_file.relative_to(data_dir.parent.parent))
+                    if rel_path in seen_files:
+                        continue
+                    seen_files.add(rel_path)
+                    docs.append({
+                        "id": None,
+                        "folio": folio,
+                        "case_number": case_num,
+                        "document_type": "FINAL_JUDGMENT" if "judgment" in pdf_file.name.lower() else "PDF",
+                        "file_path": rel_path,
+                        "recording_date": None,
+                        "instrument_number": None,
+                        "party1": None,
+                        "party2": None,
+                        "legal_description": None,
+                        "_from_disk": True,
+                    })
+        except Exception as e:
+            logger.debug(f"Filesystem document scan failed for {folio}: {e}")
+
+        return docs
     except Exception as e:
-        logger.warning(f"Documents table may not exist or error: {e}")
+        logger.warning(f"get_documents_for_property error: {e}")
         return []
     finally:
         conn.close()
@@ -860,16 +927,52 @@ def get_dashboard_stats() -> Dict[str, Any]:
         """, [today, week_end]).fetchone()
         stats["this_week"] = week_row[0] if week_row else 0
 
-        # Toxic titles flagged
+        # Toxic titles: folios with >2 survived encumbrances among upcoming auctions
         try:
             toxic_row = conn.execute("""
-                SELECT COUNT(*) FROM auctions
-                WHERE auction_date >= ? AND is_toxic_title = 1
-            """, [today]).fetchone()
-            stats["toxic_flagged"] = toxic_row[0] if toxic_row else 0
-        except sqlite3.OperationalError as e:
-            logger.debug(f"is_toxic_title column check failed: {e}")
+                SELECT COUNT(DISTINCT a.folio)
+                FROM auctions a
+                JOIN encumbrances e ON a.folio = e.folio
+                WHERE a.auction_date >= ?
+                  AND e.survival_status = 'SURVIVED'
+                GROUP BY a.folio
+                HAVING COUNT(*) > 2 OR SUM(COALESCE(e.amount, 0)) > COALESCE(MAX(a.final_judgment_amount), 0)
+            """, [today]).fetchall()
+            stats["toxic_flagged"] = len(toxic_row) if toxic_row else 0
+        except Exception as e:
+            logger.debug(f"Toxic title count failed: {e}")
             stats["toxic_flagged"] = 0
+
+        # Additional real metrics
+        try:
+            enc_row = conn.execute("""
+                SELECT COUNT(DISTINCT folio) FROM encumbrances
+            """).fetchone()
+            stats["encumbrances_coverage"] = enc_row[0] if enc_row else 0
+        except Exception:
+            stats["encumbrances_coverage"] = 0
+
+        try:
+            chain_row = conn.execute("""
+                SELECT COUNT(DISTINCT folio) FROM chain_of_title
+            """).fetchone()
+            stats["chain_coverage"] = chain_row[0] if chain_row else 0
+        except Exception:
+            stats["chain_coverage"] = 0
+
+        try:
+            surv_row = conn.execute("""
+                SELECT
+                    COUNT(*) as total_survived,
+                    SUM(COALESCE(amount, 0)) as total_survived_debt
+                FROM encumbrances
+                WHERE survival_status = 'SURVIVED'
+            """).fetchone()
+            stats["total_survived_liens"] = surv_row[0] if surv_row else 0
+            stats["total_survived_debt"] = surv_row[1] if surv_row else 0
+        except Exception:
+            stats["total_survived_liens"] = 0
+            stats["total_survived_debt"] = 0
 
         return stats
 
@@ -900,6 +1003,7 @@ def _default_enrichments() -> Dict[str, Any]:
         "permits_open": 0,
         "liens_surviving": 0,
         "liens_total_amount": 0,
+        "liens_total": 0,
         "sunbiz_entities": 0,
         "sunbiz_active": 0,
         "market_value": None,
@@ -944,28 +1048,52 @@ def _safe_json(value: Any) -> Any:
 
 
 def get_tax_status_for_property(folio: str) -> Dict[str, Any]:
-    """Tax status + liens (stored in liens table as document_type LIKE 'TAX%')."""
+    """Tax status from parcels table + tax-related encumbrances."""
     conn = get_connection()
     try:
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM liens
-            WHERE folio = ?
-              AND UPPER(COALESCE(document_type, '')) LIKE 'TAX%'
-            ORDER BY recording_date
-            """,
+        # Get tax status from parcels
+        parcel_row = conn.execute(
+            "SELECT tax_status, tax_warrant FROM parcels WHERE folio = ?",
             [folio],
-        ).fetchall()
-        if not rows:
-            return {"has_tax_liens": False, "total_amount_due": None, "liens": []}
-        liens = [dict(row) for row in rows]
-        amounts = [_safe_float(lien.get("amount")) for lien in liens]
-        total = sum([a for a in amounts if a is not None]) if any(amounts) else None
-        return {"has_tax_liens": True, "total_amount_due": total, "liens": liens}
+        ).fetchone()
+
+        has_tax_issues = False
+        tax_status = None
+        tax_warrant = False
+        if parcel_row:
+            p = dict(parcel_row)
+            tax_status = p.get("tax_status")
+            tax_warrant = bool(p.get("tax_warrant"))
+            has_tax_issues = tax_warrant or (tax_status and "delinquent" in (tax_status or "").lower())
+
+        # Get tax-related encumbrances
+        tax_encs = []
+        try:
+            rows = conn.execute("""
+                SELECT * FROM encumbrances
+                WHERE folio = ?
+                  AND (UPPER(COALESCE(encumbrance_type, '')) LIKE '%TAX%'
+                       OR UPPER(COALESCE(encumbrance_type, '')) LIKE '%CERTIFICATE%')
+                ORDER BY recording_date
+            """, [folio]).fetchall()
+            if rows:
+                tax_encs = [dict(row) for row in rows]
+        except Exception as e:
+            logger.debug(f"Tax encumbrances query failed for {folio}: {e}")
+
+        amounts = [_safe_float(e.get("amount")) for e in tax_encs]
+        total = sum(a for a in amounts if a is not None) if any(a is not None for a in amounts) else None
+
+        return {
+            "has_tax_liens": has_tax_issues or len(tax_encs) > 0,
+            "tax_status": tax_status,
+            "tax_warrant": tax_warrant,
+            "total_amount_due": total,
+            "liens": tax_encs,
+        }
     except Exception as e:
         logger.debug(f"Error fetching tax status for {folio}: {e}")
-        return {"has_tax_liens": False, "total_amount_due": None, "liens": []}
+        return {"has_tax_liens": False, "tax_status": None, "tax_warrant": False, "total_amount_due": None, "liens": []}
     finally:
         conn.close()
 
@@ -1122,66 +1250,60 @@ def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
         return result
 
     folios_unique: List[str] = [str(f) for f in {f for f in folios if f}]
+    if not folios_unique:
+        return result
 
-    # Batch read scraper_outputs for latest records per scraper/folio
-    if folios_unique:
-        try:
-            conn = sqlite3.connect(str(DB_PATH))
-            conn.row_factory = sqlite3.Row
-            placeholders = ",".join(["?"] * len(folios_unique))
-
-            for scraper in ["fema", "permits", "sunbiz", "realtor"]:
-                try:
-                    rows = conn.execute(f"""
-                        WITH latest AS (
-                            SELECT
-                                property_id,
-                                extracted_summary,
-                                ROW_NUMBER() OVER (PARTITION BY property_id ORDER BY scraped_at DESC) AS rn
-                            FROM scraper_outputs
-                            WHERE property_id IN ({placeholders})
-                              AND scraper = ?
-                              AND extraction_success = 1
-                        )
-                        SELECT property_id, extracted_summary
-                        FROM latest
-                        WHERE rn = 1
-                    """, [*folios_unique, scraper]).fetchall()
-
-                    for row in rows:
-                        property_id = row[0]
-                        summary = row[1]
-                        if property_id not in result:
-                            continue
-                        data = result[property_id]
-                        data["has_enrichments"] = True
-                        with suppress(Exception):
-                            summary = json.loads(summary) if isinstance(summary, str) else summary
-
-                        if scraper == "fema":
-                            data["flood_zone"] = (summary or {}).get("flood_zone")
-                            data["flood_risk"] = (summary or {}).get("risk_level")
-                            data["insurance_required"] = (summary or {}).get("insurance_required", False)
-                        elif scraper == "permits":
-                            data["permits_total"] = (summary or {}).get("total", 0)
-                            data["permits_open"] = (summary or {}).get("open", 0)
-                        elif scraper == "sunbiz":
-                            data["sunbiz_entities"] = (summary or {}).get("found", 0)
-                            data["sunbiz_active"] = (summary or {}).get("active", 0)
-                        elif scraper == "realtor":
-                            data["market_value"] = (summary or {}).get("price")
-                            data["zestimate"] = (summary or {}).get("zestimate")
-                except Exception as e:
-                    logger.debug(f"Error getting {scraper} enrichment batch: {e}")
-            conn.close()
-        except Exception as e:
-            logger.debug(f"Scraper outputs not available: {e}")
-
-    # Also get lien data from main DB in one query
+    conn = get_connection()
     try:
-        if folios_unique:
-            conn = get_connection()
-            placeholders = ",".join(["?"] * len(folios_unique))
+        placeholders = ",".join(["?"] * len(folios_unique))
+
+        # Get enrichment data from parcels table (flood, coords, etc.)
+        try:
+            rows = conn.execute(f"""
+                SELECT folio, flood_zone, flood_risk_level, flood_insurance_required,
+                       market_value, owner_name
+                FROM parcels
+                WHERE folio IN ({placeholders})
+            """, folios_unique).fetchall()
+            for row in rows:
+                r = dict(row)
+                f = r["folio"]
+                if f not in result:
+                    continue
+                data = result[f]
+                if r.get("flood_zone"):
+                    data["flood_zone"] = r["flood_zone"]
+                    data["flood_risk"] = r.get("flood_risk_level")
+                    data["insurance_required"] = bool(r.get("flood_insurance_required"))
+                    data["has_enrichments"] = True
+                if r.get("market_value"):
+                    data["market_value"] = r["market_value"]
+                    data["has_enrichments"] = True
+        except Exception as e:
+            logger.debug(f"Error getting parcels enrichment batch: {e}")
+
+        # Get permit counts
+        try:
+            rows = conn.execute(f"""
+                SELECT folio,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN UPPER(COALESCE(status, '')) NOT IN ('CLOSED','FINALED','EXPIRED','COMPLETE') THEN 1 ELSE 0 END) as open_count
+                FROM permits
+                WHERE folio IN ({placeholders})
+                GROUP BY folio
+            """, folios_unique).fetchall()
+            for folio_val, total, open_count in rows:
+                if folio_val not in result:
+                    continue
+                result[folio_val]["permits_total"] = total or 0
+                result[folio_val]["permits_open"] = open_count or 0
+                if total and total > 0:
+                    result[folio_val]["has_enrichments"] = True
+        except Exception as e:
+            logger.debug(f"Error getting permits enrichment batch: {e}")
+
+        # Get encumbrance/lien data
+        try:
             rows = conn.execute(f"""
                 SELECT
                     folio,
@@ -1193,17 +1315,41 @@ def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
                 GROUP BY folio
             """, folios_unique).fetchall()
 
-            for folio, total, surviving, amount in rows:
-                if folio not in result:
+            for folio_val, total, surviving, amount in rows:
+                if folio_val not in result:
                     continue
-                result[folio]["liens_surviving"] = surviving or 0
-                result[folio]["liens_total_amount"] = amount or 0
+                result[folio_val]["liens_surviving"] = surviving or 0
+                result[folio_val]["liens_total_amount"] = amount or 0
+                result[folio_val]["liens_total"] = total or 0
                 if total and total > 0:
-                    result[folio]["has_enrichments"] = True
+                    result[folio_val]["has_enrichments"] = True
+        except Exception as e:
+            logger.debug(f"Error getting encumbrances batch: {e}")
 
-            conn.close()
+        # Get market data (zestimate)
+        try:
+            rows = conn.execute(f"""
+                WITH latest AS (
+                    SELECT folio, zestimate,
+                        ROW_NUMBER() OVER (PARTITION BY folio ORDER BY created_at DESC) AS rn
+                    FROM market_data
+                    WHERE folio IN ({placeholders}) AND source = 'Zillow'
+                )
+                SELECT folio, zestimate FROM latest WHERE rn = 1
+            """, folios_unique).fetchall()
+            for folio_val, zest in rows:
+                if folio_val not in result:
+                    continue
+                if zest:
+                    result[folio_val]["zestimate"] = zest
+                    result[folio_val]["has_enrichments"] = True
+        except Exception as e:
+            logger.debug(f"Error getting market data batch: {e}")
+
     except Exception as e:
-        logger.debug(f"Error getting liens batch: {e}")
+        logger.debug(f"Error in get_bulk_enrichments: {e}")
+    finally:
+        conn.close()
 
     return result
 

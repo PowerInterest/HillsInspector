@@ -98,15 +98,10 @@ TITLE_DOC_TYPES = [
 ]
 
 # Canonical post-normalization sets (for queries against normalized DB values)
-from src.db.type_normalizer import (  # noqa: E402
-    CANONICAL_DEED_TYPES,
-    CANONICAL_ENCUMBRANCE_TYPES,
-    CANONICAL_SATISFACTION_TYPES,
-)
 
 # ORI-format type sets — used for substring matching against raw ORI doc type strings
 # e.g. any(dt in "(MTG) MORTGAGE".upper() for dt in DEED_TYPES)
-DEED_TYPES = {"D", "DEED", "TAXDEED", "TAX DEED", "WD", "WARRANTY DEED", "QCD", "QUIT CLAIM DEED"}
+DEED_TYPES = {"DEED", "TAXDEED", "TAX DEED", "WD", "WARRANTY DEED", "QCD", "QUIT CLAIM DEED"}
 
 ENCUMBRANCE_TYPES = {"MTG", "MORTGAGE", "LN", "LIEN", "JUD", "JUDGMENT", "LP", "LIS PENDENS"}
 

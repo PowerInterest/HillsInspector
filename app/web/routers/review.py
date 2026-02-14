@@ -3,8 +3,6 @@ Review routes - manual review queues for failed scrapes.
 """
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
-from pathlib import Path
 from loguru import logger
 
 from app.web.database import (
@@ -14,12 +12,11 @@ from app.web.database import (
     DatabaseLockedError,
     DatabaseUnavailableError,
 )
+from app.web.template_filters import get_templates
 
 router = APIRouter()
 
-# Templates
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = get_templates()
 
 
 @router.get("/hcpa-failures", response_class=HTMLResponse)

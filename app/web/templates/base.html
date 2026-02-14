@@ -9,6 +9,13 @@
     <link rel="stylesheet" href="/static/leaflet/leaflet.css">
     <script src="/static/leaflet/leaflet.js"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        .search-item { display:block; padding:8px 12px; text-decoration:none; color:#333; border-bottom:1px solid #eee; }
+        .search-item:hover { background:#f0f4ff; }
+        .search-item strong { display:block; font-size:0.95em; }
+        .search-item .search-meta { font-size:0.8em; color:#888; }
+        .search-item.muted { color:#999; font-style:italic; }
+    </style>
 </head>
 
 <body>
@@ -21,12 +28,12 @@
                 <a href="/review/hcpa-failures" class="nav-link">Review Queue</a>
                 <a href="/history" class="nav-link">History</a>
             </nav>
-            <div class="search-box">
+            <div class="search-box" style="position:relative;">
                 <input type="text" name="q" placeholder="Search address, folio, or owner..." hx-get="/api/search"
                     hx-trigger="keyup changed delay:500ms" hx-target="#search-results" hx-indicator="#search-spinner"
                     autocomplete="off">
                 <span id="search-spinner" class="htmx-indicator">...</span>
-                <div id="search-results" class="search-results"></div>
+                <div id="search-results" class="search-results" style="position:absolute;top:100%;left:0;right:0;z-index:1000;background:#fff;border:1px solid #ddd;border-radius:0 0 6px 6px;max-height:400px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.15);"></div>
             </div>
         </div>
     </header>

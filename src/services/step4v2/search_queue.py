@@ -483,7 +483,7 @@ class SearchQueue:
                    triggered_by_instrument, triggered_by_search_id
             FROM ori_search_queue
             WHERE folio = ?
-              AND status = 'pending'
+              AND status IN ('pending', 'ready')
               AND attempt_count < max_attempts
             ORDER BY priority ASC, queued_at ASC
             LIMIT 1
@@ -633,7 +633,7 @@ class SearchQueue:
     def get_pending_count(self, folio: str) -> int:
         """Get number of pending searches for a folio."""
         result = self.conn.execute(
-            "SELECT COUNT(*) FROM ori_search_queue WHERE folio = ? AND status = 'pending'",
+            "SELECT COUNT(*) FROM ori_search_queue WHERE folio = ? AND status IN ('pending', 'ready')",
             [folio],
         ).fetchone()
         return result[0] if result else 0
@@ -669,7 +669,7 @@ class SearchQueue:
             """
             SELECT
                 COUNT(*) as total,
-                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+                SUM(CASE WHEN status IN ('pending', 'ready') THEN 1 ELSE 0 END) as pending,
                 SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) as in_progress,
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
@@ -725,7 +725,7 @@ class SearchQueue:
             DELETE FROM ori_search_queue
             WHERE folio = ?
               AND search_type = ?
-              AND status = 'pending'
+              AND status IN ('pending', 'ready')
             """,
             [folio, search_type],
         )

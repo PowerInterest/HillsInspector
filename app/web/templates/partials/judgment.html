@@ -4,7 +4,7 @@
 <div class="judgment-data">
     <!-- Extraction Status -->
     <div class="extraction-status" style="margin-bottom: 20px; padding: 10px 15px; background: #d4edda; border-radius: 6px; border: 1px solid #c3e6cb;">
-        <strong>Extracted:</strong> {{ judgment.judgment_extracted_at.strftime('%B %d, %Y at %I:%M %p') if judgment.judgment_extracted_at else 'Unknown' }}
+        <strong>Extracted:</strong> {{ judgment.judgment_extracted_at|format_date_long if judgment.judgment_extracted_at else 'Unknown' }}
         {% if jd.confidence_score %}
         <span style="margin-left: 15px;">
             <strong>Confidence:</strong> {{ "%.0f"|format(jd.confidence_score * 100) }}%

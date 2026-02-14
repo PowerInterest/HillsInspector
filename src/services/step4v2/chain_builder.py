@@ -434,6 +434,11 @@ class ChainBuilder:
 
     def _save_chain(self, folio: str, periods: list[OwnershipPeriod]) -> None:
         """Save ownership periods to chain_of_title table."""
+        if not periods:
+            # Don't delete existing chain entries if we have nothing to replace them with.
+            # This preserves judgment-inferred entries for folios with no deed documents.
+            return
+
         # Clear existing chain
         self.conn.execute("DELETE FROM chain_of_title WHERE folio = ?", [folio])
 
@@ -466,19 +471,55 @@ class ChainBuilder:
             period.id = cursor.lastrowid
 
     def _save_encumbrances(self, folio: str, encumbrances: list[Encumbrance]) -> None:
-        """Save encumbrances to database."""
+        """Save encumbrances to database, preserving prior survival analysis data."""
+        # Preserve existing survival data before clearing
+        prior_survival = {}
+        for row in self.conn.execute("SELECT * FROM encumbrances WHERE folio = ?", [folio]).fetchall():
+            row_d = dict(row)
+            inst = (row_d.get("instrument") or "").strip()
+            book = (row_d.get("book") or "").strip()
+            page = (row_d.get("page") or "").strip()
+            if inst:
+                key = f"INST:{inst}"
+            elif book and page:
+                key = f"BKPG:{book}/{page}"
+            else:
+                key = f"DTYPE:{row_d.get('recording_date')}_{row_d.get('encumbrance_type')}"
+            prior_survival[key] = {
+                "survival_status": row_d.get("survival_status"),
+                "survival_reason": row_d.get("survival_reason"),
+                "is_joined": row_d.get("is_joined"),
+                "is_inferred": row_d.get("is_inferred"),
+            }
+
         # Clear existing encumbrances
         self.conn.execute("DELETE FROM encumbrances WHERE folio = ?", [folio])
 
         for enc in encumbrances:
+            # Look up prior survival data by instrument or book/page
+            prior = None
+            inst = (enc.instrument or "").strip()
+            book = (enc.book or "").strip()
+            page = (enc.page or "").strip()
+            if inst:
+                prior = prior_survival.get(f"INST:{inst}")
+            if prior is None and book and page:
+                prior = prior_survival.get(f"BKPG:{book}/{page}")
+
+            survival_status = prior.get("survival_status") if prior else None
+            survival_reason = prior.get("survival_reason") if prior else None
+            is_joined = prior.get("is_joined") if prior else None
+            is_inferred = prior.get("is_inferred") if prior else None
+
             cursor = self.conn.execute(
                 """
                 INSERT INTO encumbrances (
                     folio, chain_period_id, encumbrance_type, creditor, debtor,
                     amount, amount_confidence, recording_date, instrument,
-                    book, page, is_satisfied, satisfaction_instrument, satisfaction_date
+                    book, page, is_satisfied, satisfaction_instrument, satisfaction_date,
+                    survival_status, survival_reason, is_joined, is_inferred
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     folio,
@@ -495,6 +536,10 @@ class ChainBuilder:
                     enc.is_satisfied,
                     enc.satisfaction_instrument,
                     enc.satisfaction_date,
+                    survival_status,
+                    survival_reason,
+                    is_joined,
+                    is_inferred,
                 ],
             )
             enc.id = cursor.lastrowid

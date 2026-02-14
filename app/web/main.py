@@ -47,8 +47,9 @@ STATIC_DIR = BASE_DIR / "static"
 # Mount static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# Setup templates
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# Setup templates (shared instance with custom filters)
+from app.web.template_filters import get_templates  # noqa: E402
+templates = get_templates()
 
 # Include routers
 app.include_router(dashboard.router)

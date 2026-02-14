@@ -3,14 +3,27 @@
     {% for doc in documents %}
     <li class="document-item">
         <span class="doc-icon">
-            {% if doc.document_type == 'FINAL_JUDGMENT' %}PDF{% elif doc.document_type == 'LIS_PENDENS' %}LP{% else %}DOC{% endif %}
+            {% if 'JUDGMENT' in (doc.document_type or '')|upper or 'JUD' in (doc.document_type or '')|upper %}PDF
+            {% elif 'LIS_PENDENS' in (doc.document_type or '')|upper or 'LP' in (doc.document_type or '')|upper %}LP
+            {% elif 'MORTGAGE' in (doc.document_type or '')|upper or 'MTG' in (doc.document_type or '')|upper %}MTG
+            {% else %}DOC{% endif %}
         </span>
         <div class="doc-info">
             <span class="doc-type">{{ doc.document_type or 'Document' }}</span>
-            <span class="doc-date">{{ doc.recording_date.strftime('%m/%d/%Y') if doc.recording_date else '' }}</span>
+            <span class="doc-date">{{ doc.recording_date or '' }}</span>
+            {% if doc.party1 %}
+            <span class="doc-party" style="font-size:0.85em;color:var(--color-text-muted);">{{ doc.party1 }}</span>
+            {% endif %}
         </div>
         {% if doc.file_path %}
-        <a href="/static/documents/{{ doc.file_path }}" target="_blank" class="doc-download">View</a>
+        {% if doc.id %}
+        <a href="/property/{{ folio }}/doc/{{ doc.id }}" target="_blank" class="doc-download">View</a>
+        {% else %}
+        <a href="/property/{{ folio }}/documents/{{ doc.file_path|replace('data/Foreclosure/', '')|replace('data\\Foreclosure\\', '') }}" target="_blank" class="doc-download">View PDF</a>
+        {% endif %}
+        {% endif %}
+        {% if doc.instrument_number %}
+        <span class="doc-instrument" style="font-size:0.8em;color:var(--color-text-muted);">Inst: {{ doc.instrument_number }}</span>
         {% endif %}
     </li>
     {% endfor %}
@@ -19,9 +32,8 @@
 <p class="no-data">No documents available.</p>
 <p class="no-data-hint">Documents will appear here after:
     <ul>
-        <li>Final Judgment PDF is downloaded from HOVER</li>
+        <li>Final Judgment PDF is downloaded</li>
         <li>ORI documents are retrieved</li>
-        <li>Market screenshots are captured</li>
     </ul>
 </p>
 {% endif %}

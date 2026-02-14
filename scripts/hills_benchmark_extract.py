@@ -19,7 +19,7 @@ import re
 import sqlite3
 from collections import deque
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
@@ -73,6 +73,9 @@ CHALLENGE_MARKERS = [
     "just a moment",
     "enable javascript and cookies to continue",
     "cf-chl",
+]
+PROPERTY_PHOTO_MARKERS = [
+    "/pictures/",
 ]
 IMAGE_FILTER_MARKERS = [
     "logo",
@@ -176,9 +179,27 @@ def parse_args() -> argparse.Namespace:
         help="Download discovered photos to local output folder",
     )
     parser.add_argument(
+        "--photo-download-limit",
+        type=int,
+        default=0,
+        help="Max photos to download per property (0 = no cap). Only used with --download-photos.",
+    )
+    parser.add_argument(
         "--county",
         default="Hillsborough",
         help="County name filter for extracted property pages",
+    )
+    parser.add_argument(
+        "--min-auction-date",
+        type=str,
+        default=None,
+        help="Filter extracted records to auction_date >= YYYY-MM-DD (optional).",
+    )
+    parser.add_argument(
+        "--max-auction-date",
+        type=str,
+        default=None,
+        help="Filter extracted records to auction_date <= YYYY-MM-DD (optional).",
     )
     return parser.parse_args()
 
@@ -269,6 +290,11 @@ def normalize_photo_url(raw: str, base_url: str) -> Optional[str]:
         value = f"https:{value}"
     elif value.startswith("/"):
         value = urljoin(base_url, value)
+    else:
+        # Relative like ../../assets/foo.png
+        parts = urlsplit(value)
+        if not parts.scheme and not parts.netloc:
+            value = urljoin(base_url, value)
     parts = urlsplit(value)
     normalized = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
     return normalized if normalized else None
@@ -276,11 +302,101 @@ def normalize_photo_url(raw: str, base_url: str) -> Optional[str]:
 
 def looks_like_property_photo(url: str) -> bool:
     lowered = url.lower()
+    if any(marker in lowered for marker in PROPERTY_PHOTO_MARKERS):
+        return True
+    # We only treat non-/pictures/ images as photos if they look strongly like it
+    # and are not clearly static assets.
     if any(marker in lowered for marker in IMAGE_FILTER_MARKERS):
         return False
+    if "/assets" in lowered or "/static" in lowered:
+        return False
     if lowered.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
-        return True
-    return "photo" in lowered or "property" in lowered or "listing" in lowered
+        return "photo" in lowered or "property" in lowered or "listing" in lowered
+    return False
+
+
+def _strip_day_ordinal(value: str) -> str:
+    # February 11th, 2026 -> February 11, 2026
+    return re.sub(r"(\\b\\d{1,2})(st|nd|rd|th)\\b", r"\\1", value)
+
+
+def parse_hills_auction_date_iso(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    text = _strip_day_ordinal(value.strip())
+    try:
+        dt = datetime.strptime(text, "%B %d, %Y")
+    except ValueError:
+        return None
+    return dt.strftime("%Y-%m-%d")
+
+
+def parse_iso_date(value: Optional[str]) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value.strip(), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def extract_photo_urls_from_html(soup: BeautifulSoup, base_url: str) -> list[str]:
+    candidates: list[str] = []
+
+    # Prefer selectors that are specific to the property gallery to avoid pulling
+    # "similar listing" images.
+    for img in soup.select("img#mainPhoto, div[id^='photo_'] img"):
+        for attr in ("src", "data-src", "data-lazy", "data-original"):
+            raw = img.get(attr)
+            if isinstance(raw, str) and raw.strip():
+                candidates.append(raw.strip())
+
+    for a in soup.select("a[href]"):
+        href = a.get("href")
+        if isinstance(href, str) and "/pictures/" in href:
+            candidates.append(href.strip())
+
+    for el in soup.select("div.propertyImage[style]"):
+        style = el.get("style")
+        if not isinstance(style, str):
+            continue
+        for match in re.finditer(
+            r"background-image\s*:\s*url\(([^)]+)\)", style, flags=re.IGNORECASE
+        ):
+            raw = match.group(1).strip().strip("\"'").strip()
+            if raw:
+                candidates.append(raw)
+
+    # Fallback: any background image on the page that points to /pictures/
+    if not any("/pictures/" in c for c in candidates):
+        for el in soup.select("[style]"):
+            style = el.get("style")
+            if not isinstance(style, str) or "background-image" not in style:
+                continue
+            for match in re.finditer(
+                r"background-image\s*:\s*url\(([^)]+)\)", style, flags=re.IGNORECASE
+            ):
+                raw = match.group(1).strip().strip("\"'").strip()
+                if raw and "/pictures/" in raw:
+                    candidates.append(raw)
+
+    photo_urls: list[str] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        normalized = normalize_photo_url(raw, base_url)
+        if not normalized:
+            continue
+        # Strong allow: real property photos live under /pictures/
+        if "/pictures/" not in normalized.lower():
+            continue
+        if any(marker in normalized.lower() for marker in IMAGE_FILTER_MARKERS):
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        photo_urls.append(normalized)
+
+    return photo_urls
 
 
 def normalize_address(value: str) -> str:
@@ -383,22 +499,7 @@ def extract_record_from_page(
     beds = parse_float(prop_info.get("Bed / Bath", "").split("/")[0]) if "Bed / Bath" in prop_info else None
     baths = parse_float(prop_info.get("Bed / Bath", "").split("/")[1]) if "Bed / Bath" in prop_info and "/" in prop_info.get("Bed / Bath", "") else None
 
-    photo_urls_raw = [
-        img.get("src", "")
-        for img in soup.find_all("img")
-    ]
-    photo_urls: list[str] = []
-    seen: set[str] = set()
-    for raw in photo_urls_raw:
-        normalized = normalize_photo_url(raw, url)
-        if not normalized:
-            continue
-        if not looks_like_property_photo(normalized):
-            continue
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        photo_urls.append(normalized)
+    photo_urls = extract_photo_urls_from_html(soup, url)
 
     latitude, longitude = extract_coordinates(html)
 
@@ -640,6 +741,8 @@ def crawl_all(
     max_pages: int,
     max_properties: int,
     county_filter: str,
+    min_auction_date: Optional[date],
+    max_auction_date: Optional[date],
 ) -> tuple[list[ListingRecord], dict[str, Any]]:
     ensure_dir(out_dir)
     raw_pages_dir = out_dir / "pages"
@@ -724,7 +827,20 @@ def crawl_all(
             record = extract_record_from_page(current, title, html, text, html_path, text_path)
             county_value = (record.county or "").strip().lower()
             if county_filter.lower() in county_value:
-                records.append(record)
+                record_date_iso = parse_hills_auction_date_iso(record.auction_date)
+                record_date = parse_iso_date(record_date_iso)
+                if record_date is None:
+                    # Keep unknown dates unless the user explicitly asked for a range.
+                    if min_auction_date or max_auction_date:
+                        logger.info(f"Skipping record with unparseable auction date at {current}")
+                    else:
+                        records.append(record)
+                elif (min_auction_date and record_date < min_auction_date) or (
+                    max_auction_date and record_date > max_auction_date
+                ):
+                    pass
+                else:
+                    records.append(record)
             else:
                 logger.info(
                     f"Skipping non-{county_filter} record at {current} (county={record.county})"
@@ -756,6 +872,9 @@ def main() -> None:
     logger.info(f"Output dir: {run_dir}\n")
     logger.info("Starting HillsForeclosures crawl (real Chrome, non-headless, persistent profile)\n")
 
+    min_auction_date = parse_iso_date(args.min_auction_date)
+    max_auction_date = parse_iso_date(args.max_auction_date)
+
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
             user_data_dir=str(args.profile_dir),
@@ -776,12 +895,19 @@ def main() -> None:
             max_pages=args.max_pages,
             max_properties=args.max_properties,
             county_filter=args.county,
+            min_auction_date=min_auction_date,
+            max_auction_date=max_auction_date,
         )
         context.close()
 
     photo_stats = {"downloaded": 0, "failed": 0}
     if args.download_photos:
         logger.info("Downloading property photos...\n")
+        # Apply per-property cap if requested.
+        if args.photo_download_limit and args.photo_download_limit > 0:
+            for record in records:
+                record.photo_urls = record.photo_urls[: args.photo_download_limit]
+                record.photo_count = len(record.photo_urls)
         photo_stats = download_photos(records, run_dir / "photos")
 
     compare_stats = compare_with_local_db(records, args.db_path)

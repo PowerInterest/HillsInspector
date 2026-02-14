@@ -3,8 +3,6 @@ Dashboard routes - main auction list view.
 """
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
-from pathlib import Path
 from typing import Optional
 from datetime import date
 
@@ -15,12 +13,11 @@ from app.web.database import (
     get_dashboard_stats,
     get_auctions_by_date
 )
+from app.web.template_filters import get_templates
 
 router = APIRouter()
 
-# Templates
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = get_templates()
 
 
 @router.get("/", response_class=HTMLResponse)

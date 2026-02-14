@@ -276,28 +276,147 @@ class ORIApiScraper:
 
     def search_by_instrument(self, instrument: str, include_doc_types: bool = False) -> List[Dict[str, Any]]:
         """
-        Search for documents by instrument number.
+        Search for documents by instrument number using CQID=320 browser endpoint.
+
+        The POST API endpoint does not support instrument search (returns 400).
+        This method uses the browser-based CQID=320 endpoint instead.
 
         Args:
             instrument: Instrument number (e.g., "2024478600")
-            include_doc_types: If True, filter by TITLE_DOC_TYPES. If False, search all doc types.
+            include_doc_types: Ignored (kept for API compatibility).
 
         Returns:
             List of document dictionaries (usually 0 or 1)
         """
+        import asyncio as aio
+
+        async def _search():
+            return await self.search_by_instrument_browser(instrument)
+
         try:
-            instr_val = int(instrument.strip())
-        except (ValueError, TypeError):
-            instr_val = instrument.strip()
-        payload = {
-            "RecordDateBegin": "01/01/1900",
-            "RecordDateEnd": today_local().strftime("%m/%d/%Y"),
-            "Instrument": instr_val,
-        }
-        # Only add doc type filter if requested (can cause 400 errors on some searches)
-        if include_doc_types:
-            payload["DocType"] = self.TITLE_DOC_TYPES
-        return self._execute_search(payload)
+            loop = aio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(lambda: aio.run(_search()))
+                return future.result(timeout=30)
+        else:
+            return aio.run(_search())
+
+    async def search_by_instrument_browser(
+        self, instrument: str, headless: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Search ORI by instrument number using browser-based CQID=320 endpoint.
+
+        Known OBKey parameters for CQID 320:
+        - OBKey__1006_1: Instrument number
+
+        Args:
+            instrument: Instrument number (e.g., "2024478600")
+            headless: Run browser in headless mode
+
+        Returns:
+            List of document records
+        """
+        from urllib.parse import quote
+
+        instrument = instrument.strip()
+        url = (
+            f"https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html"
+            f"?CQID=320&OBKey__1006_1={quote(instrument)}"
+        )
+        logger.info(f"Searching ORI by instrument: {instrument}")
+
+        await self._ensure_browser(headless)
+        context = await self._create_isolated_context()
+
+        try:
+            page_obj = await context.new_page()
+            await apply_stealth(page_obj)
+
+            logger.debug(f"ORI Browser GET: {url}")
+
+            with Timer() as t:
+                async with page_obj.expect_response(
+                    lambda r: "CustomQuery/KeywordSearch" in r.url,
+                    timeout=30000,
+                ) as response_info:
+                    await page_obj.goto(url, timeout=60000)
+
+                api_response = await response_info.value
+
+                if api_response.status != 200:
+                    logger.warning(
+                        f"PAV API returned {api_response.status} for instrument {instrument}"
+                    )
+                    return []
+
+                api_data = await api_response.json()
+
+                if not api_data.get("Data"):
+                    logger.debug(f"No results for instrument: {instrument} (API fast-detect)")
+                    log_search(
+                        source="ORI_CQID",
+                        query=f"instrument:{instrument}",
+                        results_raw=0,
+                        duration_ms=t.ms,
+                    )
+                    return []
+
+                # Results exist - wait for the Angular table to render
+                await page_obj.wait_for_selector("table tbody tr", timeout=15000)
+                await asyncio.sleep(2)
+
+            # Get column headers
+            headers = await page_obj.query_selector_all("table thead th")
+            header_names = [await h.inner_text() for h in headers]
+
+            # Get all data rows
+            rows = await page_obj.query_selector_all("table tbody tr")
+
+            if not rows:
+                logger.debug(f"No results for instrument: {instrument}")
+                return []
+
+            results = []
+            for row in rows:
+                cells = await row.query_selector_all("td")
+                if len(cells) >= 4:
+                    data = {}
+                    for i, cell in enumerate(cells):
+                        if i < len(header_names):
+                            data[header_names[i]] = (await cell.inner_text()).strip()
+
+                    normalized = {
+                        "person_type": data.get("ORI - Person Type", ""),
+                        "name": data.get("Name", ""),
+                        "record_date": data.get("Recording Date Time", ""),
+                        "doc_type": data.get("ORI - Doc Type", ""),
+                        "book_type": data.get("Book Type", ""),
+                        "book_num": data.get("Book #", ""),
+                        "page_num": data.get("Page #", ""),
+                        "legal": data.get("Legal Description", ""),
+                        "instrument": data.get("Instrument #", ""),
+                    }
+                    results.append(normalized)
+
+            log_search(
+                source="ORI_CQID",
+                query=f"instrument:{instrument}",
+                results_raw=len(results),
+                duration_ms=t.ms,
+            )
+            return results
+
+        except Exception as e:
+            logger.error(f"Error searching ORI by instrument {instrument}: {e}")
+            return []
+        finally:
+            await context.close()
 
     async def search_by_book_page_browser(
         self, book: str, page: str, book_type: str = "OR", headless: bool = True

@@ -17,7 +17,7 @@
             <tbody>
                 {% for permit in permits %}
                 <tr>
-                    <td>{{ permit.issue_date.strftime('%m/%d/%Y') if permit.issue_date else '-' }}</td>
+                    <td>{{ permit.issue_date|format_date if permit.issue_date else '-' }}</td>
                     <td>
                         {% if permit.url %}
                         <a href="{{ permit.url }}" target="_blank">{{ permit.permit_number }}</a>
@@ -62,7 +62,7 @@
             <tbody>
                 {% for noc in nocs %}
                 <tr>
-                    <td>{{ noc.recording_date.strftime('%m/%d/%Y') if noc.recording_date else '-' }}</td>
+                    <td>{{ noc.recording_date|format_date if noc.recording_date else '-' }}</td>
                     <td>{{ noc.instrument_number }}</td>
                     <td>{{ noc.party1 or '-' }}</td>
                     <td>{{ noc.party2 or '-' }}</td>

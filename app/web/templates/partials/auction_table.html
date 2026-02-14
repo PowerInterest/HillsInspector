@@ -18,7 +18,7 @@
             {% for auction in auctions %}
             <tr class="auction-row {% if auction.is_toxic_title %}toxic{% endif %}">
                 <td class="date-cell">
-                    {{ auction.auction_date.strftime('%m/%d/%Y') if auction.auction_date else 'N/A' }}
+                    {{ auction.auction_date|format_date }}
                 </td>
                 <td class="address-cell">
                     <a href="/property/{{ auction.folio or auction.case_number }}">

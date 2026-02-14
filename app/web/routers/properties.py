@@ -3,14 +3,11 @@ Property detail routes.
 """
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.templating import Jinja2Templates
 from pathlib import Path
-import os
 
 from app.web.database import (
     get_property_detail,
     get_property_by_case,
-    get_liens_for_property,
     get_documents_for_property,
     get_sales_history,
     get_document_by_instrument,
@@ -20,13 +17,12 @@ from app.web.database import (
     get_nocs_for_property,
     get_judgment_data,
 )
+from app.web.template_filters import get_templates
 from src.utils.time import today_local
 
 router = APIRouter()
 
-# Templates
-TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates = get_templates()
 
 
 @router.get("/{folio}", response_class=HTMLResponse)
@@ -50,8 +46,7 @@ async def property_detail(request: Request, folio: str):
             "request": request,
             "property": prop,
             "auction": prop.get("auction", {}),
-            "parcel": prop.get("parcel", {}),
-            "liens": prop.get("liens", []),
+            "parcel": prop.get("parcel") or prop.get("parcels_data") or {},
             "encumbrances": prop.get("encumbrances", []),
             "net_equity": prop.get("net_equity", 0),
             "market_value": prop.get("market_value", 0),
@@ -73,19 +68,13 @@ async def property_liens(request: Request, folio: str):
     if not prop:
         return HTMLResponse("<p>Property not found</p>")
 
-    case_number = prop.get("auction", {}).get("case_number")
     encumbrances = prop.get("encumbrances", [])
-
-    # Only fetch legacy liens if we have no analyzed encumbrances for this folio.
-    liens = []
-    if not encumbrances and case_number:
-        liens = get_liens_for_property(case_number)
 
     return templates.TemplateResponse(
         "partials/lien_table.html",
         {
             "request": request,
-            "liens": liens,
+            "liens": [],
             "encumbrances": encumbrances,
             "auction": prop.get("auction", {}),
             "folio": folio
@@ -280,25 +269,65 @@ def _sanitize_folio(folio: str) -> str:
 @router.get("/{folio}/doc/{doc_id}")
 async def property_document_file(folio: str, doc_id: int):
     """
-    Serve a document file for a property if it exists under data/properties/{folio}/.
+    Serve a document file by its DB id.
+    Checks data/Foreclosure/{case_number}/documents/ first, then data/properties/{folio}/.
     """
     docs = get_documents_for_property(folio)
     doc = next((d for d in docs if d.get("id") == doc_id), None)
     if not doc or not doc.get("file_path"):
         raise HTTPException(status_code=404, detail="Document not found")
 
-    base_dir = Path("data/properties")
-    safe_folio = _sanitize_folio(folio)
-    file_path = base_dir / safe_folio / doc["file_path"]
-    file_path = file_path.resolve()
+    project_root = Path(__file__).resolve().parents[3]
+    file_path = (project_root / doc["file_path"]).resolve()
 
-    # Prevent path traversal
-    if base_dir.resolve() not in file_path.parents and base_dir.resolve() != file_path.parent:
+    # Prevent path traversal — must be under project data dir
+    data_dir = (project_root / "data").resolve()
+    if not str(file_path).startswith(str(data_dir)):
         raise HTTPException(status_code=404, detail="Invalid document path")
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found on disk")
 
-    return FileResponse(path=file_path, filename=os.path.basename(file_path))
+    return FileResponse(path=file_path, filename=file_path.name)
+
+
+@router.get("/{folio}/documents/{filename:path}")
+async def serve_document_by_name(folio: str, filename: str):
+    """
+    Serve a document file by filename for a property.
+    Looks in data/Foreclosure/{case_number}/documents/ and data/properties/{folio}/.
+    """
+    from app.web.database import get_connection
+
+    project_root = Path(__file__).resolve().parents[3]
+    data_dir = (project_root / "data").resolve()
+
+    # Sanitize filename
+    if ".." in filename or filename.startswith("/"):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    # Try Foreclosure path first — look up case_number from folio
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT case_number FROM auctions WHERE folio = ?", [folio]
+        ).fetchall()
+        for row in rows:
+            case_num = row[0]
+            if not case_num:
+                continue
+            candidate = data_dir / "Foreclosure" / case_num / "documents" / filename
+            if candidate.resolve().is_file() and str(candidate.resolve()).startswith(str(data_dir)):
+                return FileResponse(path=candidate.resolve(), filename=filename)
+    finally:
+        conn.close()
+
+    # Fallback: data/properties/{folio}/
+    safe_folio = _sanitize_folio(folio)
+    fallback = data_dir / "properties" / safe_folio / filename
+    if fallback.resolve().is_file() and str(fallback.resolve()).startswith(str(data_dir)):
+        return FileResponse(path=fallback.resolve(), filename=filename)
+
+    raise HTTPException(status_code=404, detail="File not found on disk")
 
 
 @router.get("/{folio}/title-report", response_class=HTMLResponse)

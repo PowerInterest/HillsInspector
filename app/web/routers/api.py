@@ -1,10 +1,11 @@
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from loguru import logger
 
 from app.web.database import (
     get_auction_map_points,
     check_database_health,
+    search_properties,
     DatabaseLockedError,
     DatabaseUnavailableError,
 )
@@ -38,7 +39,7 @@ async def map_auctions():
                 "lon": lon,
                 "address": address,
                 "case_number": r.get("case_number"),
-                "auction_date": r.get("auction_date").isoformat() if r.get("auction_date") else None,
+                "auction_date": str(r.get("auction_date")) if r.get("auction_date") else None,
                 "final_judgment_amount": r.get("final_judgment_amount"),
                 "url": f"/property/{r.get('case_number')}" if r.get("case_number") else "#",
             })
@@ -48,6 +49,39 @@ async def map_auctions():
             continue
 
     return JSONResponse({"features": features})
+
+
+@router.get("/search")
+async def api_search(request: Request, q: str = ""):
+    """Search auctions by case_number, address, or owner_name. Returns HTML for HTMX dropdown."""
+    if not q or len(q) < 2:
+        return HTMLResponse("")
+
+    try:
+        results = search_properties(q, limit=10)
+    except (DatabaseLockedError, DatabaseUnavailableError):
+        raise
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        return HTMLResponse('<div class="search-item">Search error</div>')
+
+    if not results:
+        return HTMLResponse('<div class="search-item muted">No results found</div>')
+
+    html_items = []
+    for r in results:
+        folio = r.get("folio") or r.get("case_number") or ""
+        address = r.get("property_address") or "No Address"
+        case = r.get("case_number") or ""
+        owner = r.get("owner_name") or ""
+        date_str = r.get("auction_date") or ""
+        html_items.append(
+            f'<a href="/property/{folio}" class="search-item">'
+            f'<strong>{address}</strong>'
+            f'<span class="search-meta">{case} | {owner} | {date_str}</span>'
+            f'</a>'
+        )
+    return HTMLResponse("\n".join(html_items))
 
 
 @router.get("/health")

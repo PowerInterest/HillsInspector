@@ -4,6 +4,16 @@
     <h2>Tax Status</h2>
     <div class="info-grid">
         <div class="info-item">
+            <span class="info-label">Tax Status</span>
+            <span class="info-value">{{ tax.tax_status or 'Unknown' }}</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Tax Warrant</span>
+            <span class="info-value">
+                {% if tax.tax_warrant %}Yes{% else %}No{% endif %}
+            </span>
+        </div>
+        <div class="info-item">
             <span class="info-label">Has Tax Liens</span>
             <span class="info-value">
                 {% if tax.has_tax_liens %}Yes{% else %}No{% endif %}
@@ -19,7 +29,7 @@
 </section>
 
 <section class="card">
-    <h2>Tax Liens</h2>
+    <h2>Tax-Related Encumbrances</h2>
     {% if liens %}
     <div class="table-container">
         <table class="data-table">
@@ -28,23 +38,24 @@
                     <th>Date</th>
                     <th>Type</th>
                     <th>Amount</th>
-                    <th>Description</th>
+                    <th>Creditor</th>
+                    <th>Status</th>
                 </tr>
             </thead>
             <tbody>
                 {% for lien in liens %}
                 <tr>
-                    <td>{{ lien.recording_date or "-" }}</td>
-                    <td>{{ lien.document_type or "-" }}</td>
+                    <td>{{ lien.recording_date|format_date if lien.recording_date else "-" }}</td>
+                    <td>{{ lien.encumbrance_type or "-" }}</td>
                     <td class="money">{{ "${:,.2f}".format(lien.amount) if lien.amount else "-" }}</td>
-                    <td>{{ lien.description or "-" }}</td>
+                    <td>{{ lien.creditor or "-" }}</td>
+                    <td>{{ lien.survival_status or "-" }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
     </div>
     {% else %}
-    <p class="muted">No tax lien records found.</p>
+    <p class="muted">No tax-related encumbrance records found.</p>
     {% endif %}
 </section>
-
