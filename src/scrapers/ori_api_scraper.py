@@ -274,37 +274,74 @@ class ORIApiScraper:
         }
         return self._execute_search(payload)
 
+    # Column order returned by PAV CQID=320 DisplayColumnValues
+    _INSTRUMENT_COLUMNS = [
+        "person_type", "name", "record_date", "doc_type",
+        "book_type", "book_num", "page_num", "legal", "instrument",
+    ]
+
     def search_by_instrument(self, instrument: str, include_doc_types: bool = False) -> List[Dict[str, Any]]:
         """
-        Search for documents by instrument number using CQID=320 browser endpoint.
+        Search for documents by instrument number via PAV CustomQuery API.
 
-        The POST API endpoint does not support instrument search (returns 400).
-        This method uses the browser-based CQID=320 endpoint instead.
+        Uses direct POST to /PAVDirectSearch/api/CustomQuery/KeywordSearch
+        with QueryID=320 and KeywordId=1006 (instrument number).
 
         Args:
             instrument: Instrument number (e.g., "2024478600")
             include_doc_types: Ignored (kept for API compatibility).
 
         Returns:
-            List of document dictionaries (usually 0 or 1)
+            List of document dictionaries with normalized field names.
         """
-        import asyncio as aio
+        instrument = str(instrument).strip()
+        if not instrument:
+            return []
 
-        async def _search():
-            return await self.search_by_instrument_browser(instrument)
+        api_url = "https://publicaccess.hillsclerk.com/PAVDirectSearch/api/CustomQuery/KeywordSearch"
+        payload = {
+            "QueryID": 320,
+            "Keywords": [{"Id": 1006, "Value": instrument}],
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Origin": "https://publicaccess.hillsclerk.com",
+            "Referer": (
+                "https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html"
+                f"?CQID=320&OBKey__1006_1={instrument}"
+            ),
+        }
 
-        try:
-            loop = aio.get_running_loop()
-        except RuntimeError:
-            loop = None
+        with Timer() as t:
+            try:
+                resp = requests.post(api_url, json=payload, headers=headers, timeout=30)
+            except requests.RequestException as e:
+                logger.warning(f"Instrument search request failed for {instrument}: {e}")
+                return []
 
-        if loop and loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(lambda: aio.run(_search()))
-                return future.result(timeout=30)
-        else:
-            return aio.run(_search())
+            if resp.status_code != 200:
+                logger.warning(f"Instrument search API returned {resp.status_code} for {instrument}")
+                return []
+
+            data = resp.json()
+            raw_items = data.get("Data", [])
+            if not raw_items:
+                log_search(source="ORI_CQID", query=f"instrument:{instrument}", results_raw=0, duration_ms=t.ms)
+                return []
+
+            results: List[Dict[str, Any]] = []
+            for item in raw_items:
+                cols = item.get("DisplayColumnValues", [])
+                row = {}
+                for i, col_name in enumerate(self._INSTRUMENT_COLUMNS):
+                    if i < len(cols):
+                        row[col_name] = (cols[i].get("Value") or "").strip()
+                    else:
+                        row[col_name] = ""
+                results.append(row)
+
+            log_search(source="ORI_CQID", query=f"instrument:{instrument}", results_raw=len(results), duration_ms=t.ms)
+            return results
 
     async def search_by_instrument_browser(
         self, instrument: str, headless: bool = True
@@ -818,9 +855,22 @@ class ORIApiScraper:
         Only ensures the browser process is started. Contexts are created
         per-search via _create_isolated_context() for thread safety.
 
+        Detects event-loop mismatch: if a previous aio.run() created the
+        browser in a now-dead loop, discard and recreate.
+
         Args:
             headless: Run in headless mode
         """
+        import asyncio
+        current_loop = asyncio.get_running_loop()
+
+        if self.browser is not None:
+            # Browser was created in a different (now-dead) event loop
+            if getattr(self, '_browser_loop', None) is not current_loop:
+                logger.debug("Browser event-loop mismatch — recreating")
+                self.browser = None
+                self.playwright = None
+
         if self.browser is None:
             self.playwright = await async_playwright().start()
             self.browser = await self.playwright.chromium.launch(
@@ -834,6 +884,7 @@ class ORIApiScraper:
                     '--disable-features=IsolateOrigins,site-per-process'
                 ]
             )
+            self._browser_loop = current_loop
             logger.info("Browser launched")
 
     async def _create_isolated_context(self):

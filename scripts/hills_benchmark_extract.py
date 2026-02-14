@@ -174,6 +174,12 @@ def parse_args() -> argparse.Namespace:
         help="Max property pages to extract (default 500)",
     )
     parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=50,
+        help="Write partial outputs every N extracted records (default 50).",
+    )
+    parser.add_argument(
         "--download-photos",
         action="store_true",
         help="Download discovered photos to local output folder",
@@ -317,7 +323,7 @@ def looks_like_property_photo(url: str) -> bool:
 
 def _strip_day_ordinal(value: str) -> str:
     # February 11th, 2026 -> February 11, 2026
-    return re.sub(r"(\\b\\d{1,2})(st|nd|rd|th)\\b", r"\\1", value)
+    return re.sub(r"(\b\d{1,2})(st|nd|rd|th)\b", r"\1", value)
 
 
 def parse_hills_auction_date_iso(value: Optional[str]) -> Optional[str]:
@@ -743,6 +749,7 @@ def crawl_all(
     county_filter: str,
     min_auction_date: Optional[date],
     max_auction_date: Optional[date],
+    checkpoint_every: int,
 ) -> tuple[list[ListingRecord], dict[str, Any]]:
     ensure_dir(out_dir)
     raw_pages_dir = out_dir / "pages"
@@ -790,6 +797,9 @@ def crawl_all(
             except PlaywrightTimeoutError:
                 logger.warning(f"Timeout loading {url}, retry {attempt + 1}/3")
                 page.wait_for_timeout(3000)
+            except Exception as exc:
+                logger.warning(f"Error loading {url}, retry {attempt + 1}/3: {exc}")
+                page.wait_for_timeout(3000)
         else:
             logger.error(f"Failed to load after retries: {url}")
             continue
@@ -798,7 +808,11 @@ def crawl_all(
         status = response.status if response else None
         logger.info(f"[{pages_visited}] {status} {current}")
 
-        links = extract_links(page)
+        try:
+            links = extract_links(page)
+        except Exception as exc:
+            logger.warning(f"Link extraction failed at {current}: {exc}")
+            links = []
         for link in links:
             if not is_hills_url(link):
                 continue
@@ -824,23 +838,50 @@ def crawl_all(
             text_path = raw_pages_dir / f"{pid}_{slug}.txt"
             html_path.write_text(html, encoding="utf-8")
             text_path.write_text(text, encoding="utf-8")
-            record = extract_record_from_page(current, title, html, text, html_path, text_path)
+            try:
+                record = extract_record_from_page(current, title, html, text, html_path, text_path)
+            except Exception:
+                logger.exception(f"Record extraction failed at {current}")
+                page.wait_for_timeout(1200)
+                continue
             county_value = (record.county or "").strip().lower()
             if county_filter.lower() in county_value:
                 record_date_iso = parse_hills_auction_date_iso(record.auction_date)
                 record_date = parse_iso_date(record_date_iso)
+                keep = False
                 if record_date is None:
-                    # Keep unknown dates unless the user explicitly asked for a range.
+                    # Keep unknown dates only when no explicit range is requested.
                     if min_auction_date or max_auction_date:
                         logger.info(f"Skipping record with unparseable auction date at {current}")
+                        keep = False
                     else:
-                        records.append(record)
+                        keep = True
                 elif (min_auction_date and record_date < min_auction_date) or (
                     max_auction_date and record_date > max_auction_date
                 ):
-                    pass
+                    keep = False
                 else:
+                    keep = True
+                if keep:
                     records.append(record)
+                    if checkpoint_every > 0 and len(records) % checkpoint_every == 0:
+                        # Best-effort checkpoint: avoids losing all progress on crashes.
+                        try:
+                            save_record_jsonl(out_dir / "hills_listings.partial.jsonl", records)
+                            (out_dir / "crawl_stats.partial.json").write_text(
+                                json.dumps(
+                                    {
+                                        "pages_visited": pages_visited,
+                                        "property_pages_visited": property_pages_visited,
+                                        "records_extracted": len(records),
+                                        "property_urls_discovered": len(discovered_property_urls),
+                                    },
+                                    indent=2,
+                                ),
+                                encoding="utf-8",
+                            )
+                        except Exception as exc:
+                            logger.warning(f"Checkpoint write failed: {exc}")
             else:
                 logger.info(
                     f"Skipping non-{county_filter} record at {current} (county={record.county})"
@@ -868,6 +909,7 @@ def main() -> None:
     ensure_dir(run_dir)
     logger.remove()
     logger.add(lambda message: print(message, end=""), level="INFO")
+    logger.add(run_dir / "run.log", level="INFO")
 
     logger.info(f"Output dir: {run_dir}\n")
     logger.info("Starting HillsForeclosures crawl (real Chrome, non-headless, persistent profile)\n")
@@ -897,6 +939,7 @@ def main() -> None:
             county_filter=args.county,
             min_auction_date=min_auction_date,
             max_auction_date=max_auction_date,
+            checkpoint_every=args.checkpoint_every,
         )
         context.close()
 

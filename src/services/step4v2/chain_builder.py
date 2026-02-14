@@ -16,12 +16,12 @@ import sqlite3
 from loguru import logger
 
 from config.step4v2 import (
-    CANONICAL_ENCUMBRANCE_TYPES,
     DEED_TYPES,
     ENCUMBRANCE_TYPES,
     MRTA_YEARS_REQUIRED,
     SATISFACTION_TYPES,
 )
+from src.db.type_normalizer import CANONICAL_ENCUMBRANCE_TYPES
 from src.services.step4v2.name_matcher import NameMatcher
 from src.utils.time import parse_date, today_local
 

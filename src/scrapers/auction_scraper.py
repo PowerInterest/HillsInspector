@@ -617,6 +617,7 @@ class AuctionScraper:
         page: Page,
         case_number: str,
         parcel_id: str,
+        ori_page: Optional[Page] = None,
     ) -> Dict[str, Any]:
         """
         Fallback: search the ORI case-number API to find the Final Judgment
@@ -624,6 +625,10 @@ class AuctionScraper:
 
         Uses POST /Public/ORIUtilities/DocumentSearch/api/Search
         with {"CaseNum": "<full_case_number>"}.
+
+        If ori_page is provided (batch mode), uses it for API calls and skips
+        creating a new browser context + navigation. A throwaway context is
+        still created for the PDF download (which navigates the page away).
         """
         result = {"pdf_path": None, "plaintiff": None, "defendant": None}
         storage_id = case_number
@@ -640,26 +645,30 @@ class AuctionScraper:
             result["pdf_path"] = str(existing_path)
             return result
 
-        new_context = None
-        new_page = None
+        own_context = None
+        own_page = None
         try:
-            new_context = await page.context.browser.new_context(
-                user_agent=USER_AGENT_DESKTOP,
-                accept_downloads=True,
-            )
-            new_page = await new_context.new_page()
-            await apply_stealth(new_page)
-
-            # Navigate to ORI site so fetch() works (same-origin)
-            await new_page.goto(
-                "https://publicaccess.hillsclerk.com/oripublicaccess/",
-                timeout=30000,
-            )
-            await asyncio.sleep(2)
+            if ori_page:
+                # Batch mode — reuse caller's pre-navigated page for API calls
+                api_page = ori_page
+            else:
+                # Single-call mode — create own context + navigate
+                own_context = await page.context.browser.new_context(
+                    user_agent=USER_AGENT_DESKTOP,
+                    accept_downloads=True,
+                )
+                own_page = await own_context.new_page()
+                await apply_stealth(own_page)
+                await own_page.goto(
+                    "https://publicaccess.hillsclerk.com/oripublicaccess/",
+                    timeout=30000,
+                )
+                await asyncio.sleep(2)
+                api_page = own_page
 
             # Call the case-number search API
             logger.info(f"ORI case search for {case_number}")
-            api_result = await new_page.evaluate(
+            api_result = await api_page.evaluate(
                 """async (caseNum) => {
                     const r = await fetch('/Public/ORIUtilities/DocumentSearch/api/Search', {
                         method: 'POST',
@@ -712,7 +721,7 @@ class AuctionScraper:
                 logger.warning(f"No document ID for judgment in {case_number}")
                 return result
 
-            # Download the PDF
+            # Download the PDF via a throwaway page (window.location navigates away)
             encoded_id = urllib.parse.quote(doc_id)
             download_url = (
                 f"https://publicaccess.hillsclerk.com"
@@ -721,15 +730,24 @@ class AuctionScraper:
             )
 
             logger.info(f"Downloading judgment PDF for {case_number}...")
-            async with new_page.expect_download(timeout=60000) as download_info:
-                await new_page.evaluate(
-                    f"window.location.href = '{download_url}'"
-                )
+            dl_context = await api_page.context.browser.new_context(
+                user_agent=USER_AGENT_DESKTOP,
+                accept_downloads=True,
+            )
+            dl_page = await dl_context.new_page()
+            try:
+                async with dl_page.expect_download(timeout=60000) as download_info:
+                    await dl_page.evaluate(
+                        f"window.location.href = '{download_url}'"
+                    )
 
-            download = await download_info.value
-            pdf_path = await download.path()
-            with open(pdf_path, "rb") as f:
-                pdf_bytes = f.read()
+                download = await download_info.value
+                pdf_path = await download.path()
+                with open(pdf_path, "rb") as f:
+                    pdf_bytes = f.read()
+            finally:
+                await dl_page.close()
+                await dl_context.close()
 
             doc_id_for_storage = str(instrument) if instrument else case_number
             saved_path = self.storage.save_document(
@@ -748,10 +766,10 @@ class AuctionScraper:
             logger.error(f"Error in ORI case search for {case_number}: {e}")
             return result
         finally:
-            if new_page:
-                await new_page.close()
-            if new_context:
-                await new_context.close()
+            if own_page:
+                await own_page.close()
+            if own_context:
+                await own_context.close()
 
     async def recover_judgment_via_party_search(
         self,
@@ -759,6 +777,7 @@ class AuctionScraper:
         case_number: str,
         party_names: list[str],
         parcel_id: str,
+        ori_page: Optional[Page] = None,
     ) -> Dict[str, Any]:
         """
         Recovery path for thin/invalid judgments (e.g. CC fee orders).
@@ -773,31 +792,39 @@ class AuctionScraper:
 
         Returns dict with pdf_path, plaintiff, defendant (same shape as
         search_judgment_by_case_number).
+
+        If ori_page is provided (batch mode), uses it for API calls and skips
+        creating a new browser context + navigation. A throwaway context is
+        still created for the PDF download (which navigates the page away).
         """
         result: Dict[str, Any] = {"pdf_path": None, "plaintiff": None, "defendant": None}
         if not party_names:
             return result
 
-        new_context = None
-        new_page = None
+        own_context = None
+        own_page = None
         try:
-            new_context = await page.context.browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/119.0.0.0 Safari/537.36"
-                ),
-                accept_downloads=True,
-            )
-            new_page = await new_context.new_page()
-            await apply_stealth(new_page)
-
-            # Navigate to ORI so fetch() is same-origin
-            await new_page.goto(
-                "https://publicaccess.hillsclerk.com/oripublicaccess/",
-                timeout=30000,
-            )
-            await asyncio.sleep(2)
+            if ori_page:
+                # Batch mode — reuse caller's pre-navigated page for API calls
+                api_page = ori_page
+            else:
+                # Single-call mode — create own context + navigate
+                own_context = await page.context.browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/119.0.0.0 Safari/537.36"
+                    ),
+                    accept_downloads=True,
+                )
+                own_page = await own_context.new_page()
+                await apply_stealth(own_page)
+                await own_page.goto(
+                    "https://publicaccess.hillsclerk.com/oripublicaccess/",
+                    timeout=30000,
+                )
+                await asyncio.sleep(2)
+                api_page = own_page
 
             # Search ORI by each party name to find LP documents
             lp_case_number = None
@@ -806,7 +833,7 @@ class AuctionScraper:
                     continue
                 logger.info(f"Recovery: ORI party search for '{name}' (case {case_number})")
                 try:
-                    api_result = await new_page.evaluate(
+                    api_result = await api_page.evaluate(
                         """async (partyName) => {
                             const r = await fetch('/Public/ORIUtilities/DocumentSearch/api/Search', {
                                 method: 'POST',
@@ -852,7 +879,7 @@ class AuctionScraper:
                 f"Recovery: searching for real judgment under {lp_case_number} "
                 f"(original CC case: {case_number})"
             )
-            api_result = await new_page.evaluate(
+            api_result = await api_page.evaluate(
                 """async (caseNum) => {
                     const r = await fetch('/Public/ORIUtilities/DocumentSearch/api/Search', {
                         method: 'POST',
@@ -896,7 +923,7 @@ class AuctionScraper:
             if not doc_id:
                 return result
 
-            # Download the real judgment PDF
+            # Download the real judgment PDF via a throwaway page
             encoded_id = urllib.parse.quote(doc_id)
             download_url = (
                 f"https://publicaccess.hillsclerk.com"
@@ -904,15 +931,24 @@ class AuctionScraper:
                 f"?OverlayMode=View"
             )
             logger.info(f"Recovery: downloading real judgment PDF for {case_number}...")
-            async with new_page.expect_download(timeout=60000) as download_info:
-                await new_page.evaluate(
-                    f"window.location.href = '{download_url}'"
-                )
+            dl_context = await api_page.context.browser.new_context(
+                user_agent=USER_AGENT_DESKTOP,
+                accept_downloads=True,
+            )
+            dl_page = await dl_context.new_page()
+            try:
+                async with dl_page.expect_download(timeout=60000) as download_info:
+                    await dl_page.evaluate(
+                        f"window.location.href = '{download_url}'"
+                    )
 
-            download = await download_info.value
-            pdf_path = await download.path()
-            with open(pdf_path, "rb") as f:
-                pdf_bytes = f.read()
+                download = await download_info.value
+                pdf_path = await download.path()
+                with open(pdf_path, "rb") as f:
+                    pdf_bytes = f.read()
+            finally:
+                await dl_page.close()
+                await dl_context.close()
 
             doc_id_for_storage = str(instrument) if instrument else lp_case_number
             saved_path = self.storage.save_document(
@@ -934,10 +970,10 @@ class AuctionScraper:
             logger.error(f"Recovery failed for {case_number}: {e}")
             return result
         finally:
-            if new_page:
-                await new_page.close()
-            if new_context:
-                await new_context.close()
+            if own_page:
+                await own_page.close()
+            if own_context:
+                await own_context.close()
 
     async def _process_final_judgment(self, prop: Property) -> None:
         """

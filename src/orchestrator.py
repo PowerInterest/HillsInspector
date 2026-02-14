@@ -919,8 +919,11 @@ class PipelineOrchestrator:
         logger.info(f"Phase 2: Starting ORI Ingestion for {parcel_id}")
 
         # Skip logic: folio has chain AND same case number (matches old pipeline)
+        # BUT respect needs_ori_ingestion flag — if TRUE, re-run even with existing chain
+        auction_row = self.db.get_auction_by_case(case_number) or {}
+        force_ori = auction_row.get("needs_ori_ingestion") in (True, 1)
         last_case = self.db.get_last_analyzed_case(parcel_id)
-        if self.folio_has_chain_of_title(parcel_id) and last_case == case_number:
+        if not force_ori and self.folio_has_chain_of_title(parcel_id) and last_case == case_number:
             logger.info(f"Skipping ORI for {parcel_id} - already analyzed for {case_number}")
             await self.db_writer.enqueue("generic_call", {
                 "func": self.db.mark_step_complete,
@@ -2017,6 +2020,7 @@ async def run_full_update(
     auction_limit: int | None = None,
     retry_failed: bool = False,
     max_retries: int = 3,
+    skip_past_auctions: bool = True,
 ) -> None:
     """Run the full pipeline with a single orchestrator entrypoint."""
     from pathlib import Path
@@ -2126,6 +2130,24 @@ async def run_full_update(
         # CHECKPOINT: Persist auction data before moving to judgment extraction
         db.checkpoint()
 
+    # -------------------------------------------------------------------------
+    # Archive past auctions — prevent Steps 2+ from processing them
+    # Runs outside the step guard so it applies even with --start-step 2
+    # -------------------------------------------------------------------------
+    if skip_past_auctions:
+        archived = db.archive_past_auctions()
+        if archived:
+            logger.info(f"Archived {archived} past auctions (auction_date + 7 days < today)")
+            db.checkpoint()
+        else:
+            logger.debug("No past auctions to archive")
+    else:
+        # --process-past-auctions: un-archive previously archived cases
+        unarchived = db.unarchive_past_auctions()
+        if unarchived:
+            logger.info(f"Un-archived {unarchived} past auctions for reprocessing")
+            db.checkpoint()
+
     # =========================================================================
     # STEP 2: Judgment Extraction
     # =========================================================================
@@ -2222,6 +2244,7 @@ async def run_full_update(
                 import asyncio as _aio
 
                 async def _backfill_pdfs(cases):
+                    import random
                     downloaded = 0
                     async with ap() as pw:
                         _browser = await pw.chromium.launch(headless=True)
@@ -2235,12 +2258,19 @@ async def run_full_update(
                         from playwright_stealth import Stealth
                         await Stealth().apply_stealth_async(_page)
 
+                        # Navigate to ORI once for the entire batch
+                        await _page.goto(
+                            "https://publicaccess.hillsclerk.com/oripublicaccess/",
+                            timeout=30000,
+                        )
+                        await asyncio.sleep(2)
+
                         scraper = AuctionScraper()
                         for row in cases:
                             cn = row["case_number"]
                             try:
                                 res = await scraper.search_judgment_by_case_number(
-                                    _page, cn, ""
+                                    _page, cn, "", ori_page=_page,
                                 )
                                 if res.get("pdf_path"):
                                     db.mark_status_step_complete(
@@ -2258,6 +2288,7 @@ async def run_full_update(
                                 logger.warning(
                                     f"Backfill: error for {cn}: {be}"
                                 )
+                            await asyncio.sleep(random.uniform(1.0, 3.0))
                         await _browser.close()
                     return downloaded
 
@@ -2293,7 +2324,7 @@ async def run_full_update(
                 SELECT a.* FROM auctions a
                 LEFT JOIN status s ON s.case_number = a.case_number
                 WHERE a.extracted_judgment_data IS NULL
-                  AND COALESCE(s.pipeline_status, 'pending') != 'skipped'
+                  AND COALESCE(s.pipeline_status, 'pending') NOT IN ('skipped', 'archived')
                   AND s.step_judgment_extracted IS NULL
                   AND s.step_pdf_downloaded IS NOT NULL
                   AND (COALESCE(s.pipeline_status, 'pending') != 'failed' OR ?)
@@ -2456,6 +2487,7 @@ async def run_full_update(
                 from src.scrapers.auction_scraper import AuctionScraper
 
                 async def _run_recovery(cases_to_recover):
+                    import random
                     recovered = 0
                     from playwright.async_api import async_playwright
                     async with async_playwright() as p:
@@ -2472,6 +2504,13 @@ async def run_full_update(
                         from playwright_stealth import Stealth
                         await Stealth().apply_stealth_async(_page)
 
+                        # Navigate to ORI once for the entire recovery batch
+                        await _page.goto(
+                            "https://publicaccess.hillsclerk.com/oripublicaccess/",
+                            timeout=30000,
+                        )
+                        await asyncio.sleep(2)
+
                         scraper = AuctionScraper()
                         for case in cases_to_recover:
                             cn = case["case_number"]
@@ -2480,7 +2519,7 @@ async def run_full_update(
                             thin_result = case["thin_result"]
                             try:
                                 res = await scraper.recover_judgment_via_party_search(
-                                    _page, cn, parties, pid,
+                                    _page, cn, parties, pid, ori_page=_page,
                                 )
                                 recovered_pdf = res.get("pdf_path")
                                 if recovered_pdf:
@@ -2542,6 +2581,7 @@ async def run_full_update(
                                     processed_case_numbers,
                                 )
                                 extracted_count += 1
+                            await asyncio.sleep(random.uniform(2.0, 5.0))
                         await _browser.close()
                     return recovered
 
@@ -2648,7 +2688,7 @@ async def run_full_update(
                 """
                 SELECT s.case_number FROM status s
                 WHERE s.step_bulk_enriched IS NULL
-                  AND COALESCE(s.pipeline_status, 'pending') NOT IN ('completed', 'skipped')
+                  AND COALESCE(s.pipeline_status, 'pending') NOT IN ('completed', 'skipped', 'archived')
                 """
             )
             for auction in unenriched:

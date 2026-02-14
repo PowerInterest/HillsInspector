@@ -156,6 +156,12 @@
 
 ## ORI Search Parameters
 
+### Browser-Based Searches (CQID URLs)
+
+The PAV Direct Search Angular SPA accepts search parameters via URL query strings.
+Each CQID corresponds to a different search type. The SPA parses `OBKey__*` params
+and automatically POSTs to the `CustomQuery/KeywordSearch` API endpoint.
+
 **Book/Page Search (CQID 319)**:
 - `OBKey__1530_1` = Book type (`OR` for Official Records, `P` for Plat)
 - `OBKey__573_1` = Book number
@@ -165,10 +171,94 @@
 - `OBKey__1006_1` = Instrument number
 
 **Legal Description Search (CQID 321)**:
-- `OBKey__1011_1` = Legal description text (URL encoded)
+- `OBKey__1011_1` = Legal description text (URL encoded, supports `*` wildcard)
 
 **Party Name Search (CQID 326)**:
 - `OBKey__486_1` = Party name (URL encoded)
+
+### Direct API: CustomQuery/KeywordSearch
+
+The PAV Direct Search API can be called directly (no browser needed) via POST to:
+```
+POST https://publicaccess.hillsclerk.com/PAVDirectSearch/api/CustomQuery/KeywordSearch
+```
+
+**Required Headers:**
+```json
+{
+  "Content-Type": "application/json",
+  "Origin": "https://publicaccess.hillsclerk.com",
+  "Referer": "https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=..."
+}
+```
+
+**Request Payload:**
+```json
+{
+  "QueryID": <CQID>,
+  "Keywords": [
+    {"Id": <keyword_id>, "Value": "<search_value>"}
+  ]
+}
+```
+
+**Keyword IDs (mapped from OBKey URL params):**
+
+| CQID | Search Type | Keyword Id | OBKey Param | Example Value |
+|------|-------------|-----------|-------------|---------------|
+| 319 | Book/Page | 573 | `OBKey__573_1` | `"24546"` (book number) |
+| 319 | Book/Page | 1049 | `OBKey__1049_1` | `"1828"` (page number) |
+| 319 | Book/Page | 1530 | `OBKey__1530_1` | `"OR"` (book type) |
+| 320 | Instrument | 1006 | `OBKey__1006_1` | `"2024478600"` |
+| 321 | Legal Desc | 1011 | `OBKey__1011_1` | `"L 198 TUSCANY*"` |
+| 326 | Party Name | 486 | `OBKey__486_1` | `"SMITH JOHN"` |
+
+**Response Format:**
+```json
+{
+  "Data": [
+    {
+      "ID": "<encoded_doc_id>",
+      "Name": "<HTML-formatted summary>",
+      "DisplayType": "Image",
+      "DisplayColumnValues": [
+        {"Value": "PARTY 1", "RawValue": null},
+        {"Value": "SMITH JOHN", "RawValue": null},
+        {"Value": "11/23/2016 12:15:28 PM", "RawValue": "1479903328000"},
+        {"Value": "(D) DEED", "RawValue": null},
+        {"Value": "O", "RawValue": null},
+        {"Value": "24546", "RawValue": null},
+        {"Value": "1828", "RawValue": "1828"},
+        {"Value": "PT L 1 B 22 BAYBRIDGE SUBD REV", "RawValue": null},
+        {"Value": "2016461130", "RawValue": "2016461130"}
+      ]
+    }
+  ]
+}
+```
+
+**DisplayColumnValues order:** `[person_type, name, record_date, doc_type, book_type, book_num, page_num, legal, instrument]`
+
+**Notes:**
+- Zero results = `{"Data": []}` returned instantly
+- Each document party gets its own record (PARTY 1, PARTY 2 etc.)
+- The `ID` field is the encoded document ID for PDF download via `/PAVDirectSearch/api/Document/{ID}/?OverlayMode=View`
+- The ORIUtilities Search API (`/Public/ORIUtilities/DocumentSearch/api/Search`) does NOT support instrument search (returns 400: "cannot convert to Int64")
+- Keyword field must use `"Id"` (capitalized) — `"Name"` accepts string keyword names but `"KeywordID"` returns 400
+
+### ORI Search API (ORIUtilities)
+
+Separate from the PAV Direct Search. Used for case number and party name searches.
+
+```
+POST https://publicaccess.hillsclerk.com/Public/ORIUtilities/DocumentSearch/api/Search
+```
+
+**Supported fields:** `CaseNum`, `Party` (alias: `PartyName`), `DocType`, `RecordDateBegin`, `RecordDateEnd`
+
+**NOT supported:** `Instrument` (returns 400: "JSON value could not be converted to System.Int64")
+
+**Requires session:** Must first navigate to `https://publicaccess.hillsclerk.com/oripublicaccess/` to establish CORS session. If the site is down/slow, this navigation times out (30s).
 
 ## Case Number Formats
 

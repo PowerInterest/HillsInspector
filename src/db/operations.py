@@ -2635,7 +2635,7 @@ class PropertyDB:
                 n.property_address
             FROM normalized n
             LEFT JOIN status s ON s.case_number = n.case_number
-            WHERE COALESCE(s.pipeline_status, 'pending') NOT IN ('completed', 'skipped')
+            WHERE COALESCE(s.pipeline_status, 'pending') NOT IN ('completed', 'skipped', 'archived')
               {date_clause}
               AND (COALESCE(s.pipeline_status, 'pending') != 'failed' OR ?)
               AND (
@@ -3217,6 +3217,83 @@ class PropertyDB:
             """,
             [reason, case_number],
         )
+
+    def archive_past_auctions(self, as_of_date: date | None = None, grace_days: int = 7) -> int:
+        """Bulk-archive auctions whose auction_date is before (as_of_date - grace_days).
+
+        Uses pipeline_status='archived' (distinct from 'skipped') so these are
+        clearly distinguishable from cases skipped for data-quality reasons.
+
+        Preserves existing last_error for failed cases so diagnostic info is
+        not lost.
+
+        Args:
+            as_of_date: Reference date (default: today in local/auction tz).
+            grace_days: Number of days after auction_date before archiving.
+                        Default 7 allows late-arriving PDFs/data to be processed.
+
+        Returns:
+            Count of newly archived cases.
+        """
+        from datetime import timedelta
+
+        from src.utils.time import today_local
+
+        self.ensure_status_table()
+        conn = self.connect()
+        cutoff = ((as_of_date or today_local()) - timedelta(days=grace_days)).isoformat()
+
+        cursor = conn.execute("""
+            UPDATE status SET
+                pipeline_status = 'archived',
+                last_error = CASE
+                    WHEN last_error IS NULL THEN 'auction_date_passed'
+                    ELSE last_error
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE case_number IN (
+                SELECT s.case_number
+                FROM status s
+                JOIN auctions a ON a.case_number = s.case_number
+                WHERE normalize_date(a.auction_date) < ?
+                  AND normalize_date(a.auction_date) IS NOT NULL
+                  AND COALESCE(s.pipeline_status, 'pending')
+                      NOT IN ('completed', 'skipped', 'archived')
+            )
+        """, [cutoff])
+        count = cursor.rowcount
+        conn.commit()
+        return count
+
+    def unarchive_past_auctions(self) -> int:
+        """Restore archived-due-to-date cases back to their pre-archive state.
+
+        Cases that were 'failed' before archiving (identifiable by last_error
+        != 'auction_date_passed') are restored to 'failed'.
+        Cases whose only archive reason was date passage are restored to 'pending'.
+
+        Returns:
+            Count of un-archived cases.
+        """
+        self.ensure_status_table()
+        conn = self.connect()
+        cursor = conn.execute("""
+            UPDATE status SET
+                pipeline_status = CASE
+                    WHEN last_error IS NOT NULL AND last_error != 'auction_date_passed'
+                        THEN 'failed'
+                    ELSE 'pending'
+                END,
+                last_error = CASE
+                    WHEN last_error = 'auction_date_passed' THEN NULL
+                    ELSE last_error
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE pipeline_status = 'archived'
+        """)
+        count = cursor.rowcount
+        conn.commit()
+        return count
 
     def is_status_step_complete(self, case_number: str, step_column: str) -> bool:
         """Check if a specific step is complete for a case."""

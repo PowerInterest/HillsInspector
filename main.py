@@ -178,6 +178,7 @@ async def handle_update(
     auction_limit: int | None = None,
     retry_failed: bool = False,
     max_retries: int = 3,
+    skip_past_auctions: bool = True,
 ):
     """Run full update via orchestrator."""
     global _shutdown_requested
@@ -234,6 +235,7 @@ async def handle_update(
                 auction_limit=auction_limit,
                 retry_failed=retry_failed,
                 max_retries=max_retries,
+                skip_past_auctions=skip_past_auctions,
             ))
             try:
                 await update_task
@@ -419,6 +421,11 @@ def main():
         default=None,
         help="Max auctions to scrape per date (for testing).",
     )
+    parser.add_argument(
+        "--process-past-auctions",
+        action="store_true",
+        help="Process auctions whose date has passed (normally archived after 7-day grace).",
+    )
 
     args = parser.parse_args()
 
@@ -479,6 +486,7 @@ def main():
                 retry_failed=args.retry_failed,
                 max_retries=args.max_retries,
                 auction_limit=args.auction_limit,
+                skip_past_auctions=not args.process_past_auctions,
             )
         )
     elif args.web:
