@@ -69,6 +69,7 @@ async def property_liens(request: Request, folio: str):
         return HTMLResponse("<p>Property not found</p>")
 
     encumbrances = prop.get("encumbrances", [])
+    real_folio = prop.get("folio") or folio
 
     return templates.TemplateResponse(
         "partials/lien_table.html",
@@ -77,7 +78,7 @@ async def property_liens(request: Request, folio: str):
             "liens": [],
             "encumbrances": encumbrances,
             "auction": prop.get("auction", {}),
-            "folio": folio
+            "folio": real_folio
         }
     )
 
@@ -212,15 +213,16 @@ async def property_chain_of_title(request: Request, folio: str):
         prop = get_property_by_case(folio)
 
     if not prop:
-        raise HTTPException(status_code=404, detail="Property not found")
+        return HTMLResponse('<p class="text-muted">No chain of title data available.</p>')
 
     chain_of_title = prop.get("chain", [])
+    real_folio = prop.get("folio") or folio
 
     # Enhance chain with document links — only link when a file exists on disk
     for item in chain_of_title:
         doc = None
         if item.get("acquisition_instrument"):
-            doc = get_document_by_instrument(folio, item["acquisition_instrument"])
+            doc = get_document_by_instrument(real_folio, item["acquisition_instrument"])
         item["document_id"] = doc["id"] if doc and doc.get("file_path") else None
 
     return templates.TemplateResponse(
@@ -228,7 +230,7 @@ async def property_chain_of_title(request: Request, folio: str):
         {
             "request": request,
             "chain_of_title": chain_of_title,
-            "folio": folio
+            "folio": real_folio
         }
     )
 

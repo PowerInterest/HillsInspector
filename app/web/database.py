@@ -575,9 +575,39 @@ def get_property_by_case(case_number: str) -> Optional[Dict[str, Any]]:
     try:
         query = "SELECT folio FROM auctions WHERE case_number = ?"
         result = conn.execute(query, [case_number]).fetchone()
-        if result and result[0]:
-            return get_property_detail(result[0])
-        return None
+        folio = (result[0] if result else None) or ""
+        if folio:
+            return get_property_detail(folio)
+
+        # Empty folio — build minimal property dict from auction record
+        auction_row = conn.execute(
+            "SELECT * FROM auctions WHERE case_number = ? LIMIT 1", [case_number]
+        ).fetchone()
+        if not auction_row:
+            return None
+        auction = dict(auction_row)
+        try:
+            if isinstance(auction.get("extracted_judgment_data"), str):
+                auction["extracted_judgment_data"] = json.loads(auction["extracted_judgment_data"])
+        except Exception:
+            pass
+        return {
+            "folio": folio,
+            "auction": auction,
+            "parcel": None,
+            "parcels_data": None,
+            "encumbrances": [],
+            "chain": [],
+            "nocs": [],
+            "sales": [],
+            "net_equity": 0,
+            "market_value": 0,
+            "est_surviving_debt": 0,
+            "is_toxic_title": False,
+            "market": {},
+            "enrichments": {},
+            "sources": [],
+        }
     except Exception as e:
         logger.error(f"Error fetching by case {case_number}: {e}")
         return None
