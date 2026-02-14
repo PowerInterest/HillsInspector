@@ -1,3 +1,4 @@
+import json
 import os
 from contextlib import suppress
 from pathlib import Path
@@ -17,21 +18,45 @@ class FinalJudgmentProcessor:
         self.temp_dir = Path("data/temp/doc_images")
         self.temp_dir.mkdir(parents=True, exist_ok=True)
     
-    def process_pdf(self, pdf_path: str, case_number: str) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def _json_cache_path(pdf_path: str) -> Path:
+        """Return the path to the JSON extraction cache file next to the PDF."""
+        p = Path(pdf_path)
+        return p.parent / f"{p.stem}_extracted.json"
+
+    def process_pdf(
+        self,
+        pdf_path: str,
+        case_number: str,
+        *,
+        force: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """
         Process a Final Judgment PDF and extract structured data.
-        
+
         Args:
             pdf_path: Path to the Final Judgment document (PDF, etc.)
             case_number: Case number for logging/tracking
-            
+            force: If True, ignore cached JSON and re-extract via Vision
+
         Returns:
             Dict with extracted data (including raw_text for debugging) or None if processing failed
         """
         if not os.path.exists(pdf_path):
             logger.error(f"PDF not found: {pdf_path}")
             return None
-        
+
+        # Check for cached extraction JSON next to the PDF
+        cache_path = self._json_cache_path(pdf_path)
+        if not force and cache_path.exists():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                if cached and isinstance(cached, dict):
+                    logger.info(f"Loaded cached extraction for {case_number} from {cache_path.name}")
+                    return cached
+            except Exception as e:
+                logger.warning(f"Bad cache file {cache_path}, re-extracting: {e}")
+
         page_images: list[str] = []
         try:
             logger.info(f"Processing Final Judgment PDF for case {case_number}...")
@@ -109,6 +134,16 @@ class FinalJudgmentProcessor:
                 'total_pages': total_pages,
                 'extraction_strategies': strategies,
             }
+
+            # Save extraction to JSON cache next to the PDF
+            try:
+                cache_path.write_text(
+                    json.dumps(merged_json, indent=2, default=str),
+                    encoding="utf-8",
+                )
+                logger.info(f"Saved extraction cache: {cache_path.name}")
+            except Exception as e:
+                logger.warning(f"Failed to save extraction cache: {e}")
 
             logger.info(f"Successfully processed Final Judgment for case {case_number}")
             return merged_json
