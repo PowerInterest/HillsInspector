@@ -216,12 +216,12 @@ async def property_chain_of_title(request: Request, folio: str):
 
     chain_of_title = prop.get("chain", [])
 
-    # Enhance chain with document links (display uses DB-provided link_status/confidence_score)
+    # Enhance chain with document links — only link when a file exists on disk
     for item in chain_of_title:
         doc = None
         if item.get("acquisition_instrument"):
             doc = get_document_by_instrument(folio, item["acquisition_instrument"])
-        item["document_id"] = doc["id"] if doc else None
+        item["document_id"] = doc["id"] if doc and doc.get("file_path") else None
 
     return templates.TemplateResponse(
         "partials/chain_of_title.html",
