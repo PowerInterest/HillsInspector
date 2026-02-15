@@ -2364,13 +2364,38 @@ async def run_full_update(
                 try:
                     existing_df = pl.read_parquet(checkpoint_path)
                     if "case_number" in existing_df.columns:
-                        processed_case_numbers = set(
+                        checkpoint_cases = set(
                             existing_df["case_number"].drop_nulls().unique().to_list()
                         )
-                        judgment_rows = existing_df.to_dicts()
+                        # Validate checkpoint against DB — only trust cases that
+                        # actually have extracted_judgment_data in the current DB
+                        conn = self.db.connect()
+                        try:
+                            db_extracted = set()
+                            for row in conn.execute(
+                                "SELECT case_number FROM auctions WHERE extracted_judgment_data IS NOT NULL"
+                            ).fetchall():
+                                db_extracted.add(row[0])
+                        finally:
+                            conn.close()
+                        valid_cases = checkpoint_cases & db_extracted
+                        stale_cases = checkpoint_cases - db_extracted
+                        if stale_cases:
+                            logger.warning(
+                                f"Checkpoint has {len(stale_cases)} stale entries "
+                                f"not in DB — will re-extract those"
+                            )
+                            # Keep only valid rows in judgment_rows
+                            judgment_rows = [
+                                r for r in existing_df.to_dicts()
+                                if r.get("case_number") in valid_cases
+                            ]
+                        else:
+                            judgment_rows = existing_df.to_dicts()
+                        processed_case_numbers = valid_cases
                         logger.info(
-                            f"Loaded judgment checkpoint with {len(judgment_rows)} rows; "
-                            f"skipping {len(processed_case_numbers)} case_numbers"
+                            f"Loaded judgment checkpoint: {len(valid_cases)} valid, "
+                            f"{len(stale_cases)} stale, skipping {len(processed_case_numbers)}"
                         )
                 except Exception as exc:
                     logger.warning(f"Failed to load judgment checkpoint: {exc}")

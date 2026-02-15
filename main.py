@@ -155,6 +155,17 @@ def handle_new():
             if wal_file.exists():
                 shutil.move(str(wal_file), str(archive_path) + ext)
 
+    # Clean up stale checkpoint/parquet files that reference old DB data
+    judgment_dir = Path("data/judgments")
+    for stale_file in [
+        judgment_dir / "judgment_extracts_checkpoint.parquet",
+        judgment_dir / "judgment_extracts_checkpoint.parquet.bak",
+        judgment_dir / "judgment_extracts_final.parquet",
+    ]:
+        if stale_file.exists():
+            logger.info(f"Removing stale checkpoint: {stale_file}")
+            stale_file.unlink()
+
     logger.info("Creating new SQLite database with WAL mode...")
     create_sqlite_database()
     logger.success("New SQLite database created successfully.")
