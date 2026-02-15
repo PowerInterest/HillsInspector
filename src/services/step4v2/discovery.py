@@ -308,16 +308,20 @@ class IterativeDiscovery:
             # Execute search
             try:
                 self.search_queue.mark_in_progress(search.id)
+                self.conn.commit()
                 new_docs = self._execute_search(folio, search)
                 documents_found += new_docs
+                self.conn.commit()
                 logger.debug(f"  Iteration {iteration}: {search.search_type} found {new_docs} new docs")
 
             except RateLimitError:
                 self.search_queue.mark_rate_limited(search.id)
+                self.conn.commit()
                 logger.warning(f"Rate limited on search {search.id}")
 
             except Exception as e:
                 self.search_queue.mark_failed(search.id, str(e))
+                self.conn.commit()
                 logger.error(f"Search failed: {e}")
 
         else:

@@ -193,6 +193,9 @@ class SearchQueue:
                 )
                 count += 1
 
+        # Commit so searches are visible to subsequent get_next_pending queries
+        # (Python sqlite3's implicit transactions may not auto-commit DML)
+        self.conn.commit()
         logger.info(f"Initialized search queue for {folio}: {count} searches queued")
         return count
 
