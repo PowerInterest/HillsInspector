@@ -35,12 +35,6 @@ from playwright.sync_api import (
 )
 
 SITE_ROOT = "https://www.hillsforeclosures.com"
-SEED_URLS = [
-    f"{SITE_ROOT}/",
-    f"{SITE_ROOT}/featured-upcoming.html",
-    f"{SITE_ROOT}/featured-results.html",
-    f"{SITE_ROOT}/tax-deed-sales.html",
-]
 HILLSBOROUGH_CITY_SLUGS = {
     "apollo-beach",
     "brandon",
@@ -62,6 +56,14 @@ HILLSBOROUGH_CITY_SLUGS = {
     "valrico",
     "wimauma",
 }
+
+SEED_URLS = [
+    f"{SITE_ROOT}/",
+    # Sold history listing (paged)
+    f"{SITE_ROOT}/featured-results.html?page=1&period=",
+    # Hillsborough foreclosure auction listing pages (city-scoped)
+    *[f"{SITE_ROOT}/foreclosure-auctions/{slug}" for slug in sorted(HILLSBOROUGH_CITY_SLUGS)],
+]
 NAVIGATION_TIMEOUT_MS = 90000
 REQUEST_TIMEOUT_SEC = 30
 USER_AGENT = (
@@ -91,9 +93,6 @@ IMAGE_FILTER_MARKERS = [
 ]
 ALLOWED_LIST_PATHS = [
     "/foreclosure-auctions/",
-    "/featured-upcoming.html",
-    "/featured-results.html",
-    "/tax-deed-sales.html",
 ]
 
 
@@ -180,6 +179,11 @@ def parse_args() -> argparse.Namespace:
         help="Write partial outputs every N extracted records (default 50).",
     )
     parser.add_argument(
+        "--block-resources",
+        action="store_true",
+        help="Block images/fonts/media + map tiles during crawl (recommended).",
+    )
+    parser.add_argument(
         "--download-photos",
         action="store_true",
         help="Download discovered photos to local output folder",
@@ -235,7 +239,7 @@ def is_property_url(url: str) -> bool:
 
 def is_list_url(url: str) -> bool:
     path = urlsplit(url).path
-    if path in {"/featured-upcoming.html", "/featured-results.html", "/tax-deed-sales.html"}:
+    if path == "/featured-results.html":
         return True
     if not path.startswith("/foreclosure-auctions/"):
         return False
@@ -464,6 +468,36 @@ def extract_coordinates(html: str) -> tuple[Optional[float], Optional[float]]:
         return float(match.group(1)), float(match.group(2))
     except ValueError:
         return None, None
+
+
+def install_resource_blocking(context: BrowserContext) -> None:
+    """Reduce bandwidth/CPU and avoid map tile storms.
+
+    We do NOT need to load images to extract photo URLs; we download photos later.
+    """
+
+    def _handler(route, request):
+        url = request.url.lower()
+        rtype = request.resource_type
+        if rtype in {"image", "media", "font"}:
+            return route.abort()
+        # Block common tile/analytics endpoints.
+        if any(
+            marker in url
+            for marker in (
+                "mapbox.com/",
+                "tiles.mapbox.com/",
+                "maps.gstatic.com/",
+                "googletagmanager.com/",
+                "google-analytics.com/",
+                "doubleclick.net/",
+                "facebook.com/tr",
+            )
+        ):
+            return route.abort()
+        return route.continue_()
+
+    context.route("**/*", _handler)
 
 
 def extract_links(page: Page) -> list[str]:
@@ -784,11 +818,12 @@ def crawl_all(
         for attempt in range(3):
             try:
                 response = page.goto(url, wait_until="domcontentloaded")
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(1500)
                 title = page.title()
-                text = page.inner_text("body")
-                html = page.content()
                 current = normalize_url(page.url)
+                snippet = page.evaluate("() => (document.body ? document.body.innerText.slice(0, 5000) : '')")
+                text = snippet or ""
+                html = ""
                 if is_challenge_page(title, text):
                     logger.warning(f"Challenge page at {url}, retry {attempt + 1}/3")
                     page.wait_for_timeout(6000)
@@ -831,6 +866,14 @@ def crawl_all(
 
         if is_property_url(current):
             property_pages_visited += 1
+            try:
+                # Only property pages need full HTML/text (list pages can be huge).
+                text = page.inner_text("body")
+                html = page.content()
+            except Exception as exc:
+                logger.warning(f"Failed to capture property content at {current}: {exc}")
+                page.wait_for_timeout(1200)
+                continue
             prop_match = re.search(r"/property-info/([0-9]+)/([^/?#]+)", current)
             slug = prop_match.group(2) if prop_match else slugify(current)
             pid = prop_match.group(1) if prop_match else "unknown"
@@ -846,7 +889,13 @@ def crawl_all(
                 continue
             county_value = (record.county or "").strip().lower()
             if county_filter.lower() in county_value:
-                record_date_iso = parse_hills_auction_date_iso(record.auction_date)
+                auction_type_value = (record.auction_type or "").strip().lower()
+                if auction_type_value and auction_type_value != "foreclosure":
+                    # Only keep foreclosure auctions (skip tax deeds, etc.)
+                    keep = False
+                    record_date_iso = None
+                else:
+                    record_date_iso = parse_hills_auction_date_iso(record.auction_date)
                 record_date = parse_iso_date(record_date_iso)
                 keep = False
                 if record_date is None:
@@ -928,6 +977,8 @@ def main() -> None:
             user_agent=USER_AGENT,
             args=["--disable-blink-features=AutomationControlled"],
         )
+        if args.block_resources:
+            install_resource_blocking(context)
         context.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
         )

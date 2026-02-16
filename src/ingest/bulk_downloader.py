@@ -75,7 +75,18 @@ async def download_latest_bulk_data(output_dir: Path = BULK_DATA_DIR) -> dict:
                 results["parcel_zip"] = await _download_file(latest_parcel["link"], output_dir, latest_parcel["filename"])
 
             if not latlon_files:
-                logger.error("No LatLon_*.zip files found!")
+                logger.warning("No LatLon_*.zip files found on HCPA site, checking local files...")
+                # Fall back to most recent local LatLon ZIP
+                local_latlon = sorted(
+                    output_dir.glob("LatLon_Table_*.zip"),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                if local_latlon:
+                    results["latlon_zip"] = local_latlon[0]
+                    logger.info(f"Using local LatLon file: {local_latlon[0].name}")
+                else:
+                    logger.error("No LatLon_*.zip files found locally either!")
             else:
                 latest_latlon = sorted(latlon_files, key=lambda x: x["date"], reverse=True)[0]
                 logger.info(f"Latest LatLon File: {latest_latlon['filename']}")

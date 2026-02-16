@@ -737,6 +737,19 @@ def enrich_auctions_from_bulk(db_path: str = str(DB_PATH), conn=None) -> dict:
                OR parcels.beds IS NULL OR parcels.legal_description IS NULL)
     """, "bulk_enrich.update_parcels_from_bulk")
 
+    # Unconditional coordinate backfill — not gated on missing owner/year_built
+    _exec_sql("""
+        UPDATE parcels
+        SET
+            latitude = b.latitude,
+            longitude = b.longitude,
+            updated_at = CURRENT_TIMESTAMP
+        FROM bulk_parcels AS b
+        WHERE parcels.folio = b.strap
+          AND (parcels.latitude IS NULL OR parcels.longitude IS NULL)
+          AND b.latitude IS NOT NULL AND b.longitude IS NOT NULL
+    """, "bulk_enrich.backfill_coordinates")
+
     # Count after
     result = conn.execute("""
         SELECT COUNT(*) FROM auctions a
@@ -857,6 +870,79 @@ def validate_bulk_data(db_path: str = str(DB_PATH)) -> dict:
     return stats
 
 
+def repair_coordinates(db_path: str = str(DB_PATH)) -> dict:
+    """
+    One-time repair: re-merge local parcel + LatLon ZIPs, rebuild parquet
+    with lat/lon, ingest to SQLite, and run enrichment to backfill parcels.
+    """
+    # Find the latest local parcel and latlon ZIPs
+    parcel_zips = sorted(
+        BULK_DATA_DIR.glob("parcel_*.zip"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    latlon_zips = sorted(
+        BULK_DATA_DIR.glob("LatLon_Table_*.zip"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    if not parcel_zips:
+        raise RuntimeError(f"No parcel_*.zip found in {BULK_DATA_DIR}")
+    if not latlon_zips:
+        raise RuntimeError(f"No LatLon_Table_*.zip found in {BULK_DATA_DIR}")
+
+    parcel_zip = parcel_zips[0]
+    latlon_zip = latlon_zips[0]
+    logger.info(f"Repair: using {parcel_zip.name} + {latlon_zip.name}")
+
+    # Load and merge
+    df_parcels = dbf_zip_to_polars(parcel_zip, "parcel")
+    df_latlon = load_latlon_data(latlon_zip)
+    df_merged = df_parcels.join(df_latlon, on="folio", how="left")
+
+    lat_count = df_merged.filter(pl.col("latitude").is_not_null()).height
+    logger.info(
+        f"Repair: merged {df_merged.height:,} parcels, "
+        f"{lat_count:,} with coordinates ({lat_count * 100 / df_merged.height:.1f}%)"
+    )
+
+    # Save corrected parquet
+    parquet_path = save_to_parquet(df_merged)
+    logger.info(f"Repair: saved corrected parquet to {parquet_path}")
+
+    # Ingest to SQLite
+    db_stats = ingest_to_sqlite(df_merged, db_path)
+    logger.info(f"Repair: ingested to SQLite: {db_stats}")
+
+    # Run enrichment (backfills parcels.latitude/longitude)
+    enrich_stats = enrich_auctions_from_bulk(db_path)
+    logger.info(f"Repair: enrichment stats: {enrich_stats}")
+
+    # Verify
+    conn = sqlite3.connect(db_path)
+    bulk_coords = conn.execute(
+        "SELECT COUNT(*) FROM bulk_parcels WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+    ).fetchone()[0]
+    parcel_coords = conn.execute(
+        "SELECT COUNT(*) FROM parcels WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+    ).fetchone()[0]
+    parcel_total = conn.execute("SELECT COUNT(*) FROM parcels").fetchone()[0]
+    conn.close()
+
+    logger.success(
+        f"Repair complete: bulk_parcels with coords={bulk_coords:,}, "
+        f"parcels with coords={parcel_coords}/{parcel_total}"
+    )
+    return {
+        "parquet": str(parquet_path),
+        "bulk_with_coords": bulk_coords,
+        "parcels_with_coords": parcel_coords,
+        "parcels_total": parcel_total,
+        **enrich_stats,
+    }
+
+
 if __name__ == "__main__":
     import sys
 
@@ -869,9 +955,9 @@ if __name__ == "__main__":
         print("  python -m src.ingest.bulk_parcel_ingest --enrich")
         print("  python -m src.ingest.bulk_parcel_ingest --validate")
         print("  python -m src.ingest.bulk_parcel_ingest --check-refresh")
-        print("  python -m src.ingest.bulk_parcel_ingest --check-refresh")
         print("  python -m src.ingest.bulk_parcel_ingest --lookup-tables")
         print("  python -m src.ingest.bulk_parcel_ingest --download")
+        print("  python -m src.ingest.bulk_parcel_ingest --repair-coords")
         sys.exit(1)
 
     arg = sys.argv[1]
@@ -901,6 +987,11 @@ if __name__ == "__main__":
             print(f"  {table_name}:")
             for key, value in table_stats.items():
                 print(f"    {key}: {value}")
+    elif arg == "--repair-coords":
+        stats = repair_coordinates()
+        print("Coordinate repair complete:")
+        for key, value in stats.items():
+            print(f"  {key}: {value}")
     else:
         path = Path(arg)
         if not path.exists():
