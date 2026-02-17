@@ -1,321 +1,348 @@
 """
-Redfin scraper using Playwright + stealth for property data and photos.
+Redfin scraper using real Chrome with persistent profile.
 
-Uses Redfin's Stingray API endpoints discovered through network inspection.
-Requires browser context to bypass bot detection.
+Requires: channel="chrome", devtools=True, user_chrome profile.
+Bare Playwright Chromium and the Stingray API are blocked by Redfin.
+Only real page navigation with a real Chrome profile works.
 """
 import asyncio
-import json
+import contextlib
 import random
 import re
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 from loguru import logger
-from playwright.async_api import async_playwright, Page
+from playwright.async_api import async_playwright, BrowserContext, Page
 from playwright_stealth import Stealth
 
-from src.services.scraper_storage import ScraperStorage
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PROFILE_DIR = PROJECT_ROOT / "data" / "browser_profiles" / "user_chrome"
+FORECLOSURES_URL = "https://www.redfin.com/county/464/FL/Hillsborough-County/foreclosures"
 
 
-async def apply_stealth(page: Page) -> None:
-    """Apply stealth settings to a page to avoid bot detection."""
-    await Stealth().apply_stealth_async(page)
+@dataclass
+class RedfinListing:
+    address: str = ""
+    list_price: float | None = None
+    redfin_estimate: float | None = None
+    beds: int | None = None
+    baths: float | None = None
+    sqft: int | None = None
+    year_built: int | None = None
+    lot_size: str | None = None
+    price_per_sqft: float | None = None
+    hoa_monthly: float | None = None
+    days_on_market: int | None = None
+    listing_status: str | None = None
+    property_type: str | None = None
+    photos: list[str] = field(default_factory=list)
+    detail_url: str = ""
 
 
 class RedfinScraper:
-    """Scraper for Redfin property data using the hidden Stingray API."""
+    """Scraper for Redfin using real Chrome with persistent profile."""
 
-    BASE_URL = "https://www.redfin.com"
-    STINGRAY_BASE = "https://www.redfin.com/stingray"
+    # Rate limiting
+    LISTING_PAGE_DELAY = (3.0, 6.0)
+    DETAIL_PAGE_DELAY = (5.0, 10.0)
+    PAGE_SETTLE_SECS = 3000  # ms, after domcontentloaded
 
-    # Rate limiting settings
-    MIN_DELAY = 3.0
-    MAX_DELAY = 8.0
+    def __init__(self):
+        self._context: BrowserContext | None = None
 
-    def __init__(self, headless: bool = True, storage: ScraperStorage | None = None):
-        self.headless = headless
-        self._storage = storage  # Lazy init to avoid DB lock on import
+    async def __aenter__(self):
+        await self._launch()
+        return self
 
-    async def _human_delay(self, min_sec: float | None = None, max_sec: float | None = None) -> None:
-        """Add random human-like delay."""
-        min_s = min_sec or self.MIN_DELAY
-        max_s = max_sec or self.MAX_DELAY
-        await asyncio.sleep(random.uniform(min_s, max_s))  # noqa: S311
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self._close()
 
-    async def _setup_browser(self, playwright):
-        """Create stealth browser context."""
-        browser = await playwright.chromium.launch(headless=self.headless)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080},
-            screen={"width": 1920, "height": 1080},
+    async def _launch(self):
+        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        self._pw = await async_playwright().__aenter__()
+        self._context = await self._pw.chromium.launch_persistent_context(
+            user_data_dir=str(PROFILE_DIR),
+            channel="chrome",
+            headless=False,
+            devtools=True,
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1440, "height": 900},
             locale="en-US",
             timezone_id="America/New_York",
-            extra_http_headers={
-                "Accept-Language": "en-US,en;q=0.9",
-            },
+            args=["--disable-blink-features=AutomationControlled"],
         )
-        page = await context.new_page()
-        await apply_stealth(page)
-        return browser, context, page
+        await self._context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+        )
+        self._page = (
+            self._context.pages[0]
+            if self._context.pages
+            else await self._context.new_page()
+        )
+        await Stealth().apply_stealth_async(self._page)
+        logger.info("Redfin scraper: Chrome launched with user profile")
 
-    async def search_property(self, address: str) -> dict[str, Any] | None:
-        """
-        Search for a property by address and return property data.
-
-        Uses the search box on Redfin to find the property, then extracts
-        data from the property page.
-
-        Args:
-            address: Full address string (e.g., "123 Main St, Tampa, FL 33617")
-
-        Returns:
-            Dictionary with property data including photos, or None if not found.
-        """
-        async with async_playwright() as p:
-            browser, _context, page = await self._setup_browser(p)
-            try:
-                # Navigate to Redfin
-                logger.info(f"Searching Redfin for: {address}")
-                await page.goto(self.BASE_URL, timeout=30000)
-                await self._human_delay(2, 4)
-
-                # Look for the search input - use multiple selectors in order of specificity
-                search_input = await page.query_selector('#search-box-input')
-                if not search_input:
-                    search_input = await page.query_selector('input[placeholder*="Address"]')
-                if not search_input:
-                    search_input = await page.query_selector('input[placeholder*="City"]')
-                if not search_input:
-                    search_input = await page.query_selector('input[type="search"]')
-
-                if not search_input:
-                    logger.warning("Could not find search input on Redfin")
-                    # Try direct URL approach
-                    return await self._search_via_url(page, address)
-
-                # Type the address with human-like typing
-                await search_input.click()
-                await self._human_delay(0.5, 1)
-                await search_input.fill(address)
-                await self._human_delay(2, 3)  # Wait longer for autocomplete
-
-                # Wait for autocomplete dropdown - Redfin uses various selectors
-                autocomplete_selectors = [
-                    '.SearchBoxAutocomplete',
-                    '[class*="autocomplete"]',
-                    '.react-autosuggest__suggestions-container--open',
-                    '.search-dropdown',
-                    'div[role="listbox"]',
-                ]
-
-                autocomplete_found = False
-                for sel in autocomplete_selectors:
-                    try:
-                        await page.wait_for_selector(sel, timeout=5000)
-                        autocomplete_found = True
-                        logger.debug(f"Found autocomplete with selector: {sel}")
-                        break
-                    except Exception as exc:
-                        logger.debug(f"Autocomplete selector failed: {sel} ({exc})")
-                        continue
-
-                if autocomplete_found:
-                    await self._human_delay(0.5, 1)
-                    # Try to click first suggestion
-                    suggestion_selectors = [
-                        '.SearchBoxAutocomplete a',
-                        '[class*="autocomplete"] a',
-                        '.react-autosuggest__suggestion',
-                        'div[role="option"]',
-                        '.search-dropdown a',
-                    ]
-
-                    for sel in suggestion_selectors:
-                        first_result = await page.query_selector(sel)
-                        if first_result:
-                            await first_result.click()
-                            logger.debug(f"Clicked suggestion with selector: {sel}")
-                            await self._human_delay(3, 5)
-                            break
-                    else:
-                        # No suggestions found, press Enter
-                        await search_input.press("Enter")
-                        await self._human_delay(3, 5)
-                else:
-                    # No autocomplete appeared, press Enter to search
-                    logger.debug("No autocomplete dropdown found, pressing Enter")
-                    await search_input.press("Enter")
-                    await self._human_delay(3, 5)
-
-                # Check if we're on a property page
-                current_url = page.url
-                if "/home/" not in current_url and "/homedetails/" not in current_url:
-                    logger.warning(f"Did not land on property page: {current_url}")
-                    return None
-
-                # Extract property data from the page
-                return await self._extract_property_data(page, {"name": address, "url": current_url})
-
-            except Exception as e:
-                logger.error(f"Redfin search error: {e}")
-                return None
-            finally:
-                await browser.close()
-
-    async def _search_via_url(self, page: Page, address: str) -> dict[str, Any] | None:
-        """Fallback: Search via URL encoding the address."""
-        # Construct a search URL
-        encoded = quote(address)
-        search_url = f"{self.BASE_URL}/{encoded}"
-        logger.info(f"Trying direct URL: {search_url}")
-
-        try:
-            await page.goto(search_url, timeout=30000)
-            await self._human_delay(3, 5)
-
-            current_url = page.url
-            if "/home/" in current_url or "/homedetails/" in current_url:
-                return await self._extract_property_data(page, {"name": address, "url": current_url})
-        except Exception as e:
-            logger.debug(f"URL search failed: {e}")
-
-        return None
-
-    async def _extract_property_data(self, page: Page, search_result: dict) -> dict[str, Any]:
-        """Extract property data from the loaded page."""
-        result = {
-            "source": "redfin",
-            "address": search_result.get("name"),
-            "url": f"{self.BASE_URL}{search_result.get('url', '')}",
-            "property_id": search_result.get("id"),
-            "photos": [],
-            "price": None,
-            "beds": None,
-            "baths": None,
-            "sqft": None,
-            "year_built": None,
-            "lot_size": None,
-            "property_type": None,
-            "status": None,
-            "estimate": None,
-        }
-
-        try:
-            # Wait for the page to fully load
-            await page.wait_for_load_state("networkidle", timeout=15000)
-
-            # Try to get photos from the page
-            # Redfin typically has a photo carousel
-            photo_elements = await page.query_selector_all('img[src*="ssl.cdn-redfin"]')
-            for elem in photo_elements[:20]:  # Limit to 20 photos
-                src = await elem.get_attribute("src")
-                if src and "photos" in src.lower():
-                    # Get higher resolution version
-                    high_res = re.sub(r"_\d+x\d+", "_1024x683", src)
-                    if high_res not in result["photos"]:
-                        result["photos"].append(high_res)
-
-            # Extract price from page
-            price_elem = await page.query_selector('[data-rf-test-id="abp-price"]')
-            if price_elem:
-                price_text = await price_elem.inner_text()
-                price_match = re.search(r"\$[\d,]+", price_text)
-                if price_match:
-                    result["price"] = float(price_match.group().replace("$", "").replace(",", ""))
-
-            # Extract beds/baths/sqft
-            stats = await page.query_selector_all('[data-rf-test-id="abp-beds"], [data-rf-test-id="abp-baths"], [data-rf-test-id="abp-sqFt"]')
-            for stat in stats:
-                text = await stat.inner_text()
-                if "bed" in text.lower():
-                    match = re.search(r"(\d+)", text)
-                    if match:
-                        result["beds"] = int(match.group(1))
-                elif "bath" in text.lower():
-                    match = re.search(r"([\d.]+)", text)
-                    if match:
-                        result["baths"] = float(match.group(1))
-                elif "sq" in text.lower():
-                    match = re.search(r"([\d,]+)", text)
-                    if match:
-                        result["sqft"] = int(match.group(1).replace(",", ""))
-
-            # Try to get Redfin estimate
-            estimate_elem = await page.query_selector('[data-rf-test-id="avmLdpPrice"]')
-            if estimate_elem:
-                est_text = await estimate_elem.inner_text()
-                est_match = re.search(r"\$[\d,]+", est_text)
-                if est_match:
-                    result["estimate"] = float(est_match.group().replace("$", "").replace(",", ""))
-
-            # Get status (for sale, sold, etc)
-            status_elem = await page.query_selector('[data-rf-test-id="abp-status"]')
-            if status_elem:
-                result["status"] = await status_elem.inner_text()
-
-            photos = result.get('photos', [])
-            logger.success(f"Extracted {len(photos) if isinstance(photos, list) else 0} photos from Redfin")
-
-        except Exception as e:
-            logger.warning(f"Error extracting property data: {e}")
-
-        return result
+    async def _close(self):
+        if self._context:
+            with contextlib.suppress(Exception):
+                await self._context.close()
+        if self._pw:
+            with contextlib.suppress(Exception):
+                await self._pw.__aexit__(None, None, None)
+        self._context = None
 
     @property
-    def storage(self) -> ScraperStorage:
-        """Lazy-load storage to avoid DB lock on import."""
-        if self._storage is None:
-            self._storage = ScraperStorage()
-        return self._storage
+    def page(self) -> Page:
+        return self._page
 
-    async def get_property_photos(self, address: str, folio: str) -> list[str]:
-        """
-        Get property photos for an address.
-
-        Args:
-            address: Property address
-            folio: Property folio for storage
-
-        Returns:
-            List of photo URLs
-        """
-        data = await self.search_property(address)
-        if data and data.get("photos"):
-            # Save the result
-            self.storage.save_json(
-                property_id=folio,
-                scraper="redfin",
-                data=data,
-                context="property_data",
+    async def _navigate(self, url: str) -> bool:
+        """Navigate to URL, wait for settle. Returns True on HTTP 200."""
+        try:
+            response = await self.page.goto(
+                url, wait_until="domcontentloaded", timeout=60000
             )
-            return data["photos"]
-        return []
+            await self.page.wait_for_timeout(self.PAGE_SETTLE_SECS)
+            status = response.status if response else None
+            if status != 200:
+                logger.warning(f"Redfin navigate {url}: HTTP {status}")
+                return False
+            return True
+        except Exception as exc:
+            logger.warning(f"Redfin navigate failed {url}: {exc}")
+            return False
 
-    def get_property_photos_sync(self, address: str, folio: str) -> list[str]:
-        """Synchronous wrapper for get_property_photos."""
-        return asyncio.run(self.get_property_photos(address, folio))
+    async def delay(self, bounds: tuple[float, float] | None = None):
+        lo, hi = bounds or self.DETAIL_PAGE_DELAY
+        await asyncio.sleep(random.uniform(lo, hi))  # noqa: S311
+
+    # ---- Tier 1: Foreclosure listings page ----
+
+    async def scrape_foreclosure_listings(self) -> list[dict[str, Any]]:
+        """Scrape listing cards from Hillsborough County foreclosures page.
+
+        Returns list of dicts: {url, address, price}.
+        Handles pagination if present.
+        """
+        all_listings: list[dict[str, Any]] = []
+
+        ok = await self._navigate(FORECLOSURES_URL)
+        if not ok:
+            logger.error("Redfin: foreclosures page blocked or failed")
+            return all_listings
+
+        page_num = 1
+        while True:
+            listings = await self.page.evaluate("""
+                () => {
+                    const cards = document.querySelectorAll('.HomeCardContainer');
+                    return Array.from(cards).map(card => {
+                        const link = card.querySelector('a[href*="/home/"]');
+                        const priceEl = card.querySelector('[class*="price"], [class*="Price"]');
+                        return {
+                            url: link ? link.href : null,
+                            address: link ? link.innerText.trim().split('\\n')[0] : null,
+                            price: priceEl ? priceEl.innerText.trim() : null,
+                        };
+                    }).filter(c => c.url && c.address);
+                }
+            """)
+            logger.info(f"Redfin listings page {page_num}: {len(listings)} cards")
+            all_listings.extend(listings)
+
+            # Check for next page button
+            next_btn = await self.page.query_selector(
+                'button[data-rf-test-id="react-data-paginate-next"]'
+            )
+            if not next_btn:
+                break
+            is_disabled = await next_btn.get_attribute("disabled")
+            if is_disabled is not None:
+                break
+
+            await next_btn.click()
+            await self.page.wait_for_timeout(self.PAGE_SETTLE_SECS)
+            await self._delay(self.LISTING_PAGE_DELAY)
+            page_num += 1
+
+        logger.info(f"Redfin: scraped {len(all_listings)} total foreclosure listings")
+        return all_listings
+
+    # ---- Tier 2: Detail page extraction ----
+
+    async def scrape_detail_page(self, url: str) -> RedfinListing | None:
+        """Navigate to a Redfin detail page and extract property data."""
+        ok = await self._navigate(url)
+        if not ok:
+            return None
+
+        listing = RedfinListing(detail_url=url)
+
+        try:
+            # Address
+            addr_el = await self.page.query_selector(
+                '[data-rf-test-id="abp-homeinfo-homeAddress"], .street-address'
+            )
+            if addr_el:
+                listing.address = (await addr_el.inner_text()).strip()
+
+            # Price
+            price_el = await self.page.query_selector('[data-rf-test-id="abp-price"]')
+            if price_el:
+                listing.list_price = _parse_dollar(await price_el.inner_text())
+
+            # Redfin Estimate
+            est_el = await self.page.query_selector('[data-rf-test-id="avmLdpPrice"]')
+            if est_el:
+                listing.redfin_estimate = _parse_dollar(await est_el.inner_text())
+
+            # Beds / Baths / SqFt
+            stats = await self.page.query_selector_all(
+                '[data-rf-test-id="abp-beds"], '
+                '[data-rf-test-id="abp-baths"], '
+                '[data-rf-test-id="abp-sqFt"]'
+            )
+            for stat in stats:
+                text = await stat.inner_text()
+                test_id = await stat.get_attribute("data-rf-test-id") or ""
+                if "beds" in test_id:
+                    m = re.search(r"(\d+)", text)
+                    if m:
+                        listing.beds = int(m.group(1))
+                elif "baths" in test_id:
+                    m = re.search(r"([\d.]+)", text)
+                    if m:
+                        listing.baths = float(m.group(1))
+                elif "sqFt" in test_id:
+                    m = re.search(r"([\d,]+)", text)
+                    if m:
+                        listing.sqft = int(m.group(1).replace(",", ""))
+
+            # Status
+            status_el = await self.page.query_selector(
+                '[data-rf-test-id="abp-status"]'
+            )
+            if status_el:
+                listing.listing_status = (await status_el.inner_text()).strip()
+
+            # Key details (year_built, lot_size, price/sqft, HOA)
+            key_details = await self.page.evaluate("""
+                () => {
+                    const items = document.querySelectorAll('.keyDetail, [class*="keyDetail"]');
+                    return Array.from(items).map(el => el.innerText.trim()).slice(0, 20);
+                }
+            """)
+            for detail in key_details:
+                detail_lower = detail.lower()
+                if "year built" in detail_lower:
+                    m = re.search(r"(\d{4})", detail)
+                    if m:
+                        listing.year_built = int(m.group(1))
+                elif "lot size" in detail_lower:
+                    listing.lot_size = detail.split("\n")[-1].strip() if "\n" in detail else detail
+                elif "price/sq.ft" in detail_lower or "price/sqft" in detail_lower:
+                    listing.price_per_sqft = _parse_dollar(detail)
+                elif "hoa" in detail_lower:
+                    listing.hoa_monthly = _parse_dollar(detail)
+                elif "on redfin" in detail_lower or "days on" in detail_lower:
+                    m = re.search(r"(\d+)", detail)
+                    if m:
+                        listing.days_on_market = int(m.group(1))
+                elif "style" in detail_lower or "type" in detail_lower:
+                    listing.property_type = detail.split("\n")[-1].strip() if "\n" in detail else detail
+
+            # Photos
+            photos = await self.page.evaluate("""
+                () => {
+                    const imgs = document.querySelectorAll('img[src*="ssl.cdn-redfin"], img[src*="photos"]');
+                    const urls = new Set();
+                    for (const img of imgs) {
+                        const src = img.src;
+                        if (src && (src.includes('photos') || src.includes('genMid'))) {
+                            urls.add(src);
+                        }
+                    }
+                    return Array.from(urls).slice(0, 20);
+                }
+            """)
+            listing.photos = photos
+
+        except Exception as exc:
+            logger.warning(f"Redfin detail extraction error for {url}: {exc}")
+
+        return listing
+
+    # ---- URL construction for Tier 2 ----
+
+    @staticmethod
+    def build_detail_url(address: str, city: str, state: str, zip_code: str) -> str:
+        """Construct a Redfin detail URL from address components.
+
+        Example: 1414 Maluhia Dr, Tampa, FL 33612
+        → https://www.redfin.com/FL/Tampa/1414-Maluhia-Dr-33612/home/
+        """
+        street_slug = re.sub(r"[^\w\s]", "", address).strip()
+        street_slug = re.sub(r"\s+", "-", street_slug)
+        zip_clean = (zip_code or "").strip()[:5]
+        slug = f"{street_slug}-{zip_clean}" if zip_clean else street_slug
+        city_clean = city.strip().replace(" ", "-")
+        state_clean = state.strip().upper()
+        return f"https://www.redfin.com/{state_clean}/{city_clean}/{slug}/home/"
+
+    # ---- Convert listing to DB payload ----
+
+    @staticmethod
+    def listing_to_market_payload(listing: RedfinListing) -> dict[str, Any]:
+        """Convert RedfinListing → dict compatible with PropertyDB.save_market_data()."""
+        return {
+            "listing_status": listing.listing_status,
+            "list_price": listing.list_price,
+            "zestimate": listing.redfin_estimate,
+            "rent_estimate": None,
+            "hoa_monthly": listing.hoa_monthly,
+            "days_on_market": listing.days_on_market,
+            "price_history": [],
+            "description": None,
+            "beds": listing.beds,
+            "baths": listing.baths,
+            "sqft": listing.sqft,
+            "year_built": listing.year_built,
+            "lot_size": listing.lot_size,
+            "price_per_sqft": listing.price_per_sqft,
+            "property_type": listing.property_type,
+            "photos": listing.photos,
+            "detail_url": listing.detail_url,
+        }
 
 
-if __name__ == "__main__":
-    import sys
+# ---- Helpers ----
 
-    async def main():
-        scraper = RedfinScraper(headless=False)
+def _parse_dollar(text: str) -> float | None:
+    """Extract dollar amount from text like '$245,000' or 'Price: $1,200/mo'."""
+    m = re.search(r"\$[\d,]+", text)
+    if m:
+        try:
+            return float(m.group().replace("$", "").replace(",", ""))
+        except ValueError:
+            return None
+    return None
 
-        # Test with a Tampa address
-        test_address = "6710 Yardley Way, Tampa, FL 33617"
-        if len(sys.argv) > 1:
-            test_address = " ".join(sys.argv[1:])
 
-        print(f"Testing Redfin scraper with: {test_address}")
-        result = await scraper.search_property(test_address)
-
-        if result:
-            print("\nProperty Data:")
-            print(json.dumps(result, indent=2, default=str))
-        else:
-            print("No data found")
-
-    asyncio.run(main())
+def normalize_address_for_match(addr: str) -> str:
+    """Normalize address for fuzzy matching: lowercase, strip unit/apt, punctuation."""
+    if not addr:
+        return ""
+    addr = addr.lower().strip()
+    # Take only the street portion (before first comma)
+    addr = addr.split(",")[0].strip()
+    # Remove unit/apt/suite suffixes
+    addr = re.sub(r"\b(apt|unit|suite|ste|#)\s*\S*", "", addr)
+    # Remove punctuation
+    addr = re.sub(r"[^\w\s]", "", addr)
+    # Collapse whitespace
+    return re.sub(r"\s+", " ", addr).strip()

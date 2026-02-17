@@ -162,24 +162,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_db_path(cli_path: Optional[Path]) -> Path:
-    candidates = []
-    if cli_path is not None:
-        candidates.append(cli_path)
-    candidates.extend(
-        [
-            Path("data/property_master_sqlite.db"),
-            Path("datav2/property_master_sqlite.db"),
-        ]
-    )
-
-    for path in candidates:
-        if path.exists() and path.stat().st_size > 0:
-            return path
-
-    raise FileNotFoundError(
-        "No non-empty SQLite DB found. Checked: "
-        + ", ".join(str(path) for path in candidates)
-    )
+    if cli_path is not None and cli_path.exists() and cli_path.stat().st_size > 0:
+        return cli_path
+    from src.db.sqlite_paths import resolve_sqlite_db_path_str
+    return Path(resolve_sqlite_db_path_str())
 
 
 def fetch_properties(db_path: Path, limit: int) -> list[PropertyRow]:

@@ -689,7 +689,7 @@ If there's an amount due, set paid_in_full to false and provide the amount.
             # Try direct JSON parse first (vision model often returns clean JSON)
             try:
                 # Clean up markdown code blocks if present
-                clean_result = result.strip()
+                clean_result = re.sub(r"<\|(?:begin|end)_of_box\|>", "", result).strip()
                 if clean_result.startswith("```"):
                     clean_result = re.sub(r'^```(?:json)?\s*', '', clean_result)
                     clean_result = re.sub(r'\s*```$', '', clean_result)

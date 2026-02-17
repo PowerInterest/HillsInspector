@@ -101,18 +101,30 @@ uv run playwright install chromium
 
 **Shell**: PowerShell 7 on Windows - never bash/cmd
 
-**Browser Automation**: All Playwright scrapers must use `playwright-stealth` to avoid bot detection. Apply stealth to every page immediately after creation:
+**Browser Automation**: Always use **real Chrome** (`channel="chrome"`) with `devtools=True` and a persistent browser profile from `data/browser_profiles/`. Never use bare Playwright Chromium — it gets blocked by CloudFront/bot detection. Apply stealth to every page immediately after creation:
 ```python
+from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 
 async def apply_stealth(page):
     """Apply stealth settings to a page to avoid bot detection."""
     await Stealth().apply_stealth_async(page)
 
-# After creating a page:
-page = await context.new_page()
+# Launch with real Chrome + profile:
+context = await playwright.chromium.launch_persistent_context(
+    user_data_dir="data/browser_profiles/<profile_name>",
+    channel="chrome",
+    headless=False,
+    devtools=True,
+    args=["--disable-blink-features=AutomationControlled"],
+)
+page = context.pages[0] if context.pages else await context.new_page()
 await apply_stealth(page)
 ```
+
+**Browser Profiles**: Stored in `data/browser_profiles/`. Use `user_chrome` (copy of user's real Chrome profile with cookies/history) for sites with aggressive bot detection (Redfin, Zillow). Use `market_bakeoff_chrome` for general scraping. Never use a fresh/empty profile for sites that block bots.
+
+**Never take screenshots** of property websites — that is what bots do. Use CDP debugger tools (`cdp = await context.new_cdp_session(page)`) for inspecting page state, typing input, and extracting data. Use `Input.insertText` or `Input.dispatchKeyEvent` via CDP for typing into React inputs where Playwright's `fill()` doesn't trigger events.
 
 ## SQLite Critical Patterns
 

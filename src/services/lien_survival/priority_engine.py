@@ -8,10 +8,25 @@ Handles:
 - Uncertainty flagging for missing data
 """
 
-from datetime import date
+from datetime import date, datetime
 from typing import Optional, Dict, Any, List, Tuple
 from loguru import logger
 from src.utils.name_matcher import NameMatcher
+
+
+def _ensure_date(val) -> Optional[date]:
+    """Convert string dates to date objects for safe comparison."""
+    if val is None:
+        return None
+    if isinstance(val, date):
+        return val
+    if isinstance(val, str):
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(val, fmt).date()
+            except ValueError:
+                continue
+    return None
 
 def identify_foreclosing_lien(
     encumbrance: Dict[str, Any],
@@ -55,8 +70,8 @@ def determine_seniority(
     Priority is primarily determined by recording date. 
     If recording date is missing, fell back to instrument number sequence.
     """
-    target_date = target.get('recording_date')
-    foreclosing_date = foreclosing.get('recording_date') or lis_pendens_date
+    target_date = _ensure_date(target.get('recording_date'))
+    foreclosing_date = _ensure_date(foreclosing.get('recording_date')) or _ensure_date(lis_pendens_date)
 
     if not target_date:
         return "UNKNOWN (Missing Date)"
@@ -79,9 +94,10 @@ def determine_seniority(
             return "JUNIOR"
         except (ValueError, TypeError):
             logger.debug(f"Could not compare instruments as integers: {target_inst!r} vs {foreclosing_inst!r}")
-    
+
     # Tie-breaker: LP date vs target recording date if available
-    if lis_pendens_date and target_date < lis_pendens_date:
+    lp_date = _ensure_date(lis_pendens_date)
+    if lp_date and target_date < lp_date:
         return "SENIOR"
         
     return "JUNIOR (Same Day Tie)"
@@ -105,13 +121,13 @@ def is_historical(
     if not current_period:
         return False
         
-    acquisition_date = current_period.get('acquisition_date')
-    recording_date = encumbrance.get('recording_date')
-    
+    acquisition_date = _ensure_date(current_period.get('acquisition_date'))
+    recording_date = _ensure_date(encumbrance.get('recording_date'))
+
     if not acquisition_date or not recording_date:
         return False
-        
+
     # If recorded BEFORE current owner bought the property, it's historical
-    # (unless it's a mortgage that was assumed, but that's rare and usually 
+    # (unless it's a mortgage that was assumed, but that's rare and usually
     # handled by seeing it hasn't been satisfied/wiped).
     return recording_date < acquisition_date

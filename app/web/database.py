@@ -1169,6 +1169,7 @@ def get_market_snapshot(folio: str) -> Dict[str, Any]:
         # Latest market_data per source
         zillow = None
         realtor = None
+        redfin = None
         try:
             z = conn.execute(
                 """
@@ -1201,16 +1202,40 @@ def get_market_snapshot(folio: str) -> Dict[str, Any]:
         except Exception as err:
             logger.debug(f"Realtor market_data lookup failed for {folio}: {err}")
 
+        try:
+            rf = conn.execute(
+                """
+                SELECT *
+                FROM market_data
+                WHERE folio = ? AND source = 'Redfin'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                [folio],
+            ).fetchone()
+            if rf:
+                redfin = dict(rf)
+                # Redfin photos supplement HomeHarvest photos
+                raw_json = _safe_json((redfin or {}).get("raw_json"))
+                if isinstance(raw_json, dict):
+                    for url in raw_json.get("photos") or []:
+                        if isinstance(url, str) and url.strip():
+                            photos.append(url.strip())
+        except Exception as err:
+            logger.debug(f"Redfin market_data lookup failed for {folio}: {err}")
+
         # Estimates (for blending)
         zestimate = _safe_float((zillow or {}).get("zestimate"))
         homeharvest_estimated = _safe_float((homeharvest or {}).get("estimated_value"))
         realtor_estimate = _safe_float((realtor or {}).get("zestimate"))
-        estimate_values = [v for v in [zestimate, homeharvest_estimated, realtor_estimate] if v is not None]
+        redfin_estimate = _safe_float((redfin or {}).get("zestimate"))
+        estimate_values = [v for v in [zestimate, homeharvest_estimated, realtor_estimate, redfin_estimate] if v is not None]
         blended = sum(estimate_values) / len(estimate_values) if estimate_values else None
 
         # List prices shown separately
         realtor_list_price = _safe_float((realtor or {}).get("list_price"))
         homeharvest_list_price = _safe_float((homeharvest or {}).get("list_price"))
+        redfin_list_price = _safe_float((redfin or {}).get("list_price"))
 
         return {
             "blended_estimate": blended,
@@ -1218,14 +1243,17 @@ def get_market_snapshot(folio: str) -> Dict[str, Any]:
                 "zillow_zestimate": zestimate,
                 "homeharvest_estimated_value": homeharvest_estimated,
                 "realtor_estimate": realtor_estimate,
+                "redfin_estimate": redfin_estimate,
             },
             "list_prices": {
                 "realtor_list_price": realtor_list_price,
                 "homeharvest_list_price": homeharvest_list_price,
+                "redfin_list_price": redfin_list_price,
             },
             "sources": {
                 "zillow": zillow,
                 "realtor": realtor,
+                "redfin": redfin,
                 "homeharvest": homeharvest,
             },
             "photos": list(dict.fromkeys(photos)),  # stable de-dupe
@@ -1356,14 +1384,14 @@ def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
         except Exception as e:
             logger.debug(f"Error getting encumbrances batch: {e}")
 
-        # Get market data (zestimate)
+        # Get market data (zestimate / Redfin estimate)
         try:
             rows = conn.execute(f"""
                 WITH latest AS (
                     SELECT folio, zestimate,
                         ROW_NUMBER() OVER (PARTITION BY folio ORDER BY created_at DESC) AS rn
                     FROM market_data
-                    WHERE folio IN ({placeholders}) AND source = 'Zillow'
+                    WHERE folio IN ({placeholders}) AND source IN ('Zillow', 'Redfin')
                 )
                 SELECT folio, zestimate FROM latest WHERE rn = 1
             """, folios_unique).fetchall()

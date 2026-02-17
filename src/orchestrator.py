@@ -645,7 +645,16 @@ class PipelineOrchestrator:
             # Current period: Usually the one with disposition_date IS NULL or latest acquisition
             current_period_id = None
             if periods:
-                latest = sorted(periods, key=lambda p: p.acquisition_date or date.min, reverse=True)[0]
+                def _sort_key(p):
+                    d = p.acquisition_date
+                    if isinstance(d, str):
+                        try:
+                            from datetime import datetime
+                            d = datetime.strptime(d, "%Y-%m-%d").date()
+                        except (ValueError, TypeError):
+                            d = None
+                    return d or date.min
+                latest = sorted(periods, key=_sort_key, reverse=True)[0]
                 current_period_id = latest.id
             
             # 3. Analyze
@@ -1294,7 +1303,11 @@ class PipelineOrchestrator:
                 )
 
     async def _run_market_scraper(self, case_number: str, parcel_id: str, address: str):
-        # Check if we already have recent market data
+        """Check-only: market data is fetched in batch Step 3.5 (Redfin).
+
+        If the batch step already saved data, mark complete.
+        Otherwise, do nothing — the next pipeline run will pick it up.
+        """
         if self.db.is_status_step_complete(case_number, "step_market_fetched"):
             return
         if self.db.folio_has_market_data(parcel_id):
@@ -1307,116 +1320,6 @@ class PipelineOrchestrator:
                 {"func": self.db.mark_step_complete, "args": [case_number, "needs_market_data"]},
             )
             return
-
-        # Validate address - can't search market data without a real address
-        if not address or address.lower() in ("unknown", "n/a", "none", ""):
-            logger.warning(f"Skipping market scrape for {case_number}: invalid address '{address}'")
-            await self.db_writer.enqueue(
-                "generic_call",
-                {"func": self.db.mark_status_step_complete, "args": [case_number, "step_market_fetched", 9]},
-            )
-            await self.db_writer.enqueue(
-                "generic_call",
-                {"func": self.db.mark_step_complete, "args": [case_number, "needs_market_data"]},
-            )
-            return
-
-        async with self.market_semaphore:
-            try:
-                # Parse address components
-                street = address
-                city = "Tampa"
-                state = "FL"
-                zip_code = ""
-
-                parts = address.split(",")
-                if len(parts) >= 3:
-                    street = parts[0].strip()
-                    city = parts[1].strip()
-                    state_zip = parts[2].strip().split()
-                    if len(state_zip) > 0:
-                        state = state_zip[0]
-                    if len(state_zip) > 1:
-                        zip_code = state_zip[1]
-                elif len(parts) == 2:
-                    # Handle "123 Main St, Tampa" format
-                    street = parts[0].strip()
-                    city_state_zip = parts[1].strip()
-                    tokens = city_state_zip.split()
-                    if len(tokens) >= 2 and tokens[-1].isdigit():
-                        zip_code = tokens[-1]
-                        if len(tokens) >= 3 and len(tokens[-2]) == 2:
-                            state = tokens[-2]
-                            city = " ".join(tokens[:-2])
-                        else:
-                            city = " ".join(tokens[:-1])
-                    elif len(tokens) >= 2 and len(tokens[-1]) == 2:
-                        state = tokens[-1]
-                        city = " ".join(tokens[:-1])
-                    else:
-                        city = city_state_zip
-
-                # get_listing_details now tries both Zillow and Realtor
-                listing = await self.market_scraper.get_listing_details(
-                    address=street, city=city, state=state, zip_code=zip_code, property_id=parcel_id
-                )
-
-                has_value = False
-                if listing:
-                    has_value = any([
-                        listing.price is not None,
-                        listing.status and listing.status != "Unknown",
-                        bool(listing.estimates.get("Zillow")),
-                        bool(listing.estimates.get("Rent Zestimate")),
-                        bool(listing.estimates.get("Rent Estimate")),
-                        listing.hoa_monthly is not None,
-                        listing.days_on_market is not None,
-                        bool(listing.price_history),
-                    ])
-
-                if listing and has_value:
-                    market_payload = {
-                        "listing_status": listing.status,
-                        "list_price": listing.price,
-                        "zestimate": listing.estimates.get("Zillow"),
-                        "rent_estimate": (
-                            listing.estimates.get("Rent Zestimate")
-                            or listing.estimates.get("Rent Estimate")
-                        ),
-                        "hoa_monthly": listing.hoa_monthly,
-                        "days_on_market": listing.days_on_market,
-                        "price_history": listing.price_history,
-                        "description": listing.description,
-                    }
-                    # Save consolidated market data
-                    await self.db_writer.enqueue("save_market_data", {
-                        "folio": parcel_id,
-                        "source": "Consolidated",
-                        "data": market_payload,
-                        "screenshot_path": getattr(listing, "screenshot_path", None)
-                    })
-                    logger.success(f"Consolidated market data saved for {parcel_id}")
-                    # Mark step complete - we got useful data
-                    await self.db_writer.enqueue(
-                        "generic_call",
-                        {"func": self.db.mark_status_step_complete, "args": [case_number, "step_market_fetched", 9]},
-                    )
-                    await self.db_writer.enqueue(
-                        "generic_call",
-                        {"func": self.db.mark_step_complete, "args": [case_number, "needs_market_data"]},
-                    )
-                else:
-                    logger.warning(f"Market scrape returned no useful data for {parcel_id}")
-                    await self.db_writer.enqueue(
-                        "generic_call",
-                        {"func": self.db.mark_status_step_failed, "args": [case_number, "No useful market data returned", 9]},
-                    )
-            except Exception as e:
-                logger.warning(f"Market scraper failed for {parcel_id}: {e}")
-                await self.db_writer.enqueue(
-                    "generic_call",
-                    {"func": self.db.mark_status_step_failed, "args": [case_number, str(e)[:200], 9]},
-                )
 
     async def _run_homeharvest(self, prop: Property):
         """Phase 1: Run HomeHarvest Enrichment."""
@@ -1832,10 +1735,11 @@ class PipelineOrchestrator:
                 f"{chain_result.total_years:.1f} years chain, {len(chain_result.encumbrances)} encumbrances"
             )
 
-            # Only mark step complete when discovery produced usable output
+            # Mark ORI complete when discovery finished or exhausted search space.
+            # max_iterations also counts — retrying will produce the same result.
             ori_complete = (
                 result.is_complete
-                or result.stopped_reason == "exhausted"
+                or result.stopped_reason in ("exhausted", "max_iterations", "complete")
                 or len(chain_result.periods) > 0
             )
             if ori_complete:
@@ -2445,15 +2349,10 @@ async def run_full_update(
                         )
                         # Validate checkpoint against DB — only trust cases that
                         # actually have extracted_judgment_data in the current DB
-                        conn = db.connect()
-                        try:
-                            db_extracted = set()
-                            for row in conn.execute(
-                                "SELECT case_number FROM auctions WHERE extracted_judgment_data IS NOT NULL"
-                            ).fetchall():
-                                db_extracted.add(row[0])
-                        finally:
-                            conn.close()
+                        db_extracted_rows = db.execute_query(
+                            "SELECT case_number FROM auctions WHERE extracted_judgment_data IS NOT NULL"
+                        )
+                        db_extracted = {row["case_number"] for row in db_extracted_rows}
                         valid_cases = checkpoint_cases & db_extracted
                         stale_cases = checkpoint_cases - db_extracted
                         if stale_cases:
@@ -2889,6 +2788,135 @@ async def run_full_update(
 
         # CHECKPOINT: Persist bulk enrichment before parallel processing
         db.checkpoint()
+
+    # =========================================================================
+    # STEP 3.5: Redfin Market Data (batch, single Chrome session)
+    # =========================================================================
+    if start_step <= 4:
+        logger.info("=" * 60)
+        logger.info("STEP 3.5: REDFIN MARKET DATA (batch)")
+        logger.info("=" * 60)
+
+        try:
+            from src.scrapers.redfin_scraper import (
+                RedfinScraper,
+                normalize_address_for_match,
+            )
+
+            # Get auctions needing market data
+            need_market = db.execute_query(
+                """
+                SELECT s.case_number, COALESCE(a.parcel_id, a.folio) AS parcel_id,
+                       COALESCE(
+                           a.property_address,
+                           p.property_address,
+                           bp.property_address
+                       ) AS address,
+                       p.city, p.zip_code
+                FROM status s
+                JOIN auctions a ON a.case_number = s.case_number
+                LEFT JOIN parcels p ON p.folio = COALESCE(a.parcel_id, a.folio)
+                LEFT JOIN bulk_parcels bp ON bp.strap = COALESCE(a.parcel_id, a.folio)
+                WHERE s.step_market_fetched IS NULL
+                  AND COALESCE(s.pipeline_status, 'pending') NOT IN ('skipped', 'archived')
+                """,
+            )
+            logger.info(f"Step 3.5: {len(need_market)} auctions need market data")
+
+            if need_market:
+                # Build normalized address → auction lookup
+                addr_to_auctions: dict[str, list[dict]] = {}
+                for row in need_market:
+                    addr = (row.get("address") or "").strip()
+                    if not addr or addr.lower() in ("unknown", "n/a", "none", ""):
+                        continue
+                    norm = normalize_address_for_match(addr)
+                    if norm:
+                        addr_to_auctions.setdefault(norm, []).append(dict(row))
+
+                matched_folios: set[str] = set()
+
+                async with RedfinScraper() as scraper:
+                    # ---- Tier 1: Foreclosure listings page ----
+                    listings = await scraper.scrape_foreclosure_listings()
+                    logger.info(f"Tier 1: {len(listings)} Redfin foreclosure listings")
+
+                    for card in listings:
+                        card_addr = normalize_address_for_match(card.get("address", ""))
+                        if not card_addr:
+                            continue
+                        matching = addr_to_auctions.get(card_addr)
+                        if not matching:
+                            continue
+
+                        # Navigate to detail page
+                        detail_url = card.get("url", "")
+                        if not detail_url:
+                            continue
+
+                        logger.info(f"Tier 1 match: {card.get('address')} → {detail_url}")
+                        listing = await scraper.scrape_detail_page(detail_url)
+                        if listing:
+                            payload = RedfinScraper.listing_to_market_payload(listing)
+                            for auction in matching:
+                                folio = auction.get("parcel_id", "")
+                                case = auction.get("case_number", "")
+                                if folio and folio not in matched_folios:
+                                    db.save_market_data(folio, "Redfin", payload)
+                                    db.mark_status_step_complete(case, "step_market_fetched", 9)
+                                    matched_folios.add(folio)
+                                    logger.success(f"Redfin Tier 1: saved for {folio}")
+
+                        await scraper.delay(scraper.DETAIL_PAGE_DELAY)
+
+                    # ---- Tier 2: Direct URL for unmatched ----
+                    unmatched = [
+                        row
+                        for rows in addr_to_auctions.values()
+                        for row in rows
+                        if row.get("parcel_id", "") not in matched_folios
+                    ]
+                    logger.info(f"Tier 2: {len(unmatched)} unmatched auctions to try via direct URL")
+
+                    consecutive_failures = 0
+                    for row in unmatched:
+                        if consecutive_failures >= 5:
+                            logger.warning("Tier 2: 5 consecutive failures — stopping")
+                            break
+
+                        addr = (row.get("address") or "").strip()
+                        folio = row.get("parcel_id", "")
+                        case = row.get("case_number", "")
+                        city = (row.get("city") or "Tampa").strip()
+                        zip_code = (row.get("zip_code") or "").strip()
+
+                        # Parse street from full address
+                        street = addr.split(",")[0].strip()
+                        url = RedfinScraper.build_detail_url(street, city, "FL", zip_code)
+                        logger.info(f"Tier 2: trying {url}")
+
+                        listing = await scraper.scrape_detail_page(url)
+                        if listing and (listing.list_price or listing.redfin_estimate):
+                            payload = RedfinScraper.listing_to_market_payload(listing)
+                            db.save_market_data(folio, "Redfin", payload)
+                            db.mark_status_step_complete(case, "step_market_fetched", 9)
+                            matched_folios.add(folio)
+                            consecutive_failures = 0
+                            logger.success(f"Redfin Tier 2: saved for {folio}")
+                        else:
+                            consecutive_failures += 1
+                            logger.debug(f"Tier 2: no data for {addr}")
+
+                        await scraper.delay(scraper.DETAIL_PAGE_DELAY)
+
+                logger.success(
+                    f"Step 3.5 complete: {len(matched_folios)} properties "
+                    f"with Redfin data"
+                )
+                db.checkpoint()
+
+        except Exception as exc:
+            logger.error(f"Step 3.5 Redfin batch failed: {exc}")
 
     # =========================================================================
     # STEPS 4+: Parallel Property Enrichment via Orchestrator

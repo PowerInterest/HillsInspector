@@ -2890,14 +2890,23 @@ class PropertyDB:
         ).fetchone()
         return result[0] > 0 if result else False
 
-    def folio_has_market_data(self, folio: str) -> bool:
-        """Check if folio has consolidated market data or both Zillow/Realtor."""
+    def folio_has_redfin_data(self, folio: str) -> bool:
+        """Check if folio has Redfin data."""
         conn = self.connect()
-        consolidated = conn.execute(
-            "SELECT COUNT(*) FROM market_data WHERE folio = ? AND source = 'Consolidated'",
+        result = conn.execute(
+            "SELECT COUNT(*) FROM market_data WHERE folio = ? AND source = 'Redfin'",
             [folio],
         ).fetchone()
-        if consolidated and consolidated[0] > 0:
+        return result[0] > 0 if result else False
+
+    def folio_has_market_data(self, folio: str) -> bool:
+        """Check if folio has consolidated market data, Redfin data, or both Zillow/Realtor."""
+        conn = self.connect()
+        result = conn.execute(
+            "SELECT COUNT(*) FROM market_data WHERE folio = ? AND source IN ('Consolidated', 'Redfin')",
+            [folio],
+        ).fetchone()
+        if result and result[0] > 0:
             return True
         has_realtor = self.folio_has_realtor_data(folio)
         has_zillow = self.folio_has_zillow_data(folio)

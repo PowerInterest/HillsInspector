@@ -115,8 +115,9 @@ def robust_json_parse(text: str, context: str = "") -> Optional[Dict[str, Any]]:
     if not text:
         return None
 
-    # Clean up markdown code blocks and isolate a JSON candidate if possible.
-    cleaned = text.replace("```json", "").replace("```", "").strip()
+    # Clean up markdown code blocks, GLM box tokens, and isolate a JSON candidate.
+    cleaned = re.sub(r"<\|(?:begin|end)_of_box\|>", "", text)
+    cleaned = cleaned.replace("```json", "").replace("```", "").strip()
     candidate = _extract_json_candidate(cleaned)
     if candidate:
         cleaned = candidate
@@ -1498,7 +1499,7 @@ class VisionService:
 
             result = response.json()
             content = result["choices"][0]["message"]["content"]
-            return content.strip()
+            return content.strip() if content else None
 
         except Exception as e:
             logger.exception("Vision API error while analyzing {}: {}", image_path, e)

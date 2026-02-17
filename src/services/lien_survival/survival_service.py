@@ -9,6 +9,7 @@ Main entry point that coordinates:
 - Final survival status setting
 """
 
+from datetime import date, datetime
 from typing import List, Dict, Any, Optional
 from loguru import logger
 
@@ -97,8 +98,14 @@ class SurvivalService:
                              and not e.get('is_satisfied')
                              and e.get('survival_status') not in ('SATISFIED', 'EXPIRED', 'HISTORICAL')]
                 if mortgages:
-                    # Sort by recording date descending
-                    mortgages.sort(key=lambda x: x.get('recording_date') or '', reverse=True)
+                    # Sort by recording date descending (handle mixed str/date types)
+                    def _date_sort_key(x):
+                        d = x.get('recording_date')
+                        if isinstance(d, str):
+                            try: d = datetime.strptime(d, "%Y-%m-%d").date()
+                            except (ValueError, TypeError): d = None
+                        return d if isinstance(d, date) else date.min
+                    mortgages.sort(key=_date_sort_key, reverse=True)
                     foreclosing_doc = mortgages[0]
                     foreclosing_doc['survival_status'] = 'FORECLOSING'
                     foreclosing_doc['survival_reason'] = "Inferred foreclosing lien (most recent mortgage, no exact match)"

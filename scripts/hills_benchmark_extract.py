@@ -166,8 +166,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--db-path",
         type=Path,
-        default=Path("datav2/property_master_sqlite.db"),
-        help="SQLite DB path for comparison",
+        default=None,
+        help="SQLite DB path for comparison (default: from .env HILLS_SQLITE_DB)",
     )
     parser.add_argument(
         "--max-pages",
@@ -1118,6 +1118,9 @@ def crawl_all(
 
 def main() -> None:
     args = parse_args()
+    if args.db_path is None:
+        from src.db.sqlite_paths import resolve_sqlite_db_path_str
+        args.db_path = Path(resolve_sqlite_db_path_str())
     if args.resume and args.run_dir is None and not args.resume_latest:
         raise SystemExit("--resume requires --run-dir or --resume-latest")
 

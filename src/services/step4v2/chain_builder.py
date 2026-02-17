@@ -378,8 +378,14 @@ class ChainBuilder:
             return 0.0
 
         # Get earliest acquisition and latest disposition
-        earliest = min(p.acquisition_date for p in periods if p.acquisition_date)
-        latest = max(p.disposition_date or today_local() for p in periods)
+        valid_dates = [parse_date(p.acquisition_date) for p in periods if p.acquisition_date]
+        valid_dates = [d for d in valid_dates if d is not None]
+        if not valid_dates:
+            return 0.0
+        earliest = min(valid_dates)
+        disp_dates = [parse_date(p.disposition_date) or today_local() for p in periods]
+        disp_dates = [d for d in disp_dates if d is not None]
+        latest = max(disp_dates) if disp_dates else today_local()
 
         days = (latest - earliest).days
         return max(0, days / 365.25)
@@ -570,8 +576,8 @@ class ChainBuilder:
                 id=d["id"],
                 owner_name=d["owner_name"] or "",
                 acquired_from=d["acquired_from"] or "",
-                acquisition_date=d["acquisition_date"],
-                disposition_date=d["disposition_date"],
+                acquisition_date=parse_date(d["acquisition_date"]),
+                disposition_date=parse_date(d["disposition_date"]),
                 acquisition_instrument=d["acquisition_instrument"] or "",
                 acquisition_doc_type=d["acquisition_doc_type"] or "",
                 acquisition_price=d["acquisition_price"] or 0.0,
@@ -611,13 +617,13 @@ class ChainBuilder:
                 debtor=d["debtor"] or "",
                 amount=d["amount"] or 0.0,
                 amount_confidence=d["amount_confidence"] or "unknown",
-                recording_date=d["recording_date"],
+                recording_date=parse_date(d["recording_date"]),
                 instrument=d["instrument"] or "",
                 book=d["book"] or "",
                 page=d["page"] or "",
                 is_satisfied=d["is_satisfied"] or False,
                 satisfaction_instrument=d["satisfaction_instrument"] or "",
-                satisfaction_date=d["satisfaction_date"],
+                satisfaction_date=parse_date(d["satisfaction_date"]),
                 survival_status=d["survival_status"] or "unknown",
             )
             encumbrances.append(enc)
