@@ -181,6 +181,7 @@ This section preserves test-relevant findings from files that may be deleted:
 - `MAYBE3.md`
 - `DB_ISSUES.md`
 - `LOGGING_FIXES.md`
+- `NEW2.md`
 
 If those files are removed, this section becomes the canonical test backlog source.
 
@@ -242,13 +243,58 @@ If those files are removed, this section becomes the canonical test backlog sour
 | LG-14 | `folio_has_*` helper broad exception returns | SF | Ensure helper query failures log instead of silently returning false |
 | LG-15 | Geocoder/address-source mismatch diagnostics | SF/LR | Ensure invalid source address paths log source metadata |
 
-### 9.4 Assertion Style Rules (From Logging/DB Audits)
+### 9.4 NEW2-Derived Orchestration/Recovery Backlog
+
+| ID | Scenario | Category | Test Intent |
+|---|---|---|---|
+| N2-01 | Permanent non-critical blockers loop in `processing` | LR/DI | Ensure terminal non-critical outcomes set step completion and prevent infinite retries |
+| N2-02 | Step-5 backfill false positive from folio-global evidence | LR/DI | Ensure `step_ori_ingested` is not backfilled from unrelated folio-only artifacts |
+| N2-03 | Survival guarded only by stale/incorrect ORI completion | LR/DI | Ensure survival preflight requires true case-ready ORI prerequisites |
+| N2-04 | `mark_status_step_failed` mutates global state incorrectly | LR/SF | Ensure step failure updates only scoped fields and preserves pipeline status/retry invariants |
+| N2-05 | Disabled-step env config typo silently applied | SF/LR | Ensure unknown step names are logged/ignored and completion calc uses only validated disabled steps |
+| N2-06 | Resume query and retry gating regressions | LR | Ensure `processing` and retry-eligible `failed` rows are included/excluded exactly as intended |
+| N2-07 | One-time recovery SQL over-resets critical failures | DI/SF | Ensure recovery resets only in-range non-critical saturated rows and leaves critical failures untouched |
+| N2-08 | Bounded rerun from Step 5 does not improve thresholds | DI | Ensure rerun validation ties to required chain/encumbrance/survival coverage thresholds |
+
+### 9.5 Assertion Style Rules (From Logging/DB Audits)
 
 1. Prefer state assertions first (row content, status flags, counts).
 2. Log assertions should use stable substrings/fields, not full exact messages.
 3. For every negative-path test, assert both:
    - control-flow behavior (no crash / expected return / expected raise), and
    - observability (at least one contextual log line).
+
+### 9.6 Docs/Steps-Derived Regression Backlog (2026-02-17 Sweep)
+
+| ID | Source Doc | Category | Test Intent |
+|---|---|---|---|
+| DOC-01 | `docs/AUCTION_EXPIRE.md` | LR/DI | Verify past-auction auto-archive uses grace window and `--process-past-auctions` override works |
+| DOC-02 | `docs/CASE_FALLBACK.md` | DI | Verify ORI case search falls back from full case format to short clerk format on zero-result path |
+| DOC-03 | `docs/steps/02_final_judgment.md` | DI/LR | Verify thin extraction detection and recovery path (party/case fallback) persist usable judgment data |
+| DOC-04 | `docs/steps/02_5_resolve_parcel_ids.md` | DI | Verify parcel resolver strategy order and deterministic winner selection across ties/ambiguity |
+| DOC-05 | `docs/steps/03_5_homeharvest.md` | LR | Verify freshness gating, skip flags, and auto-upgrade guardrails for HomeHarvest enrichment |
+| DOC-06 | `docs/steps/04_hcpa_gis.md` | DI | Verify HCPA saves legal description/sales history via UPSERT (no duplicate-row drift) |
+| DOC-07 | `docs/steps/06_lien_survival.md` | DI | Verify survival analyzer statutory branches (superpriority, federal liens, joined/omitted parties) |
+| DOC-08 | `docs/pipeline_audit_findings.md` | LR | Verify Market/Zillow and Realtor responsibilities do not regress back into dual scraping conflicts |
+| DOC-09 | `docs/steps/07_sunbiz_lookup.md` | DI | Verify Sunbiz entity/officer extraction and cache/replay behavior on repeated lookups |
+| DOC-10 | `docs/steps/08_building_permits.md` | DI | Verify permit extraction normalizes city/county source outputs and persists canonical permit rows |
+| DOC-11 | `docs/steps/09_flood_zone.md` | DI | Verify FEMA flood API mapping normalizes zone/risk fields and handles no-feature responses |
+| DOC-12 | `docs/steps/13_tax_status.md` | DI | Verify tax lien parser produces stable lien rows and preserves identifying source metadata |
+| DOC-13 | `docs/steps/00_pipeline_overview.md` | LR | Verify orchestrator step/semaphore gating behavior stays aligned with documented pipeline stage boundaries |
+
+### 9.7 Docs Requiring Refresh (Not Archived)
+
+These docs still provide test value but contain stale implementation details and should be updated before being treated as operational truth:
+
+1. `docs/steps/01_foreclosure_auctions.md` (storage paths still use `data/properties/...`).
+2. `docs/steps/03_bulk_enrichment.md` (references `data/property_master.db` instead of `data/property_master_sqlite.db`).
+3. `docs/steps/07_sunbiz_lookup.md` (storage path still uses `data/properties/...`).
+4. `docs/steps/08_building_permits.md` (storage paths still use `data/properties/...`).
+5. `docs/steps/09_flood_zone.md` (raw cache path still uses `data/properties/...`).
+6. `docs/steps/10_market_zillow.md` (scope says Zillow + Realtor; storage path stale).
+7. `docs/steps/11_market_realtor.md` (mentions `realtor_semaphore`; storage paths stale).
+8. `docs/steps/13_tax_status.md` (storage path still uses `data/properties/...`).
+9. `docs/steps/00_pipeline_overview.md` (mentions `realtor_semaphore`, not present in orchestrator).
 
 ---
 
