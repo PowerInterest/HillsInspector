@@ -9,6 +9,7 @@ Supports modes:
 """
 import argparse
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
@@ -218,16 +219,24 @@ async def handle_update(
     async def _snapshot_loop() -> None:
         if snapshot_interval <= 0:
             return
+        consecutive_failures = 0
+        current_interval = snapshot_interval
         while not _shutdown_requested:
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=snapshot_interval)
+                await asyncio.wait_for(stop_event.wait(), timeout=current_interval)
                 break
             except TimeoutError:
                 try:
                     # skip_lock=True because we're already inside exclusive_db_lock
                     refresh_web_snapshot(DB_PATH, skip_lock=True)
+                    consecutive_failures = 0
+                    current_interval = snapshot_interval
                 except DatabaseSnapshotError as exc:
-                    logger.warning(f"Web snapshot refresh failed: {exc}")
+                    consecutive_failures += 1
+                    logger.warning(f"Web snapshot refresh failed ({consecutive_failures}): {exc}")
+                    if consecutive_failures >= 3:
+                        current_interval = min(current_interval * 2, 600)
+                        logger.warning(f"Snapshot interval increased to {current_interval}s after {consecutive_failures} failures")
 
     # Install signal handlers
     original_sigint = signal.signal(signal.SIGINT, _signal_handler)
@@ -270,10 +279,8 @@ async def handle_update(
         stop_event.set()
         if snapshot_task:
             snapshot_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await snapshot_task
-            except asyncio.CancelledError:
-                pass
         # Restore original signal handlers
         signal.signal(signal.SIGINT, original_sigint)
         signal.signal(signal.SIGTERM, original_sigterm)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import time
 from pathlib import Path
 
 from loguru import logger
@@ -48,17 +49,26 @@ def refresh_web_snapshot(
             conn.close()
 
         tmp_path = snapshot_path.with_suffix(snapshot_path.suffix + ".tmp")
-        shutil.copy2(source_db, tmp_path)
-        tmp_path.replace(snapshot_path)
-        logger.info(f"Web snapshot refreshed at {snapshot_path} ({now_utc().isoformat()})")
-        return snapshot_path
+        delays = [0, 2, 5]
+        last_err: OSError | None = None
+        for attempt, delay in enumerate(delays, 1):
+            if delay:
+                time.sleep(delay)
+            try:
+                shutil.copy2(source_db, tmp_path)
+                tmp_path.replace(snapshot_path)
+                logger.info(f"Web snapshot refreshed at {snapshot_path} ({now_utc().isoformat()})")
+                return snapshot_path
+            except OSError as exc:
+                last_err = exc
+                logger.debug(f"Snapshot copy attempt {attempt}/{len(delays)} failed: {exc}")
+        raise DatabaseSnapshotError(f"Snapshot copy failed after {len(delays)} attempts: {last_err}")
 
     try:
         if skip_lock:
             return _do_snapshot()
-        else:
-            with exclusive_db_lock(lock_path, wait_seconds=wait_seconds):
-                return _do_snapshot()
+        with exclusive_db_lock(lock_path, wait_seconds=wait_seconds):
+            return _do_snapshot()
     except DatabaseLockError as exc:
         raise DatabaseSnapshotError(str(exc)) from exc
     except Exception as exc:

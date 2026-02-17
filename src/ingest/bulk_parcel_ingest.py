@@ -383,9 +383,15 @@ def ingest_to_sqlite(df: pl.DataFrame, db_path: str = str(DB_PATH)) -> dict:
     return stats
 
 
-def ingest_dbf_file(dbf_path: Path, db_path: str = str(DB_PATH), ingest_to_db: bool = True) -> dict:
+def ingest_dbf_file(
+    dbf_path: Path,
+    db_path: str = str(DB_PATH),
+    ingest_to_db: bool = True,
+    latlon_df: pl.DataFrame | None = None,
+) -> dict:
     """
-    Full ingestion pipeline: DBF -> Polars -> Parquet -> DuckDB (optional).
+    Full ingestion pipeline: DBF -> Polars -> Parquet -> SQLite (optional).
+    If latlon_df is provided, merge coordinates before saving.
     """
     stats = {"source_file": str(dbf_path)}
 
@@ -393,11 +399,18 @@ def ingest_dbf_file(dbf_path: Path, db_path: str = str(DB_PATH), ingest_to_db: b
     df = dbf_to_polars(dbf_path)
     stats["records_read"] = len(df)
 
+    # Step 1.5: Merge LatLon data if provided
+    if latlon_df is not None:
+        logger.info("Merging LatLon data into parcel dataframe...")
+        df = df.join(latlon_df, on="folio", how="left")
+        coords_count = df.filter(pl.col("latitude").is_not_null()).height
+        logger.info(f"Merged LatLon: {coords_count:,}/{len(df):,} parcels have coordinates")
+
     # Step 2: Save to Parquet
     parquet_path = save_to_parquet(df)
     stats["parquet_file"] = str(parquet_path)
 
-    # Step 3: Ingest to DuckDB (Optional)
+    # Step 3: Ingest to SQLite (Optional)
     if ingest_to_db:
         db_stats = ingest_to_sqlite(df, db_path)
         stats.update(db_stats)
@@ -419,11 +432,31 @@ def ingest_from_zip(
     zip_path: Path,
     db_path: str = str(DB_PATH),
     ingest_to_db: bool = True,
+    latlon_zip: Path | None = None,
 ) -> dict:
     """
     Extract and ingest parcel.dbf from a HCPA zip file.
+    If latlon_zip is not provided, auto-discovers LatLon_Table_*.zip in the same directory.
     """
     logger.info(f"Extracting from ZIP: {zip_path}")
+
+    # Auto-discover LatLon ZIP if not provided
+    latlon_df = None
+    if latlon_zip is None:
+        candidates = sorted(
+            zip_path.parent.glob("LatLon_Table_*.zip"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if candidates:
+            latlon_zip = candidates[0]
+            logger.info(f"Auto-discovered LatLon ZIP: {latlon_zip}")
+
+    if latlon_zip and latlon_zip.exists():
+        try:
+            latlon_df = load_latlon_data(latlon_zip)
+        except Exception as exc:
+            logger.error(f"Failed to load LatLon data from {latlon_zip}: {exc}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         with zipfile.ZipFile(zip_path, 'r') as zf:
@@ -441,7 +474,7 @@ def ingest_from_zip(
 
             zf.extract(dbf_name, tmpdir)
             dbf_path = Path(tmpdir) / dbf_name
-            return ingest_dbf_file(dbf_path, db_path, ingest_to_db=ingest_to_db)
+            return ingest_dbf_file(dbf_path, db_path, ingest_to_db=ingest_to_db, latlon_df=latlon_df)
 
 
 def dbf_zip_to_polars(zip_path: Path, pattern: str = "parcel") -> pl.DataFrame:
@@ -955,7 +988,7 @@ if __name__ == "__main__":
         print("  python -m src.ingest.bulk_parcel_ingest --enrich")
         print("  python -m src.ingest.bulk_parcel_ingest --validate")
         print("  python -m src.ingest.bulk_parcel_ingest --check-refresh")
-        print("  python -m src.ingest.bulk_parcel_ingest --lookup-tables")
+
         print("  python -m src.ingest.bulk_parcel_ingest --download")
         print("  python -m src.ingest.bulk_parcel_ingest --repair-coords")
         sys.exit(1)
@@ -980,13 +1013,6 @@ if __name__ == "__main__":
         else:
             print("No refresh needed")
             sys.exit(1)
-    elif arg == "--lookup-tables":
-        stats = ingest_all_lookup_tables()
-        print("Lookup tables ingestion:")
-        for table_name, table_stats in stats.items():
-            print(f"  {table_name}:")
-            for key, value in table_stats.items():
-                print(f"    {key}: {value}")
     elif arg == "--repair-coords":
         stats = repair_coordinates()
         print("Coordinate repair complete:")

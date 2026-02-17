@@ -113,8 +113,9 @@ class DatabaseWriter:
                         break
                     except Exception as e:
                         last_error = e
-                        if "write-write conflict" in str(e) and attempt < max_retries - 1:
-                            await asyncio.sleep(0.1 * (attempt + 1))  # Backoff
+                        err_msg = str(e).lower()
+                        if ("write-write conflict" in err_msg or "database is locked" in err_msg) and attempt < max_retries - 1:
+                            await asyncio.sleep(0.5 * (attempt + 1))  # Backoff
                             continue
                         break
 

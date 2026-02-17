@@ -139,6 +139,15 @@ class ListingRecord:
     matched_address: Optional[str] = None
     home_harvest_photo_count: Optional[int] = None
 
+@dataclass
+class CrawlCheckpoint:
+    queue: list[str]
+    visited: list[str]
+    discovered_property_urls: list[str]
+    pages_visited: int
+    list_pages_visited: int
+    property_pages_visited: int
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build HillsForeclosures benchmark dataset")
@@ -177,6 +186,28 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=50,
         help="Write partial outputs every N extracted records (default 50).",
+    )
+    parser.add_argument(
+        "--checkpoint-pages",
+        type=int,
+        default=5,
+        help="Write crawl state every N visited pages (default 5).",
+    )
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        default=None,
+        help="Use a specific run directory (supports resume).",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume crawl from an existing run directory state file.",
+    )
+    parser.add_argument(
+        "--resume-latest",
+        action="store_true",
+        help="Resume from the latest run directory under --output-dir.",
     )
     parser.add_argument(
         "--block-resources",
@@ -613,6 +644,99 @@ def save_record_csv(path: Path, records: list[ListingRecord]) -> None:
         writer.writerows(rows)
 
 
+def record_from_dict(payload: dict[str, Any]) -> ListingRecord:
+    return ListingRecord(
+        property_id=str(payload.get("property_id", "")),
+        slug=str(payload.get("slug", "")),
+        url=str(payload.get("url", "")),
+        crawled_at_utc=str(payload.get("crawled_at_utc", now_utc())),
+        title=payload.get("title"),
+        full_address=payload.get("full_address"),
+        city=payload.get("city"),
+        state=payload.get("state"),
+        zip_code=payload.get("zip_code"),
+        county=payload.get("county"),
+        bedrooms=payload.get("bedrooms"),
+        bathrooms=payload.get("bathrooms"),
+        sqft_under_air=payload.get("sqft_under_air"),
+        lot_size_sqft=payload.get("lot_size_sqft"),
+        year_built=payload.get("year_built"),
+        property_type=payload.get("property_type"),
+        auction_status=payload.get("auction_status"),
+        auction_type=payload.get("auction_type"),
+        auction_date=payload.get("auction_date"),
+        case_number=payload.get("case_number"),
+        final_judgment_ref=payload.get("final_judgment_ref"),
+        number_of_bids=payload.get("number_of_bids"),
+        winning_bid=payload.get("winning_bid"),
+        winner_name=payload.get("winner_name"),
+        previous_sale_price=payload.get("previous_sale_price"),
+        previous_sale_date=payload.get("previous_sale_date"),
+        appraised_value=payload.get("appraised_value"),
+        taxes_previous_year=payload.get("taxes_previous_year"),
+        latitude=payload.get("latitude"),
+        longitude=payload.get("longitude"),
+        photo_count=int(payload.get("photo_count", 0) or 0),
+        photo_urls=[str(x) for x in payload.get("photo_urls", []) if isinstance(x, str)],
+        html_path=str(payload.get("html_path", "")),
+        text_path=str(payload.get("text_path", "")),
+        section_data=payload.get("section_data") if isinstance(payload.get("section_data"), dict) else {},
+        data_sources=payload.get("data_sources") if isinstance(payload.get("data_sources"), list) else [],
+        matched_case_number=payload.get("matched_case_number"),
+        matched_folio=payload.get("matched_folio"),
+        matched_address=payload.get("matched_address"),
+        home_harvest_photo_count=payload.get("home_harvest_photo_count"),
+    )
+
+
+def load_record_jsonl(path: Path) -> list[ListingRecord]:
+    if not path.exists():
+        return []
+    records: list[ListingRecord] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                records.append(record_from_dict(payload))
+    return records
+
+
+def save_crawl_checkpoint(path: Path, checkpoint: CrawlCheckpoint) -> None:
+    path.write_text(json.dumps(asdict(checkpoint), indent=2), encoding="utf-8")
+
+
+def load_crawl_checkpoint(path: Path) -> Optional[CrawlCheckpoint]:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return CrawlCheckpoint(
+            queue=[str(x) for x in payload.get("queue", []) if isinstance(x, str)],
+            visited=[str(x) for x in payload.get("visited", []) if isinstance(x, str)],
+            discovered_property_urls=[
+                str(x)
+                for x in payload.get("discovered_property_urls", [])
+                if isinstance(x, str)
+            ],
+            pages_visited=int(payload.get("pages_visited", 0) or 0),
+            list_pages_visited=int(payload.get("list_pages_visited", 0) or 0),
+            property_pages_visited=int(payload.get("property_pages_visited", 0) or 0),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
 def download_photos(records: list[ListingRecord], photos_dir: Path) -> dict[str, Any]:
     ensure_dir(photos_dir)
     session = requests.Session()
@@ -784,19 +908,72 @@ def crawl_all(
     min_auction_date: Optional[date],
     max_auction_date: Optional[date],
     checkpoint_every: int,
+    checkpoint_pages: int,
+    initial_checkpoint: Optional[CrawlCheckpoint],
+    initial_records: list[ListingRecord],
 ) -> tuple[list[ListingRecord], dict[str, Any]]:
     ensure_dir(out_dir)
     raw_pages_dir = out_dir / "pages"
     ensure_dir(raw_pages_dir)
 
-    queue = deque([normalize_url(url) for url in SEED_URLS])
-    visited: set[str] = set()
-    discovered_property_urls: set[str] = set()
-    records: list[ListingRecord] = []
+    queue = deque(
+        initial_checkpoint.queue
+        if initial_checkpoint
+        else [normalize_url(url) for url in SEED_URLS]
+    )
+    visited: set[str] = set(initial_checkpoint.visited if initial_checkpoint else [])
+    discovered_property_urls: set[str] = set(
+        initial_checkpoint.discovered_property_urls if initial_checkpoint else []
+    )
+    records: list[ListingRecord] = list(initial_records)
+    seen_record_urls: set[str] = {r.url for r in records if r.url}
 
-    pages_visited = 0
-    list_pages_visited = 0
-    property_pages_visited = 0
+    pages_visited = initial_checkpoint.pages_visited if initial_checkpoint else 0
+    list_pages_visited = initial_checkpoint.list_pages_visited if initial_checkpoint else 0
+    property_pages_visited = (
+        initial_checkpoint.property_pages_visited if initial_checkpoint else 0
+    )
+
+    if not queue:
+        for seed in [normalize_url(url) for url in SEED_URLS]:
+            if seed not in visited:
+                queue.append(seed)
+
+    partial_jsonl_path = out_dir / "hills_listings.partial.jsonl"
+    partial_stats_path = out_dir / "crawl_stats.partial.json"
+    checkpoint_path = out_dir / "crawl_state.json"
+
+    def checkpoint_write(force: bool = False) -> None:
+        if not force and checkpoint_pages > 0 and pages_visited % checkpoint_pages != 0:
+            return
+        try:
+            save_record_jsonl(partial_jsonl_path, records)
+            partial_stats_path.write_text(
+                json.dumps(
+                    {
+                        "pages_visited": pages_visited,
+                        "list_pages_visited": list_pages_visited,
+                        "property_pages_visited": property_pages_visited,
+                        "records_extracted": len(records),
+                        "property_urls_discovered": len(discovered_property_urls),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            save_crawl_checkpoint(
+                checkpoint_path,
+                CrawlCheckpoint(
+                    queue=list(queue),
+                    visited=sorted(visited),
+                    discovered_property_urls=sorted(discovered_property_urls),
+                    pages_visited=pages_visited,
+                    list_pages_visited=list_pages_visited,
+                    property_pages_visited=property_pages_visited,
+                ),
+            )
+        except Exception as exc:
+            logger.warning(f"Checkpoint write failed: {exc}")
 
     page = context.new_page()
     page.set_default_timeout(NAVIGATION_TIMEOUT_MS)
@@ -842,6 +1019,7 @@ def crawl_all(
         pages_visited += 1
         status = response.status if response else None
         logger.info(f"[{pages_visited}] {status} {current}")
+        checkpoint_write(force=False)
 
         try:
             links = extract_links(page)
@@ -912,25 +1090,11 @@ def crawl_all(
                 else:
                     keep = True
                 if keep:
-                    records.append(record)
+                    if record.url not in seen_record_urls:
+                        records.append(record)
+                        seen_record_urls.add(record.url)
                     if checkpoint_every > 0 and len(records) % checkpoint_every == 0:
-                        # Best-effort checkpoint: avoids losing all progress on crashes.
-                        try:
-                            save_record_jsonl(out_dir / "hills_listings.partial.jsonl", records)
-                            (out_dir / "crawl_stats.partial.json").write_text(
-                                json.dumps(
-                                    {
-                                        "pages_visited": pages_visited,
-                                        "property_pages_visited": property_pages_visited,
-                                        "records_extracted": len(records),
-                                        "property_urls_discovered": len(discovered_property_urls),
-                                    },
-                                    indent=2,
-                                ),
-                                encoding="utf-8",
-                            )
-                        except Exception as exc:
-                            logger.warning(f"Checkpoint write failed: {exc}")
+                        checkpoint_write(force=True)
             else:
                 logger.info(
                     f"Skipping non-{county_filter} record at {current} (county={record.county})"
@@ -940,6 +1104,7 @@ def crawl_all(
 
         page.wait_for_timeout(1200)
 
+    checkpoint_write(force=True)
     page.close()
     stats = {
         "pages_visited": pages_visited,
@@ -953,8 +1118,25 @@ def crawl_all(
 
 def main() -> None:
     args = parse_args()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = args.output_dir / timestamp
+    if args.resume and args.run_dir is None and not args.resume_latest:
+        raise SystemExit("--resume requires --run-dir or --resume-latest")
+
+    run_dir: Path
+    if args.run_dir is not None:
+        run_dir = args.run_dir
+    elif args.resume_latest:
+        candidates = sorted(
+            [p for p in args.output_dir.iterdir() if p.is_dir()],
+            key=lambda p: p.name,
+            reverse=True,
+        )
+        if not candidates:
+            raise SystemExit(f"No run directories found under {args.output_dir}")
+        run_dir = candidates[0]
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = args.output_dir / timestamp
+
     ensure_dir(run_dir)
     logger.remove()
     logger.add(lambda message: print(message, end=""), level="INFO")
@@ -965,6 +1147,17 @@ def main() -> None:
 
     min_auction_date = parse_iso_date(args.min_auction_date)
     max_auction_date = parse_iso_date(args.max_auction_date)
+    checkpoint_path = run_dir / "crawl_state.json"
+    partial_records_path = run_dir / "hills_listings.partial.jsonl"
+    should_resume = args.resume or args.resume_latest
+    initial_checkpoint = load_crawl_checkpoint(checkpoint_path) if should_resume else None
+    initial_records = load_record_jsonl(partial_records_path) if should_resume else []
+    if should_resume:
+        queue_count = len(initial_checkpoint.queue) if initial_checkpoint else 0
+        visited_count = len(initial_checkpoint.visited) if initial_checkpoint else 0
+        logger.info(
+            f"Resume mode: queue={queue_count} visited={visited_count} records={len(initial_records)}\n"
+        )
 
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
@@ -991,6 +1184,9 @@ def main() -> None:
             min_auction_date=min_auction_date,
             max_auction_date=max_auction_date,
             checkpoint_every=args.checkpoint_every,
+            checkpoint_pages=args.checkpoint_pages,
+            initial_checkpoint=initial_checkpoint,
+            initial_records=initial_records,
         )
         context.close()
 

@@ -429,7 +429,8 @@ class SearchQueue:
                     date_from, date_to, triggered_by_instrument, triggered_by_search_id
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (folio, search_type, search_term, search_operator) DO NOTHING
+                ON CONFLICT (folio, search_type, search_term, search_operator,
+                            COALESCE(date_from, ''), COALESCE(date_to, '')) DO NOTHING
                 """,
                 [
                     folio,

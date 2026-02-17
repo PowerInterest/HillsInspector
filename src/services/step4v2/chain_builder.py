@@ -117,7 +117,11 @@ class ChainBuilder:
         # Link periods together
         self._link_periods(periods)
 
-        # Build encumbrances from mortgages/liens
+        # Save chain BEFORE building encumbrances so periods have real DB IDs
+        # (_find_period_for_date skips periods with id=None)
+        self._save_chain(folio, periods)
+
+        # Build encumbrances from mortgages/liens (periods now have IDs)
         encumbrances = self._build_encumbrances(folio, documents, periods)
 
         # Match satisfactions to encumbrances
@@ -139,8 +143,7 @@ class ChainBuilder:
             mrta_status = "root"
             is_complete = True
 
-        # Save to database
-        self._save_chain(folio, periods)
+        # Save encumbrances to database
         self._save_encumbrances(folio, encumbrances)
         self.conn.commit()
 

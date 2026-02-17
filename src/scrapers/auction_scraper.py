@@ -29,6 +29,18 @@ USER_AGENT_MOBILE = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTM
 USER_AGENT_DESKTOP = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
 
 
+def _to_short_case_number(full_case: str) -> str | None:
+    """Convert auction case number to short clerk format.
+
+    Example: '292016CA007158A001HC' -> '16-CA-007158'
+    """
+    m = re.match(r"29(\d{4})(CA|CC)(\d{6})", full_case)
+    if m:
+        year, court, num = m.groups()
+        return f"{year[2:]}-{court}-{num}"
+    return None
+
+
 class AuctionScraper:
     BASE_URL = "https://hillsborough.realforeclose.com"
 
@@ -668,24 +680,22 @@ class AuctionScraper:
 
             # Call the case-number search API
             logger.info(f"ORI case search for {case_number}")
-            api_result = await api_page.evaluate(
-                """async (caseNum) => {
-                    const r = await fetch('/Public/ORIUtilities/DocumentSearch/api/Search', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({"CaseNum": caseNum})
-                    });
-                    return await r.json();
-                }""",
-                case_number,
+            api_result = await asyncio.wait_for(
+                api_page.evaluate(
+                    """async (caseNum) => {
+                        const r = await fetch('/Public/ORIUtilities/DocumentSearch/api/Search', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({"CaseNum": caseNum})
+                        });
+                        return await r.json();
+                    }""",
+                    case_number,
+                ),
+                timeout=30,
             )
 
             results = api_result.get("ResultList") or []
-            if not results:
-                logger.warning(
-                    f"ORI case search returned 0 results for {case_number}"
-                )
-                return result
 
             # Find the Final Judgment - prefer (JUD) JUDGMENT, fall back to (FJ)
             judgment_rec = None
@@ -694,6 +704,47 @@ class AuctionScraper:
                 if "(JUD)" in doc_type or "(FJ)" in doc_type:
                     judgment_rec = rec
                     break
+
+            # Fallback: try short case number format (e.g. 16-CA-007158)
+            # ORI indexes older documents under the short format only
+            if not judgment_rec:
+                short_case = _to_short_case_number(case_number)
+                if short_case:
+                    logger.info(
+                        f"No JUD with full case number, retrying with short format: {short_case}"
+                    )
+                    short_result = await asyncio.wait_for(
+                        api_page.evaluate(
+                            """async (caseNum) => {
+                                const r = await fetch('/Public/ORIUtilities/DocumentSearch/api/Search', {
+                                    method: 'POST',
+                                    headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({"CaseNum": caseNum})
+                                });
+                                return await r.json();
+                            }""",
+                            short_case,
+                        ),
+                        timeout=30,
+                    )
+                    short_results = short_result.get("ResultList") or []
+                    if short_results:
+                        logger.info(
+                            f"Short format {short_case} returned {len(short_results)} docs: "
+                            f"{[r.get('DocType') for r in short_results]}"
+                        )
+                        results = short_results
+                        for rec in results:
+                            doc_type = rec.get("DocType", "")
+                            if "(JUD)" in doc_type or "(FJ)" in doc_type:
+                                judgment_rec = rec
+                                break
+
+            if not results:
+                logger.warning(
+                    f"ORI case search returned 0 results for {case_number}"
+                )
+                return result
 
             if not judgment_rec:
                 logger.warning(
@@ -833,16 +884,19 @@ class AuctionScraper:
                     continue
                 logger.info(f"Recovery: ORI party search for '{name}' (case {case_number})")
                 try:
-                    api_result = await api_page.evaluate(
-                        """async (partyName) => {
-                            const r = await fetch('/Public/ORIUtilities/DocumentSearch/api/Search', {
-                                method: 'POST',
-                                headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify({"PartyName": partyName})
-                            });
-                            return await r.json();
-                        }""",
-                        name,
+                    api_result = await asyncio.wait_for(
+                        api_page.evaluate(
+                            """async (partyName) => {
+                                const r = await fetch('/Public/ORIUtilities/DocumentSearch/api/Search', {
+                                    method: 'POST',
+                                    headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({"PartyName": partyName})
+                                });
+                                return await r.json();
+                            }""",
+                            name,
+                        ),
+                        timeout=30,
                     )
                     results = api_result.get("ResultList") or []
                     if not results:
@@ -879,16 +933,19 @@ class AuctionScraper:
                 f"Recovery: searching for real judgment under {lp_case_number} "
                 f"(original CC case: {case_number})"
             )
-            api_result = await api_page.evaluate(
-                """async (caseNum) => {
-                    const r = await fetch('/Public/ORIUtilities/DocumentSearch/api/Search', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({"CaseNum": caseNum})
-                    });
-                    return await r.json();
-                }""",
-                lp_case_number,
+            api_result = await asyncio.wait_for(
+                api_page.evaluate(
+                    """async (caseNum) => {
+                        const r = await fetch('/Public/ORIUtilities/DocumentSearch/api/Search', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({"CaseNum": caseNum})
+                        });
+                        return await r.json();
+                    }""",
+                    lp_case_number,
+                ),
+                timeout=30,
             )
             results = api_result.get("ResultList") or []
             judgment_rec = None

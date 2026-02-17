@@ -5,6 +5,7 @@ Uses SQLite with WAL mode for concurrent write support.
 """
 
 import os
+import re
 import sqlite3
 import threading
 from contextlib import suppress
@@ -110,10 +111,8 @@ class PropertyDB:
 
         # Ensure migrations can wait for concurrent writers instead of failing
         # with "database is locked" immediately.
-        try:
+        with suppress(Exception):
             conn.execute("PRAGMA busy_timeout = 5000")
-        except Exception:
-            pass
 
         def table_exists(table_name: str) -> bool:
             try:
@@ -219,6 +218,9 @@ class PropertyDB:
             add_column_if_not_exists("auctions", "hcpa_scrape_error", "TEXT")
             add_column_if_not_exists("auctions", "ori_party_fallback_used", "INTEGER", "0")
             add_column_if_not_exists("auctions", "ori_party_fallback_note", "TEXT")
+
+        if table_exists("status"):
+            add_column_if_not_exists("status", "completed_at", "TIMESTAMP")
 
         # Migrate sales_history unique index to include instrument column.
         # The old index (folio, book, page) caused collisions for HCPA vision-extracted
@@ -369,6 +371,77 @@ class PropertyDB:
                     """)
                 except Exception as e:
                     logger.error(f"Document dedup (composite key) failed: {e}")
+
+        # Migrate ori_search_queue: remove inline UNIQUE(folio, search_type, search_term, search_operator)
+        # and replace with a unique index that includes date bounds.
+        # This allows the same search term with different date ranges (gap-bounded name searches).
+        if table_exists("ori_search_queue"):
+            # Check if inline UNIQUE still exists (table SQL contains "UNIQUE(folio")
+            tbl_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='ori_search_queue' LIMIT 1"
+            ).fetchone()
+            if tbl_sql and "UNIQUE(folio" in (tbl_sql[0] or ""):
+                try:
+                    conn.execute("ALTER TABLE ori_search_queue RENAME TO ori_search_queue_old")
+                    conn.execute("""
+                        CREATE TABLE ori_search_queue (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            folio TEXT NOT NULL,
+                            search_type TEXT NOT NULL,
+                            search_term TEXT NOT NULL,
+                            search_operator TEXT DEFAULT '',
+                            priority INTEGER DEFAULT 50,
+                            status TEXT DEFAULT 'pending',
+                            attempt_count INTEGER DEFAULT 0,
+                            max_attempts INTEGER DEFAULT 3,
+                            date_from TEXT,
+                            date_to TEXT,
+                            triggered_by_instrument TEXT,
+                            triggered_by_search_id INTEGER,
+                            result_count INTEGER,
+                            new_documents_found INTEGER,
+                            error_message TEXT,
+                            queued_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                            started_at TEXT,
+                            completed_at TEXT,
+                            next_retry_at TEXT
+                        )
+                    """)
+                    conn.execute("""
+                        INSERT INTO ori_search_queue (
+                            id, folio, search_type, search_term, search_operator, priority,
+                            status, attempt_count, max_attempts, date_from, date_to,
+                            triggered_by_instrument, triggered_by_search_id, result_count,
+                            new_documents_found, error_message, queued_at, started_at,
+                            completed_at, next_retry_at
+                        )
+                        SELECT id, folio, search_type, search_term, search_operator, priority,
+                               status, attempt_count, max_attempts, date_from, date_to,
+                               triggered_by_instrument, triggered_by_search_id, result_count,
+                               new_documents_found, error_message, queued_at, started_at,
+                               completed_at, next_retry_at
+                        FROM ori_search_queue_old
+                    """)
+                    conn.execute("DROP TABLE ori_search_queue_old")
+                    conn.execute("""
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_ori_search_queue_unique
+                        ON ori_search_queue(folio, search_type, search_term, search_operator,
+                                            COALESCE(date_from, ''), COALESCE(date_to, ''))
+                    """)
+                    logger.info("Migration: ori_search_queue UNIQUE constraint updated to include date bounds")
+                except Exception as e:
+                    logger.warning(f"Migration: ori_search_queue rebuild failed: {e}")
+                    # Try to recover if rename happened but create failed
+                    if not table_exists("ori_search_queue") and table_exists("ori_search_queue_old"):
+                        conn.execute("ALTER TABLE ori_search_queue_old RENAME TO ori_search_queue")
+            else:
+                # Table already migrated, just ensure the index exists
+                with suppress(Exception):
+                    conn.execute("""
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_ori_search_queue_unique
+                        ON ori_search_queue(folio, search_type, search_term, search_operator,
+                                            COALESCE(date_from, ''), COALESCE(date_to, ''))
+                    """)
 
         # Normalize raw ORI encumbrance types to standard lowercase format
         if table_exists("encumbrances"):
@@ -1273,7 +1346,6 @@ class PropertyDB:
 
     def ensure_geocode_columns(self):
         """Add latitude/longitude to parcels if missing. No-op: columns in CREATE TABLE."""
-        pass
 
     def update_legal_description(self, folio: str, legal_description: str):
         """Update (or insert) the legal description for a parcel."""
@@ -1300,6 +1372,10 @@ class PropertyDB:
         image_url = hcpa_result.get("image_url")
         legal_desc = hcpa_result.get("legal_description")
 
+        # Guard against non-address strings (e.g. "Mailing Address", owner names)
+        if address and not re.search(r'\d', address):
+            address = None
+
         # Ensure row exists
         conn.execute("INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio])
         # Update with available HCPA data (COALESCE preserves existing non-null values)
@@ -1315,6 +1391,7 @@ class PropertyDB:
         """,
             [address, year_built, image_url, legal_desc, folio],
         )
+        conn.commit()
 
     def update_flood_data(self, folio: str, flood_data: Dict[str, Any]):
         """Update flood zone information for a parcel."""
@@ -1354,6 +1431,7 @@ class PropertyDB:
             """,
             [latitude, longitude, parcel_id, parcel_id],
         )
+        conn.commit()
 
     def create_chain_tables(self):
         """Create tables for chain of title and encumbrances."""
@@ -1499,9 +1577,15 @@ class PropertyDB:
                 queued_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 started_at TEXT,
                 completed_at TEXT,
-                next_retry_at TEXT,
-                UNIQUE(folio, search_type, search_term, search_operator)
+                next_retry_at TEXT
             )
+        """)
+
+        # Unique index with date bounds — allows same search term with different date ranges
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ori_search_queue_unique
+            ON ori_search_queue(folio, search_type, search_term, search_operator,
+                                COALESCE(date_from, ''), COALESCE(date_to, ''))
         """)
 
         # Linked Identities table
@@ -2490,7 +2574,6 @@ class PropertyDB:
 
     def ensure_last_analyzed_column(self):
         """Add last_analyzed_case_number column if missing. No-op: column added at init."""
-        pass
 
     def get_auction_count_by_date(self, auction_date: date) -> int:
         """Get count of auctions we have for a specific date."""
@@ -2638,10 +2721,7 @@ class PropertyDB:
             WHERE COALESCE(s.pipeline_status, 'pending') NOT IN ('completed', 'skipped', 'archived')
               {date_clause}
               AND (COALESCE(s.pipeline_status, 'pending') != 'failed' OR ?)
-              AND (
-                  COALESCE(s.pipeline_status, 'pending') != 'failed'
-                  OR COALESCE(s.retry_count, 0) < ?
-              )
+              AND COALESCE(s.retry_count, 0) < ?
               {auction_type_filter}
             ORDER BY n.auction_date_norm, n.case_number
         """
@@ -3019,6 +3099,7 @@ class PropertyDB:
                 [new_status, case_number],
             )
         self._maybe_mark_status_completed(case_number)
+        conn.commit()
 
     def get_status_state(self, case_number: str) -> str:
         """Return current status state for a case (defaults to 'pending')."""
@@ -3186,6 +3267,55 @@ class PropertyDB:
               AND pipeline_status NOT IN ('failed', 'completed', 'skipped')
             """,
             [error_message, error_step, case_number],
+        )
+
+    def mark_status_retriable_error(
+        self,
+        case_number: str,
+        error_message: str,
+        error_step: int | None = None,
+    ) -> None:
+        """Record error + increment retry_count WITHOUT changing pipeline_status.
+
+        Use for step failures that should be retried but shouldn't block other steps.
+        Unlike mark_status_failed: does NOT set pipeline_status='failed'.
+        Unlike mark_status_step_failed: DOES increment retry_count.
+
+        Once retry_count reaches max_retries, get_auctions_for_processing will
+        stop selecting this case — effectively quarantining it without needing
+        pipeline_status='failed'.
+        """
+        self.ensure_status_table()
+        conn = self.connect()
+        conn.execute(
+            """
+            UPDATE status SET
+                last_error = ?,
+                error_step = ?,
+                retry_count = retry_count + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE case_number = ?
+            """,
+            [error_message, error_step, case_number],
+        )
+
+    def reset_pipeline_status(self, case_number: str) -> None:
+        """Reset a 'failed' case back to 'processing' after successful re-processing.
+
+        Only resets if current status is 'failed'. Does not touch completed/skipped/archived.
+        """
+        self.ensure_status_table()
+        conn = self.connect()
+        conn.execute(
+            """
+            UPDATE status SET
+                pipeline_status = 'processing',
+                last_error = NULL,
+                error_step = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE case_number = ? AND pipeline_status = 'failed'
+            """,
+            [case_number],
         )
 
     def mark_status_completed(self, case_number: str) -> None:

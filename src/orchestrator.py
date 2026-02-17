@@ -626,7 +626,22 @@ class PipelineOrchestrator:
                 def_name = auction.get('defendant')
                 if def_name:
                     judgment_data['defendants'] = [def_name]
-            
+
+            # Build foreclosing_refs from foreclosed_mortgage for exact lien matching
+            foreclosed_mortgage = judgment_data.get("foreclosed_mortgage") or {}
+            if foreclosed_mortgage:
+                foreclosing_refs = {
+                    "instrument": foreclosed_mortgage.get("instrument_number"),
+                    "book": foreclosed_mortgage.get("book"),
+                    "page": foreclosed_mortgage.get("page"),
+                    "original_amount": foreclosed_mortgage.get("original_amount"),
+                    "original_date": foreclosed_mortgage.get("original_date"),
+                    "lender": foreclosed_mortgage.get("lender"),
+                }
+                # Only add if at least one reference field is present
+                if any(v for v in foreclosing_refs.values()):
+                    judgment_data["foreclosing_refs"] = foreclosing_refs
+
             # Current period: Usually the one with disposition_date IS NULL or latest acquisition
             current_period_id = None
             if periods:
@@ -655,6 +670,7 @@ class PipelineOrchestrator:
             return {
                 "updates": [],
                 "survival_updates": survival_updates,
+                "encumbrance_count": len(enc_dicts),
                 "summary": {
                     "survived_count": len(analysis['results']['survived']),
                     "extinguished_count": len(analysis['results']['extinguished']),
@@ -768,7 +784,7 @@ class PipelineOrchestrator:
             return
 
         status_state = self.db.get_status_state(case_number)
-        if status_state in {"completed", "skipped"}:
+        if status_state == "completed":
             logger.info(f"Skipping {case_number}: status={status_state}")
             return
 
@@ -780,10 +796,6 @@ class PipelineOrchestrator:
                 f"Skipping enrichment: No parcel_id for case {case_number}. "
                 "Run Step 2.5 parcel resolution (requires judgment extraction and bulk_parcels) "
                 "to restore downstream enrichment coverage."
-            )
-            await self.db_writer.enqueue(
-                "generic_call",
-                {"func": self.db.mark_status_skipped, "args": [case_number, "No parcel_id"]},
             )
             return
 
@@ -862,7 +874,7 @@ class PipelineOrchestrator:
                     await self.db_writer.enqueue(
                         "generic_call",
                         {
-                            "func": self.db.mark_status_failed,
+                            "func": self.db.mark_status_retriable_error,
                             "args": [case_number, str(e)[:200], 5],
                         },
                     )
@@ -1002,10 +1014,26 @@ class PipelineOrchestrator:
                                 await self.db_writer.execute_with_result(
                                     self.db.save_chain_of_title, result['property_id'], result['chain_data']
                                 )
-                        await self.db_writer.enqueue("generic_call", {
-                            "func": self.db.mark_status_step_complete,
-                            "args": [case_number, "step_ori_ingested", 5]
-                        })
+                            # Party search found docs — mark ORI complete
+                            await self.db_writer.enqueue("generic_call", {
+                                "func": self.db.mark_status_step_complete,
+                                "args": [case_number, "step_ori_ingested", 5]
+                            })
+                            await self.db_writer.enqueue("generic_call", {
+                                "func": self.db.mark_step_complete,
+                                "args": [case_number, "needs_ori_ingestion"]
+                            })
+                            logger.success(f"Party-based ORI search completed for {case_number} (no legal desc fallback)")
+                        else:
+                            # Party search ran but found nothing — don't mark complete, allow retry
+                            logger.warning(
+                                f"Party-based ORI search returned 0 documents for {case_number}, "
+                                "will retry next run"
+                            )
+                            await self.db_writer.enqueue("generic_call", {
+                                "func": self.db.mark_status_retriable_error,
+                                "args": [case_number, "Party ORI fallback found 0 documents (no legal desc)", 5]
+                            })
                         await self.db_writer.enqueue(
                             "generic_call",
                             {
@@ -1016,17 +1044,10 @@ class PipelineOrchestrator:
                                 ],
                             },
                         )
-                        await self.db_writer.enqueue("generic_call", {
-                            "func": self.db.mark_step_complete,
-                            "args": [case_number, "needs_ori_ingestion"]
-                        })
-                        # Don't mark HCPA as failed - party search succeeded, HCPA didn't fail.
-                        # The case can continue with other enrichment steps since folio is valid.
-                        logger.success(f"Party-based ORI search completed for {case_number} (no legal desc fallback)")
                     except Exception as e:
                         logger.error(f"Party-based ORI search failed for {case_number}: {e}")
                         await self.db_writer.enqueue("generic_call", {
-                            "func": self.db.mark_status_failed,
+                            "func": self.db.mark_status_retriable_error,
                             "args": [case_number, f"Party search failed: {str(e)[:150]}", 5]
                         })
                         logger.error(
@@ -1731,7 +1752,7 @@ class PipelineOrchestrator:
             logger.error(f"ORI Ingestion v1 failed: {e}")
             await self.db_writer.enqueue(
                 "generic_call",
-                {"func": self.db.mark_status_failed, "args": [case_number, str(e)[:200], 5]},
+                {"func": self.db.mark_status_retriable_error, "args": [case_number, str(e)[:200], 5]},
             )
 
     async def _run_ori_ingestion_v2(self, case_number: str, prop: Property):
@@ -1811,11 +1832,24 @@ class PipelineOrchestrator:
                 f"{chain_result.total_years:.1f} years chain, {len(chain_result.encumbrances)} encumbrances"
             )
 
-            # Mark step complete
-            await self.db_writer.enqueue(
-                "generic_call",
-                {"func": self.db.mark_status_step_complete, "args": [case_number, "step_ori_ingested", 5]},
+            # Only mark step complete when discovery produced usable output
+            ori_complete = (
+                result.is_complete
+                or result.stopped_reason == "exhausted"
+                or len(chain_result.periods) > 0
             )
+            if ori_complete:
+                await self.db_writer.enqueue(
+                    "generic_call",
+                    {"func": self.db.mark_status_step_complete, "args": [case_number, "step_ori_ingested", 5]},
+                )
+            else:
+                logger.warning(
+                    f"ORI discovery incomplete for {case_number} "
+                    f"(stopped_reason={result.stopped_reason}, "
+                    f"chain_periods={len(chain_result.periods)}, "
+                    f"docs_found={result.documents_found}), will retry next run"
+                )
 
         except Exception as e:
             logger.error(f"ORI Ingestion v2 failed for {case_number}: {e}")
@@ -1823,7 +1857,7 @@ class PipelineOrchestrator:
             logger.debug(traceback.format_exc())
             await self.db_writer.enqueue(
                 "generic_call",
-                {"func": self.db.mark_status_failed, "args": [case_number, str(e)[:200], 5]},
+                {"func": self.db.mark_status_retriable_error, "args": [case_number, str(e)[:200], 5]},
             )
 
     async def _run_permit_scraper(self, case_number: str, parcel_id: str, address: str):
@@ -1920,7 +1954,7 @@ class PipelineOrchestrator:
                 await self.db_writer.enqueue(
                     "generic_call",
                     {
-                        "func": self.db.mark_status_failed,
+                        "func": self.db.mark_status_retriable_error,
                         "args": [case_number, "Survival analysis produced no result", 6],
                     },
                 )
@@ -1929,7 +1963,7 @@ class PipelineOrchestrator:
                 await self.db_writer.enqueue(
                     "generic_call",
                     {
-                        "func": self.db.mark_status_failed,
+                        "func": self.db.mark_status_retriable_error,
                         "args": [case_number, result["error"], 6],
                     },
                 )
@@ -1975,23 +2009,33 @@ class PipelineOrchestrator:
                     },
                 )
 
-            await self.db_writer.enqueue(
-                "generic_call",
-                {"func": self.db.mark_as_analyzed, "args": [prop.case_number]},
-            )
-            await self.db_writer.enqueue(
-                "generic_call",
-                {"func": self.db.set_last_analyzed_case, "args": [prop.parcel_id, prop.case_number]},
-            )
+            # Only mark survival complete when updates were produced or no encumbrances exist
+            encumbrance_count = result.get("encumbrance_count", 0)
+            survival_should_complete = bool(survival_updates) or encumbrance_count == 0
 
-            await self.db_writer.enqueue(
-                "generic_call",
-                {"func": self.db.mark_step_complete, "args": [prop.case_number, "needs_lien_survival"]},
-            )
-            await self.db_writer.enqueue(
-                "generic_call",
-                {"func": self.db.mark_status_step_complete, "args": [case_number, "step_survival_analyzed", 6]},
-            )
+            if survival_should_complete:
+                await self.db_writer.enqueue(
+                    "generic_call",
+                    {"func": self.db.mark_as_analyzed, "args": [prop.case_number]},
+                )
+                await self.db_writer.enqueue(
+                    "generic_call",
+                    {"func": self.db.set_last_analyzed_case, "args": [prop.parcel_id, prop.case_number]},
+                )
+
+                await self.db_writer.enqueue(
+                    "generic_call",
+                    {"func": self.db.mark_step_complete, "args": [prop.case_number, "needs_lien_survival"]},
+                )
+                await self.db_writer.enqueue(
+                    "generic_call",
+                    {"func": self.db.mark_status_step_complete, "args": [case_number, "step_survival_analyzed", 6]},
+                )
+            else:
+                logger.warning(
+                    f"Survival analysis for {prop.parcel_id} ({case_number}) produced 0 updates "
+                    f"but {encumbrance_count} encumbrances exist — will retry next run"
+                )
 
             summary = result.get("summary", {})
             logger.info(
@@ -2006,7 +2050,7 @@ class PipelineOrchestrator:
             logger.exception(f"Survival analysis failed for {prop.parcel_id}: {e}")
             await self.db_writer.enqueue(
                 "generic_call",
-                {"func": self.db.mark_status_failed, "args": [case_number, str(e)[:200], 6]},
+                {"func": self.db.mark_status_retriable_error, "args": [case_number, str(e)[:200], 6]},
             )
 
 
@@ -2167,14 +2211,14 @@ async def run_full_update(
             "judgment_date": result.get("judgment_date"),
             "lis_pendens_date": (result.get("lis_pendens") or {}).get("recording_date"),
             "foreclosure_sale_date": result.get("foreclosure_sale_date"),
-            "total_judgment_amount": result.get("total_judgment_amount"),
-            "principal_amount": result.get("principal_amount"),
-            "interest_amount": result.get("interest_amount"),
-            "attorney_fees": result.get("attorney_fees"),
-            "court_costs": result.get("court_costs"),
+            "total_judgment_amount": amounts.get("total_judgment_amount"),
+            "principal_amount": amounts.get("principal_amount"),
+            "interest_amount": amounts.get("interest_amount"),
+            "attorney_fees": amounts.get("attorney_fees"),
+            "court_costs": amounts.get("court_costs"),
             "original_mortgage_amount": amounts.get("original_mortgage_amount"),
-            "original_mortgage_date": amounts.get("original_mortgage_date"),
-            "monthly_payment": result.get("monthly_payment"),
+            "original_mortgage_date": result.get("foreclosed_mortgage", {}).get("original_date") if isinstance(result.get("foreclosed_mortgage"), dict) else None,
+            "monthly_payment": amounts.get("monthly_payment"),
             "default_date": result.get("default_date"),
             "extracted_judgment_data": json.dumps(result),
             "raw_judgment_text": result.get("raw_text", ""),
@@ -2182,6 +2226,7 @@ async def run_full_update(
         db.update_judgment_data(case_number, db_payload)
         db.mark_step_complete(case_number, "needs_judgment_extraction")
         db.mark_status_step_complete(case_number, "step_judgment_extracted", 2)
+        db.reset_pipeline_status(case_number)
 
         legal_desc = result.get("legal_description")
         if legal_desc and parcel_id:
@@ -2266,12 +2311,15 @@ async def run_full_update(
                         await asyncio.sleep(2)
 
                         scraper = AuctionScraper()
+                        consecutive_timeouts = 0
+                        timeout_bursts = 0
                         for row in cases:
                             cn = row["case_number"]
                             try:
                                 res = await scraper.search_judgment_by_case_number(
                                     _page, cn, "", ori_page=_page,
                                 )
+                                consecutive_timeouts = 0
                                 if res.get("pdf_path"):
                                     db.mark_status_step_complete(
                                         cn, "step_pdf_downloaded", 1
@@ -2285,10 +2333,38 @@ async def run_full_update(
                                         f"Backfill: no judgment found for {cn}"
                                     )
                             except Exception as be:
-                                logger.warning(
-                                    f"Backfill: error for {cn}: {be}"
-                                )
-                            await asyncio.sleep(random.uniform(1.0, 3.0))
+                                if isinstance(be, (TimeoutError, asyncio.TimeoutError)) or "timeout" in str(be).lower():
+                                    consecutive_timeouts += 1
+                                    logger.warning(
+                                        f"Backfill: timeout for {cn} ({consecutive_timeouts} consecutive)"
+                                    )
+                                    if consecutive_timeouts >= 3:
+                                        timeout_bursts += 1
+                                        if timeout_bursts >= 2:
+                                            logger.warning(
+                                                "Backfill: 2 timeout bursts — ORI appears down, aborting"
+                                            )
+                                            break
+                                        logger.warning(
+                                            "Backfill: 3 consecutive timeouts — cooling down 30s and re-navigating"
+                                        )
+                                        await asyncio.sleep(30)
+                                        try:
+                                            await _page.goto(
+                                                "https://publicaccess.hillsclerk.com/oripublicaccess/",
+                                                timeout=30000,
+                                            )
+                                            await asyncio.sleep(2)
+                                        except Exception:
+                                            logger.warning("Backfill: re-navigation failed, aborting")
+                                            break
+                                        consecutive_timeouts = 0
+                                else:
+                                    consecutive_timeouts = 0
+                                    logger.warning(
+                                        f"Backfill: error for {cn}: {be}"
+                                    )
+                            await asyncio.sleep(random.uniform(1.0, 3.0))  # noqa: S311
                         await _browser.close()
                     return downloaded
 
@@ -2318,19 +2394,19 @@ async def run_full_update(
 
         try:
             judgment_processor = FinalJudgmentProcessor()
-            params: list[object] = [retry_failed, max_retries]
+            step2_failed_clause = "" if retry_failed else "AND COALESCE(s.pipeline_status, 'pending') != 'failed'"
             auctions = db.execute_query(
-                """
+                f"""
                 SELECT a.* FROM auctions a
                 LEFT JOIN status s ON s.case_number = a.case_number
                 WHERE a.extracted_judgment_data IS NULL
                   AND COALESCE(s.pipeline_status, 'pending') NOT IN ('skipped', 'archived')
+                  {step2_failed_clause}
                   AND s.step_judgment_extracted IS NULL
                   AND s.step_pdf_downloaded IS NOT NULL
-                  AND (COALESCE(s.pipeline_status, 'pending') != 'failed' OR ?)
                   AND COALESCE(s.retry_count, 0) < ?
                 """,
-                tuple(params),
+                (max_retries,),
             )
             logger.info(f"Found {len(auctions)} auctions needing judgment extraction")
 
@@ -2369,7 +2445,7 @@ async def run_full_update(
                         )
                         # Validate checkpoint against DB — only trust cases that
                         # actually have extracted_judgment_data in the current DB
-                        conn = self.db.connect()
+                        conn = db.connect()
                         try:
                             db_extracted = set()
                             for row in conn.execute(
@@ -2425,7 +2501,7 @@ async def run_full_update(
 
                 if not pdf_paths:
                     logger.debug(f"No final judgment PDF on disk for {case_number}")
-                    db.mark_status_failed(
+                    db.mark_status_step_failed(
                         case_number,
                         "Final judgment PDF not found on disk",
                         error_step=2,
@@ -2478,14 +2554,14 @@ async def run_full_update(
                         # Vision service returned no structured data
                         logger.warning(f"No structured data extracted for {case_number}")
                         judgment_processor.dump_pdf_text(str(pdf_path), case_number)
-                        db.mark_status_failed(
+                        db.mark_status_retriable_error(
                             case_number,
                             "Vision service returned no structured data",
                             error_step=2,
                         )
                 except Exception as exc:
                     logger.warning(f"Failed to process judgment for {case_number}: {exc}")
-                    db.mark_status_failed(case_number, str(exc)[:200], error_step=2)
+                    db.mark_status_retriable_error(case_number, str(exc)[:200], error_step=2)
 
                 # Periodic checkpoint every 10 auctions to prevent data loss on kill
                 processed_since_checkpoint += 1
@@ -2513,6 +2589,7 @@ async def run_full_update(
 
                 async def _run_recovery(cases_to_recover):
                     import random
+                    nonlocal extracted_count
                     recovered = 0
                     from playwright.async_api import async_playwright
                     async with async_playwright() as p:
@@ -2537,7 +2614,9 @@ async def run_full_update(
                         await asyncio.sleep(2)
 
                         scraper = AuctionScraper()
-                        for case in cases_to_recover:
+                        consecutive_timeouts = 0
+                        timeout_bursts = 0
+                        for idx, case in enumerate(cases_to_recover):
                             cn = case["case_number"]
                             pid = case["parcel_id"]
                             parties = case["parties"]
@@ -2546,6 +2625,7 @@ async def run_full_update(
                                 res = await scraper.recover_judgment_via_party_search(
                                     _page, cn, parties, pid, ori_page=_page,
                                 )
+                                consecutive_timeouts = 0
                                 recovered_pdf = res.get("pdf_path")
                                 if recovered_pdf:
                                     # Re-extract from the real judgment PDF
@@ -2597,16 +2677,61 @@ async def run_full_update(
                                     )
                                     extracted_count += 1
                             except Exception as re_exc:
-                                logger.warning(
-                                    f"Recovery failed for {cn}: {re_exc}"
-                                )
+                                if isinstance(re_exc, (TimeoutError, asyncio.TimeoutError)) or "timeout" in str(re_exc).lower():
+                                    consecutive_timeouts += 1
+                                    logger.warning(
+                                        f"Recovery: timeout for {cn} ({consecutive_timeouts} consecutive)"
+                                    )
+                                else:
+                                    consecutive_timeouts = 0
+                                    logger.warning(
+                                        f"Recovery failed for {cn}: {re_exc}"
+                                    )
                                 _store_judgment_result(
                                     db, judgment_processor, thin_result,
                                     cn, pid, judgment_rows,
                                     processed_case_numbers,
                                 )
                                 extracted_count += 1
-                            await asyncio.sleep(random.uniform(2.0, 5.0))
+                                if consecutive_timeouts >= 3:
+                                    timeout_bursts += 1
+                                    if timeout_bursts >= 2:
+                                        logger.warning(
+                                            "Recovery: 2 timeout bursts — ORI appears down, storing remaining thin results"
+                                        )
+                                        # Store thin results for remaining cases
+                                        remaining = cases_to_recover[idx + 1:]
+                                        for rem in remaining:
+                                            _store_judgment_result(
+                                                db, judgment_processor, rem["thin_result"],
+                                                rem["case_number"], rem["parcel_id"],
+                                                judgment_rows, processed_case_numbers,
+                                            )
+                                            extracted_count += 1
+                                        break
+                                    logger.warning(
+                                        "Recovery: 3 consecutive timeouts — cooling down 30s and re-navigating"
+                                    )
+                                    await asyncio.sleep(30)
+                                    try:
+                                        await _page.goto(
+                                            "https://publicaccess.hillsclerk.com/oripublicaccess/",
+                                            timeout=30000,
+                                        )
+                                        await asyncio.sleep(2)
+                                    except Exception:
+                                        logger.warning("Recovery: re-navigation failed, storing remaining thin results")
+                                        remaining = cases_to_recover[idx + 1:]
+                                        for rem in remaining:
+                                            _store_judgment_result(
+                                                db, judgment_processor, rem["thin_result"],
+                                                rem["case_number"], rem["parcel_id"],
+                                                judgment_rows, processed_case_numbers,
+                                            )
+                                            extracted_count += 1
+                                        break
+                                    consecutive_timeouts = 0
+                            await asyncio.sleep(random.uniform(2.0, 5.0))  # noqa: S311
                         await _browser.close()
                     return recovered
 
@@ -2805,16 +2930,21 @@ async def run_full_update(
         query = """
             SELECT DISTINCT
                 p.folio,
-                p.property_address,
+                COALESCE(
+                    CASE WHEN p.property_address GLOB '*[0-9]*' THEN p.property_address END,
+                    CASE WHEN bp.property_address GLOB '*[0-9]*' THEN bp.property_address END
+                ) AS property_address,
                 p.city,
                 p.zip_code
             FROM parcels p
             JOIN auctions a
               ON COALESCE(a.parcel_id, a.folio) = p.folio
+            LEFT JOIN bulk_parcels bp ON bp.strap = p.folio
             WHERE (p.latitude IS NULL OR p.longitude IS NULL)
-              AND p.property_address IS NOT NULL
-              AND p.property_address != ''
-              AND LOWER(p.property_address) NOT IN ('unknown', 'n/a', 'none')
+              AND COALESCE(
+                    CASE WHEN p.property_address GLOB '*[0-9]*' THEN p.property_address END,
+                    CASE WHEN bp.property_address GLOB '*[0-9]*' THEN bp.property_address END
+                  ) IS NOT NULL
         """
         params: list[object] = []
         if geocode_limit is not None:

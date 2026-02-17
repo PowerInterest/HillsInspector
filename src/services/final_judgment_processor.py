@@ -127,7 +127,18 @@ class FinalJudgmentProcessor:
                 )
                 return None
 
-            merged_json['raw_text'] = ""
+            # Save raw OCR text to disk for troubleshooting
+            raw_text = merged_json.get("raw_text", "")
+            if raw_text and case_number:
+                try:
+                    docs_dir = Path(f"data/Foreclosure/{case_number}/documents")
+                    docs_dir.mkdir(parents=True, exist_ok=True)
+                    ocr_path = docs_dir / f"{case_number}_raw_ocr.txt"
+                    ocr_path.write_text(raw_text, encoding="utf-8")
+                except Exception as exc:
+                    # Non-fatal debug artifact: extraction should continue.
+                    logger.debug(f"Could not write OCR debug text for {case_number}: {exc}")
+
             merged_json['_metadata'] = {
                 'case_number': case_number,
                 'pages_processed': num_pages,

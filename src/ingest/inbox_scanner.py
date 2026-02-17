@@ -79,11 +79,11 @@ class InboxScanner:
                     case_number=prop.case_number,
                     parcel_id=prop.parcel_id,
                     auction_date=prop.auction_date,
-                    auction_type="FORECLOSURE"
+                    auction_type=prop.auction_type or "FORECLOSURE"
                 )
                 self.db.mark_status_step_complete(prop.case_number, "step_auction_scraped", 1)
                 successes += 1
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 failures += 1
                 logger.error(f"Failed to upsert {prop.case_number}: {exc}")
 

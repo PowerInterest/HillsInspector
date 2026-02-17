@@ -1,6 +1,7 @@
 """
 Chain of Title Builder - Creates ownership timeline with encumbrances.
 """
+import json
 from datetime import date, datetime
 from src.utils.time import now_utc
 from typing import Dict, List, Optional, Any
@@ -197,8 +198,29 @@ def build_chain_of_title(documents: List[Dict]) -> Dict:
             continue
 
         # Get grantee (new owner)
-        grantee = deed.get("grantee") or deed.get("parties_two", [""])[0] if isinstance(deed.get("parties_two"), list) else deed.get("parties_two", "")
-        grantor = deed.get("grantor") or deed.get("parties_one", [""])[0] if isinstance(deed.get("parties_one"), list) else deed.get("parties_one", "")
+        # parties_one/parties_two may be JSON strings from SQLite
+        raw_p2 = deed.get("parties_two")
+        if isinstance(raw_p2, str):
+            try:
+                raw_p2 = json.loads(raw_p2)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        raw_p1 = deed.get("parties_one")
+        if isinstance(raw_p1, str):
+            try:
+                raw_p1 = json.loads(raw_p1)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if isinstance(raw_p2, list) and raw_p2:
+            fallback_p2 = raw_p2[0]
+        else:
+            fallback_p2 = raw_p2 or ""
+        if isinstance(raw_p1, list) and raw_p1:
+            fallback_p1 = raw_p1[0]
+        else:
+            fallback_p1 = raw_p1 or ""
+        grantee = deed.get("grantee") or fallback_p2
+        grantor = deed.get("grantor") or fallback_p1
 
         # Parse consideration
         consideration = deed.get("consideration") or deed.get("sale_price")

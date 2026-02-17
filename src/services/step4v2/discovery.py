@@ -37,6 +37,20 @@ from src.utils.legal_description import parse_legal_description
 from src.utils.time import parse_date
 
 
+def _parse_json_list(val):
+    """Parse a JSON list from a SQLite text column."""
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return []
+
+
 @dataclass
 class ChainGap:
     """Represents a gap in the chain of title."""
@@ -105,8 +119,7 @@ def _normalize_subdivision(subdiv: str | None) -> str:
     # Normalize common abbreviations
     result = re.sub(r"\bPH\s*(\d)", r"PHASE \1", result)  # "PH 2" → "PHASE 2"
     result = re.sub(r"\bPH\b", "PHASE", result)  # "PH" alone → "PHASE"
-    result = re.sub(r"\s+", " ", result).strip()  # Normalize whitespace
-    return result
+    return re.sub(r"\s+", " ", result).strip()  # Normalize whitespace
 
 
 def _subdivisions_match(expected: str | None, actual: str | None) -> bool:
@@ -471,7 +484,7 @@ class IterativeDiscovery:
         for doc in documents:
             # Apply lot/block filter to verify document is for correct property
             if expected_lot or expected_block:
-                doc_legal = doc.get("Legal") or doc.get("legal_description")
+                doc_legal = doc.get("Legal") or doc.get("legal_description") or doc.get("legal")
                 # Only filter if document HAS a legal description we can verify
                 # Documents without legal (mortgages, assignments) are allowed through
                 if doc_legal and not _document_matches_lot_block(
@@ -487,11 +500,9 @@ class IterativeDiscovery:
         if filtered_count > 0:
             logger.debug(f"  Filtered out {filtered_count} docs not matching lot/block")
 
-        # SHORT-CIRCUIT: If a legal search yields valid results matching the property
-        # (even if they are duplicates), we can cancel broader fallback searches.
-        # This saves significant time by skipping redundant wildcard permutations.
-        valid_doc_count = len(documents) - filtered_count
-        if search.search_type == "legal" and valid_doc_count > 0:
+        # SHORT-CIRCUIT: If a legal search yields NEW documents (not just duplicates),
+        # cancel broader fallback searches to save time on redundant permutations.
+        if search.search_type == "legal" and new_count > 0:
             self.search_queue.cancel_pending_searches(folio, "legal")
 
         self.search_queue.mark_completed(search.id, len(documents), new_count)
@@ -577,7 +588,7 @@ class IterativeDiscovery:
 
         Returns True if new document saved, False if duplicate.
         """
-        instrument = doc.get("Instrument") or doc.get("instrument_number")
+        instrument = doc.get("Instrument") or doc.get("instrument_number") or doc.get("instrument")
         if not instrument:
             return False
 
@@ -594,8 +605,8 @@ class IterativeDiscovery:
             return False
 
         # Parse document data
-        recording_date = self._parse_ori_date(doc.get("RecordDate"))
-        doc_type = doc.get("DocType") or doc.get("document_type") or ""
+        recording_date = self._parse_ori_date(doc.get("RecordDate") or doc.get("record_date"))
+        doc_type = doc.get("DocType") or doc.get("document_type") or doc.get("doc_type") or ""
 
         # Extract parties (handle both API formats)
         party1 = doc.get("party1")
@@ -603,10 +614,31 @@ class IterativeDiscovery:
         parties_one = doc.get("PartiesOne") or []
         parties_two = doc.get("PartiesTwo") or []
 
+        # Handle instrument/book_page search format: single name + person_type per row
+        if not party1 and not party2 and not parties_one and not parties_two:
+            name = doc.get("name")
+            person_type = doc.get("person_type") or doc.get("PersonType") or ""
+            if name:
+                if person_type == "1":
+                    party1 = name
+                elif person_type == "2":
+                    party2 = name
+                else:
+                    party1 = name  # Default to grantor if unknown
+
         if not party1 and parties_one:
             party1 = ", ".join(parties_one)
         if not party2 and parties_two:
             party2 = ", ".join(parties_two)
+
+        # Detect self-transfers (e.g., person to their trust, name variations)
+        is_self_transfer = 0
+        if party1 and party2:
+            p1 = party1.strip().upper()
+            p2 = party2.strip().upper()
+            # Exact match or one name is a substring of the other
+            if p1 == p2 or (len(p1) > 3 and p1 in p2) or (len(p2) > 3 and p2 in p1):
+                is_self_transfer = 1
 
         # Insert document
         try:
@@ -616,20 +648,21 @@ class IterativeDiscovery:
                     folio, document_type, instrument_number, recording_date,
                     book, page, party1, party2, legal_description,
                     sales_price, page_count, ori_uuid, ori_id, book_type,
-                    triggered_by_search_id, parties_one, parties_two
+                    triggered_by_search_id, parties_one, parties_two,
+                    is_self_transfer
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     folio,
                     self._clean_doc_type(doc_type),
                     instrument,
                     recording_date,
-                    (doc.get("Book") or doc.get("book") or "").strip() or None,
-                    (doc.get("Page") or doc.get("page") or "").strip() or None,
+                    (doc.get("Book") or doc.get("book") or doc.get("book_num") or "").strip() or None,
+                    (doc.get("Page") or doc.get("page") or doc.get("page_num") or "").strip() or None,
                     party1,
                     party2,
-                    doc.get("Legal") or doc.get("legal_description"),
+                    doc.get("Legal") or doc.get("legal_description") or doc.get("legal"),
                     doc.get("SalesPrice") or doc.get("sales_price"),
                     doc.get("PageCount") or doc.get("page_count"),
                     doc.get("UUID") or doc.get("ori_uuid"),
@@ -638,6 +671,7 @@ class IterativeDiscovery:
                     search_id,
                     json.dumps(parties_one) if parties_one else None,
                     json.dumps(parties_two) if parties_two else None,
+                    is_self_transfer,
                 ],
             )
             return True
@@ -692,11 +726,11 @@ class IterativeDiscovery:
         - Party names with date bounds
         - Referenced instruments
         """
-        recording_date = self._parse_ori_date(doc.get("RecordDate"))
-        instrument = doc.get("Instrument") or doc.get("instrument_number")
+        recording_date = self._parse_ori_date(doc.get("RecordDate") or doc.get("record_date"))
+        instrument = doc.get("Instrument") or doc.get("instrument_number") or doc.get("instrument")
 
         # 1. Legal description
-        legal = doc.get("Legal") or doc.get("legal_description")
+        legal = doc.get("Legal") or doc.get("legal_description") or doc.get("legal")
         if legal:
             self.search_queue.queue_legal_search(
                 folio,
@@ -708,14 +742,26 @@ class IterativeDiscovery:
                 triggered_by_search_id=search_id,
             )
 
-        # 2. Party names
-        parties_one = doc.get("PartiesOne") or []
-        parties_two = doc.get("PartiesTwo") or []
+        # 2. Party names (may be list from API or JSON string from SQLite)
+        parties_one = _parse_json_list(doc.get("PartiesOne") or doc.get("parties_one"))
+        parties_two = _parse_json_list(doc.get("PartiesTwo") or doc.get("parties_two"))
 
         if not parties_one and doc.get("party1"):
             parties_one = [doc.get("party1")]
         if not parties_two and doc.get("party2"):
             parties_two = [doc.get("party2")]
+
+        # Handle instrument/book_page search format: single name + person_type per row
+        if not parties_one and not parties_two:
+            name = doc.get("name")
+            person_type = doc.get("person_type") or doc.get("PersonType") or ""
+            if name:
+                if person_type == "1":
+                    parties_one = [name]
+                elif person_type == "2":
+                    parties_two = [name]
+                else:
+                    parties_one = [name]  # Default to grantor if unknown
 
         for party in parties_one:
             if party and not self.name_matcher.is_generic(party):
@@ -745,9 +791,10 @@ class IterativeDiscovery:
 
         # 3. Check for linked identities (self-transfer)
         if parties_one and parties_two:
-            p1 = parties_one[0] if isinstance(parties_one, list) else parties_one
-            p2 = parties_two[0] if isinstance(parties_two, list) else parties_two
-            self.name_matcher.detect_and_link(folio, p1, p2)
+            p1 = parties_one[0] if parties_one else ""
+            p2 = parties_two[0] if parties_two else ""
+            if p1 and p2:
+                self.name_matcher.detect_and_link(folio, p1, p2)
 
         # 4. Extract instrument references from document text
         # Documents may reference other instruments (e.g., "CLK #2019437669")
@@ -771,7 +818,7 @@ class IterativeDiscovery:
 
         # 5. Queue adjacent instrument searches for deeds/mortgages
         # Deeds and mortgages are often recorded sequentially on the same day
-        doc_type = doc.get("DocType") or doc.get("document_type") or ""
+        doc_type = doc.get("DocType") or doc.get("document_type") or doc.get("doc_type") or ""
         if instrument:
             self._queue_adjacent_instruments(folio, str(instrument), doc_type, search_id)
 
@@ -828,7 +875,7 @@ class IterativeDiscovery:
 
         # Fields that may contain references
         fields_to_check = [
-            doc.get("Legal") or doc.get("legal_description") or "",
+            doc.get("Legal") or doc.get("legal_description") or doc.get("legal") or "",
             doc.get("Comments") or doc.get("comments") or "",
             doc.get("party1") or "",
             doc.get("party2") or "",
@@ -852,7 +899,7 @@ class IterativeDiscovery:
         references.update(match.group(1) for match in re.finditer(r"O\.?R\.?\s+(\d{7,10})", text, re.IGNORECASE))
 
         # Don't include the document's own instrument number
-        own_instrument = str(doc.get("Instrument") or doc.get("instrument_number") or "")
+        own_instrument = str(doc.get("Instrument") or doc.get("instrument_number") or doc.get("instrument") or "")
         references.discard(own_instrument)
 
         return list(references)
@@ -1178,12 +1225,21 @@ class IterativeDiscovery:
         return None
 
     def _calculate_chain_years(self, folio: str) -> float:
-        """Calculate total years covered by documents."""
+        """Calculate total years covered by deed documents."""
+        # Build deed type filter - handle both short codes and full ORI format
+        deed_patterns = []
+        for dt in DEED_TYPES:
+            deed_patterns.append(f"UPPER(document_type) = '{dt}'")
+            deed_patterns.append(f"UPPER(document_type) LIKE '%({dt})%'")
+
+        where_clause = " OR ".join(deed_patterns)
+
         result = self.conn.execute(
-            """
+            f"""
             SELECT MIN(recording_date) as oldest, MAX(recording_date) as newest
             FROM documents
             WHERE folio = ? AND recording_date IS NOT NULL
+              AND ({where_clause})
             """,
             [folio],
         ).fetchone()
@@ -1357,8 +1413,9 @@ class IterativeDiscovery:
             # party1 or parties_one typically has the developer
             if result[0]:
                 return result[0]
-            if result[2] and isinstance(result[2], list) and result[2]:
-                return result[2][0]
+            parties = _parse_json_list(result[2])
+            if parties:
+                return parties[0]
 
         return None
 
