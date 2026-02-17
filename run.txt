@@ -31,6 +31,14 @@ codex --ask-for-approval never --sandbox danger-full-access --enable web_search_
   --full-auto  `--ask-for-approval on-failure` and `--sandbox workspace-write`.
 --dangerously-bypass-approvals-and-sandbox, --yolo
 
+  uv run scripts/hills_benchmark_extract.py --output-dir data/temp/
+  hills_benchmark_2y_full --run-dir data/temp/hills_benchmark_2y_full/rolling_2y
+  --resume --max-pages 0 --max-properties 0 --checkpoint-every 10 --checkpoint-pages 2
+  --block-resources --county Hillsborough --min-auction-date 2024-02-16 --max-auction-
+  date 2026-02-16
+
+
+
 
 ORI Search:
 Summary: ORI Public Access Search Options
@@ -77,4 +85,4 @@ Summary: ORI Public Access Search Options
   3. Decide on pandas vs Polars; if Polars-only is the policy, refactor pandas usages 
   4. Enable judgment PDF download in the pipeline (set process_final_judgments=True and route saves to the
      chosen artifact path) 
-  5. Adjust “Zero-JS” language to acknowledge HTMX
+  5. Adjust “Zero-JS” language to acknowledge HT

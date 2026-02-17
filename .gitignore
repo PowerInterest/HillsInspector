@@ -138,6 +138,7 @@ data/
 .venv_broken_2/
 Download_log.txt
 debug_*.txt
+*.out
 
 # Playwright
 node_modules/

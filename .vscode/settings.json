@@ -10,13 +10,13 @@
                 "AI",
                 "bash",
                 "-c",
-                "source .venv/bin/activate 2>/dev/null; /home/elalto@dbag.lab/.local/bin/claude --dangerously-skip-permissions",
+                "source .venv/bin/activate 2>/dev/null; ~/local/bin/claude --dangerously-skip-permissions",
                 ";",
                 "split-window",
                 "-h",
                 "bash",
                 "-c",
-                "source .venv/bin/activate 2>/dev/null; codex --ask-for-approval never --sandbox danger-full-access --enable web_search_request"
+                "source .venv/bin/activate 2>/dev/null; /home/user/.nvm/versions/node/v22.20.0/bin/codex --dangerously-bypass-approvals-and-sandbox"
             ],
             "icon": "hubot",
             "color": "terminal.ansiMagenta",
@@ -89,6 +89,8 @@
     "workbench.editorAssociations": {
         "*.pdf": "default"
     },
+    "livePreview.customExternalBrowser": "Chrome",
+    "livePreview.defaultPreviewType": "External Browser",
     "python.pythonPath": ".venv/bin/python",
     "[python]": {
         "editor.defaultFormatter": "charliermarsh.ruff",
