@@ -7,7 +7,7 @@ This configuration controls the iterative discovery algorithm.
 from pathlib import Path
 
 # Discovery limits
-MAX_ITERATIONS_PER_FOLIO = 50
+MAX_ITERATIONS_PER_FOLIO = 75
 MAX_DOCUMENTS_PER_FOLIO = 500
 MAX_SEARCHES_PER_FOLIO = 200
 
@@ -42,7 +42,7 @@ MAX_ANCHOR_GAP_DAYS = 730  # Max days between plat and first deed (2 years - bui
 MAX_OWNERSHIP_GAP_DAYS = 3650  # Max days between deeds before warning (10 years)
 
 # Instrument reference discovery
-ADJACENT_INSTRUMENT_RANGE = 5  # Search ±N instruments when finding mortgage/deed
+ADJACENT_INSTRUMENT_RANGE = 2  # Search ±N instruments when finding mortgage/deed
 
 # Matching thresholds
 NAME_FUZZY_THRESHOLD = 0.85

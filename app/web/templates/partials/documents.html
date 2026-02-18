@@ -21,6 +21,8 @@
         {% else %}
         <a href="/property/{{ folio }}/documents/{{ doc.file_path|replace('data/Foreclosure/', '')|replace('data\\Foreclosure\\', '') }}" target="_blank" class="doc-download">View PDF</a>
         {% endif %}
+        {% elif doc.instrument_number %}
+        <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=320&OBKey__1006_1={{ doc.instrument_number }}" target="_blank" class="doc-download" title="View in ORI">ORI</a>
         {% endif %}
         {% if doc.instrument_number %}
         <span class="doc-instrument" style="font-size:0.8em;color:var(--color-text-muted);">Inst: {{ doc.instrument_number }}</span>

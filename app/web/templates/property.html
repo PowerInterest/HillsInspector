@@ -78,7 +78,7 @@
                         </div>
                         {% else %}
                         <div class="card-image-placeholder">
-                            <span class="placeholder-text">No HomeHarvest Photo</span>
+                            <span class="placeholder-text">No Photo</span>
                         </div>
                         {% endif %}
                     </section>
@@ -262,34 +262,43 @@
         <!-- Judgment Tab -->
         <div id="judgment" class="tab-content"
              hx-get="/property/{{ property.folio }}/judgment"
-             hx-trigger="load"
+             hx-trigger="intersect once"
              hx-swap="innerHTML"
              style="display:none;">
             <div class="htmx-loading">Loading judgment data...</div>
         </div>
 
-        <!-- Permits Tab -->
-        <div id="permits" class="tab-content"
-             hx-get="/property/{{ property.folio }}/permits"
-             hx-trigger="load"
+        <!-- Chain Tab -->
+        <div id="chain" class="tab-content"
+             hx-get="/property/{{ property.folio }}/chain"
+             hx-trigger="intersect once"
              hx-swap="innerHTML"
              style="display:none;">
-            <div class="htmx-loading">Loading permits...</div>
+            <div class="htmx-loading">Loading chain of title...</div>
         </div>
 
         <!-- Liens Tab -->
         <div id="liens" class="tab-content"
              hx-get="/property/{{ property.folio }}/liens"
-             hx-trigger="load"
+             hx-trigger="intersect once"
              hx-swap="innerHTML"
              style="display:none;">
             <div class="htmx-loading">Loading liens...</div>
         </div>
 
+        <!-- Permits Tab -->
+        <div id="permits" class="tab-content"
+             hx-get="/property/{{ property.folio }}/permits"
+             hx-trigger="intersect once"
+             hx-swap="innerHTML"
+             style="display:none;">
+            <div class="htmx-loading">Loading permits...</div>
+        </div>
+
         <!-- Tax Tab -->
         <div id="tax" class="tab-content"
              hx-get="/property/{{ property.folio }}/tax"
-             hx-trigger="load"
+             hx-trigger="intersect once"
              hx-swap="innerHTML"
              style="display:none;">
             <div class="htmx-loading">Loading tax...</div>
@@ -298,19 +307,10 @@
         <!-- Documents Tab -->
         <div id="documents" class="tab-content"
              hx-get="/property/{{ property.folio }}/documents"
-             hx-trigger="load"
+             hx-trigger="intersect once"
              hx-swap="innerHTML"
              style="display:none;">
             <div class="htmx-loading">Loading documents...</div>
-        </div>
-
-        <!-- Chain Tab -->
-        <div id="chain" class="tab-content"
-             hx-get="/property/{{ property.folio }}/chain"
-             hx-trigger="load"
-             hx-swap="innerHTML"
-             style="display:none;">
-            <div class="htmx-loading">Loading chain of title...</div>
         </div>
     </div>
 

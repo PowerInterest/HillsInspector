@@ -341,13 +341,14 @@ class IterativeDiscovery:
             stopped_reason = "max_iterations"
             logger.warning(f"Max iterations reached for {folio}")
 
-        # If exhausted but chain incomplete, try gap-bounded searches
-        if stopped_reason == "exhausted" and not self._is_chain_complete(folio):
+        # If exhausted or hit max_iterations but chain incomplete, try gap-bounded searches
+        if stopped_reason in ("exhausted", "max_iterations") and not self._is_chain_complete(folio):
             gaps_queued = self._queue_gap_bounded_searches(folio)
             if gaps_queued > 0:
                 logger.info(f"Queued {gaps_queued} gap-bounded searches for {folio}")
-                # Continue discovery with gap-bounded searches
-                while iteration < MAX_ITERATIONS_PER_FOLIO:
+                # Allow extra iterations for gap-bounded searches even if we hit max_iterations
+                gap_iteration_limit = iteration + 25
+                while iteration < gap_iteration_limit:
                     iteration += 1
 
                     if self._is_chain_complete(folio):
@@ -478,6 +479,15 @@ class IterativeDiscovery:
         if expected_lot or expected_block:
             logger.debug(f"  Filtering for lot={expected_lot} block={expected_block}")
 
+        # For instrument searches, collect known party names to validate docs without legal desc
+        known_parties: set[str] = set()
+        if search.search_type == "instrument":
+            rows = self.conn.execute(
+                "SELECT party_name_normalized FROM property_parties WHERE folio = ?",
+                [folio],
+            ).fetchall()
+            known_parties = {dict(r)["party_name_normalized"] for r in rows if dict(r).get("party_name_normalized")}
+
         # Process each document
         new_count = 0
         filtered_count = 0
@@ -485,13 +495,19 @@ class IterativeDiscovery:
             # Apply lot/block filter to verify document is for correct property
             if expected_lot or expected_block:
                 doc_legal = doc.get("Legal") or doc.get("legal_description") or doc.get("legal")
-                # Only filter if document HAS a legal description we can verify
-                # Documents without legal (mortgages, assignments) are allowed through
-                if doc_legal and not _document_matches_lot_block(
-                    doc_legal, expected_lot, expected_block, self._folio_subdivision
-                ):
-                    filtered_count += 1
-                    continue
+                if doc_legal:
+                    if not _document_matches_lot_block(
+                        doc_legal, expected_lot, expected_block, self._folio_subdivision
+                    ):
+                        filtered_count += 1
+                        continue
+                elif search.search_type == "instrument" and known_parties:
+                    # No legal description on an adjacent-instrument doc — require party overlap
+                    doc_p1 = self.name_matcher.normalize(doc.get("Party1") or doc.get("party1") or "")
+                    doc_p2 = self.name_matcher.normalize(doc.get("Party2") or doc.get("party2") or "")
+                    if doc_p1 not in known_parties and doc_p2 not in known_parties:
+                        filtered_count += 1
+                        continue
 
             if self._save_document(folio, doc, search.id):
                 new_count += 1

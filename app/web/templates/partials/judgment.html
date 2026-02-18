@@ -28,7 +28,7 @@
                 </div>
                 <div class="info-item">
                     <span class="info-label">Lis Pendens Date</span>
-                    <span class="info-value">{{ judgment.lis_pendens_date or jd.lis_pendens_date or '-' }}</span>
+                    <span class="info-value">{{ judgment.lis_pendens_date or (jd.lis_pendens.recording_date if jd.lis_pendens is mapping else None) or jd.lis_pendens_date or '-' }}</span>
                 </div>
                 {% if jd.foreclosure_sale_date %}
                 <div class="info-item">
@@ -86,18 +86,19 @@
                     <span class="info-label">Court Costs</span>
                     <span class="info-value money">{{ "${:,.2f}".format(judgment.court_costs) if judgment.court_costs else (("${:,.2f}".format(jd.court_costs)) if jd.court_costs else '-') }}</span>
                 </div>
-                {% if jd.per_diem_interest %}
+                {% set per_diem = jd.per_diem_rate or jd.per_diem_interest %}
+                {% if per_diem %}
                 <div class="info-item">
                     <span class="info-label">Per Diem Interest</span>
-                    <span class="info-value money">{{ "${:,.2f}".format(jd.per_diem_interest) }}/day</span>
+                    <span class="info-value money">{{ "${:,.2f}".format(per_diem) }}/day</span>
                 </div>
                 {% endif %}
             </div>
         </section>
 
         <!-- Foreclosed Mortgage -->
-        {% if jd.foreclosed_mortgage %}
         {% set fm = jd.foreclosed_mortgage %}
+        {% if fm and (fm.original_amount or fm.original_date or fm.instrument_number or fm.recording_book or fm.original_lender or fm.current_holder) %}
         <section class="card">
             <h3>Foreclosed Mortgage</h3>
             <div class="info-grid">

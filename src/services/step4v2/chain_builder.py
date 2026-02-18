@@ -114,6 +114,12 @@ class ChainBuilder:
         # Build ownership periods from deeds
         periods = self._build_periods(folio, documents)
 
+        # Infer missing ownership periods from mortgages (borrower = owner)
+        self._infer_from_mortgages(folio, documents, periods)
+
+        # Add HCPA current owner as chain terminus if missing
+        self._add_hcpa_owner_terminus(folio, periods)
+
         # Link periods together
         self._link_periods(periods)
 
@@ -222,6 +228,82 @@ class ChainBuilder:
 
         return periods
 
+    def _infer_from_mortgages(
+        self, folio: str, documents: list[dict], periods: list[OwnershipPeriod]
+    ) -> None:
+        """Infer missing ownership periods from mortgage documents.
+
+        If a mortgage's borrower (party1) doesn't match any existing chain owner
+        AND the mortgage date is after the last known deed, create an inferred period.
+        """
+        if not periods:
+            return
+
+        existing_owners = {p.owner_name.upper() for p in periods if p.owner_name}
+        last_deed_date = max((p.acquisition_date for p in periods if p.acquisition_date), default=date.min)
+
+        for doc in documents:
+            doc_type = (doc.get("document_type") or "").upper()
+            if "MTG" not in doc_type and "MORTGAGE" not in doc_type:
+                continue
+
+            borrower = doc.get("party1") or ""
+            recording_date = doc.get("recording_date")
+            if isinstance(recording_date, str):
+                recording_date = parse_date(recording_date)
+
+            if not borrower or not recording_date:
+                continue
+
+            # Only infer if this borrower isn't already in the chain
+            borrower_upper = borrower.upper()
+            if any(self._names_match(borrower, owner) for owner in existing_owners):
+                continue
+
+            # Only infer if mortgage is after the last known deed
+            if recording_date <= last_deed_date:
+                continue
+
+            period = OwnershipPeriod(
+                owner_name=borrower,
+                acquisition_date=recording_date,
+                acquisition_doc_type="INFERRED FROM MORTGAGE",
+                link_status="inferred",
+                confidence_score=0.6,
+            )
+            periods.append(period)
+            existing_owners.add(borrower_upper)
+            logger.info(f"Inferred ownership period for {borrower} from mortgage on {recording_date}")
+
+        # Re-sort
+        periods.sort(key=lambda p: p.acquisition_date or date.min)
+
+    def _add_hcpa_owner_terminus(self, folio: str, periods: list[OwnershipPeriod]) -> None:
+        """Add HCPA current owner as chain terminus if not already present."""
+        row = self.conn.execute(
+            "SELECT owner_name FROM parcels WHERE folio = ?", [folio]
+        ).fetchone()
+        if not row:
+            return
+
+        hcpa_owner = dict(row).get("owner_name") or ""
+        if not hcpa_owner:
+            return
+
+        # Check if HCPA owner already in chain
+        if any(self._names_match(hcpa_owner, p.owner_name) for p in periods if p.owner_name):
+            return
+
+        # Add as final period with today's date (approximate)
+        period = OwnershipPeriod(
+            owner_name=hcpa_owner,
+            acquisition_doc_type="HCPA CURRENT OWNER",
+            link_status="inferred",
+            confidence_score=0.5,
+        )
+        periods.append(period)
+        logger.info(f"Added HCPA owner '{hcpa_owner}' as chain terminus for {folio}")
+
     def _is_transfer_doc(self, doc_type: str) -> bool:
         """Check if document type is a transfer document."""
         doc_type_upper = doc_type.upper()
@@ -282,11 +364,20 @@ class ChainBuilder:
             # Find which ownership period this belongs to
             period_id = self._find_period_for_date(periods, recording_date)
 
+            # For judgments/liens/lis pendens: party1 = creditor (plaintiff/lienor)
+            # For mortgages: party1 = borrower, party2 = lender
+            if any(kw in doc_type for kw in ("JUD", "JUDGMENT", "LP", "LIS PENDENS", "LN", "LIEN")):
+                creditor = doc.get("party1") or ""
+                debtor = doc.get("party2") or ""
+            else:
+                creditor = doc.get("party2") or ""
+                debtor = doc.get("party1") or ""
+
             encumbrance = Encumbrance(
                 chain_period_id=period_id,
                 encumbrance_type=self._classify_encumbrance(doc_type),
-                creditor=doc.get("party2") or "",  # Lender
-                debtor=doc.get("party1") or "",    # Borrower
+                creditor=creditor,
+                debtor=debtor,
                 amount=doc.get("sales_price") or 0.0,
                 amount_confidence="ori_api",
                 recording_date=recording_date,
@@ -355,13 +446,24 @@ class ChainBuilder:
             if isinstance(sat_date, str):
                 sat_date = parse_date(sat_date)
 
+            # Split comma-separated party strings into individual names
+            sat_names = [n.strip() for n in sat_party1.split(",") if n.strip()] + \
+                        [n.strip() for n in sat_party2.split(",") if n.strip()]
+
             # Find matching encumbrance
             for enc in encumbrances:
                 if enc.is_satisfied:
                     continue
 
-                # Match by creditor name
-                if self._names_match(enc.creditor, sat_party1) or self._names_match(enc.creditor, sat_party2):
+                # Satisfaction date must be >= encumbrance recording date (when both available)
+                if sat_date and enc.recording_date:
+                    enc_date = parse_date(enc.recording_date) if isinstance(enc.recording_date, str) else enc.recording_date
+                    if enc_date and sat_date < enc_date:
+                        continue
+
+                # Match by creditor name — split comma-separated creditor too
+                enc_names = [n.strip() for n in (enc.creditor or "").split(",") if n.strip()]
+                if any(self._names_match(en, sn) for en in enc_names for sn in sat_names if en and sn):
                     enc.is_satisfied = True
                     enc.satisfaction_instrument = sat_instrument
                     enc.satisfaction_date = sat_date

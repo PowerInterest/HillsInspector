@@ -1008,22 +1008,23 @@ class PropertyDB:
 
                 # Get instrument number
                 instrument = sale.get("instrument", "")
+                sale_date = sale.get("date")
 
-                # Skip if no instrument number (can't dedupe without it)
-                if not instrument:
-                    continue
-
-                # Check if record already exists by folio + instrument
-                existing = conn.execute(
-                    """
-                    SELECT id FROM sales_history
-                    WHERE folio = ? AND instrument = ?
-                """,
-                    [folio, instrument],
-                ).fetchone()
+                # Dedupe: by instrument if available, else by folio+date+price
+                if instrument:
+                    existing = conn.execute(
+                        "SELECT id FROM sales_history WHERE folio = ? AND instrument = ?",
+                        [folio, instrument],
+                    ).fetchone()
+                else:
+                    existing = conn.execute(
+                        "SELECT id FROM sales_history WHERE folio = ? AND sale_date = ? AND sale_price = ?",
+                        [folio, sale_date, sale_price],
+                    ).fetchone()
 
                 if existing:
                     # Update existing record
+                    existing_id = dict(existing)["id"]
                     conn.execute(
                         """
                         UPDATE sales_history SET
@@ -1031,17 +1032,18 @@ class PropertyDB:
                             doc_type = ?,
                             sale_price = ?,
                             grantor = ?,
-                            grantee = ?
-                        WHERE folio = ? AND instrument = ?
+                            grantee = ?,
+                            instrument = COALESCE(NULLIF(?, ''), instrument)
+                        WHERE id = ?
                     """,
                         [
-                            sale.get("date"),
+                            sale_date,
                             sale.get("deed_type", sale.get("doc_type")),
                             sale_price,
                             sale.get("grantor"),
                             sale.get("grantee"),
-                            folio,
                             instrument,
+                            existing_id,
                         ],
                     )
                 else:
@@ -1055,8 +1057,8 @@ class PropertyDB:
                     """,
                         [
                             folio,
-                            instrument,
-                            sale.get("date"),
+                            instrument or None,
+                            sale_date,
                             sale.get("deed_type", sale.get("doc_type")),
                             sale_price,
                             sale.get("grantor"),

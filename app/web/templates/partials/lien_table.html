@@ -54,7 +54,7 @@
             <td>{{ enc.encumbrance_type or '-' }}</td>
             <td class="money-cell">
                 {{ "${:,.0f}".format(enc.amount) if enc.amount else '-' }}
-                {% if enc.amount_confidence and enc.amount_confidence != 'HIGH' %}
+                {% if enc.amount_confidence and enc.amount_confidence not in ('HIGH', 'ori_api') %}
                 <span class="confidence-badge {{ enc.amount_confidence|lower }}">{{ enc.amount_confidence }}</span>
                 {% endif %}
             </td>
