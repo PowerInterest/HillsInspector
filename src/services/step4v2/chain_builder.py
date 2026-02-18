@@ -21,7 +21,12 @@ from config.step4v2 import (
     MRTA_YEARS_REQUIRED,
     SATISFACTION_TYPES,
 )
-from src.db.type_normalizer import CANONICAL_ENCUMBRANCE_TYPES
+from src.db.type_normalizer import (
+    CANONICAL_ENCUMBRANCE_TYPES,
+    CANONICAL_SATISFACTION_TYPES,
+    _PAREN_RE,
+    _DOC_TYPE_MAP,
+)
 from src.services.step4v2.name_matcher import NameMatcher
 from src.utils.time import parse_date, today_local
 
@@ -243,8 +248,8 @@ class ChainBuilder:
         last_deed_date = max((p.acquisition_date for p in periods if p.acquisition_date), default=date.min)
 
         for doc in documents:
-            doc_type = (doc.get("document_type") or "").upper()
-            if "MTG" not in doc_type and "MORTGAGE" not in doc_type:
+            canonical, _ = self._canonical_type(doc.get("document_type") or "")
+            if canonical != "mortgage":
                 continue
 
             borrower = doc.get("party1") or ""
@@ -304,9 +309,50 @@ class ChainBuilder:
         periods.append(period)
         logger.info(f"Added HCPA owner '{hcpa_owner}' as chain terminus for {folio}")
 
+    @staticmethod
+    def _canonical_type(doc_type: str) -> tuple[str, bool]:
+        """Extract canonical type from raw or normalized doc_type.
+
+        Returns (canonical_type, skip_fallback) where skip_fallback is True
+        when the type was resolved via the ORI code map OR was recognized as
+        ORI parenthetical format (even if unmapped). Substring-based fallback
+        checks should only run when skip_fallback is False.
+
+        '(DRJUD) DOMESTIC RELATIONS JUDGMENT' → code 'DRJUD' → unmapped ORI → ('', True)
+        '(MTG) MORTGAGE' → code 'MTG' → ('mortgage', True)
+        'mortgage' → already normalized → ('mortgage', True)
+        'some_unknown_string' → not ORI, not mapped → ('some_unknown_string', False)
+        """
+        t = (doc_type or "").strip()
+        if not t:
+            return "", True
+        m = _PAREN_RE.match(t)
+        if m:
+            code = m.group(1).upper()
+            mapped = _DOC_TYPE_MAP.get(code)
+            if mapped:
+                return mapped, True
+            # ORI parenthetical format but code not in map — skip substring fallback
+            return "", True
+        # Already normalized or bare code
+        mapped = _DOC_TYPE_MAP.get(t.upper())
+        if mapped:
+            return mapped, True
+        # Check if already a canonical form
+        lower = t.lower()
+        if lower in CANONICAL_ENCUMBRANCE_TYPES or lower in CANONICAL_SATISFACTION_TYPES:
+            return lower, True
+        return lower, False
+
     def _is_transfer_doc(self, doc_type: str) -> bool:
         """Check if document type is a transfer document."""
-        doc_type_upper = doc_type.upper()
+        canonical, mapped = self._canonical_type(doc_type)
+        if canonical == "deed":
+            return True
+        if mapped:
+            return False
+        # Fallback: substring check only for completely unknown types
+        doc_type_upper = (doc_type or "").upper()
         return any(deed_type in doc_type_upper for deed_type in DEED_TYPES)
 
     def _link_periods(self, periods: list[OwnershipPeriod]) -> None:
@@ -352,9 +398,9 @@ class ChainBuilder:
         encumbrances = []
 
         for doc in documents:
-            doc_type = (doc.get("document_type") or "").upper()
+            raw_doc_type = doc.get("document_type") or ""
 
-            if not self._is_encumbrance_doc(doc_type):
+            if not self._is_encumbrance_doc(raw_doc_type):
                 continue
 
             recording_date = doc.get("recording_date")
@@ -366,7 +412,8 @@ class ChainBuilder:
 
             # For judgments/liens/lis pendens: party1 = creditor (plaintiff/lienor)
             # For mortgages: party1 = borrower, party2 = lender
-            if any(kw in doc_type for kw in ("JUD", "JUDGMENT", "LP", "LIS PENDENS", "LN", "LIEN")):
+            canonical, _ = self._canonical_type(raw_doc_type)
+            if canonical in ("judgment", "lis_pendens", "lien"):
                 creditor = doc.get("party1") or ""
                 debtor = doc.get("party2") or ""
             else:
@@ -375,7 +422,7 @@ class ChainBuilder:
 
             encumbrance = Encumbrance(
                 chain_period_id=period_id,
-                encumbrance_type=self._classify_encumbrance(doc_type),
+                encumbrance_type=self._classify_encumbrance(raw_doc_type),
                 creditor=creditor,
                 debtor=debtor,
                 amount=doc.get("sales_price") or 0.0,
@@ -392,11 +439,14 @@ class ChainBuilder:
 
     def _is_encumbrance_doc(self, doc_type: str) -> bool:
         """Check if document type is an encumbrance."""
-        doc_type_upper = doc_type.upper()
-        if any(enc_type in doc_type_upper for enc_type in ENCUMBRANCE_TYPES):
+        canonical, mapped = self._canonical_type(doc_type)
+        if canonical in CANONICAL_ENCUMBRANCE_TYPES:
             return True
-        # Also check canonical normalized forms (handles mixed storage formats)
-        return doc_type.lower().strip() in CANONICAL_ENCUMBRANCE_TYPES
+        if mapped:
+            return False
+        # Fallback: substring check only for completely unknown types
+        doc_type_upper = (doc_type or "").upper()
+        return any(enc_type in doc_type_upper for enc_type in ENCUMBRANCE_TYPES)
 
     def _classify_encumbrance(self, doc_type: str) -> str:
         """Classify encumbrance type from document type."""
@@ -471,7 +521,13 @@ class ChainBuilder:
 
     def _is_satisfaction_doc(self, doc_type: str) -> bool:
         """Check if document type is a satisfaction."""
-        doc_type_upper = doc_type.upper()
+        canonical, mapped = self._canonical_type(doc_type)
+        if canonical in CANONICAL_SATISFACTION_TYPES:
+            return True
+        if mapped:
+            return False
+        # Fallback: substring check only for completely unknown types
+        doc_type_upper = (doc_type or "").upper()
         return any(sat_type in doc_type_upper for sat_type in SATISFACTION_TYPES)
 
     def _calculate_total_years(self, periods: list[OwnershipPeriod]) -> float:
