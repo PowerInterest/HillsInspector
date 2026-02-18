@@ -362,14 +362,18 @@ class IterativeDiscovery:
 
                     try:
                         self.search_queue.mark_in_progress(search.id)
+                        self.conn.commit()
                         new_docs = self._execute_search(folio, search)
                         documents_found += new_docs
+                        self.conn.commit()
                         logger.debug(f"  Gap-search iteration {iteration}: found {new_docs} new docs")
                     except RateLimitError:
                         self.search_queue.mark_rate_limited(search.id)
+                        self.conn.commit()
                         logger.warning(f"Rate limited on gap-search {search.id} for {folio}")
                     except Exception as e:
                         self.search_queue.mark_failed(search.id, str(e))
+                        self.conn.commit()
                         logger.error(f"Gap-search {search.id} failed for {folio}: {e}")
 
         # Link name variations across documents (e.g., "ROSRIGUEZ" <-> "RODRIGUEZ")
