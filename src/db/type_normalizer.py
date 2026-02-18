@@ -8,12 +8,12 @@ import re
 
 # --- Allowed encumbrance types (enforced by SQLite trigger) ---
 ALLOWED_ENCUMBRANCE_TYPES = frozenset({
-    "mortgage", "judgment", "lis_pendens", "lien",
+    "mortgage", "judgment", "lis_pendens", "lien", "easement",
     "satisfaction", "release", "assignment", "other",
 })
 
 # --- Classification sets (canonical, post-normalization) ---
-CANONICAL_ENCUMBRANCE_TYPES = frozenset({"mortgage", "judgment", "lis_pendens", "lien"})
+CANONICAL_ENCUMBRANCE_TYPES = frozenset({"mortgage", "judgment", "lis_pendens", "lien", "easement"})
 CANONICAL_DEED_TYPES = frozenset({"deed"})
 CANONICAL_SATISFACTION_TYPES = frozenset({"satisfaction", "release", "partial_release"})
 
@@ -33,11 +33,13 @@ def normalize_encumbrance_type(raw: str) -> str:
         return "judgment"
     if "LIS PENDENS" in t or "LIS_PENDENS" in t or "(LP)" in t or t == "LP":
         return "lis_pendens"
-    if "LIEN" in t or "(LN)" in t or t == "LN" or "MEDLN" in t:
+    if "LIEN" in t or "(LN)" in t or t == "LN" or "MEDLN" in t or "FINANCING" in t or "(FIN)" in t or t == "FIN":
         return "lien"
+    if "EASEMENT" in t or "(EAS)" in t or t == "EAS":
+        return "easement"
     if "SATISFACTION" in t or "SAT" in t:
         return "satisfaction"
-    if "RELEASE" in t or "REL" in t:
+    if "RELEASE" in t or "REL" in t or "TERMINATION" in t or "(TER)" in t or t == "TER":
         return "release"
     if "ASSIGNMENT" in t or "ASG" in t:
         return "assignment"
@@ -65,14 +67,22 @@ _DOC_TYPE_MAP = {
     # Satisfactions
     "SAT": "satisfaction", "SATCORPTX": "satisfaction",
     "SATMTG": "satisfaction", "RELMTG": "satisfaction",
-    # Releases
+    # Releases / Terminations
     "REL": "release", "PR": "partial_release",
+    "TER": "release",
     # Assignments
     "ASG": "assignment", "ASGT": "assignment",
     "ASGN": "assignment", "ASGNMTG": "assignment",
     "ASSIGN": "assignment", "ASINT": "assignment",
+    # Domestic relations (divorce judgments can transfer property / create liens)
+    "DRJUD": "judgment",
+    # UCC / financing
+    "FIN": "lien", "AGD": "mortgage",
+    # Easements (encumbrances that survive foreclosure)
+    "EAS": "easement",
     # Other
     "NOC": "noc", "MOD": "modification", "AFF": "affidavit",
+    "ORD": "court_order", "CP": "court_paper",
 }
 
 _PAREN_RE = re.compile(r"\(([^)]+)\)\s*(.*)")

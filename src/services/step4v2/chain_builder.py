@@ -315,10 +315,11 @@ class ChainBuilder:
 
         Returns (canonical_type, skip_fallback) where skip_fallback is True
         when the type was resolved via the ORI code map OR was recognized as
-        ORI parenthetical format (even if unmapped). Substring-based fallback
-        checks should only run when skip_fallback is False.
+        a canonical form. Substring-based fallback checks run when
+        skip_fallback is False.
 
-        '(DRJUD) DOMESTIC RELATIONS JUDGMENT' → code 'DRJUD' → unmapped ORI → ('', True)
+        '(DRJUD) DOMESTIC RELATIONS JUDGMENT' → code 'DRJUD' → unmapped → ('', False)
+          → allows substring fallback to match "JUDGMENT" in full description
         '(MTG) MORTGAGE' → code 'MTG' → ('mortgage', True)
         'mortgage' → already normalized → ('mortgage', True)
         'some_unknown_string' → not ORI, not mapped → ('some_unknown_string', False)
@@ -332,8 +333,10 @@ class ChainBuilder:
             mapped = _DOC_TYPE_MAP.get(code)
             if mapped:
                 return mapped, True
-            # ORI parenthetical format but code not in map — skip substring fallback
-            return "", True
+            # ORI parenthetical format but code not in map — allow substring
+            # fallback so the full description text (e.g. "DOMESTIC RELATIONS
+            # JUDGMENT") can still match encumbrance/satisfaction keywords.
+            return "", False
         # Already normalized or bare code
         mapped = _DOC_TYPE_MAP.get(t.upper())
         if mapped:

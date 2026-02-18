@@ -274,6 +274,20 @@ class ORIApiScraper:
         }
         return self._execute_search(payload)
 
+    def search_by_case_number(
+        self,
+        case_number: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for documents by case number using the CaseNum payload field.
+
+        Unlike search_by_party (which sends case_number as a Party name),
+        this uses the dedicated CaseNum field that matches the court case
+        number against recorded documents. Returns all doc types for the case.
+        """
+        payload = {"CaseNum": case_number.strip()}
+        return self._execute_search(payload)
+
     # Column order returned by PAV CQID=320 DisplayColumnValues
     _INSTRUMENT_COLUMNS = [
         "person_type", "name", "record_date", "doc_type",

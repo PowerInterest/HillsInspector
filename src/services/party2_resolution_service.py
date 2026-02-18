@@ -21,6 +21,7 @@ from difflib import SequenceMatcher
 
 from loguru import logger
 
+from src.db.type_normalizer import _DOC_TYPE_MAP, _PAREN_RE
 from src.scrapers.ori_api_scraper import ORIApiScraper
 from src.services.vision_service import VisionService
 
@@ -44,13 +45,6 @@ class Party2ResolutionService:
     especially for deeds where Party 2 may be indexed under a different
     legal description text than Party 1.
     """
-
-    # Deed document types that should have both parties
-    DEED_TYPES = {
-        "(D) DEED", "(WD) WARRANTY DEED", "(QC) QUIT CLAIM",
-        "(CD) CORRECTIVE DEED", "(TD) TRUSTEE DEED", "(SD) SPECIAL WARRANTY DEED",
-        "(TAXDEED) TAX DEED", "D", "WD", "QC", "CD", "TD", "SD", "TAXDEED"
-    }
 
     def __init__(self, ori_scraper: Optional[ORIApiScraper] = None,
                  vision_service: Optional[VisionService] = None):
@@ -78,9 +72,18 @@ class Party2ResolutionService:
         party1 = doc.get("party1") or doc.get("grantor")
         party2 = doc.get("party2") or doc.get("grantee")
 
-        # Normalize doc_type for comparison
-        doc_type_upper = doc_type.upper()
-        is_deed = any(dt.upper() in doc_type_upper for dt in self.DEED_TYPES)
+        # Use ORI code map for reliable deed detection
+        doc_type_str = (doc_type or "").strip()
+        m = _PAREN_RE.match(doc_type_str)
+        if m:
+            canonical = _DOC_TYPE_MAP.get(m.group(1).upper(), "")
+        else:
+            # Try as ORI code; fall back to the string itself (handles
+            # already-normalized values like "deed" from DB)
+            canonical = _DOC_TYPE_MAP.get(
+                doc_type_str.upper(), doc_type_str.lower()
+            )
+        is_deed = canonical == "deed"
 
         return bool(is_deed and party1 and not party2)
 

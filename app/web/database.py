@@ -1229,8 +1229,15 @@ def get_market_snapshot(folio: str) -> Dict[str, Any]:
         homeharvest_estimated = _safe_float((homeharvest or {}).get("estimated_value"))
         realtor_estimate = _safe_float((realtor or {}).get("zestimate"))
         redfin_estimate = _safe_float((redfin or {}).get("zestimate"))
-        estimate_values = [v for v in [zestimate, homeharvest_estimated, realtor_estimate, redfin_estimate] if v is not None]
-        blended = sum(estimate_values) / len(estimate_values) if estimate_values else None
+        all_estimates = [
+            zestimate, homeharvest_estimated,
+            realtor_estimate, redfin_estimate,
+        ]
+        estimate_values = [v for v in all_estimates if v is not None]
+        blended = (
+            sum(estimate_values) / len(estimate_values)
+            if estimate_values else None
+        )
 
         # List prices shown separately
         realtor_list_price = _safe_float((realtor or {}).get("list_price"))
@@ -1263,13 +1270,18 @@ def get_market_snapshot(folio: str) -> Dict[str, Any]:
 
 
 def get_bulk_homeharvest_photos(folios: List[str]) -> Dict[str, str]:
-    """Return latest HomeHarvest primary_photo per folio (for cards)."""
+    """Return latest photo per folio (for cards).
+
+    Checks HomeHarvest first, then falls back to first Redfin photo from raw_json.
+    """
     result: Dict[str, str] = {}
     if not folios:
         return result
     conn = get_connection()
     try:
         placeholders = ",".join(["?"] * len(folios))
+
+        # Primary: HomeHarvest primary_photo
         rows = conn.execute(
             f"""
             WITH latest AS (
@@ -1289,9 +1301,39 @@ def get_bulk_homeharvest_photos(folios: List[str]) -> Dict[str, str]:
         for folio, primary_photo in rows:
             if folio and primary_photo:
                 result[str(folio)] = str(primary_photo)
+
+        # Fallback: Redfin photos from raw_json for folios still missing a photo
+        missing = [f for f in folios if str(f) not in result and f]
+        if missing:
+            missing_ph = ",".join(["?"] * len(missing))
+            redfin_rows = conn.execute(
+                f"""
+                WITH latest AS (
+                    SELECT folio, raw_json,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY folio
+                            ORDER BY created_at DESC
+                        ) AS rn
+                    FROM market_data
+                    WHERE folio IN ({missing_ph})
+                      AND source = 'Redfin'
+                )
+                SELECT folio, raw_json FROM latest WHERE rn = 1
+                """,
+                missing,
+            ).fetchall()
+            for folio, raw_json in redfin_rows:
+                if not folio or not raw_json:
+                    continue
+                parsed = _safe_json(raw_json)
+                if isinstance(parsed, dict):
+                    photos = parsed.get("photos") or []
+                    if photos and isinstance(photos[0], str):
+                        result[str(folio)] = photos[0]
+
         return result
     except Exception as e:
-        logger.debug(f"HomeHarvest bulk photo lookup failed: {e}")
+        logger.debug(f"Bulk photo lookup failed: {e}")
         return result
     finally:
         conn.close()
@@ -1389,7 +1431,10 @@ def get_bulk_enrichments(folios: List[str]) -> Dict[str, Dict[str, Any]]:
             rows = conn.execute(f"""
                 WITH latest AS (
                     SELECT folio, zestimate,
-                        ROW_NUMBER() OVER (PARTITION BY folio ORDER BY created_at DESC) AS rn
+                        ROW_NUMBER() OVER (
+                            PARTITION BY folio
+                            ORDER BY (zestimate IS NOT NULL) DESC, created_at DESC
+                        ) AS rn
                     FROM market_data
                     WHERE folio IN ({placeholders}) AND source IN ('Zillow', 'Redfin')
                 )

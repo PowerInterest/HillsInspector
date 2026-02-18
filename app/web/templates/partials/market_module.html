@@ -25,9 +25,21 @@
             </span>
         </div>
         <div class="info-item">
+            <span class="info-label">Redfin Estimate</span>
+            <span class="info-value money">
+                {{ "${:,.0f}".format(estimates.redfin_estimate) if estimates.redfin_estimate else "-" }}
+            </span>
+        </div>
+        <div class="info-item">
             <span class="info-label">Realtor Estimate</span>
             <span class="info-value money">
                 {{ "${:,.0f}".format(estimates.realtor_estimate) if estimates.realtor_estimate else "-" }}
+            </span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Redfin List Price</span>
+            <span class="info-value money">
+                {{ "${:,.0f}".format(list_prices.redfin_list_price) if list_prices.redfin_list_price else "-" }}
             </span>
         </div>
         <div class="info-item">

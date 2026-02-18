@@ -20,7 +20,6 @@ from loguru import logger
 from config.step4v2 import (
     ADJACENT_INSTRUMENT_RANGE,
     DEED_TYPES,
-    ENCUMBRANCE_TYPES,
     MAX_ANCHOR_GAP_DAYS,
     MAX_DOCUMENTS_PER_FOLIO,
     MAX_ITERATIONS_PER_FOLIO,
@@ -30,6 +29,7 @@ from config.step4v2 import (
     PRIORITY_LEGAL_BEGINS,
     PRIORITY_NAME_CHAIN,
 )
+from src.db.type_normalizer import _DOC_TYPE_MAP, _PAREN_RE
 from src.scrapers.ori_api_scraper import ORIApiScraper
 from src.services.step4v2.name_matcher import NameMatcher
 from src.services.step4v2.search_queue import SearchItem, SearchQueue
@@ -271,13 +271,17 @@ class IterativeDiscovery:
         hcpa_data: Optional[dict] = None,
         final_judgment: Optional[dict] = None,
         bulk_parcel: Optional[dict] = None,
+        fallback_mode: bool = False,
     ) -> DiscoveryResult:
         """
         Run iterative discovery for a folio.
 
+        When fallback_mode=True, passes through to search queue to seed
+        plaintiff name search and skip legal/plat seeds.
+
         Returns a DiscoveryResult with statistics and completion status.
         """
-        logger.info(f"Starting iterative discovery for {folio}")
+        logger.info(f"Starting iterative discovery for {folio} (fallback_mode={fallback_mode})")
 
         # Extract lot/block filter from the known legal description
         # This will be applied to ALL documents to prevent cross-property contamination
@@ -290,6 +294,7 @@ class IterativeDiscovery:
             hcpa_data=hcpa_data,
             final_judgment=final_judgment,
             bulk_parcel=bulk_parcel,
+            fallback_mode=fallback_mode,
         )
 
         iteration = 0
@@ -570,10 +575,9 @@ class IterativeDiscovery:
                 return []
 
             if search.search_type == "case":
-                # Case number search - search by legal with case number as party name
-                # The lis pendens for foreclosure cases often shows the case number
-                logger.debug(f"Case search via party: {search.search_term}")
-                return self.ori_scraper.search_by_party(search.search_term)
+                # Case number search - uses dedicated CaseNum API field
+                logger.debug(f"Case search: {search.search_term}")
+                return self.ori_scraper.search_by_case_number(search.search_term)
 
             logger.warning(f"Unknown search type: {search.search_type}")
             return []
@@ -948,12 +952,20 @@ class IterativeDiscovery:
         Returns:
             Number of adjacent instrument searches queued
         """
-        # Only queue adjacents for deeds and encumbrances (mortgages/liens)
-        doc_type_upper = (doc_type or "").upper()
-        is_deed = any(dt in doc_type_upper for dt in DEED_TYPES)
-        is_encumbrance = any(et in doc_type_upper for et in ENCUMBRANCE_TYPES)
-
-        if not is_deed and not is_encumbrance:
+        # Only queue adjacents for deeds and mortgages — these are recorded
+        # together (e.g. Deed 2019437668, Mortgage 2019437669).
+        # NOT judgments, lis pendens, liens (standalone filings).
+        doc_type_str = (doc_type or "").strip()
+        m = _PAREN_RE.match(doc_type_str)
+        if m:
+            canonical = _DOC_TYPE_MAP.get(m.group(1).upper(), "")
+        else:
+            # Try as ORI code; fall back to the string itself (handles
+            # already-normalized values like "deed", "mortgage" from DB)
+            canonical = _DOC_TYPE_MAP.get(
+                doc_type_str.upper(), doc_type_str.lower()
+            )
+        if canonical not in ("deed", "mortgage"):
             return 0
 
         # Parse instrument as integer

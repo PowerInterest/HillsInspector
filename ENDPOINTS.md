@@ -264,3 +264,225 @@ POST https://publicaccess.hillsclerk.com/Public/ORIUtilities/DocumentSearch/api/
 
 - `29YYYYCA######` = Circuit Court (Civil) - Mortgage foreclosures
 - `29YYYYCC######` = County Court - HOA liens, code enforcement, small claims
+
+## Hillsboroughcounty.org Subdomain Snapshot
+
+Source: passive certificate transparency enumeration (`certspotter`) on `2026-02-18`.
+This list may include internal, retired, or non-resolving hostnames.
+
+```text
+aar.hillsboroughcounty.org
+app-dev.hillsboroughcounty.org
+app-int.hillsboroughcounty.org
+app-test.hillsboroughcounty.org
+app.hillsboroughcounty.org
+avd.hillsboroughcounty.org
+boards.hillsboroughcounty.org
+ccunity01.hillsboroughcounty.org
+ccunity02.hillsboroughcounty.org
+ccxbocc01.hillsboroughcounty.org
+ccxbocc02.hillsboroughcounty.org
+ccxpud01.hillsboroughcounty.org
+ccxpud02.hillsboroughcounty.org
+cemp-prod.hillsboroughcounty.org
+cer911primary.hillsboroughcounty.org
+cer911secondary.hillsboroughcounty.org
+cham-web.hillsboroughcounty.org
+coin.hillsboroughcounty.org
+colosub.hillsboroughcounty.org
+conserv.hillsboroughcounty.org
+db.hillsboroughcounty.org
+eam.hillsboroughcounty.org
+eamdev.hillsboroughcounty.org
+eammob.hillsboroughcounty.org
+eammobdev.hillsboroughcounty.org
+eamrpt.hillsboroughcounty.org
+eamrptdev.hillsboroughcounty.org
+eer-assignments.hillsboroughcounty.org
+employeedowntownparking.hillsboroughcounty.org
+energyestimator.hillsboroughcounty.org
+expc-cluster.hillsboroughcounty.org
+expc01.hillsboroughcounty.org
+expc02.hillsboroughcounty.org
+expe-cluster.hillsboroughcounty.org
+expe01.hillsboroughcounty.org
+expe02.hillsboroughcounty.org
+fats.hillsboroughcounty.org
+fmeflow.hillsboroughcounty.org
+fredmz-fme04.hillsboroughcounty.org
+fredmz-fme05.hillsboroughcounty.org
+fredmz-fme06.hillsboroughcounty.org
+gisdextweb1.hillsboroughcounty.org
+gisdportal1.hillsboroughcounty.org
+gisdportal2.hillsboroughcounty.org
+gisdportal3.hillsboroughcounty.org
+gispextweb1.hillsboroughcounty.org
+gispextweb2.hillsboroughcounty.org
+hcsystemcentercmg.hillsboroughcounty.org
+insights.hillsboroughcounty.org
+link.hillsboroughcounty.org
+maps.hillsboroughcounty.org
+mediaweb.hillsboroughcounty.org
+medtesting.hillsboroughcounty.org
+meetinglog.hillsboroughcounty.org
+myhr.hillsboroughcounty.org
+nagios-colo.hillsboroughcounty.org
+nagios-psoc.hillsboroughcounty.org
+nic.hillsboroughcounty.org
+onbaseweb.hillsboroughcounty.org
+onbasewebdev.hillsboroughcounty.org
+onbasewebpavapp.hillsboroughcounty.org
+onbasewebpavnet.hillsboroughcounty.org
+onbasewebtest.hillsboroughcounty.org
+onbasewebtestpav.hillsboroughcounty.org
+onbasewebtestpavnet.hillsboroughcounty.org
+onbasewebtraining.hillsboroughcounty.org
+orahc-db-dr.hillsboroughcounty.org
+orahc-db-prod.hillsboroughcounty.org
+orahc-db-test.hillsboroughcounty.org
+orahc-emcctl.hillsboroughcounty.org
+psccmsub.hillsboroughcounty.org
+psccmsub02.hillsboroughcounty.org
+psoc-sat01.hillsboroughcounty.org
+psocpub.hillsboroughcounty.org
+public-solutions.hillsboroughcounty.org
+scrutinizer.hillsboroughcounty.org
+securelink-dmz.hillsboroughcounty.org
+solutions-test.hillsboroughcounty.org
+solutions.hillsboroughcounty.org
+spccmsub.hillsboroughcounty.org
+swis.hillsboroughcounty.org
+swprofiler.hillsboroughcounty.org
+swprofileradmin.hillsboroughcounty.org
+taxes.hillsboroughcounty.org
+uccxpsoc01.hillsboroughcounty.org
+uccxsabal02.hillsboroughcounty.org
+www.app-dev.hillsboroughcounty.org
+www.app-int.hillsboroughcounty.org
+www.app-test.hillsboroughcounty.org
+www.app.hillsboroughcounty.org
+www.avd.hillsboroughcounty.org
+www.boards.hillsboroughcounty.org
+www.cemp-prod.hillsboroughcounty.org
+www.cham-web.hillsboroughcounty.org
+www.conserv.hillsboroughcounty.org
+www.db.hillsboroughcounty.org
+www.eer-assignments.hillsboroughcounty.org
+www.employeedowntownparking.hillsboroughcounty.org
+www.energyestimator.hillsboroughcounty.org
+www.fats.hillsboroughcounty.org
+www.gisdextweb1.hillsboroughcounty.org
+www.gisdportal1.hillsboroughcounty.org
+www.gisdportal2.hillsboroughcounty.org
+www.gisdportal3.hillsboroughcounty.org
+www.hcsystemcentercmg.hillsboroughcounty.org
+www.insights.hillsboroughcounty.org
+www.mediaweb.hillsboroughcounty.org
+www.medtesting.hillsboroughcounty.org
+www.meetinglog.hillsboroughcounty.org
+www.myhr.hillsboroughcounty.org
+www.nagios-colo.hillsboroughcounty.org
+www.nagios-psoc.hillsboroughcounty.org
+www.nic.hillsboroughcounty.org
+www.onbaseweb.hillsboroughcounty.org
+www.onbasewebdev.hillsboroughcounty.org
+www.onbasewebpavapp.hillsboroughcounty.org
+www.onbasewebpavnet.hillsboroughcounty.org
+www.onbasewebtest.hillsboroughcounty.org
+www.onbasewebtestpav.hillsboroughcounty.org
+www.onbasewebtestpavnet.hillsboroughcounty.org
+www.onbasewebtraining.hillsboroughcounty.org
+www.orahc-db-dr.hillsboroughcounty.org
+www.orahc-db-prod.hillsboroughcounty.org
+www.orahc-db-test.hillsboroughcounty.org
+www.orahc-emcctl.hillsboroughcounty.org
+www.psoc-sat01.hillsboroughcounty.org
+www.public-solutions.hillsboroughcounty.org
+www.scrutinizer.hillsboroughcounty.org
+www.securelink-dmz.hillsboroughcounty.org
+www.solutions-test.hillsboroughcounty.org
+www.solutions.hillsboroughcounty.org
+www.swis.hillsboroughcounty.org
+www.swprofiler.hillsboroughcounty.org
+www.swprofileradmin.hillsboroughcounty.org
+www.taxes.hillsboroughcounty.org
+www.zoom1.hillsboroughcounty.org
+www.zoomcollect.hillsboroughcounty.org
+zoom1.hillsboroughcounty.org
+zoomcollect.hillsboroughcounty.org
+```
+
+## FTP/SFTP Bulk Data Endpoint Recon (2026-02-18)
+
+Scope: verify whether Hillsborough County exposes a working FTP/SFTP bulk-data endpoint (including non-standard ports).
+
+### What Was Tried
+
+- Passive subdomain enumeration (`certspotter`) for `*.hillsboroughcounty.org`.
+- Direct DNS resolution checks for:
+  - `ftp.hillsboroughcounty.org`
+  - `secureftp.hillsboroughcounty.org`
+  - `securelink-dmz.hillsboroughcounty.org`
+  - `link.hillsboroughcounty.org`
+  - `maps.hillsboroughcounty.org`
+  - `gisdextweb1.hillsboroughcounty.org`
+  - `gispextweb1.hillsboroughcounty.org`
+- Port probes on candidate transfer hosts for:
+  - `20`, `21`, `22`, `80`, `443`, `989`, `990`, `2022`, `2222`, `8021`, `8080`, `8443`
+- FTP client attempts:
+  - Anonymous FTP to `ftp.hillsboroughcounty.org`
+- SFTP client attempts:
+  - Batch/no-auth SFTP to `ftp.hillsboroughcounty.org`
+  - Batch/no-auth SFTP to `securelink-dmz.hillsboroughcounty.org`
+- HTTPS header checks:
+  - `https://link.hillsboroughcounty.org`
+  - `https://securelink-dmz.hillsboroughcounty.org`
+  - `https://maps.hillsboroughcounty.org`
+- Public web-source review for legacy references.
+
+### What Worked
+
+- `securelink-dmz.hillsboroughcounty.org`
+  - Port `22` reachable
+  - SSH banner observed: `SSH-2.0-OpenSSH_9.9`
+  - SFTP handshake reached auth step (then denied without credentials)
+  - `https://securelink-dmz.hillsboroughcounty.org` responds and redirects (`301`) to `/ui`
+- `maps.hillsboroughcounty.org`
+  - `443` reachable
+  - HTTPS responds (`200`, IIS/ASP.NET headers)
+- `gisdextweb1.hillsboroughcounty.org`, `gispextweb1.hillsboroughcounty.org`
+  - `443` reachable (web/GIS services likely)
+- `ftp.hillsboroughcounty.org`
+  - DNS resolves to `97.76.232.51`
+- `secureftp.hillsboroughcounty.org`
+  - DNS resolves to `107.144.145.81`
+
+### What Did Not Work
+
+- `ftp.hillsboroughcounty.org`
+  - Port `21` (FTP) timed out
+  - Port `22` (SFTP/SSH) timed out
+  - Anonymous FTP login not reachable (connection timeout)
+  - SFTP connection not reachable (connection timeout)
+- `secureftp.hillsboroughcounty.org`
+  - No tested ports were reachable from this environment (`20/21/22/80/443/989/990/2022/2222/8021/8443`)
+- `link.hillsboroughcounty.org`
+  - Port `443` open but HTTPS request timed out during header fetch in this test
+- Typo domain `ftp.hillsboroughcount.org`
+  - DNS does not resolve (`NXDOMAIN`)
+
+### Web Clues Found (Historical/Context)
+
+- ArcGIS metadata contains legacy FTP path reference:
+  - `ftp://ftp.hillsboroughcounty.org/gis/pub/corporate_data/`
+  - Source:
+    - `https://www.arcgis.com/sharing/rest/content/items/fd8ab321bb0348e6b334b8f42fd214a4/info/metadata/metadata.xml?format=default&output=html`
+- Reverse-DNS style listing includes `ftp`/`secureftp` names in same IP block context:
+  - Source:
+    - `https://ipinfo.io/ips/97.76.232.0/24`
+
+### Current Practical Bulk Data Endpoint
+
+- Confirmed working public source for HCPA bulk data:
+  - `https://downloads.hcpafl.org/`
+- Conclusion: public FTP/SFTP bulk feed is not currently reachable from this environment; likely private/allowlisted and/or legacy.

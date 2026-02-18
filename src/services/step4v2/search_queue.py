@@ -64,6 +64,58 @@ class SearchQueue:
         self.name_matcher = NameMatcher(conn)
         self._limit_warned_folios: set[str] = set()  # Track folios that hit search limit  # Track folios that hit search limit
 
+    @staticmethod
+    def _normalize_party_for_search(name: str) -> list[str]:
+        """
+        Normalize a raw party name string into one or more clean search names.
+
+        Handles semicolon-separated lists, A/K/A aliases, legal suffixes,
+        and parenthetical content. Returns a list because one raw string
+        (e.g. "SMITH, JOHN; SMITH, JANE") may yield multiple search names.
+        """
+        import re
+
+        if not name or len(name.strip()) < 3:
+            return []
+
+        raw = name.strip().upper()
+
+        # Split on semicolons first (multiple parties)
+        parts = [p.strip() for p in raw.split(";") if p.strip()]
+
+        results = []
+        for part in parts:
+            # Truncate at A/K/A, F/K/A, D/B/A patterns (keep primary name)
+            for sep in (" A/K/A ", " AKA ", " F/K/A ", " FKA ", " D/B/A ", " DBA "):
+                if sep in part:
+                    part = part.split(sep)[0].strip()
+                    break
+
+            # Remove common legal suffixes at end
+            for suffix in (
+                " ET AL", " ET AL.", " ET UX", " ET VIR",
+                " AS TRUSTEE", " INDIVIDUALLY",
+                " AND ALL", " AND",
+            ):
+                if part.endswith(suffix):
+                    part = part[: -len(suffix)].strip()
+
+            # Remove parenthetical content
+            part = re.sub(r"\([^)]*\)", "", part).strip()
+
+            # Convert "LAST, FIRST" to "LAST FIRST"
+            if "," in part:
+                segs = part.split(",", 1)
+                part = f"{segs[0].strip()} {segs[1].strip()}"
+
+            # Collapse whitespace
+            part = " ".join(part.split())
+
+            if len(part) >= 3:
+                results.append(part)
+
+        return results
+
     def initialize_for_folio(
         self,
         folio: str,
@@ -71,9 +123,14 @@ class SearchQueue:
         hcpa_data: Optional[dict] = None,
         final_judgment: Optional[dict] = None,
         bulk_parcel: Optional[dict] = None,
+        fallback_mode: bool = False,
     ) -> int:
         """
         Initialize the search queue for a folio from all available data sources.
+
+        When fallback_mode=True (invalid folio / no legal description),
+        additionally seeds plaintiff name search. All other seeds still run
+        if their data is available — fallback_mode is additive, not restrictive.
 
         Returns the number of searches queued.
         """
@@ -149,7 +206,7 @@ class SearchQueue:
                         source_type="bulk_import",
                     )
 
-        # 4. Case number search (for foreclosure docs)
+        # 4. Case number search (for foreclosure docs) - always queued
         case_number = auction.get("case_number")
         if case_number:
             self.queue_case_search(folio, case_number)
@@ -193,10 +250,24 @@ class SearchQueue:
                 )
                 count += 1
 
+        # Fallback mode: also seed plaintiff name (for HOA/invalid-folio cases)
+        if fallback_mode:
+            plaintiff_raw = auction.get("plaintiff")
+            if plaintiff_raw:
+                for clean_name in self._normalize_party_for_search(plaintiff_raw):
+                    if not self.name_matcher.is_generic(clean_name):
+                        self.queue_name_search(
+                            folio,
+                            clean_name,
+                            date_to=auction_date,
+                            priority=PRIORITY_NAME_CHAIN,
+                        )
+                        count += 1
+
         # Commit so searches are visible to subsequent get_next_pending queries
         # (Python sqlite3's implicit transactions may not auto-commit DML)
         self.conn.commit()
-        logger.info(f"Initialized search queue for {folio}: {count} searches queued")
+        logger.info(f"Initialized search queue for {folio}: {count} searches queued (fallback_mode={fallback_mode})")
         return count
 
     def _get_sales_history(self, folio: str) -> list[dict]:

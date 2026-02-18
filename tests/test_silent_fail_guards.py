@@ -17,26 +17,6 @@ class DummyORIScraper(ORIApiScraper):
         pass
 
 
-def test_survival_parse_failure_returns_error_dict():
-    prop = Property(case_number="CASE-1", parcel_id="1234567890", address="123 MAIN ST")
-    fake_db = SimpleNamespace(
-        get_auction_by_case=lambda _: {"extracted_judgment_data": "{not-json"},
-    )
-    fake_orch: Any = SimpleNamespace(
-        db=fake_db,
-        get_encumbrances_by_folio=lambda _: [],
-        get_chain_of_title=lambda _: None,
-    )
-
-    result = PipelineOrchestrator._gather_and_analyze_survival(  # noqa: SLF001
-        cast("PipelineOrchestrator", fake_orch), prop
-    )
-
-    assert "error" in result
-    assert "Invalid extracted_judgment_data JSON" in result["error"]
-    assert result["case_number"] == "CASE-1"
-
-
 def test_survival_v2_parse_failure_returns_error_dict(monkeypatch):
     import src.services.step4v2.chain_builder as chain_builder_mod
 
@@ -96,3 +76,74 @@ def test_backfill_status_steps_raises_when_table_probe_fails(monkeypatch):
 
     with pytest.raises(sqlite3.OperationalError, match="boom"):
         db.backfill_status_steps()
+
+
+def test_invalid_folio_fallback_does_not_mark_skipped_when_ori_incomplete():
+    class FakeWriter:
+        def __init__(self):
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def enqueue(self, op: str, payload: dict[str, Any]) -> None:
+            self.calls.append((op, payload))
+
+        async def execute_with_result(self, func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+    class FakeDB:
+        def get_status_state(self, _case_number: str) -> str:
+            return "processing"
+
+        def get_parcel_by_folio(self, _folio: str):
+            return None
+
+        def set_surrogate_folio(self, _case_number: str, _surrogate: str) -> None:
+            return None
+
+        def mark_ori_party_fallback_used(self, _case_number: str, _note: str) -> None:
+            return None
+
+        def mark_step_complete(self, _case_number: str, _step: str) -> None:
+            return None
+
+        def mark_status_skipped(self, _case_number: str, _reason: str) -> None:
+            return None
+
+        def mark_status_retriable_error(
+            self, _case_number: str, _error_message: str, _error_step: int | None = None
+        ) -> None:
+            return None
+
+        def checkpoint(self) -> None:
+            return None
+
+        def is_status_step_complete(self, _case_number: str, _step_column: str) -> bool:
+            return False
+
+    async def _no_op_ori(_case_number: str, _prop: Property, fallback_mode: bool = False):
+        assert fallback_mode is True
+
+    async def _run() -> list[str]:
+        writer = FakeWriter()
+        fake_orch: Any = SimpleNamespace(
+            db=FakeDB(),
+            db_writer=writer,
+            _run_ori_ingestion=_no_op_ori,
+        )
+        auction = {
+            "case_number": "CASE-INV-1",
+            "parcel_id": "PROPERTY APPRAISER",
+            "address": "UNKNOWN",
+            "plaintiff": "SAMPLE HOA, INC.",
+            "defendant": "JOHN DOE",
+        }
+        await PipelineOrchestrator._enrich_property(  # noqa: SLF001
+            cast("PipelineOrchestrator", fake_orch), auction
+        )
+        return [
+            getattr(payload.get("func"), "__name__", str(payload.get("func")))
+            for _, payload in writer.calls
+        ]
+
+    func_names = asyncio.run(_run())
+    assert "mark_status_retriable_error" in func_names
+    assert "mark_status_skipped" not in func_names

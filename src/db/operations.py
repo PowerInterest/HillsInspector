@@ -218,6 +218,7 @@ class PropertyDB:
             add_column_if_not_exists("auctions", "hcpa_scrape_error", "TEXT")
             add_column_if_not_exists("auctions", "ori_party_fallback_used", "INTEGER", "0")
             add_column_if_not_exists("auctions", "ori_party_fallback_note", "TEXT")
+            add_column_if_not_exists("auctions", "surrogate_folio", "TEXT")
 
         if table_exists("status"):
             add_column_if_not_exists("status", "completed_at", "TIMESTAMP")
@@ -608,8 +609,8 @@ class PropertyDB:
         # Step 2: Judgment Extraction
         # If we have extracted data, we don't need to run it again
         conn.execute("""
-            UPDATE auctions 
-            SET needs_judgment_extraction = FALSE 
+            UPDATE auctions
+            SET needs_judgment_extraction = FALSE
             WHERE extracted_judgment_data IS NOT NULL
         """)
 
@@ -797,6 +798,19 @@ class PropertyDB:
             [note, case_number],
         )
 
+    def set_surrogate_folio(self, case_number: str, surrogate: str) -> None:
+        """Set a surrogate folio (case_number) for auctions with invalid parcel_id."""
+        conn = self.connect()
+        conn.execute(
+            """
+            UPDATE auctions
+            SET surrogate_folio = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE case_number = ?
+            """,
+            [surrogate, case_number],
+        )
+
     def upsert_auction(self, prop: Property) -> int:
         """
         Insert or update an auction property.
@@ -811,6 +825,7 @@ class PropertyDB:
 
         # Ensure column exists (dynamic schema update)
         self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN has_valid_parcel_id INTEGER DEFAULT 1")
+        self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN surrogate_folio TEXT")
 
         # Check if auction already exists
         existing = conn.execute("SELECT id FROM auctions WHERE case_number = ?", [prop.case_number]).fetchone()
@@ -891,7 +906,7 @@ class PropertyDB:
         conn.execute("INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio])
         conn.execute(
             """
-            UPDATE parcels 
+            UPDATE parcels
             SET tax_status = ?, tax_warrant = ?
             WHERE parcel_id = ? OR folio = ?
         """,
@@ -3644,7 +3659,7 @@ class PropertyDB:
         # Step 1: Auction scraped (default for known cases)
         conn.execute(
             f"""
-            UPDATE status 
+            UPDATE status
             SET step_auction_scraped = COALESCE(status.step_auction_scraped, status.created_at, CURRENT_TIMESTAMP)
             WHERE status.step_auction_scraped IS NULL
             {date_clause}
@@ -3655,7 +3670,7 @@ class PropertyDB:
         # Step 2: Judgment extracted
         conn.execute(
             f"""
-            UPDATE status 
+            UPDATE status
             SET step_judgment_extracted = CURRENT_TIMESTAMP
             FROM auctions AS a
             WHERE status.case_number = a.case_number
@@ -3669,7 +3684,7 @@ class PropertyDB:
         # Step 1 PDF downloaded: if judgment extracted, PDF existed
         conn.execute(
             f"""
-            UPDATE status 
+            UPDATE status
             SET step_pdf_downloaded = CURRENT_TIMESTAMP
             WHERE status.step_pdf_downloaded IS NULL
               AND status.step_judgment_extracted IS NOT NULL
@@ -3681,7 +3696,7 @@ class PropertyDB:
         # Step 3: Bulk enrichment (best-effort using bulk-parcel markers)
         conn.execute(
             f"""
-            UPDATE status 
+            UPDATE status
             SET step_bulk_enriched = CURRENT_TIMESTAMP
             FROM auctions AS a
             JOIN parcels AS p ON COALESCE(a.parcel_id, a.folio) = p.folio
@@ -3697,7 +3712,7 @@ class PropertyDB:
         if table_exists("home_harvest"):
             conn.execute(
                 f"""
-                UPDATE status 
+                UPDATE status
                 SET step_homeharvest_enriched = CURRENT_TIMESTAMP
                 WHERE status.step_homeharvest_enriched IS NULL
                   AND status.case_number IN (
@@ -3715,7 +3730,7 @@ class PropertyDB:
             sales_history_filter = "OR COALESCE(a.parcel_id, a.folio) IN (SELECT DISTINCT folio FROM sales_history)"
         conn.execute(
             f"""
-            UPDATE status 
+            UPDATE status
             SET step_hcpa_enriched = CURRENT_TIMESTAMP
             WHERE status.step_hcpa_enriched IS NULL
               AND status.case_number IN (
@@ -3739,7 +3754,7 @@ class PropertyDB:
         # Step 6: Survival analysis (auctions status ANALYZED/FLAGGED)
         conn.execute(
             f"""
-            UPDATE status 
+            UPDATE status
             SET step_survival_analyzed = CURRENT_TIMESTAMP
             FROM auctions AS a
             WHERE status.case_number = a.case_number
@@ -3754,7 +3769,7 @@ class PropertyDB:
         if table_exists("permits"):
             conn.execute(
                 f"""
-                UPDATE status 
+                UPDATE status
                 SET step_permits_checked = CURRENT_TIMESTAMP
                 WHERE status.step_permits_checked IS NULL
                   AND status.case_number IN (
@@ -3769,7 +3784,7 @@ class PropertyDB:
         # Step 8: Flood check
         conn.execute(
             f"""
-            UPDATE status 
+            UPDATE status
             SET step_flood_checked = CURRENT_TIMESTAMP
             WHERE status.step_flood_checked IS NULL
               AND status.case_number IN (
@@ -3787,7 +3802,7 @@ class PropertyDB:
         if table_exists("market_data"):
             conn.execute(
                 f"""
-                UPDATE status 
+                UPDATE status
                 SET step_market_fetched = CURRENT_TIMESTAMP
                 WHERE status.step_market_fetched IS NULL
                   AND status.case_number IN (
@@ -3802,7 +3817,7 @@ class PropertyDB:
         # Step 12: Tax check
         conn.execute(
             f"""
-            UPDATE status 
+            UPDATE status
             SET step_tax_checked = CURRENT_TIMESTAMP
             WHERE status.step_tax_checked IS NULL
               AND status.case_number IN (
@@ -3832,7 +3847,7 @@ class PropertyDB:
         for flag, step in step_flag_map.items():
             conn.execute(
                 f"""
-                UPDATE status 
+                UPDATE status
                 SET {step} = CURRENT_TIMESTAMP
                 FROM auctions AS a
                 WHERE status.case_number = a.case_number

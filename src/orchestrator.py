@@ -1,8 +1,7 @@
 import asyncio
 import json
 import re
-import contextlib
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import List, Optional, Dict, Any
 from loguru import logger
 
@@ -15,9 +14,7 @@ from src.scrapers.permit_scraper import PermitScraper
 from src.scrapers.market_scraper import MarketScraper
 from src.scrapers.hcpa_gis_scraper import scrape_hcpa_property
 from src.scrapers.sunbiz_scraper import SunbizScraper
-from src.scrapers.ori_scraper import ORIScraper
 from src.scrapers.fema_flood_scraper import FEMAFloodChecker, FEMARequestError
-from src.services.ingestion_service import IngestionService
 from src.services.lien_survival_analyzer import LienSurvivalAnalyzer
 from src.services.homeharvest_service import HomeHarvestService
 
@@ -248,7 +245,7 @@ class PipelineOrchestrator:
     """
     Orchestrates the scraping and analysis pipeline.
     """
-    
+
     def __init__(
         self,
         db_writer: DatabaseWriter,
@@ -259,23 +256,18 @@ class PipelineOrchestrator:
         self.db_writer = db_writer
         self.db = db or PropertyDB()  # Read-only access for status checks
         self.storage = storage or ScraperStorage(db_path=self.db.db_path, db=self.db)
-        
+
         # Services
         self.tax_scraper = TaxScraper(storage=self.storage)
         self.permit_scraper = PermitScraper(headless=True, use_vision=True, storage=self.storage)
         self.market_scraper = MarketScraper(headless=True, storage=self.storage)
         self.sunbiz_scraper = SunbizScraper(headless=True, storage=self.storage)
         self.fema_checker = FEMAFloodChecker(storage=self.storage)
-        
-        # Heavy Services (Injected with db_writer for serialization)
-        self.ingestion_service = IngestionService(
-            db_writer=self.db_writer,
-            db=self.db,
-            storage=self.storage,
-        )
+
+        # Heavy Services
         self.survival_analyzer = LienSurvivalAnalyzer()
         self.homeharvest_service = HomeHarvestService(db=self.db)
-        
+
         # Concurrency Control
         self.property_semaphore = asyncio.Semaphore(max_concurrent_properties)
         self.market_semaphore = asyncio.Semaphore(3)
@@ -301,266 +293,6 @@ class PipelineOrchestrator:
     def encumbrance_exists(self, folio: str, book: str, page: str) -> bool:
         """Check if encumbrance exists by book/page."""
         return self.db.encumbrance_exists(folio, book, page)
-
-    def _gather_and_analyze_survival(self, prop: Property) -> Dict[str, Any]:
-        """
-        Synchronous worker method for Survival Analysis.
-        Reads DB, runs logic, returns updates to be applied.
-        """
-        folio = prop.parcel_id
-        case_number = prop.case_number
-        
-        # 1. Gather Data
-        auction = self.db.get_auction_by_case(case_number)
-        if not auction:
-            return {
-                "error": "Missing auction record for survival analysis",
-                "folio": folio,
-                "case_number": case_number,
-            }
-        
-        encs_rows = self.get_encumbrances_by_folio(folio)
-        chain = self.get_chain_of_title(folio)
-        
-        current_owner_acq_date = None
-        if chain and chain.get("ownership_timeline"):
-             acq = chain["ownership_timeline"][-1].get("acquisition_date")
-             if acq:
-                 with contextlib.suppress(ValueError, TypeError):
-                     current_owner_acq_date = datetime.strptime(str(acq), "%Y-%m-%d").date()
-
-        # Prepare encumbrances list
-        encumbrances = []
-        enc_id_map = {}
-        for row in encs_rows:
-            rec_date = None
-            if row["recording_date"]:
-                with contextlib.suppress(ValueError):
-                    rec_date = datetime.strptime(str(row["recording_date"]), "%Y-%m-%d").date()
-            
-            enc = {
-                "id": row["id"],
-                "encumbrance_type": row["encumbrance_type"],
-                "recording_date": rec_date,
-                "creditor": row.get("creditor"),
-                "debtor": row.get("debtor"),
-                "amount": row["amount"],
-                "instrument": row.get("instrument"),
-                "book": row.get("book"),
-                "page": row.get("page"),
-                "is_satisfied": row.get("is_satisfied", False),
-            }
-            encumbrances.append(enc)
-            instrument = row.get("instrument")
-            book = row.get("book")
-            page = row.get("page")
-            rec_date_key = rec_date.isoformat() if rec_date else None
-            row_id = row["id"]
-            if instrument:
-                key = f"INST:{instrument}"
-            elif book and page:
-                key = f"BKPG:{book}/{page}"
-            else:
-                # Include row ID in fallback key to avoid collisions when
-                # multiple encumbrances share the same date+type (e.g., HOA liens)
-                key = f"DTYPE:{rec_date_key}_{row['encumbrance_type']}_{row_id}"
-            enc_id_map[key] = row_id
-
-        # 2. Identify Foreclosing Mortgage
-        judgment_data = {}
-        raw_judgment = auction.get("extracted_judgment_data")
-        if isinstance(raw_judgment, dict):
-            judgment_data = raw_judgment
-        elif isinstance(raw_judgment, str) and raw_judgment.strip():
-            try:
-                judgment_data = json.loads(raw_judgment)
-            except (json.JSONDecodeError, TypeError) as e:
-                raw_preview = raw_judgment[:200].replace("\n", " ").replace("\r", " ")
-                error_msg = (
-                    f"Invalid extracted_judgment_data JSON for survival analysis "
-                    f"(case={case_number}, folio={folio}): {e}"
-                )
-                logger.error(f"{error_msg}; raw_preview={raw_preview!r}")
-                return {"error": error_msg, "folio": folio, "case_number": case_number}
-
-        foreclosed_mtg = judgment_data.get("foreclosed_mortgage", {})
-        mtg_book = foreclosed_mtg.get("recording_book")
-        mtg_page = foreclosed_mtg.get("recording_page")
-        
-        foreclosing_refs = {
-            "instrument": foreclosed_mtg.get("instrument_number"),
-            "book": mtg_book,
-            "page": mtg_page
-        }
-        
-        new_encumbrances = [] # List of dicts to insert
-        
-        if mtg_book and mtg_page and not self.encumbrance_exists(folio, mtg_book, mtg_page):
-            # Check if this mortgage is already in our list (maybe scraped but missed book match?)
-            # Or perform lookup
-            mtg_instrument = foreclosed_mtg.get("instrument_number")
-            mtg_record_date = foreclosed_mtg.get("recording_date")
-            
-            if not mtg_instrument:
-                try:
-                    # Sync lookup via ORIScraper (instantiated here/stateless)
-                    ori_scraper = ORIScraper() # Logic should be in scraper class
-                    ori_results = ori_scraper.search_by_book_page_sync(mtg_book, mtg_page)
-                    if ori_results:
-                        for ori_doc in ori_results:
-                            doc_type = ori_doc.get("ORI - Doc Type", "")
-                            if "MTG" in doc_type or "MORTGAGE" in doc_type.upper():
-                                mtg_instrument = ori_doc.get("Instrument #")
-                                if not mtg_record_date:
-                                    dt = ori_doc.get("Recording Date Time", "").split()[0]
-                                    mtg_record_date = dt if dt else None
-                                break
-                        if not mtg_instrument and ori_results:
-                             mtg_instrument = ori_results[0].get("Instrument #")
-                except Exception as e:
-                    logger.warning(f"Failed to lookup mortgage by book/page: {e}")
-            
-            if mtg_instrument:
-                foreclosing_refs["instrument"] = mtg_instrument
-            
-            # Create the encumbrance entry for insertion
-            mtg_amount = judgment_data.get("principal_amount") or foreclosed_mtg.get("original_amount")
-            mtg_creditor = auction.get("plaintiff")
-            
-            new_enc = {
-                "folio": folio,
-                "encumbrance_type": "mortgage",
-                "creditor": mtg_creditor,
-                "amount": mtg_amount,
-                "recording_date": mtg_record_date,
-                "book": mtg_book,
-                "page": mtg_page,
-                "instrument": mtg_instrument,
-                "survival_status": "FORECLOSING",
-                "is_inferred": True # Since we created it from judgment inference
-            }
-            new_encumbrances.append(new_enc)
-            
-            # Add to local list for analyzer
-            rec_date_parsed = None
-            if mtg_record_date:
-                with contextlib.suppress(ValueError, TypeError):
-                    rec_date_parsed = datetime.strptime(str(mtg_record_date), "%Y-%m-%d").date()
-
-            encumbrances.append({
-                 "encumbrance_type": "mortgage",
-                 "creditor": mtg_creditor,
-                 "amount": mtg_amount,
-                 "recording_date": rec_date_parsed,
-                 "book": mtg_book,
-                 "page": mtg_page,
-                 "instrument": mtg_instrument,
-            })
-
-        if not any(foreclosing_refs.values()):
-            foreclosing_refs = None
-
-        # 3. Analyze
-        lis_pendens_date = None
-        lp_str = judgment_data.get("lis_pendens_date")
-        if lp_str:
-            with contextlib.suppress(ValueError):
-                lis_pendens_date = datetime.strptime(lp_str, "%Y-%m-%d").date()
-
-        # Extract defendant names list from judgment data for "Joined" check (matches old pipeline)
-        def_names = []
-        defs = judgment_data.get("defendants")
-        if isinstance(defs, list):
-            for d in defs:
-                name = d.get("name") if isinstance(d, dict) else str(d) if d else None
-                if name:
-                    def_names.append(name)
-        elif isinstance(defs, dict):
-            name = defs.get("name")
-            if name:
-                def_names = [name]
-        elif isinstance(defs, str):
-            def_names = [defs]
-
-        # Fallback to single string if list missing (matches old pipeline)
-        defendant = judgment_data.get("defendant")
-        if not def_names and defendant:
-            def_names = [defendant]
-
-        survival_result = self.survival_analyzer.analyze(
-            encumbrances=encumbrances,
-            foreclosure_type=auction.get("foreclosure_type") or judgment_data.get("foreclosure_type"),
-            lis_pendens_date=lis_pendens_date,
-            current_owner_acquisition_date=current_owner_acq_date,
-            plaintiff=auction.get("plaintiff"),
-            original_mortgage_amount=auction.get("original_mortgage_amount"),
-            foreclosing_refs=foreclosing_refs,
-            defendants=def_names or None
-        )
-        
-        # 4. Map Results to Updates
-        updates = []
-        results_by_status = survival_result.get("results", {})
-        
-        status_mapping = {
-            "survived": "SURVIVED",
-            "extinguished": "EXTINGUISHED",
-            "expired": "EXPIRED",
-            "satisfied": "SATISFIED",
-            "historical": "HISTORICAL",
-            "foreclosing": "FORECLOSING",
-        }
-        
-        for category, status_val in status_mapping.items():
-            for enc in results_by_status.get(category, []):
-                enc_id = enc.get("encumbrance_id")
-                if enc_id:
-                    upd = {"encumbrance_id": enc_id, "status": status_val}
-                    if enc.get("is_joined") is not None:
-                        upd["is_joined"] = enc.get("is_joined")
-                    if enc.get("is_inferred"):
-                        upd["is_inferred"] = True
-                    updates.append(upd)
-                    continue
-
-                instrument = enc.get("instrument")
-                book = enc.get("book")
-                page = enc.get("page")
-                rec_date_key = enc.get("recording_date")
-                # Get the original DB ID if preserved through analysis
-                enc_orig_id = enc.get("id")
-                if instrument:
-                    key = f"INST:{instrument}"
-                elif book and page:
-                    key = f"BKPG:{book}/{page}"
-                elif enc_orig_id:
-                    # Use original ID in fallback key (matches map building)
-                    key = f"DTYPE:{rec_date_key}_{enc.get('encumbrance_type') or enc.get('type')}_{enc_orig_id}"
-                else:
-                    # Fallback for new encumbrances without DB ID
-                    key = f"DTYPE:{rec_date_key}_{enc.get('encumbrance_type') or enc.get('type')}"
-                # If checking against new_encumbrances, they don't have DB IDs yet.
-                # But they are "FORECLOSING" status already.
-                # Only update EXISTING DB records.
-                db_id = enc_id_map.get(key)
-                if db_id:
-                    upd = {"encumbrance_id": db_id, "status": status_val}
-                    if enc.get("is_joined") is not None:
-                        upd["is_joined"] = enc.get("is_joined")
-                    if enc.get("is_inferred"):
-                        upd["is_inferred"] = True
-                    updates.append(upd)
-
-        # Include summary for logging (matches old pipeline)
-        summary = survival_result.get("summary", {})
-
-        return {
-            "new_encumbrances": new_encumbrances,
-            "updates": updates,
-            "summary": summary,
-            "folio": folio,
-            "case_number": case_number
-        }
 
     def _gather_and_analyze_survival_v2(
         self, prop: Property, auction: Optional[Dict[str, Any]] = None
@@ -602,7 +334,7 @@ class PipelineOrchestrator:
             for e in encumbrances:
                 d = e.__dict__.copy()
                 enc_dicts.append(d)
-            
+
             judgment_data = {}
             raw_judgment = auction.get("extracted_judgment_data")
             if isinstance(raw_judgment, dict):
@@ -618,7 +350,7 @@ class PipelineOrchestrator:
                     )
                     logger.error(f"{error_msg}; raw_preview={raw_preview!r}")
                     return {"error": error_msg, "folio": folio, "case_number": case_number}
-            
+
             # Ensure critical context is present
             if not judgment_data.get('plaintiff'):
                 judgment_data['plaintiff'] = auction.get('plaintiff')
@@ -656,11 +388,11 @@ class PipelineOrchestrator:
                     return d or date.min
                 latest = sorted(periods, key=_sort_key, reverse=True)[0]
                 current_period_id = latest.id
-            
+
             # 3. Analyze
             service = SurvivalService(folio)
             analysis = service.analyze(enc_dicts, judgment_data, period_dicts, current_period_id)
-            
+
             # 4. Collect updates to return (writes happen via DatabaseWriter in caller)
             flat_results = []
             for cat in analysis['results'].values():
@@ -691,7 +423,7 @@ class PipelineOrchestrator:
                 "folio": folio,
                 "case_number": case_number
             }
-            
+
         except Exception as e:
             logger.exception(f"Survival analysis v2 failed for {folio}: {e}")
             return {"error": str(e)}
@@ -800,15 +532,9 @@ class PipelineOrchestrator:
         # Determine address early
         address = auction_dict.get('address') or auction_dict.get('location_address') or auction_dict.get('property_address') or "Unknown"
 
-        if not parcel_id:
-            logger.warning(
-                f"Skipping enrichment: No parcel_id for case {case_number}. "
-                "Run Step 2.5 parcel resolution (requires judgment extraction and bulk_parcels) "
-                "to restore downstream enrichment coverage."
-            )
-            return
-
         # Instantiate Property Object EARLY for consistency (Code Health Improvement)
+        # Empty/missing parcel_id falls through to is_valid_folio() below,
+        # which triggers surrogate-folio v2 discovery if party data exists.
         prop = Property(
             case_number=case_number,
             parcel_id=parcel_id,
@@ -835,76 +561,59 @@ class PipelineOrchestrator:
         # Check for invalid folios (mobile homes, "Property Appraiser", etc.)
         if not is_valid_folio(parcel_id):
             if prop.plaintiff or prop.defendant:
-                logger.info(f"Invalid folio '{parcel_id}' for case {case_number}, trying party-based ORI search")
-                try:
-                    # Run party-based ingestion in executor with skip_db_writes=True
-                    # Then queue the writes through db_writer to avoid write-write conflicts
-                    loop = asyncio.get_running_loop()
-                    result = await loop.run_in_executor(
-                        None,
-                        lambda: self.ingestion_service.ingest_property_by_party(
-                            prop, prop.plaintiff, prop.defendant, skip_db_writes=True
-                        )
-                    )
-                    # Queue the DB writes if we got results
-                    if result and result.get('documents'):
-                        for doc in result['documents']:
-                            await self.db_writer.execute_with_result(
-                                self.db.save_document, result['property_id'], doc
-                            )
-                        if result.get('chain_data'):
-                            await self.db_writer.execute_with_result(
-                                self.db.save_chain_of_title, result['property_id'], result['chain_data']
-                            )
-                    await self.db_writer.enqueue(
-                        "generic_call",
-                        {
-                            "func": self.db.mark_status_step_complete,
-                            "args": [case_number, "step_ori_ingested", 5],
-                        },
-                    )
-                    await self.db_writer.enqueue(
-                        "generic_call",
-                        {
-                            "func": self.db.mark_status_skipped,
-                            "args": [
-                                case_number,
-                                "Invalid parcel_id; processed via party-based ORI only",
-                            ],
-                        },
-                    )
-                    # Mark step complete
+                logger.info(
+                    f"Invalid folio '{parcel_id}' for {case_number}, "
+                    f"running v2 discovery with case_number as surrogate folio"
+                )
+                surrogate = case_number
+                prop.parcel_id = surrogate
+                # Persist surrogate mapping for future lookups
+                await self.db_writer.enqueue("generic_call", {
+                    "func": self.db.set_surrogate_folio,
+                    "args": [case_number, surrogate],
+                })
+                # Run ORI discovery in fallback mode, then return.
+                # Do NOT fall through to Phase 1/3 — those scrapers need
+                # a real folio/address and would get garbage with surrogate.
+                await self._run_ori_ingestion(case_number, prop, fallback_mode=True)
+                await self.db_writer.enqueue("generic_call", {
+                    "func": self.db.mark_ori_party_fallback_used,
+                    "args": [case_number, "Invalid folio — v2 fallback with surrogate"],
+                })
+                # Only mark needs_ori_ingestion complete if ORI step succeeded.
+                # _run_ori_ingestion_v2 marks step_ori_ingested on success,
+                # or marks retriable on failure — check which happened.
+                await self.db_writer.execute_with_result(self.db.checkpoint)
+                if self.db.is_status_step_complete(case_number, "step_ori_ingested"):
                     await self.db_writer.enqueue("generic_call", {
                         "func": self.db.mark_step_complete,
-                        "args": [case_number, "needs_ori_ingestion"]
+                        "args": [case_number, "needs_ori_ingestion"],
                     })
-                except Exception as e:
-                    logger.error(f"Party-based ingestion failed for {case_number}: {e}")
-                    await self.db_writer.enqueue(
-                        "generic_call",
-                        {
-                            "func": self.db.mark_status_retriable_error,
-                            "args": [case_number, str(e)[:200], 5],
-                        },
-                    )
+                    await self.db_writer.enqueue("generic_call", {
+                        "func": self.db.mark_status_skipped,
+                        "args": [case_number, "Invalid parcel_id; ORI-only via surrogate folio"],
+                    })
+                else:
+                    await self.db_writer.enqueue("generic_call", {
+                        "func": self.db.mark_status_retriable_error,
+                        "args": [case_number, "Invalid parcel_id fallback ORI incomplete", 5],
+                    })
             else:
                 logger.info(f"Invalid folio '{parcel_id}' and no party data. Skipping ORI.")
                 await self.db_writer.enqueue("generic_call", {
                     "func": self.db.mark_step_complete,
-                    "args": [case_number, "needs_ori_ingestion"]
+                    "args": [case_number, "needs_ori_ingestion"],
                 })
                 await self.db_writer.enqueue("generic_call", {
                     "func": self.db.mark_status_step_complete,
-                    "args": [case_number, "step_ori_ingested", 5]
+                    "args": [case_number, "step_ori_ingested", 5],
                 })
-                await self.db_writer.enqueue(
-                    "generic_call",
-                    {
-                        "func": self.db.mark_status_skipped,
-                        "args": [case_number, "Invalid parcel_id; no party data"],
-                    },
-                )
+                await self.db_writer.enqueue("generic_call", {
+                    "func": self.db.mark_status_skipped,
+                    "args": [case_number, "Invalid parcel_id; no party data"],
+                })
             return
+
 
         if prop.address == "Unknown":
             logger.info(f"Skipping enrichment for {parcel_id}: No address")
@@ -996,89 +705,26 @@ class PipelineOrchestrator:
                     logger.debug(f"Failed to load bulk_parcels raw_legal for {parcel_id}: {e}")
 
             if not primary_legal:
-                # No legal description from HCPA/judgment/bulk - try party-based search as fallback
-                # This can find Lis Pendens which contains the legal description
-                plaintiff = prop.plaintiff or auction_dict.get('plaintiff')
-                defendant = prop.defendant or auction_dict.get('defendant')
-
-                if plaintiff or defendant:
-                    logger.info(f"No legal description for {parcel_id}, trying party-based ORI search")
-                    try:
-                        # Run party-based ingestion in executor with skip_db_writes=True
-                        # Then queue the writes through db_writer to avoid write-write conflicts
-                        loop = asyncio.get_running_loop()
-                        result = await loop.run_in_executor(
-                            None,
-                            lambda: self.ingestion_service.ingest_property_by_party(
-                                prop, plaintiff, defendant, skip_db_writes=True
-                            )
-                        )
-                        # Queue the DB writes if we got results
-                        if result and result.get('documents'):
-                            for doc in result['documents']:
-                                await self.db_writer.execute_with_result(
-                                    self.db.save_document, result['property_id'], doc
-                                )
-                            if result.get('chain_data'):
-                                await self.db_writer.execute_with_result(
-                                    self.db.save_chain_of_title, result['property_id'], result['chain_data']
-                                )
-                            # Party search found docs — mark ORI complete
-                            await self.db_writer.enqueue("generic_call", {
-                                "func": self.db.mark_status_step_complete,
-                                "args": [case_number, "step_ori_ingested", 5]
-                            })
-                            await self.db_writer.enqueue("generic_call", {
-                                "func": self.db.mark_step_complete,
-                                "args": [case_number, "needs_ori_ingestion"]
-                            })
-                            logger.success(f"Party-based ORI search completed for {case_number} (no legal desc fallback)")
-                        else:
-                            # Party search ran but found nothing — don't mark complete, allow retry
-                            logger.warning(
-                                f"Party-based ORI search returned 0 documents for {case_number}, "
-                                "will retry next run"
-                            )
-                            await self.db_writer.enqueue("generic_call", {
-                                "func": self.db.mark_status_retriable_error,
-                                "args": [case_number, "Party ORI fallback found 0 documents (no legal desc)", 5]
-                            })
-                        await self.db_writer.enqueue(
-                            "generic_call",
-                            {
-                                "func": self.db.mark_ori_party_fallback_used,
-                                "args": [
-                                    case_number,
-                                    "Party-based ORI fallback used (no legal description)",
-                                ],
-                            },
-                        )
-                    except Exception as e:
-                        logger.error(f"Party-based ORI search failed for {case_number}: {e}")
-                        await self.db_writer.enqueue("generic_call", {
-                            "func": self.db.mark_status_retriable_error,
-                            "args": [case_number, f"Party search failed: {str(e)[:150]}", 5]
-                        })
-                        logger.error(
-                            f"Aborting further enrichment for {case_number}: "
-                            "party-based ORI fallback failed and legal description is still missing."
-                        )
-                        return
-                else:
-                    # No legal description AND no party data - mark for manual review
-                    logger.warning(f"No usable legal description for {parcel_id} (case {case_number}) and no party data, marking for manual review")
-                    await self.db_writer.enqueue("generic_call", {
-                        "func": self.db.mark_hcpa_scrape_failed,
-                        "args": [case_number, "No usable legal description (HCPA/judgment/bulk) and no party data"],
-                    })
-                    # Mark complete so we don't loop forever
+                # No legal description — use v2 discovery in fallback mode
+                # (case number + party name searches only, no legal seeds)
+                logger.warning(
+                    f"No legal description for {parcel_id} from any source. "
+                    f"v2 discovery will use case/name searches only."
+                )
+                await self._run_ori_ingestion(case_number, prop, fallback_mode=True)
+                await self.db_writer.enqueue("generic_call", {
+                    "func": self.db.mark_ori_party_fallback_used,
+                    "args": [case_number, "No legal description — v2 fallback mode"],
+                })
+                # Only mark needs_ori_ingestion complete if ORI step succeeded.
+                # _run_ori_ingestion_v2 marks step_ori_ingested on success,
+                # or marks retriable on failure — check which happened.
+                # Flush first so the status write is visible.
+                await self.db_writer.execute_with_result(self.db.checkpoint)
+                if self.db.is_status_step_complete(case_number, "step_ori_ingested"):
                     await self.db_writer.enqueue("generic_call", {
                         "func": self.db.mark_step_complete,
-                        "args": [case_number, "needs_ori_ingestion"]
-                    })
-                    await self.db_writer.enqueue("generic_call", {
-                        "func": self.db.mark_status_step_complete,
-                        "args": [case_number, "step_ori_ingested", 5]
+                        "args": [case_number, "needs_ori_ingestion"],
                     })
             else:
                 # Build search terms (matches old pipeline logic exactly)
@@ -1245,7 +891,7 @@ class PipelineOrchestrator:
                 # Derive status strings
                 status_str = "PAID" if tax_status.paid_in_full else ("DELINQUENT" if tax_status.amount_due > 0 else "UNKNOWN")
                 has_warrant = len(tax_status.certificates) > 0
-                
+
                 await self.db_writer.enqueue("update_tax_status", {"folio": parcel_id, "tax_status": status_str, "tax_warrant": has_warrant})
                 await self.db_writer.enqueue(
                     "generic_call",
@@ -1635,34 +1281,20 @@ class PipelineOrchestrator:
                     {"func": self.db.mark_status_step_failed, "args": [case_number, str(e)[:200], 4]},
                 )
 
-    async def _run_ori_ingestion(self, case_number: str, prop: Property):
-        """Run ORI ingestion - dispatches to v1 or v2 based on config."""
+    async def _run_ori_ingestion(self, case_number: str, prop: Property, fallback_mode: bool = False):
+        """Run ORI ingestion - dispatches to v2 iterative discovery."""
         if self.db.is_status_step_complete(case_number, "step_ori_ingested"):
             return
 
-        await self._run_ori_ingestion_v2(case_number, prop)
+        await self._run_ori_ingestion_v2(case_number, prop, fallback_mode=fallback_mode)
 
-    async def _run_ori_ingestion_v1(self, case_number: str, prop: Property):
-        """Run ORI ingestion using v1 (IngestionService)."""
-        # IngestionService manages its own internal semaphores/concurrency via db_writer
-        try:
-            await self.ingestion_service.ingest_property_async(prop)
-            await self.db_writer.enqueue(
-                "generic_call",
-                {"func": self.db.mark_status_step_complete, "args": [case_number, "step_ori_ingested", 5]},
-            )
-        except Exception as e:
-            logger.error(f"ORI Ingestion v1 failed: {e}")
-            await self.db_writer.enqueue(
-                "generic_call",
-                {"func": self.db.mark_status_retriable_error, "args": [case_number, str(e)[:200], 5]},
-            )
-
-    async def _run_ori_ingestion_v2(self, case_number: str, prop: Property):
+    async def _run_ori_ingestion_v2(self, case_number: str, prop: Property, fallback_mode: bool = False):
         """
         Run ORI ingestion using Step 4v2 (IterativeDiscovery).
 
         Uses the SQLite database and iterative discovery algorithm.
+        When fallback_mode=True, seeds plaintiff name search and uses
+        stricter completion criteria (0 docs = retriable, not complete).
         """
 
         folio = prop.parcel_id
@@ -1724,6 +1356,7 @@ class PipelineOrchestrator:
                 hcpa_data=hcpa_data,
                 final_judgment=final_judgment,
                 bulk_parcel=bulk_parcel,
+                fallback_mode=fallback_mode,
             )
 
             # Build chain of title from discovered documents
@@ -1734,6 +1367,24 @@ class PipelineOrchestrator:
                 f"Step 4v2 complete for {folio}: {result.documents_found} docs, "
                 f"{chain_result.total_years:.1f} years chain, {len(chain_result.encumbrances)} encumbrances"
             )
+
+            # Stricter completion for fallback mode: check post-run DB totals
+            # (not just delta — reruns with duplicates can show 0 new docs)
+            if fallback_mode:
+                total_docs = conn.execute(
+                    "SELECT COUNT(*) FROM documents WHERE folio = ?", [folio]
+                ).fetchone()[0]
+                total_chain = len(chain_result.periods)
+                if total_docs == 0 and total_chain == 0:
+                    logger.warning(
+                        f"Fallback-mode discovery: 0 total docs/chain for {case_number}. "
+                        f"Marking retriable, not complete."
+                    )
+                    await self.db_writer.enqueue(
+                        "generic_call",
+                        {"func": self.db.mark_status_retriable_error, "args": [case_number, "Fallback ORI: 0 documents in DB", 5]},
+                    )
+                    return
 
             # Mark ORI complete when discovery finished or exhausted search space.
             # max_iterations also counts — retrying will produce the same result.
@@ -2938,10 +2589,7 @@ async def run_full_update(
             skip_tax_deeds=skip_tax_deeds,
         )
     finally:
-        try:
-            await writer.stop()
-        finally:
-            await orchestrator.ingestion_service.shutdown()
+        await writer.stop()
 
     # CHECKPOINT: Persist all parallel enrichment data before geocoding
     db.checkpoint()
