@@ -57,8 +57,11 @@
             for (i = 0; i < tablinks.length; i++) {
                 tablinks[i].className = tablinks[i].className.replace(" active", "");
             }
-            document.getElementById(tabName).style.display = "block";
+            var target = document.getElementById(tabName);
+            target.style.display = "block";
             evt.currentTarget.className += " active";
+            // Trigger lazy HTMX load on first tab activation
+            htmx.trigger(target, 'tab-show');
         }
 
         // Ensure first tab is active on load if it exists
