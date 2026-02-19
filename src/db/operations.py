@@ -178,6 +178,17 @@ class PropertyDB:
             add_column_if_not_exists("parcels", "flood_base_elevation", "REAL")
             add_column_if_not_exists("parcels", "bulk_folio", "TEXT")
             add_column_if_not_exists("parcels", "raw_legal1", "TEXT")
+            # PG hydration columns (batch-populated from PostgreSQL)
+            add_column_if_not_exists("parcels", "homestead_exempt", "INTEGER", "0")
+            add_column_if_not_exists("parcels", "homestead_exempt_value", "REAL")
+            add_column_if_not_exists("parcels", "just_value", "REAL")
+            add_column_if_not_exists("parcels", "taxable_value", "REAL")
+            add_column_if_not_exists("parcels", "estimated_annual_tax", "REAL")
+            add_column_if_not_exists("parcels", "soh_differential", "REAL")
+            add_column_if_not_exists("parcels", "property_use_code", "TEXT")
+            add_column_if_not_exists("parcels", "pg_hydrated_at", "TEXT")
+            add_column_if_not_exists("parcels", "clerk_case_status", "TEXT")
+            add_column_if_not_exists("parcels", "federal_lien_count", "INTEGER", "0")
 
         if table_exists("encumbrances"):
             add_column_if_not_exists("encumbrances", "is_joined", "INTEGER", "0")
@@ -209,6 +220,7 @@ class PropertyDB:
             add_column_if_not_exists("chain_of_title", "confidence_score", "REAL")
             add_column_if_not_exists("chain_of_title", "mrta_status", "TEXT")
             add_column_if_not_exists("chain_of_title", "years_covered", "REAL")
+            add_column_if_not_exists("chain_of_title", "data_source", "TEXT", "'ori'")
 
         if table_exists("encumbrances"):
             add_column_if_not_exists("encumbrances", "survival_reason", "TEXT")
@@ -811,6 +823,32 @@ class PropertyDB:
             [surrogate, case_number],
         )
 
+    def update_auction_parcel_id(self, case_number: str, parcel_id: str) -> None:
+        """Update the parcel_id/folio for an auction (e.g. after PG resolution)."""
+        conn = self.connect()
+        conn.execute(
+            """
+            UPDATE auctions
+            SET parcel_id = ?, folio = ?, has_valid_parcel_id = 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE case_number = ?
+            """,
+            [parcel_id, parcel_id, case_number],
+        )
+        conn.execute(
+            """
+            UPDATE status
+            SET parcel_id = ?,
+                pipeline_status = CASE
+                    WHEN pipeline_status = 'skipped' THEN 'pending'
+                    ELSE pipeline_status
+                END,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE case_number = ?
+            """,
+            [parcel_id, case_number],
+        )
+
     def upsert_auction(self, prop: Property) -> int:
         """
         Insert or update an auction property.
@@ -1146,7 +1184,7 @@ class PropertyDB:
         """Save the OCR'd text of the Final Judgment."""
         conn = self.connect()
 
-        # Ensure column exists (DuckDB supportsnatively)
+        # Ensure column exists
         self._safe_exec(conn, "ALTER TABLE auctions ADD COLUMN final_judgment_content TEXT")
 
         conn.execute(
@@ -1410,6 +1448,129 @@ class PropertyDB:
         )
         conn.commit()
 
+    def batch_upsert_parcels_from_pg(self, rows: list[dict]) -> int:
+        """Bulk UPSERT parcels from PG hydration data.
+
+        Each row dict should contain keys matching parcels columns. Uses
+        INSERT OR IGNORE + UPDATE pattern for atomic upsert.
+
+        Returns the number of rows upserted.
+        """
+        if not rows:
+            return 0
+
+        conn = self.connect()
+        count = 0
+        for row in rows:
+            folio = row.get("folio")
+            if not folio:
+                continue
+            conn.execute("INSERT OR IGNORE INTO parcels (folio) VALUES (?)", [folio])
+            conn.execute(
+                """
+                UPDATE parcels SET
+                    owner_name = COALESCE(?, owner_name),
+                    property_address = COALESCE(?, property_address),
+                    city = COALESCE(?, city),
+                    zip_code = COALESCE(?, zip_code),
+                    legal_description = COALESCE(?, legal_description),
+                    year_built = COALESCE(?, year_built),
+                    beds = COALESCE(?, beds),
+                    baths = COALESCE(?, baths),
+                    heated_area = COALESCE(?, heated_area),
+                    lot_size = COALESCE(?, lot_size),
+                    assessed_value = COALESCE(?, assessed_value),
+                    market_value = COALESCE(?, market_value),
+                    just_value = COALESCE(?, just_value),
+                    taxable_value = COALESCE(?, taxable_value),
+                    homestead_exempt = COALESCE(?, homestead_exempt),
+                    homestead_exempt_value = COALESCE(?, homestead_exempt_value),
+                    estimated_annual_tax = COALESCE(?, estimated_annual_tax),
+                    soh_differential = COALESCE(?, soh_differential),
+                    property_use_code = COALESCE(?, property_use_code),
+                    clerk_case_status = COALESCE(?, clerk_case_status),
+                    federal_lien_count = COALESCE(?, federal_lien_count),
+                    strap = COALESCE(?, strap),
+                    pg_hydrated_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE folio = ?
+                """,
+                [
+                    row.get("owner_name"),
+                    row.get("property_address"),
+                    row.get("city"),
+                    row.get("zip_code"),
+                    row.get("legal_description"),
+                    row.get("year_built"),
+                    row.get("beds"),
+                    row.get("baths"),
+                    row.get("heated_area"),
+                    row.get("lot_size"),
+                    row.get("assessed_value"),
+                    row.get("market_value"),
+                    row.get("just_value"),
+                    row.get("taxable_value"),
+                    row.get("homestead_exempt"),
+                    row.get("homestead_exempt_value"),
+                    row.get("estimated_annual_tax"),
+                    row.get("soh_differential"),
+                    row.get("property_use_code"),
+                    row.get("clerk_case_status"),
+                    row.get("federal_lien_count"),
+                    row.get("strap"),
+                    folio,
+                ],
+            )
+            count += 1
+        conn.commit()
+        return count
+
+    def batch_insert_sales_from_pg(self, folio: str, sales: list[dict]) -> int:
+        """Insert sales_history rows from PG hcpa_allsales data.
+
+        Uses INSERT OR IGNORE to avoid duplicates (matched by the unique
+        expression index on folio + book + page + instrument).
+
+        Returns the number of rows inserted.
+        """
+        if not sales:
+            return 0
+
+        conn = self.connect()
+        self.create_sales_history_table()
+
+        inserted = 0
+        for sale in sales:
+            try:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO sales_history (
+                        folio, strap, book, page, instrument,
+                        sale_date, doc_type, qualified, vacant_improved,
+                        sale_price, grantor, grantee
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        folio,
+                        sale.get("strap"),
+                        sale.get("book") or sale.get("or_book"),
+                        sale.get("page") or sale.get("or_page"),
+                        sale.get("instrument") or sale.get("instrument_number"),
+                        sale.get("sale_date"),
+                        sale.get("doc_type") or sale.get("sale_type"),
+                        sale.get("qualified"),
+                        sale.get("vacant_improved"),
+                        sale.get("sale_price"),
+                        sale.get("grantor"),
+                        sale.get("grantee"),
+                    ],
+                )
+                inserted += conn.total_changes  # approximate
+            except Exception as e:
+                logger.debug(f"batch_insert_sales_from_pg({folio}): skip row: {e}")
+        conn.commit()
+        return inserted
+
     def update_flood_data(self, folio: str, flood_data: Dict[str, Any]):
         """Update flood zone information for a parcel."""
         conn = self.connect()
@@ -1518,6 +1679,7 @@ class PropertyDB:
                 confidence_score REAL,
                 mrta_status TEXT DEFAULT 'pending',
                 years_covered REAL DEFAULT 0,
+                data_source TEXT DEFAULT 'ori',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -1764,7 +1926,7 @@ class PropertyDB:
             ],
         )
 
-        # Get the inserted ID (DuckDB compatible)
+        # Get the inserted ID
         result = conn.execute(
             """
             SELECT id FROM documents
@@ -2917,10 +3079,10 @@ class PropertyDB:
         return result[0] > 0 if result else False
 
     def folio_has_market_data(self, folio: str) -> bool:
-        """Check if folio has consolidated market data, Redfin data, or both Zillow/Realtor."""
+        """Check if folio has consolidated, Redfin, or Zillow market data, or both Zillow/Realtor."""
         conn = self.connect()
         result = conn.execute(
-            "SELECT COUNT(*) FROM market_data WHERE folio = ? AND source IN ('Consolidated', 'Redfin')",
+            "SELECT COUNT(*) FROM market_data WHERE folio = ? AND source IN ('Consolidated', 'Redfin', 'Zillow')",
             [folio],
         ).fetchone()
         if result and result[0] > 0:
@@ -3048,8 +3210,7 @@ class PropertyDB:
         self.ensure_status_table()
         auction_type = self._normalize_auction_type(auction_type)
         conn = self.connect()
-        # Column renamed to pipeline_status to avoid DuckDB ambiguity with table name 'status'
-        # Use CURRENT_TIMESTAMP instead of CURRENT_TIMESTAMP to avoid DuckDB parsing issues
+        # Column pipeline_status tracks overall case progress
         conn.execute(
             """
             INSERT INTO status (case_number, parcel_id, auction_date, auction_type, pipeline_status, step_auction_scraped, updated_at)
@@ -3093,7 +3254,7 @@ class PropertyDB:
             raise ValueError(f"Invalid step column: {step_column}")
 
         # Update the step timestamp and current_step
-        # First get current status to avoid ambiguous column reference in DuckDB
+        # First get current overall status
         current_status = self.get_status_state(case_number)
         new_status = current_status if current_status in ("completed", "skipped") else "processing"
 

@@ -20,6 +20,8 @@ from src.services.homeharvest_service import HomeHarvestService
 
 # Step 4v2 - Iterative Discovery
 from src.services.step4v2 import IterativeDiscovery, ChainBuilder
+from src.services.step4v2.chain_builder import ChainResult
+from src.services.pg_sales_service import PgSalesService
 
 # Database & Storage
 from src.db.operations import PropertyDB
@@ -268,6 +270,9 @@ class PipelineOrchestrator:
         self.survival_analyzer = LienSurvivalAnalyzer()
         self.homeharvest_service = HomeHarvestService(db=self.db)
 
+        # PostgreSQL reference data (graceful degradation if unavailable)
+        self.pg_service = PgSalesService()
+
         # Concurrency Control
         self.property_semaphore = asyncio.Semaphore(max_concurrent_properties)
         self.market_semaphore = asyncio.Semaphore(3)
@@ -318,7 +323,7 @@ class PipelineOrchestrator:
             conn = self.db.connect()
 
             # 1. Fetch data from SQLite DB
-            builder = ChainBuilder(conn)
+            builder = ChainBuilder(conn, pg_service=self.pg_service)
             periods = builder.get_chain(folio)
             encumbrances = builder.get_encumbrances(folio)
 
@@ -358,6 +363,9 @@ class PipelineOrchestrator:
                 def_name = auction.get('defendant')
                 if def_name:
                     judgment_data['defendants'] = [def_name]
+            # Pass case_number for case-based matching in survival analysis
+            if not judgment_data.get('case_number'):
+                judgment_data['case_number'] = case_number
 
             # Build foreclosing_refs from foreclosed_mortgage for exact lien matching
             foreclosed_mortgage = judgment_data.get("foreclosed_mortgage") or {}
@@ -389,9 +397,23 @@ class PipelineOrchestrator:
                 latest = sorted(periods, key=_sort_key, reverse=True)[0]
                 current_period_id = latest.id
 
-            # 3. Analyze
+            # 3. Determine homestead status from parcels table
+            is_homestead = False
+            try:
+                parcel_row = conn.execute(
+                    "SELECT homestead_exempt FROM parcels WHERE folio = ?", [folio]
+                ).fetchone()
+                if parcel_row:
+                    is_homestead = bool(dict(parcel_row).get("homestead_exempt"))
+            except Exception as _e:
+                logger.debug(f"Could not read homestead_exempt for {folio}: {_e}")
+
+            # 4. Analyze
             service = SurvivalService(folio)
-            analysis = service.analyze(enc_dicts, judgment_data, period_dicts, current_period_id)
+            analysis = service.analyze(
+                enc_dicts, judgment_data, period_dicts, current_period_id,
+                is_homestead=is_homestead,
+            )
 
             # 4. Collect updates to return (writes happen via DatabaseWriter in caller)
             flat_results = []
@@ -559,6 +581,35 @@ class PipelineOrchestrator:
                     prop.owner_name = bulk_data["owner_name"]
 
         # Check for invalid folios (mobile homes, "Property Appraiser", etc.)
+        # Try PG fuzzy name resolution first for invalid folios
+        if not is_valid_folio(parcel_id) and self.pg_service and self.pg_service.available and prop.defendant:
+            matches = self.pg_service.resolve_property_by_name(
+                defendant_name=prop.defendant,
+                plaintiff_hint=prop.plaintiff,
+            )
+            if matches and matches[0]["match_score"] >= 0.5:
+                resolved_strap = matches[0]["strap"]
+                logger.info(
+                    f"PG resolved invalid folio for {case_number}: "
+                    f"'{parcel_id}' → {resolved_strap} "
+                    f"(score={matches[0]['match_score']:.2f}, method={matches[0]['match_method']})"
+                )
+                parcel_id = resolved_strap
+                prop.parcel_id = resolved_strap
+                # Update the auction record with the resolved strap
+                await self.db_writer.enqueue("generic_call", {
+                    "func": self.db.update_auction_parcel_id,
+                    "args": [case_number, resolved_strap],
+                })
+                # Pre-hydrate from bulk data with new strap
+                bulk_data = self.db.get_parcel_by_folio(resolved_strap)
+                if bulk_data:
+                    if prop.address == "Unknown" and bulk_data.get("address"):
+                        prop.address = bulk_data["address"]
+                        address = prop.address
+                    if not prop.owner_name and bulk_data.get("owner_name"):
+                        prop.owner_name = bulk_data["owner_name"]
+
         if not is_valid_folio(parcel_id):
             if prop.plaintiff or prop.defendant:
                 logger.info(
@@ -589,6 +640,10 @@ class PipelineOrchestrator:
                         "func": self.db.mark_step_complete,
                         "args": [case_number, "needs_ori_ingestion"],
                     })
+                    # Run survival analysis on surrogate-folio encumbrances.
+                    # Phase 1/2 scrapers need a real folio, but survival only
+                    # needs encumbrances (which ORI just created).
+                    await self._run_survival_analysis(case_number, prop)
                     await self.db_writer.enqueue("generic_call", {
                         "func": self.db.mark_status_skipped,
                         "args": [case_number, "Invalid parcel_id; ORI-only via surrogate folio"],
@@ -616,33 +671,38 @@ class PipelineOrchestrator:
 
 
         if prop.address == "Unknown":
-            logger.info(f"Skipping enrichment for {parcel_id}: No address")
-            await self.db_writer.enqueue(
-                "generic_call",
-                {"func": self.db.mark_status_skipped, "args": [case_number, "No address available"]},
+            logger.info(
+                f"No address for {parcel_id} — skipping Phase 1 scrapers, "
+                f"but still running ORI + survival (they use legal description, not address)"
             )
-            return
+            # Skip Phase 1 entirely, jump straight to Phase 2 (ORI) + Phase 3 (survival)
+            # Phase 1 scrapers (tax, market, permits, FEMA) all need a real address.
+            # ORI and survival only need legal description + parcel_id.
+            goto_phase2 = True
+        else:
+            goto_phase2 = False
 
-        logger.info(f"Enriching {parcel_id} ({prop.address})")
+        if not goto_phase2:
+            logger.info(f"Enriching {parcel_id} ({prop.address})")
 
-        # PHASE 1: Independent Parallel Scrapers (Data Gathering)
-        # These don't depend on each other and can run immediately
-        # Use gather(return_exceptions=True) instead of TaskGroup so that one
-        # failing scraper (e.g. tax timeout) doesn't cancel all other tasks.
-        logger.info(f"Phase 1: Starting parallel gather for {parcel_id}")
-        phase1_results = await asyncio.gather(
-            self._run_tax_scraper(case_number, parcel_id, prop.address),
-            self._run_market_scraper(case_number, parcel_id, prop.address),
-            self._run_homeharvest(prop),
-            self._run_fema_checker(case_number, parcel_id, prop.address),
-            self._run_sunbiz_scraper(parcel_id, prop.owner_name or ""),
-            self._run_hcpa_gis(case_number, parcel_id),
-            return_exceptions=True,
-        )
-        for i, result in enumerate(phase1_results):
-            if isinstance(result, Exception):
-                task_names = ["tax", "market", "homeharvest", "fema", "sunbiz", "hcpa"]
-                logger.warning(f"Phase 1 task {task_names[i]} failed for {parcel_id}: {result}")
+            # PHASE 1: Independent Parallel Scrapers (Data Gathering)
+            # These don't depend on each other and can run immediately
+            # Use gather(return_exceptions=True) instead of TaskGroup so that one
+            # failing scraper (e.g. tax timeout) doesn't cancel all other tasks.
+            logger.info(f"Phase 1: Starting parallel gather for {parcel_id}")
+            phase1_results = await asyncio.gather(
+                self._run_tax_scraper(case_number, parcel_id, prop.address),
+                self._run_market_scraper(case_number, parcel_id, prop.address),
+                self._run_homeharvest(prop),
+                self._run_fema_checker(case_number, parcel_id, prop.address),
+                self._run_sunbiz_scraper(parcel_id, prop.owner_name or ""),
+                self._run_hcpa_gis(case_number, parcel_id),
+                return_exceptions=True,
+            )
+            for i, result in enumerate(phase1_results):
+                if isinstance(result, Exception):
+                    task_names = ["tax", "market", "homeharvest", "fema", "sunbiz", "hcpa"]
+                    logger.warning(f"Phase 1 task {task_names[i]} failed for {parcel_id}: {result}")
 
         # PHASE 2: ORI Ingestion (Depends on Legal Description from HCPA/Bulk)
         # HCPA GIS (Phase 1) might have updated legal description in DB
@@ -1167,8 +1227,22 @@ class PipelineOrchestrator:
     async def _run_hcpa_gis(self, case_number: str, parcel_id: str):
         if self.db.is_status_step_complete(case_number, "step_hcpa_enriched"):
             return
-        # NOTE: Removed folio_has_sales_history shortcut - it could skip even when
-        # legal_description is missing. Rely on step_hcpa_enriched status instead.
+
+        # Skip Playwright scrape if PG hydration already populated this parcel
+        if parcel_id:
+            try:
+                parcel_row = self.db.execute_query(
+                    "SELECT pg_hydrated_at FROM parcels WHERE folio = ?", (parcel_id,)
+                )
+                if parcel_row and parcel_row[0].get("pg_hydrated_at"):
+                    logger.debug(f"HCPA GIS skipped for {case_number} — already hydrated from PG")
+                    await self.db_writer.enqueue(
+                        "generic_call",
+                        {"func": self.db.mark_status_step_complete, "args": [case_number, "step_hcpa_enriched", 4]},
+                    )
+                    return
+            except Exception as _e:
+                logger.debug(f"PG hydration check failed for {case_number}: {_e}")
 
         # Validate parcel_id - can't search HCPA without a valid parcel ID
         if not parcel_id or parcel_id.lower() in ("unknown", "n/a", "none", "", "property appraiser", "multiple parcel"):
@@ -1349,7 +1423,7 @@ class PipelineOrchestrator:
                     final_judgment = {}
 
             # Run iterative discovery
-            discovery = IterativeDiscovery(conn)
+            discovery = IterativeDiscovery(conn, pg_service=self.pg_service)
             result = discovery.run(
                 folio=folio,
                 auction=auction,
@@ -1360,8 +1434,31 @@ class PipelineOrchestrator:
             )
 
             # Build chain of title from discovered documents
-            chain_builder = ChainBuilder(conn)
+            chain_builder = ChainBuilder(conn, pg_service=self.pg_service)
             chain_result = chain_builder.build(folio)
+
+            # Judgment-inferred fallback: if ORI found 0 encumbrances but we have
+            # judgment data, create inferred encumbrances.  Every foreclosure has
+            # a foreclosing lien — if ORI didn't find it, infer from judgment.
+            if not chain_result.encumbrances and final_judgment:
+                logger.info(
+                    f"ORI found 0 encumbrances for {folio} ({case_number}). "
+                    f"Creating judgment-inferred encumbrance from plaintiff/mortgage data."
+                )
+                inferred_result = chain_builder.infer_encumbrances_from_judgment(
+                    folio, auction, final_judgment
+                )
+                if inferred_result.encumbrances:
+                    chain_result = ChainResult(
+                        folio=folio,
+                        periods=chain_result.periods + inferred_result.periods,
+                        encumbrances=chain_result.encumbrances + inferred_result.encumbrances,
+                        total_years=chain_result.total_years,
+                        is_complete=chain_result.is_complete,
+                        mrta_status=chain_result.mrta_status,
+                        gaps=chain_result.gaps,
+                        issues=chain_result.issues + inferred_result.issues,
+                    )
 
             logger.info(
                 f"Step 4v2 complete for {folio}: {result.documents_found} docs, "
@@ -1370,14 +1467,16 @@ class PipelineOrchestrator:
 
             # Stricter completion for fallback mode: check post-run DB totals
             # (not just delta — reruns with duplicates can show 0 new docs)
+            # NOTE: even with 0 ORI docs, judgment-inferred encumbrances may exist
             if fallback_mode:
                 total_docs = conn.execute(
                     "SELECT COUNT(*) FROM documents WHERE folio = ?", [folio]
                 ).fetchone()[0]
                 total_chain = len(chain_result.periods)
-                if total_docs == 0 and total_chain == 0:
+                total_enc = len(chain_result.encumbrances)
+                if total_docs == 0 and total_chain == 0 and total_enc == 0:
                     logger.warning(
-                        f"Fallback-mode discovery: 0 total docs/chain for {case_number}. "
+                        f"Fallback-mode discovery: 0 total docs/chain/enc for {case_number}. "
                         f"Marking retriable, not complete."
                     )
                     await self.db_writer.enqueue(
@@ -1645,6 +1744,7 @@ async def run_full_update(
 
     db = PropertyDB()
     storage = ScraperStorage(db_path=db.db_path, db=db)
+    pg_service = PgSalesService()
 
     # Initialize status table and backfill from existing data (all auctions)
     db.ensure_status_table()
@@ -2341,10 +2441,44 @@ async def run_full_update(
         try:
             from src.services.parcel_resolver import resolve_missing_parcel_ids
 
-            resolution_stats = resolve_missing_parcel_ids(db)
+            resolution_stats = resolve_missing_parcel_ids(db, pg_service=pg_service)
             logger.success(f"Step 2.5 complete: {resolution_stats}")
         except Exception as exc:
             logger.error(f"Parcel ID resolution failed: {exc}")
+
+        db.checkpoint()
+
+    # =========================================================================
+    # STEP 2.7: PG Hydration (batch)
+    # =========================================================================
+    if start_step <= 3:
+        logger.info("=" * 60)
+        logger.info("STEP 2.7: PG HYDRATION (batch parcel + sales + tax)")
+        logger.info("=" * 60)
+
+        try:
+            from src.services.pg_hydrate_service import PgHydrateService
+
+            hydrate_svc = PgHydrateService(db=db)
+            if hydrate_svc.available:
+                hydrate_auctions = db.execute_query(
+                    """
+                    SELECT s.case_number, COALESCE(a.parcel_id, a.folio) AS parcel_id
+                    FROM status s
+                    JOIN auctions a ON a.case_number = s.case_number
+                    WHERE COALESCE(s.pipeline_status, 'pending') NOT IN ('skipped', 'archived')
+                    """
+                )
+                hydrate_list = [dict(r) for r in hydrate_auctions]
+                if hydrate_list:
+                    hydrate_stats = hydrate_svc.hydrate_auctions(hydrate_list)
+                    logger.success(f"PG hydration: {hydrate_stats}")
+                else:
+                    logger.info("PG hydration: no auctions to hydrate")
+            else:
+                logger.info("PG hydration: PostgreSQL unavailable, will fall back to HCPA GIS")
+        except Exception as exc:
+            logger.error(f"PG hydration failed (non-fatal): {exc}")
 
         db.checkpoint()
 
@@ -2441,22 +2575,17 @@ async def run_full_update(
         db.checkpoint()
 
     # =========================================================================
-    # STEP 3.5: Redfin Market Data (batch, single Chrome session)
+    # STEP 3.5: Market Data Service (Redfin + Zillow + HomeHarvest)
     # =========================================================================
     if start_step <= 4:
         logger.info("=" * 60)
-        logger.info("STEP 3.5: REDFIN MARKET DATA (batch)")
+        logger.info("STEP 3.5: MARKET DATA SERVICE (Redfin + Zillow + HomeHarvest)")
         logger.info("=" * 60)
 
         try:
-            from src.scrapers.redfin_scraper import (
-                RedfinScraper,
-                normalize_address_for_match,
-            )
+            from src.services.market_data_service import MarketDataService
 
-            # Get auctions needing market data
-            need_market = db.execute_query(
-                """
+            need_market = db.execute_query("""
                 SELECT s.case_number, COALESCE(a.parcel_id, a.folio) AS parcel_id,
                        COALESCE(
                            a.property_address,
@@ -2468,106 +2597,20 @@ async def run_full_update(
                 JOIN auctions a ON a.case_number = s.case_number
                 LEFT JOIN parcels p ON p.folio = COALESCE(a.parcel_id, a.folio)
                 LEFT JOIN bulk_parcels bp ON bp.strap = COALESCE(a.parcel_id, a.folio)
-                WHERE s.step_market_fetched IS NULL
-                  AND COALESCE(s.pipeline_status, 'pending') NOT IN ('skipped', 'archived')
-                """,
-            )
-            logger.info(f"Step 3.5: {len(need_market)} auctions need market data")
+                WHERE COALESCE(s.pipeline_status, 'pending') NOT IN ('skipped', 'archived')
+                  AND COALESCE(a.property_address, p.property_address, bp.property_address)
+                      IS NOT NULL
+            """)
+            logger.info(f"Step 3.5: {len(need_market)} properties for market data service")
 
             if need_market:
-                # Build normalized address → auction lookup
-                addr_to_auctions: dict[str, list[dict]] = {}
-                for row in need_market:
-                    addr = (row.get("address") or "").strip()
-                    if not addr or addr.lower() in ("unknown", "n/a", "none", ""):
-                        continue
-                    norm = normalize_address_for_match(addr)
-                    if norm:
-                        addr_to_auctions.setdefault(norm, []).append(dict(row))
-
-                matched_folios: set[str] = set()
-
-                async with RedfinScraper() as scraper:
-                    # ---- Tier 1: Foreclosure listings page ----
-                    listings = await scraper.scrape_foreclosure_listings()
-                    logger.info(f"Tier 1: {len(listings)} Redfin foreclosure listings")
-
-                    for card in listings:
-                        card_addr = normalize_address_for_match(card.get("address", ""))
-                        if not card_addr:
-                            continue
-                        matching = addr_to_auctions.get(card_addr)
-                        if not matching:
-                            continue
-
-                        # Navigate to detail page
-                        detail_url = card.get("url", "")
-                        if not detail_url:
-                            continue
-
-                        logger.info(f"Tier 1 match: {card.get('address')} → {detail_url}")
-                        listing = await scraper.scrape_detail_page(detail_url)
-                        if listing:
-                            payload = RedfinScraper.listing_to_market_payload(listing)
-                            for auction in matching:
-                                folio = auction.get("parcel_id", "")
-                                case = auction.get("case_number", "")
-                                if folio and folio not in matched_folios:
-                                    db.save_market_data(folio, "Redfin", payload)
-                                    db.mark_status_step_complete(case, "step_market_fetched", 9)
-                                    matched_folios.add(folio)
-                                    logger.success(f"Redfin Tier 1: saved for {folio}")
-
-                        await scraper.delay(scraper.DETAIL_PAGE_DELAY)
-
-                    # ---- Tier 2: Direct URL for unmatched ----
-                    unmatched = [
-                        row
-                        for rows in addr_to_auctions.values()
-                        for row in rows
-                        if row.get("parcel_id", "") not in matched_folios
-                    ]
-                    logger.info(f"Tier 2: {len(unmatched)} unmatched auctions to try via direct URL")
-
-                    consecutive_failures = 0
-                    for row in unmatched:
-                        if consecutive_failures >= 5:
-                            logger.warning("Tier 2: 5 consecutive failures — stopping")
-                            break
-
-                        addr = (row.get("address") or "").strip()
-                        folio = row.get("parcel_id", "")
-                        case = row.get("case_number", "")
-                        city = (row.get("city") or "Tampa").strip()
-                        zip_code = (row.get("zip_code") or "").strip()
-
-                        # Parse street from full address
-                        street = addr.split(",")[0].strip()
-                        url = RedfinScraper.build_detail_url(street, city, "FL", zip_code)
-                        logger.info(f"Tier 2: trying {url}")
-
-                        listing = await scraper.scrape_detail_page(url)
-                        if listing and (listing.list_price or listing.redfin_estimate):
-                            payload = RedfinScraper.listing_to_market_payload(listing)
-                            db.save_market_data(folio, "Redfin", payload)
-                            db.mark_status_step_complete(case, "step_market_fetched", 9)
-                            matched_folios.add(folio)
-                            consecutive_failures = 0
-                            logger.success(f"Redfin Tier 2: saved for {folio}")
-                        else:
-                            consecutive_failures += 1
-                            logger.debug(f"Tier 2: no data for {addr}")
-
-                        await scraper.delay(scraper.DETAIL_PAGE_DELAY)
-
-                logger.success(
-                    f"Step 3.5 complete: {len(matched_folios)} properties "
-                    f"with Redfin data"
-                )
+                service = MarketDataService(db)
+                summary = await service.run_batch([dict(r) for r in need_market])
+                logger.success(f"Step 3.5 complete: {summary}")
                 db.checkpoint()
 
         except Exception as exc:
-            logger.error(f"Step 3.5 Redfin batch failed: {exc}")
+            logger.error(f"Step 3.5 Market Data Service failed: {exc}")
 
     # =========================================================================
     # STEPS 4+: Parallel Property Enrichment via Orchestrator
