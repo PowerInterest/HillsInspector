@@ -564,6 +564,12 @@ class TampaPermitService:
 
         timestamp = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
         out_path = self.download_dir / f"records_{start_date:%Y%m%d}_{end_date:%Y%m%d}_{timestamp}.csv"
+        logger.info(
+            "Tampa window capture start: start_date={}, end_date={}, output={}",
+            start_date,
+            end_date,
+            out_path,
+        )
 
         showing_text: str | None = None
         export_url: str | None = None
@@ -593,6 +599,11 @@ class TampaPermitService:
 
                 body_text = page.text_content("body") or ""
                 if "No records found" in body_text:
+                    logger.info(
+                        "Tampa window capture no records: start_date={}, end_date={}",
+                        start_date,
+                        end_date,
+                    )
                     return WindowCaptureResult(
                         start_date=start_date,
                         end_date=end_date,
@@ -606,6 +617,12 @@ class TampaPermitService:
                     "#ctl00_PlaceHolderMain_CapView_gdvPermitList_gdvPermitListtop4btnExport"
                 )
                 if export_button.count() == 0:
+                    logger.warning(
+                        "Tampa window capture missing export button: start_date={}, end_date={}, page_url={}",
+                        start_date,
+                        end_date,
+                        page.url,
+                    )
                     return WindowCaptureResult(
                         start_date=start_date,
                         end_date=end_date,
@@ -625,6 +642,12 @@ class TampaPermitService:
                     export_button.click()
                 download = dl_info.value
                 download.save_as(str(out_path))
+                logger.info(
+                    "Tampa window capture download saved: start_date={}, end_date={}, file={}",
+                    start_date,
+                    end_date,
+                    out_path,
+                )
 
                 iframe = page.locator("iframe#iframeexport")
                 if iframe.count() > 0:
@@ -641,6 +664,14 @@ class TampaPermitService:
                 browser.close()
 
         row_count = self._count_csv_rows(out_path)
+        logger.info(
+            "Tampa window capture complete: start_date={}, end_date={}, row_count={}, showing={}, export_url={}",
+            start_date,
+            end_date,
+            row_count,
+            showing_text,
+            export_url,
+        )
         return WindowCaptureResult(
             start_date=start_date,
             end_date=end_date,
@@ -662,6 +693,7 @@ class TampaPermitService:
         timestamp = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
         safe_query = re.sub(r"[^A-Za-z0-9._-]+", "_", query)[:80]
         out_path = self.download_dir / f"records_query_{safe_query}_{timestamp}.csv"
+        logger.info("Tampa query capture start: query={!r}, output={}", query, out_path)
 
         showing_text: str | None = None
         export_url: str | None = None
@@ -687,6 +719,11 @@ class TampaPermitService:
                     "#ctl00_PlaceHolderMain_CapView_gdvPermitList_gdvPermitListtop4btnExport"
                 )
                 if export_button.count() == 0:
+                    logger.warning(
+                        "Tampa query capture missing export button: query={!r}, page_url={}",
+                        query,
+                        page.url,
+                    )
                     return QueryCaptureResult(
                         query_text=query,
                         csv_path=None,
@@ -704,6 +741,7 @@ class TampaPermitService:
                     export_button.click()
                 download = dl_info.value
                 download.save_as(str(out_path))
+                logger.info("Tampa query capture download saved: query={!r}, file={}", query, out_path)
 
                 iframe = page.locator("iframe#iframeexport")
                 if iframe.count() > 0:
@@ -718,6 +756,13 @@ class TampaPermitService:
                 browser.close()
 
         row_count = self._count_csv_rows(out_path)
+        logger.info(
+            "Tampa query capture complete: query={!r}, row_count={}, showing={}, export_url={}",
+            query,
+            row_count,
+            showing_text,
+            export_url,
+        )
         return QueryCaptureResult(
             query_text=query,
             csv_path=out_path,
@@ -750,7 +795,12 @@ class TampaPermitService:
             result = self.capture_window_export(win_start, win_end)
 
             if result.row_count == 0 or result.csv_path is None:
-                logger.info(f"No records returned for window {win_start} -> {win_end}")
+                logger.info(
+                    "No records returned for Tampa window {} -> {} (showing={})",
+                    win_start,
+                    win_end,
+                    result.showing_text,
+                )
                 continue
 
             showing_total = _extract_showing_total(result.showing_text)
@@ -758,8 +808,12 @@ class TampaPermitService:
             # Export appears capped around 1000 rows. Split windows to avoid truncation.
             if result.row_count >= self.max_export_rows and win_start < win_end:
                 logger.warning(
-                    f"Window {win_start} -> {win_end} returned {result.row_count} rows; "
-                    "splitting to avoid potential export cap truncation"
+                    "Window {} -> {} returned {} rows (showing={}); splitting to avoid "
+                    "potential export cap truncation",
+                    win_start,
+                    win_end,
+                    result.row_count,
+                    result.showing_text,
                 )
                 midpoint = win_start + timedelta(days=(win_end - win_start).days // 2)
                 if midpoint >= win_end:
@@ -808,13 +862,15 @@ class TampaPermitService:
 
             time.sleep(0.5)
 
-        return {
+        summary = {
             "windows_processed": total_windows,
             "windows_split": split_windows,
             "csv_rows_total": total_export_rows,
             "parsed_total": total_parsed,
             "written_total": total_written,
         }
+        logger.info("Tampa date-range sync complete: {}", summary)
+        return summary
 
     # ------------------------------------------------------------------
     # Detail enrichment (job value, closeout signals)
@@ -886,6 +942,7 @@ class TampaPermitService:
             ]
 
         if not record_numbers:
+            logger.info("Tampa detail enrichment: no candidate records selected")
             return {"selected": 0, "updated": 0, "errors": 0}
 
         updated = 0
@@ -949,10 +1006,20 @@ class TampaPermitService:
                 updated += 1
             except Exception as exc:
                 errors += 1
-                logger.warning(f"Detail enrichment failed for {record_number}: {exc}")
+                logger.exception(
+                    "Detail enrichment failed for record_number={} with error={}",
+                    record_number,
+                    exc,
+                )
 
             time.sleep(0.2)
 
+        logger.info(
+            "Tampa detail enrichment complete: selected={}, updated={}, errors={}",
+            len(record_numbers),
+            updated,
+            errors,
+        )
         return {"selected": len(record_numbers), "updated": updated, "errors": errors}
 
 

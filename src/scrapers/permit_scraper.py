@@ -97,6 +97,12 @@ class PermitScraper:
         """
         county_stats = {}
         tampa_stats = {}
+        logger.info(
+            "Permit lookup started: folio={}, strap={}, address_present={}",
+            folio,
+            strap,
+            bool(address and address.strip()),
+        )
 
         # Resolve strap → folio if folio not provided directly
         if not folio and strap:
@@ -108,17 +114,26 @@ class PermitScraper:
             try:
                 county_stats = self.fetch_county_by_folio(folio)
             except Exception as e:
-                logger.error(f"County permit lookup failed for folio={folio}: {e}")
+                logger.exception("County permit lookup failed for folio={} with error={}", folio, e)
                 county_stats = {"error": str(e)}
 
         if address:
             try:
                 tampa_stats = self.fetch_tampa_by_address(address)
             except Exception as e:
-                logger.error(f"Tampa permit lookup failed for address={address!r}: {e}")
+                logger.exception(
+                    "Tampa permit lookup failed for address={!r} with error={}",
+                    address,
+                    e,
+                )
                 tampa_stats = {"error": str(e)}
 
-        return {"county": county_stats, "tampa": tampa_stats}
+        if not folio and not address:
+            logger.warning("Permit lookup had no usable folio/address after normalization; no source queried")
+
+        result = {"county": county_stats, "tampa": tampa_stats}
+        logger.info("Permit lookup finished: county={}, tampa={}", county_stats, tampa_stats)
+        return result
 
 
 def check_property_permits(

@@ -205,6 +205,12 @@ class CountyPermitService:
 
         if last_error is None:
             raise RuntimeError("Unknown ArcGIS request failure")
+        logger.error(
+            "CountyPermit request failed after retries: endpoint={}, params={}, error={}",
+            endpoint,
+            params,
+            last_error,
+        )
         raise RuntimeError(f"ArcGIS request failed after retries: {last_error}") from last_error
 
     def get_total_count(self, where: str = "1=1") -> int:
