@@ -2,195 +2,97 @@
 
 ## Architecture
 
-The HillsInspector pipeline uses a hybrid architecture:
-- **Sequential Pre-processing**: Steps 1-3.5 run sequentially in `main.py`
-- **Parallel Enrichment**: Steps 4+ run in parallel via `PipelineOrchestrator`
-- **Single Database**: All data stored in SQLite (`data/property_master_sqlite.db`) with WAL mode
+HillsInspector uses a **single PG-first pipeline** (`Controller.py` → `PgPipelineController`).
 
-## Database
+- **Phase A**: Bulk data loading into PostgreSQL (530K parcels, 2.4M sales, 73K cases, etc.)
+- **Phase B**: Per-auction enrichment (scraping, PDF extraction, ORI search, survival analysis)
+- **Database**: PostgreSQL (`hills_sunbiz`) is the sole production database
 
-**SQLite only** (`data/property_master_sqlite.db`) with WAL mode enabled. All pipeline data — auctions, parcels, documents, chain of title, encumbrances, and analysis results — lives in this single database.
+## Entry Point
 
-Key tables:
-- `auctions` - Foreclosure/tax deed auction listings
-- `status` - Pipeline step completion tracking
-- `parcels` - Property details (owner, address, legal description, coords)
-- `permits` - Building permit data
-- `market_data` - Zillow/listing data
-- `sales_history` - HCPA sales history
-- `bulk_parcels` - HCPA bulk parcel import (529K+ rows)
+```bash
+uv run Controller.py                           # Full pipeline (Phase A + B)
+uv run Controller.py --skip-hcpa --skip-nal    # Skip bulk refresh
+uv run Controller.py --skip-auction-scrape     # Skip scraping
+uv run Controller.py --ori-limit 10            # Limit ORI search
+```
 
 ## Pipeline Stages
 
-### Pre-Processing (Sequential in main.py)
+### Phase A: Bulk Data Refresh (idempotent, no per-property scraping)
 
-| Step | Name | Description | Code Location |
-|------|------|-------------|---------------|
-| 1 | Foreclosure Auctions | Scrape auction calendar | `src/scrapers/auction_scraper.py` |
-| 1.5 | Tax Deed Auctions | Scrape tax deed sales | `src/scrapers/tax_deed_scraper.py` |
-| 2 | Final Judgment | Download & extract PDFs | `src/services/final_judgment_processor.py` |
-| 2.5 | Resolve Parcel IDs | Resolve missing parcel_id from judgment/bulk data | `docs/steps/02_5_resolve_parcel_ids.md` |
-| 3 | Bulk Enrichment | Match to HCPA parcel data | `src/ingest/bulk_parcel_ingest.py` |
-| 3.5 | HomeHarvest | Fetch MLS photos & data | `src/services/homeharvest_service.py` |
+| Step | Name | Source | PG Table | Rows |
+|------|------|--------|----------|------|
+| 1 | HCPA Suite | Bulk files | `hcpa_bulk_parcels`, `hcpa_allsales` | 530K / 2.4M |
+| 2 | Clerk Bulk | Bulk files | `clerk_civil_cases`, `clerk_civil_parties` | 73K / 271K |
+| 3 | DOR NAL | DOR tax file | `dor_nal_parcels` | 524K |
+| 4 | Sunbiz UCC | SFTP | `sunbiz_flr_filings`, `sunbiz_flr_parties` | 21K / 44K |
+| 5 | Sunbiz Entity | SFTP | `sunbiz_entity_filings` | 81 |
+| 6 | County Permits | REST API | `county_permits` | 89K |
+| 7 | Tampa Permits | Accela scrape | `tampa_accela_records` | 1K |
+| 8 | Foreclosure Refresh | Join all bulk | `foreclosures` (hub) | 1.3K |
+| 9 | Trust Accounts | Clerk registry | `TrustAccount` | 3.4K |
+| 10 | Title Chain | PG analysis | `foreclosure_title_chain` | 5.8K |
+| 11 | Market Data | Zillow scrape | `property_market` | 126 |
 
-### Parallel Enrichment (Orchestrator)
+### Phase B: Per-Auction Enrichment (scraping + analysis)
 
-The orchestrator processes each auction property through 3 phases:
+| Step | Name | Method | PG Table Updated |
+|------|------|--------|------------------|
+| 12 | Auction Scrape | Playwright → clerk website | `foreclosures` |
+| 13 | Judgment Extract | VisionService → PDF OCR | `foreclosures.judgment_data` |
+| 14 | ORI Search | ORIApiScraper → ORI website | `ori_encumbrances` |
+| 15 | Survival Analysis | SurvivalService computation | `ori_encumbrances.survival_status` |
+| 16 | Final Refresh | Re-join with new data | `foreclosures` (enrichment) |
 
-#### Phase 1: Independent Scrapers (Parallel)
-| Task | Description | Semaphore |
-|------|-------------|-----------|
-| Tax Scraper | Get tax payment status | 5 |
-| Market (Zillow) | Get Zestimate, status | 3 |
-| Market (Realtor) | Get HOA, price history | 2 |
-| FEMA Flood | Check flood zone | 10 |
-| Sunbiz | Corporate entity lookup | 5 |
-| HCPA GIS | Get sales history, write to parcels table | 5 |
+## Key Tables
 
-#### Phase 2: ORI Ingestion (Sequential)
-- Read legal description from `parcels` table (populated by HCPA GIS in Phase 1)
-- Fallback chain: `parcels.legal_description` -> `parcels.judgment_legal_description` -> `bulk_parcels.raw_legal1-4` -> party name search
-- Search Official Records Index via PAV Direct Search browser (CQID 321) and API fallback
-- **Fast zero-result detection**: All browser searches intercept the PAV `KeywordSearch` API response (`page.expect_response`). Empty `Data` array → bail instantly instead of waiting 30s for table rows that never appear. Saves ~3.6h per run (76% of searches are zero-result).
-- Build chain of title
-- Download document PDFs
-- Vision extraction gated by `VISION_EXTRACT_DOC_TYPES` — skips NOC, ASG, RELLP, PR, AGR, AFF (ORI metadata sufficient for those types)
-- Extract encumbrances
+### Hub Table: `foreclosures`
+One row per (case_number, auction_date). Enriched by PG trigger with strap↔folio cross-fill, case-number normalization, and joins to bulk data (property specs, tax, market).
 
-#### Phase 3: Survival Analysis (Sequential)
-- Analyze lien priority
-- Calculate surviving debt
-- Mark analysis complete
+### Encumbrances: `ori_encumbrances`
+Mortgages, liens, judgments, lis pendens found in ORI. Each has `survival_status` (FORECLOSING, SURVIVED, EXTINGUISHED, EXPIRED, SATISFIED, HISTORICAL, UNCERTAIN).
 
-## Execution Flow
+### Title Chain: `foreclosure_title_chain` + `foreclosure_title_events`
+Ownership history built from sales records and clerk events.
 
-```
-main.py --update
-    |
-    v
-+-------------------+
-| Step 1: Auctions  |  Scrape foreclosure calendar
-+-------------------+
-    |
-    v
-+-------------------+
-| Step 1.5: Tax     |  Scrape tax deed calendar
-+-------------------+
-    |
-    v
-+-------------------+
-| Step 2: Judgments |  Download/extract final judgment PDFs
-+-------------------+
-    |
-    v
-+--------------------+
-| Step 2.5: Resolve  |  Resolve missing parcel_id values
-+--------------------+
-    |
-    v
-+-------------------+
-| Step 3: Bulk      |  Enrich from HCPA parcel dump
-+-------------------+
-    |
-    v
-+-------------------+
-| Step 3.5: HH      |  Fetch HomeHarvest photos/MLS
-+-------------------+
-    |
-    v
-+--------------------------------------+
-| PipelineOrchestrator.process_auctions|
-|                                      |
-|  For each auction (parallel):        |
-|    +-> Phase 1: Gather data          |
-|    |     Tax, Zillow, Realtor,       |
-|    |     FEMA, Sunbiz, HCPA GIS     |
-|    |     (writes to parcels table)   |
-|    +-> Phase 2: ORI Ingestion        |
-|    |     Read legal desc from parcels|
-|    |     Search ORI, build chain     |
-|    +-> Phase 3: Survival Analysis    |
-|          Lien priority, calc debt    |
-+--------------------------------------+
-    |
-    v
-+-------------------+
-| Complete          |
-+-------------------+
+## Key Services
+
+| Service | File | Purpose |
+|---------|------|---------|
+| `PgPipelineController` | `src/services/pg_pipeline_controller.py` | Phase A+B orchestrator |
+| `PgAuctionService` | `src/services/pg_auction_service.py` | Scrape auctions → PG |
+| `PgJudgmentService` | `src/services/pg_judgment_service.py` | Extract judgment PDFs → PG |
+| `PgOriService` | `src/services/pg_ori_service.py` | ORI search → PG |
+| `PgSurvivalService` | `src/services/pg_survival_service.py` | Survival analysis → PG |
+| `AuctionScraper` | `src/scrapers/auction_scraper.py` | Playwright scraper (stateless) |
+| `ORIApiScraper` | `src/scrapers/ori_api_scraper.py` | ORI API + browser (stateless) |
+| `SurvivalService` | `src/services/lien_survival/survival_service.py` | Lien analysis (stateless) |
+| `FinalJudgmentProcessor` | `src/services/final_judgment_processor.py` | PDF extraction (stateless) |
+| `VisionService` | `src/services/vision_service.py` | OCR engine |
+
+## Verification
+
+```sql
+-- Active upcoming auctions
+SELECT COUNT(*) FROM foreclosures WHERE archived_at IS NULL;
+
+-- Judgment coverage
+SELECT COUNT(*) FILTER (WHERE judgment_data IS NOT NULL) * 100.0 / COUNT(*)
+FROM foreclosures WHERE archived_at IS NULL;
+
+-- Encumbrance coverage
+SELECT COUNT(DISTINCT strap) FROM ori_encumbrances;
+
+-- Survival coverage
+SELECT COUNT(*) FILTER (WHERE survival_status IS NOT NULL) * 100.0 / COUNT(*)
+FROM ori_encumbrances;
+
+-- Dashboard test
+SELECT * FROM get_dashboard_stats(60);
 ```
 
-## Key Components
+## Legacy (deprecated)
 
-### DatabaseWriter (Serialized Writes)
-All database writes are serialized through an async queue to prevent SQLite locking issues:
-```python
-writer = DatabaseWriter(Path(db.db_path))
-await writer.start()
-# ... pipeline runs ...
-await writer.stop()
-```
-
-### Semaphores (Concurrency Control)
-```python
-property_semaphore = asyncio.Semaphore(15)   # Max properties in parallel
-market_semaphore = asyncio.Semaphore(3)      # Zillow rate limit
-realtor_semaphore = asyncio.Semaphore(2)     # Realtor.com aggressive blocking
-tax_semaphore = asyncio.Semaphore(5)         # Tax collector
-permit_semaphore = asyncio.Semaphore(5)      # Building permits
-hcpa_semaphore = asyncio.Semaphore(5)        # HCPA GIS
-sunbiz_semaphore = asyncio.Semaphore(5)      # Sunbiz
-fema_semaphore = asyncio.Semaphore(10)       # FEMA API (fast)
-homeharvest_semaphore = asyncio.Semaphore(1) # HomeHarvest (serial)
-```
-
-### Skip Logic
-Each step checks if work was already done:
-```python
-# Skip if already analyzed for this case
-last_case = db.get_last_analyzed_case(parcel_id)
-if db.folio_has_chain_of_title(parcel_id) and last_case == case_number:
-    db.mark_step_complete(case_number, "needs_ori_ingestion")
-    return  # Skip
-```
-
-## Command Line Usage
-
-```bash
-# Full pipeline (60 days from today)
-uv run main.py --update
-
-# Custom date range
-uv run main.py --update --start-date 2025-01-15 --end-date 2025-02-15
-
-# Start from specific step (resume after failure)
-uv run main.py --update --start-step 3
-
-# Small test run (5 auctions)
-uv run main.py --update --start-date YYYY-MM-DD --end-date YYYY-MM-DD --auction-limit 5
-
-```
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `main.py` | Entry point, runs pre-processing steps |
-| `src/orchestrator.py` | Parallel property enrichment |
-| `src/db/writer.py` | Serialized database writes |
-| `src/db/operations.py` | All SQLite database operations |
-| `src/services/ingestion_service.py` | ORI search & chain building |
-| `src/scrapers/ori_api_scraper.py` | ORI browser & API searches (PAV Direct Search) |
-| `src/services/lien_survival_analyzer.py` | Lien priority analysis |
-
-## Data Flow
-
-```
-Auctions (scraped)
-    -> parcels (HCPA GIS + bulk enriched)
-    -> home_harvest (MLS photos)
-    -> documents (ORI PDFs)
-    -> chain_of_title (ownership)
-    -> encumbrances (liens/mortgages)
-    -> market_data (Zillow/Realtor)
-    -> analysis_results (survival calc)
-```
+The SQLite pipeline (`main.py --update` → `orchestrator.py`) is deprecated.
+Use `Controller.py` for all pipeline operations.

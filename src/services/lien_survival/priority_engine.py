@@ -42,20 +42,37 @@ def identify_foreclosing_lien(
         instr = encumbrance.get('instrument')
         if instr and str(instr).strip() == str(foreclosing_refs.get('instrument', '')).strip():
             return True, "EXACT_INSTRUMENT_MATCH"
-            
+
         book = encumbrance.get('book')
         page = encumbrance.get('page')
-        if (book and page and 
+        if (book and page and
             str(book).strip() == str(foreclosing_refs.get('book', '')).strip() and
             str(page).strip() == str(foreclosing_refs.get('page', '')).strip()):
             return True, "EXACT_BOOK_PAGE_MATCH"
 
     # 2. Name matching with Plaintiff (Medium Confidence)
+    # Handles comma-separated multi-party creditor fields from ORI
     creditor = encumbrance.get('creditor')
     if creditor and plaintiff:
+        best_score = 0.0
+        best_match_type = "NONE"
+        # Try the full creditor string first
         match_type, score = NameMatcher.match(creditor, plaintiff)
-        if score >= 0.85:
-            return True, f"PLAINTIFF_NAME_MATCH ({match_type})"
+        if score > best_score:
+            best_score = score
+            best_match_type = match_type
+        # Also try each comma-separated part
+        if "," in creditor:
+            for part in creditor.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                mt, sc = NameMatcher.match(part, plaintiff)
+                if sc > best_score:
+                    best_score = sc
+                    best_match_type = mt
+        if best_score >= 0.85:
+            return True, f"PLAINTIFF_NAME_MATCH ({best_match_type})"
 
     return False, ""
 

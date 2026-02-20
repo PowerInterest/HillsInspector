@@ -1,5 +1,4 @@
 import sqlite3
-from contextlib import suppress
 from loguru import logger
 
 from src.db.sqlite_paths import resolve_sqlite_db_path_str

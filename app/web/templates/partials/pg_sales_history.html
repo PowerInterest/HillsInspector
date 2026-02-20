@@ -1,0 +1,67 @@
+{% if sales %}
+<div style="margin-bottom: 10px;">
+    <small class="text-muted">Source: HCPA All Sales ({{ sales|length }} records)</small>
+</div>
+<div class="sales-history-list">
+    {% for sale in sales %}
+    <div class="sale-item">
+        <div class="sale-header">
+            <span class="sale-date">{{ sale.sale_date or 'Unknown Date' }}</span>
+            <span class="badge {% if sale.sale_type == 'WD' %}badge-info{% elif sale.sale_type == 'CT' %}badge-warning{% elif sale.sale_type == 'FD' %}badge-danger{% elif sale.sale_type == 'QC' %}badge-secondary{% elif sale.sale_type == 'TD' %}badge-danger{% else %}badge-secondary{% endif %}"
+                  title="{{ sale.sale_type_desc or sale.sale_type }}">
+                {{ sale.sale_type or 'N/A' }}
+            </span>
+            {% if sale.qualification_code == 'Q' %}
+            <span class="badge" style="background: #2ecc71; color: white; font-size: 0.7rem; padding: 2px 6px;" title="Qualified (arm's-length sale)">Q</span>
+            {% elif sale.qualification_code == 'U' %}
+            <span class="badge" style="background: #95a5a6; color: white; font-size: 0.7rem; padding: 2px 6px;" title="Unqualified (non-market transaction)">U</span>
+            {% endif %}
+        </div>
+        <div class="sale-details">
+            <div class="sale-price">
+                {% if sale.sale_amount %}
+                ${{ "{:,.0f}".format(sale.sale_amount) }}
+                {% else %}
+                <span class="text-muted">No price recorded</span>
+                {% endif %}
+            </div>
+            <div class="sale-meta">
+                {% if sale.or_book and sale.or_page and sale.or_book != 'None' and sale.or_page != 'None' %}
+                <span class="sale-ref">Bk {{ sale.or_book }} / Pg {{ sale.or_page }}</span>
+                {% endif %}
+                {% if sale.doc_num %}
+                <span class="sale-instrument">Doc: {{ sale.doc_num }}</span>
+                {% endif %}
+            </div>
+            {% if sale.grantor or sale.grantee %}
+            <div style="font-size: 0.85rem; color: #666; margin-top: 4px;">
+                {% if sale.grantor %}<span class="text-muted">From:</span> {{ sale.grantor[:50] }}{% if sale.grantor|length > 50 %}...{% endif %}{% endif %}
+                {% if sale.grantor and sale.grantee %} &rarr; {% endif %}
+                {% if sale.grantee %}<span class="text-muted">To:</span> {{ sale.grantee[:50] }}{% if sale.grantee|length > 50 %}...{% endif %}{% endif %}
+            </div>
+            {% endif %}
+        </div>
+        <div class="sale-actions">
+            {% if sale.or_book and sale.or_page and sale.or_book != 'None' and sale.or_page != 'None' %}
+            <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=319&OBKey__1530_1=O&OBKey__573_1={{ sale.or_book }}&OBKey__1049_1={{ sale.or_page }}" target="_blank" class="btn btn-sm btn-outline">ORI Lookup</a>
+            {% elif sale.doc_num %}
+            <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=319&OBKey__1530_1=O&OBKey__1528_1={{ sale.doc_num }}" target="_blank" class="btn btn-sm btn-outline">ORI Lookup</a>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+<div class="doc-type-legend">
+    <small>
+        <span class="badge badge-info">WD</span> Warranty Deed
+        <span class="badge badge-warning">CT</span> Certificate of Title
+        <span class="badge badge-danger">FD</span> Foreclosure Deed
+        <span class="badge badge-secondary">QC</span> Quit Claim
+        <span style="margin-left: 10px;">|</span>
+        <span class="badge" style="background: #2ecc71; color: white; font-size: 0.7rem; padding: 2px 6px;">Q</span> Qualified (arm's-length)
+        <span class="badge" style="background: #95a5a6; color: white; font-size: 0.7rem; padding: 2px 6px;">U</span> Unqualified
+    </small>
+</div>
+{% else %}
+<p class="empty-state">No sales history found in HCPA records.</p>
+{% endif %}

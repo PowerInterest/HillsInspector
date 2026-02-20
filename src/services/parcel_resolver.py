@@ -21,11 +21,12 @@ from src.scrapers.hcpa_gis_scraper import convert_bulk_parcel_to_url_format
 TAG = "[RESOLVE]"
 
 
-def resolve_missing_parcel_ids(db) -> dict:
+def resolve_missing_parcel_ids(db, pg_service=None) -> dict:
     """Resolve missing parcel_ids on auctions using judgment data and bulk_parcels.
 
     Args:
         db: PropertyDB instance.
+        pg_service: Optional PgSalesService for fuzzy name resolution.
 
     Returns:
         Stats dict with counts by strategy and outcome.
@@ -52,6 +53,7 @@ def resolve_missing_parcel_ids(db) -> dict:
         "skipped_multiple_parcel": 0,
         "skipped_ambiguous": 0,
         "by_strategy": {
+            "pg_fuzzy": 0,
             "strap_conversion": 0,
             "strap_conversion_unverified": 0,
             "address_exact_unique": 0,
@@ -108,6 +110,38 @@ def resolve_missing_parcel_ids(db) -> dict:
             logger.info(f"{TAG}   SKIP: no judgment data and no auction address")
             stats["skipped_no_data"] += 1
             continue
+
+        # --- Strategy 0: PG fuzzy name resolution ---
+        if pg_service and pg_service.available:
+            defendant = None
+            if jdata:
+                defs = jdata.get("defendants") or []
+                if defs:
+                    d = defs[0]
+                    defendant = d.get("name", "") if isinstance(d, dict) else str(d)
+            if not defendant:
+                defendant = row.get("defendant") or ""
+            plaintiff_hint = None
+            if jdata:
+                plaintiff_hint = jdata.get("plaintiff")
+
+            if defendant and defendant.strip():
+                matches = pg_service.resolve_property_by_name(
+                    defendant_name=defendant.strip(),
+                    plaintiff_hint=plaintiff_hint,
+                )
+                if matches and matches[0]["match_score"] >= 0.5:
+                    resolved_strap = matches[0]["strap"]
+                    # Verify strap exists in bulk_parcels
+                    found, _ = _lookup_strap(conn, resolved_strap)
+                    if found:
+                        logger.info(
+                            f"{TAG}   Strategy 0 (PG fuzzy): score={matches[0]['match_score']:.2f}, "
+                            f"method={matches[0]['match_method']}, strap={resolved_strap}"
+                        )
+                        _apply_resolution(conn, case, resolved_strap, "pg_fuzzy", stats)
+                        continue
+                    logger.debug(f"{TAG}   Strategy 0: PG strap {resolved_strap} not in bulk_parcels")
 
         # --- Strategy 1: Judgment parcel_id → strap conversion ---
         result, verified = _strategy_strap_conversion(conn, jdata)

@@ -58,11 +58,12 @@ class SearchQueue:
     Handles queueing, deduplication, and prioritization of ORI searches.
     """
 
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: sqlite3.Connection, pg_service=None):
         """Initialize the search queue manager."""
         self.conn = conn
         self.name_matcher = NameMatcher(conn)
-        self._limit_warned_folios: set[str] = set()  # Track folios that hit search limit  # Track folios that hit search limit
+        self.pg_service = pg_service
+        self._limit_warned_folios: set[str] = set()  # Track folios that hit search limit
 
     @staticmethod
     def _normalize_party_for_search(name: str) -> list[str]:
@@ -164,6 +165,43 @@ class SearchQueue:
             # Queue book/page search (older recordings - pre ~2010)
             if sale.get("book") and sale.get("page") and self.queue_book_page_search(folio, sale["book"], sale["page"]):
                 count += 1
+
+        # =====================================================================
+        # TIER 1.5: PG SALES INSTRUMENTS (PostgreSQL hcpa_allsales)
+        # =====================================================================
+        if self.pg_service and self.pg_service.available:
+            pg_folio = self.pg_service.resolve_strap_to_folio(folio)
+            if pg_folio:
+                pg_instruments = self.pg_service.get_sale_instruments(pg_folio)
+                pg_count = 0
+                seen_names = set()
+                for sale in pg_instruments:
+                    # Queue instrument searches
+                    doc_num = sale.get("doc_num")
+                    if doc_num and self.queue_instrument_search(folio, str(doc_num)):
+                        pg_count += 1
+                    # Queue book/page searches
+                    if (
+                        sale.get("or_book")
+                        and sale.get("or_page")
+                        and self.queue_book_page_search(folio, sale["or_book"], sale["or_page"])
+                    ):
+                        pg_count += 1
+                    # Queue last 5 unique grantors/grantees as name searches
+                    for party_key in ("grantee", "grantor"):
+                        name = (sale.get(party_key) or "").strip()
+                        if (
+                            name
+                            and name not in seen_names
+                            and not self.name_matcher.is_generic(name)
+                            and len(seen_names) < 10
+                        ):
+                            seen_names.add(name)
+                            self.queue_name_search(folio, name, priority=45)
+                            pg_count += 1
+                count += pg_count
+                if pg_count:
+                    logger.info(f"PG Tier 1.5: queued {pg_count} searches from {len(pg_instruments)} sales")
 
         # =====================================================================
         # TIER 2: HIGH-CONFIDENCE LEGAL DESCRIPTIONS

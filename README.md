@@ -44,6 +44,13 @@ Launches the local web dashboard to view results.
 ```powershell
 uv run main.py --web
 ```
+Database tab (CloudBeaver):
+- `CLOUDBEAVER_PG_URL` (or fallback `CLOUDBEAVER_URL`, default `http://localhost:8978`) controls PostgreSQL embed.
+- `CLOUDBEAVER_SQLITE_URL` (optional) can point to a CloudBeaver SQLite connection.
+- `CLOUDBEAVER_EMBED=0` disables iframe embed and leaves only the "Open In New Tab" link.
+The `/database` page includes both backends:
+- `PostgreSQL` tab (default, primary workflow)
+- `SQLite` tab (read-only local query/table preview)
 
 ### 4. Reset Database
 Archives the existing database and creates a fresh one.
@@ -61,46 +68,31 @@ uv run main.py --new
 - **ONLY use `Polars`** for DataFrames. Never use `pandas`.
 - **Store bulk data as Parquet files** for efficient columnar storage.
 
-### Database: DuckDB
+### Database: SQLite & PostgreSQL
 
-**CRITICAL**: DuckDB is a **columnar OLAP database**, NOT a row-by-row OLTP database like PostgreSQL or SQLite.
+**SQLite** is used for local operational data, pipeline state, and the active auction window.
+**PostgreSQL** is used for bulk data, historical analysis, and cross-source linking (Clerk, Sales, Sunbiz).
 
-Operations that seem fast on small datasets become **catastrophically slow** at scale.
+**STRICT RULE:** All local pipeline state must be stored in **SQLite** (`data/property_master_sqlite.db`).
+**STRICT RULE:** All bulk datasets and complex historical analytics must be stored in **PostgreSQL**.
 
-**NEVER DO THIS:**
-```python
-# BAD - Row-by-row inserts are extremely slow
-for row in data:
-    conn.execute("INSERT INTO table VALUES (?, ?)", [row.a, row.b])
+#### PostgreSQL Extensions (Installed)
+- `pg_search`: Full-text/hybrid search extension for fast property and party search workflows.
+- `pg_trgm`: Trigram similarity + GIN support for fuzzy name/address matching.
+- `fuzzystrmatch`: Phonetic/string-distance helpers for entity resolution.
+- `citext`: Case-insensitive text type for equality/grouping on names.
+  Columns now using `citext`: `foreclosures.sold_to`, `foreclosures_history.sold_to`, `sunbiz_flr_parties.name`, `sunbiz_entity_parties.party_name`.
+- `unaccent`: Accent/diacritic normalization support (useful with `lower(...)` + `pg_trgm`).
+- `pgcrypto`: Hashing and crypto-safe random/UUID helper functions for IDs/dedup workflows.
 
-# BAD - executemany is still row-by-row under the hood
-conn.executemany("INSERT INTO table VALUES (?, ?)", rows)
-```
+#### SQLite Best Practices (WAL Mode)
+The pipeline uses SQLite in Write-Ahead Logging (WAL) mode to handle concurrent reads and writes.
 
 **ALWAYS DO THIS:**
 ```python
-# GOOD - Register DataFrame and bulk insert
-conn.register("df_temp", polars_df)
-conn.execute("INSERT INTO table SELECT * FROM df_temp")
-
-# GOOD - Direct Parquet read
-conn.execute("INSERT INTO table SELECT * FROM 'data.parquet'")
-
-# GOOD - COPY for CSVs
-conn.execute("COPY table FROM 'data.csv'")
-```
-
-**For Bulk Updates - Use Polars register + UPDATE FROM:**
-```python
-# GOOD - Bulk update from DataFrame
-conn.register("updates_df", polars_df)
-conn.execute("""
-    UPDATE target_table SET
-        column1 = u.column1,
-        column2 = u.column2
-    FROM updates_df u
-    WHERE target_table.id = u.id
-""")
+# GOOD - Use the provided PropertyDB or DatabaseWriter
+with PropertyDB() as db:
+    db.upsert_auction(data)
 ```
 
 ### Tooling Requirements
@@ -208,6 +200,29 @@ For an **HOA foreclosure** on a property acquired in 2023:
 - 2023 first mortgage ($211k): **SURVIVED** (Florida Safe Harbor)
 - 2023-2025 HOA liens: **FORECLOSING** (plaintiff's liens)
 
+## Auction Buyer Resolution (hcpa_allsales)
+
+The auction website only shows "3rd Party Bidder" — never the real buyer's name. We resolve the real buyer from `hcpa_allsales` (2.4M property transfer records in PostgreSQL) by looking at the **first deed recorded after the auction date** for the same folio.
+
+The key insight is that **different deed types put the auction winner on different sides of the transfer**:
+
+| Deed Type | Code | Winner is | Why |
+|-----------|------|-----------|-----|
+| Certificate of Title | **CT** | **grantee** | Clerk issues certificate directly **to** the auction winner; grantor is the old foreclosed homeowner |
+| Certificate of Deed | **CD** | **grantee** | Same as CT — Clerk-issued certificate **to** the winner |
+| Warranty Deed | **WD** | **grantor** | Auction winner already owns the property, now **selling** it |
+| Quit Claim Deed | **QC** | **grantor** | Same — winner is **selling/transferring** out |
+| Transfer | **TR** | **grantor** | Same — winner is **transferring** |
+| Fee / Final Deed | **FD** | **grantor** | Same — winner is **selling** |
+| Deed (generic) | **DD** | **grantor** | Same — winner is **selling** |
+
+**How it works in practice:**
+- After a foreclosure sale, the Clerk issues a CT or CD to the auction winner (avg 74 days after auction). The `grantee` on that deed IS the buyer.
+- If no CT/CD appears in `hcpa_allsales` (HCPA doesn't always record these), we fall back to the first WD/QC/etc., where the `grantor` is the person who bought at auction and is now reselling.
+- This logic runs automatically via a PostgreSQL trigger (`trg_resolve_buyer`) on every INSERT/UPDATE to `historical_auctions`. It's also available as `HistoryService.backfill_buyers_from_hcpa()` for manual runs.
+
+**Coverage:** ~80% of auctions get a real buyer name. The remaining ~20% have no post-auction deed in `hcpa_allsales` (property not yet resold, or folio data gap).
+
 ## Roadmap / TODO
 *   **System Identification**: The backend is **Hyland OnBase**.
     *   *Action*: Leverage [OnBase Documentation](https://support.hyland.com/r/OnBase/Public-Sector-Constituency-Web-Access/English/Foundation-22.1/Public-Sector-Constituency-Web-Access/Configuration/Front-End-Client-Configuration/Search-Panel-Settings/Configuring-Custom-Queries/Predefine-Keyword-Values-to-Search/Dynamic-Keyword-Values) to discover more advanced search capabilities and potential API endpoints.
@@ -236,20 +251,20 @@ We exclusively use **[uv](https://github.com/astral-sh/uv)** for all Python pack
     * *exception:* `HTMX` is permitted **only** if strictly necessary to avoid full page reloads for minor updates, but standard HTML is the priority.
 
 ## 3. Data Storage & Processing
-**STRICT RULE:** Do **NOT** use or suggest `sqlite`. All local storage must be **DuckDB**.
+**STRICT RULE:** Use **SQLite** for local operational state and **PostgreSQL** for bulk/analytical data.
 **STRICT RULE:** Do **NOT** use `pandas`. Use `polars`.
 
 ### **Dataframes: Polars**
 * **Tool:** `polars`
 * **Why:** Multithreaded, lazy evaluation, and handles larger-than-memory datasets efficiently.
 
-### **Database: DuckDB**
-* **Tool:** `duckdb` (Version 1.1+)
-* **Constraint:** All SQL queries must be compatible with **DuckDB 1.1+**.
-* **Why:** Serverless SQL analytics engine that allows querying `.csv`, `.parquet`, or `.json` files directly.
+### **Databases**
+* **Operational:** SQLite (Version 3.40+) with WAL mode enabled.
+* **Analytical:** PostgreSQL (Version 15+) for high-volume historical and clerk data.
 * **Storage Pattern:**
     * Raw scrapes -> Saved as `Parquet` or `JSON` (structured).
-    * Analytical tables -> `property_master.db` (DuckDB persistent file).
+    * Active Pipeline -> `property_master_sqlite.db`.
+    * Historical/Bulk -> PostgreSQL.
 
 ## 4. Quality Assurance (Linting & Typing)
 We enforce strict code quality using the [Astral](https://astral.sh) suite.
@@ -288,7 +303,7 @@ We enforce strict code quality using the [Astral](https://astral.sh) suite.
 ## 3. Technical Stack (Strict)
 * **Language:** Python 3.12
 * **Package Manager:** `uv` (No pip/poetry).
-* **Data Storage:** `DuckDB` 1.4+ (Analytical DB) + `Parquet` (Raw storage). **No SQLite.**
+* **Data Storage:** `SQLite` (Operational) + `PostgreSQL` (Analytical) + `Parquet` (Raw).
 * **Data Processing:** `Polars` (Lazyframes). **No Pandas.**
 * **Web Framework:** `FastAPI` + `Jinja2` (SSR) + `HTMX` (Interactivity). **No React/SPA.**
 * **Scraping:** `Playwright` (Browser Automation) + `playwright-stealth`.

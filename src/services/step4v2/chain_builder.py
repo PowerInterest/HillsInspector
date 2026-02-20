@@ -46,7 +46,8 @@ class OwnershipPeriod:
     years_covered: float = 0.0
     link_status: str = "unknown"  # 'linked', 'gap', 'root'
     confidence_score: float = 1.0
-    mrta_status: str = "pending"  # 'complete', 'incomplete', 'root'
+    mrta_status: str = "pending"
+    data_source: str = "ori"  # 'ori', 'pg_sales', 'merged', 'inferred'  # 'complete', 'incomplete', 'root'
 
 
 @dataclass
@@ -91,10 +92,11 @@ class ChainBuilder:
     Constructs ownership timeline and encumbrances from discovered documents.
     """
 
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: sqlite3.Connection, pg_service=None):
         """Initialize the chain builder."""
         self.conn = conn
         self.name_matcher = NameMatcher(conn)
+        self.pg_service = pg_service
 
     def build(self, folio: str) -> ChainResult:
         """
@@ -116,8 +118,17 @@ class ChainBuilder:
             logger.warning(f"No documents found for {folio}")
             return ChainResult(folio=folio, issues=["No documents found"])
 
-        # Build ownership periods from deeds
-        periods = self._build_periods(folio, documents)
+        # Build ownership periods from deeds (ORI documents)
+        ori_periods = self._build_periods(folio, documents)
+
+        # Build ownership periods from PG sales (if available)
+        pg_periods = self._build_periods_from_pg_sales(folio) if self.pg_service else []
+
+        # Merge PG backbone with ORI periods
+        if pg_periods:
+            periods = self._merge_periods(pg_periods, ori_periods)
+        else:
+            periods = ori_periods
 
         # Infer missing ownership periods from mortgages (borrower = owner)
         self._infer_from_mortgages(folio, documents, periods)
@@ -232,6 +243,153 @@ class ChainBuilder:
         periods.sort(key=lambda p: p.acquisition_date or date.min)
 
         return periods
+
+    def _build_periods_from_pg_sales(self, folio: str) -> list[OwnershipPeriod]:
+        """Build ownership periods from PostgreSQL hcpa_allsales records."""
+        from src.services.pg_sales_service import SALE_TYPE_MAP
+
+        pg = self.pg_service
+        if not pg or not pg.available:
+            return []
+
+        pg_folio = pg.resolve_strap_to_folio(folio)
+        if not pg_folio:
+            logger.debug(f"PG: no folio mapping for strap {folio}")
+            return []
+
+        sales = pg.get_sales_chain(pg_folio)
+        if not sales:
+            return []
+
+        periods = []
+        for sale in sales:
+            grantee = (sale.get("grantee") or "").strip()
+            grantor = (sale.get("grantor") or "").strip()
+            if not grantee:
+                continue
+
+            # Skip self-transfers (same grantor/grantee after normalization)
+            if grantee and grantor and grantee.upper() == grantor.upper():
+                continue
+
+            sale_date = sale.get("sale_date")
+            if isinstance(sale_date, str):
+                sale_date = parse_date(sale_date)
+
+            sale_type = (sale.get("sale_type") or "").upper()
+            doc_type = SALE_TYPE_MAP.get(sale_type, sale_type or "DEED")
+
+            # Build instrument reference from doc_num or book/page
+            instrument = sale.get("doc_num") or ""
+            if not instrument and sale.get("or_book") and sale.get("or_page"):
+                instrument = f"{sale['or_book']}/{sale['or_page']}"
+
+            period = OwnershipPeriod(
+                owner_name=grantee,
+                acquired_from=grantor,
+                acquisition_date=sale_date,
+                acquisition_instrument=instrument,
+                acquisition_doc_type=doc_type,
+                acquisition_price=sale.get("sale_amount") or 0.0,
+                confidence_score=0.95,
+                link_status="pg_sales",
+                data_source="pg_sales",
+            )
+            periods.append(period)
+
+        periods.sort(key=lambda p: p.acquisition_date or date.min)
+        if periods:
+            logger.info(f"PG sales: {len(periods)} ownership periods for {folio}")
+        return periods
+
+    def _merge_periods(
+        self,
+        pg_periods: list[OwnershipPeriod],
+        ori_periods: list[OwnershipPeriod],
+    ) -> list[OwnershipPeriod]:
+        """Merge PG sales backbone with ORI-derived periods.
+
+        PG periods form the backbone. ORI periods are matched by:
+        1. Exact instrument match
+        2. Book/page match
+        3. Date + name match (30-day window)
+
+        Matched periods: enrich PG with ORI detail, bump confidence to 1.0.
+        Unmatched ORI: append as-is.
+        """
+
+        if not pg_periods:
+            return ori_periods
+        if not ori_periods:
+            return pg_periods
+
+        merged = list(pg_periods)
+        used_ori = set()
+
+        for pg_p in merged:
+            pg_inst = pg_p.acquisition_instrument or ""
+            pg_date = pg_p.acquisition_date
+
+            for i, ori_p in enumerate(ori_periods):
+                if i in used_ori:
+                    continue
+                ori_inst = ori_p.acquisition_instrument or ""
+
+                matched = False
+
+                # Match 1: exact instrument number
+                if pg_inst and ori_inst and pg_inst == ori_inst:
+                    matched = True
+                # Match 2: book/page (pg_inst might be "1234/567")
+                elif "/" in pg_inst and ori_inst:
+                    parts = pg_inst.split("/", 1)
+                    if len(parts) == 2:
+                        bp = f"{parts[0]}/{parts[1]}"
+                        if ori_inst == bp:
+                            matched = True
+                # Match 3: date + name (30-day window)
+                elif pg_date and ori_p.acquisition_date:
+                    delta = abs((pg_date - ori_p.acquisition_date).days)
+                    if delta <= 30 and self._names_match(
+                        pg_p.owner_name, ori_p.owner_name
+                    ):
+                        matched = True
+
+                if matched:
+                    used_ori.add(i)
+                    pg_p.confidence_score = 1.0
+                    pg_p.data_source = "merged"
+                    # Prefer ORI's more detailed doc_type if available
+                    if ori_p.acquisition_doc_type and len(ori_p.acquisition_doc_type) > len(pg_p.acquisition_doc_type):
+                        pg_p.acquisition_doc_type = ori_p.acquisition_doc_type
+                    # Prefer ORI instrument if more specific
+                    if ori_inst and (not pg_inst or "/" in pg_inst):
+                        pg_p.acquisition_instrument = ori_inst
+                    break
+
+        # Append unmatched ORI periods
+        for i, ori_p in enumerate(ori_periods):
+            if i not in used_ori:
+                merged.append(ori_p)
+
+        # Sort and deduplicate: same grantee within 7-day window
+        merged.sort(key=lambda p: p.acquisition_date or date.min)
+        deduped = []
+        for p in merged:
+            if deduped and p.acquisition_date and deduped[-1].acquisition_date:
+                delta = abs((p.acquisition_date - deduped[-1].acquisition_date).days)
+                if delta <= 7 and self._names_match(p.owner_name, deduped[-1].owner_name):
+                    # Keep the higher-confidence one
+                    if p.confidence_score > deduped[-1].confidence_score:
+                        deduped[-1] = p
+                    continue
+            deduped.append(p)
+
+        logger.info(
+            f"Merged chain: {len(pg_periods)} PG + {len(ori_periods)} ORI "
+            f"→ {len(deduped)} periods ({len(ori_periods) - len([i for i in range(len(ori_periods)) if i not in used_ori])} matched)"
+        )
+        return deduped
 
     def _infer_from_mortgages(
         self, folio: str, documents: list[dict], periods: list[OwnershipPeriod]
@@ -483,43 +641,166 @@ class ChainBuilder:
         documents: list[dict],
         encumbrances: list[Encumbrance],
     ) -> None:
-        """Match satisfaction documents to encumbrances."""
+        """Match satisfaction documents to encumbrances using multi-pass strategy.
+
+        Pass 1: Instrument number proximity (same recording session, +-5 instruments)
+        Pass 2: Creditor name match (sat_party1 against enc.creditor)
+        Pass 3: Debtor name match (sat_party1 against enc.debtor) — for liens
+        Pass 4: Cross-match (sat_party2 against enc.creditor or enc.debtor)
+        """
         # Get satisfaction documents
         satisfactions = [
             doc for doc in documents
             if self._is_satisfaction_doc((doc.get("document_type") or "").upper())
         ]
 
+        if not satisfactions or not encumbrances:
+            return
+
+        # Build lookup structures
         for sat in satisfactions:
-            sat_party1 = sat.get("party1") or ""  # Who is being satisfied
-            sat_party2 = sat.get("party2") or ""  # Who is satisfying
-            sat_date = sat.get("recording_date")
-            sat_instrument = sat.get("instrument_number") or ""
+            if isinstance(sat.get("recording_date"), str):
+                sat["recording_date"] = parse_date(sat["recording_date"])
 
-            if isinstance(sat_date, str):
-                sat_date = parse_date(sat_date)
+        def _date_ok(sat_date, enc_date) -> bool:
+            """Check if satisfaction date is plausible relative to encumbrance."""
+            if not sat_date or not enc_date:
+                return True  # Allow match when either date is unknown
+            ed = parse_date(enc_date) if isinstance(enc_date, str) else enc_date
+            if not ed:
+                return True
+            return sat_date >= ed
 
-            # Split comma-separated party strings into individual names
-            sat_names = [n.strip() for n in sat_party1.split(",") if n.strip()] + \
-                        [n.strip() for n in sat_party2.split(",") if n.strip()]
+        def _mark_satisfied(enc: Encumbrance, sat: dict) -> None:
+            enc.is_satisfied = True
+            enc.satisfaction_instrument = sat.get("instrument_number") or ""
+            enc.satisfaction_date = sat.get("recording_date")
 
-            # Find matching encumbrance
+        def _split_names(name_str: str) -> list[str]:
+            """Split comma-separated names into individual trimmed names."""
+            return [n.strip() for n in (name_str or "").split(",") if n.strip()]
+
+        # Track which satisfactions have been consumed
+        used_sats = set()  # indices into satisfactions list
+
+        # --- PASS 1: Instrument number proximity (strongest signal) ---
+        # Documents recorded in the same session often have adjacent instrument numbers.
+        # A satisfaction with instrument N likely satisfies an encumbrance with instrument N-1 to N-5.
+        for sat_idx, sat in enumerate(satisfactions):
+            if sat_idx in used_sats:
+                continue
+            sat_inst = (sat.get("instrument_number") or "").strip()
+            if not sat_inst:
+                continue
+            try:
+                sat_inst_num = int(sat_inst)
+            except (ValueError, TypeError):
+                continue
+
+            best_enc = None
+            best_dist = 6  # anything > 5 is no match
             for enc in encumbrances:
                 if enc.is_satisfied:
                     continue
+                enc_inst = (enc.instrument or "").strip()
+                if not enc_inst:
+                    continue
+                try:
+                    enc_inst_num = int(enc_inst)
+                except (ValueError, TypeError):
+                    continue
+                dist = abs(sat_inst_num - enc_inst_num)
+                if 0 < dist <= 5 and dist < best_dist:
+                    # Also verify at least one name overlaps to avoid cross-property matches
+                    sat_names = _split_names(sat.get("party1")) + _split_names(sat.get("party2"))
+                    enc_all_names = _split_names(enc.creditor) + _split_names(enc.debtor)
+                    if any(
+                        self._names_match(sn, en)
+                        for sn in sat_names for en in enc_all_names
+                        if sn and en
+                    ):
+                        best_enc = enc
+                        best_dist = dist
 
-                # Satisfaction date must be >= encumbrance recording date (when both available)
-                if sat_date and enc.recording_date:
-                    enc_date = parse_date(enc.recording_date) if isinstance(enc.recording_date, str) else enc.recording_date
-                    if enc_date and sat_date < enc_date:
-                        continue
+            if best_enc is not None:
+                _mark_satisfied(best_enc, sat)
+                used_sats.add(sat_idx)
 
-                # Match by creditor name — split comma-separated creditor too
-                enc_names = [n.strip() for n in (enc.creditor or "").split(",") if n.strip()]
-                if any(self._names_match(en, sn) for en in enc_names for sn in sat_names if en and sn):
-                    enc.is_satisfied = True
-                    enc.satisfaction_instrument = sat_instrument
-                    enc.satisfaction_date = sat_date
+        # --- PASS 2: Creditor name match (sat.party1 against enc.creditor) ---
+        for sat_idx, sat in enumerate(satisfactions):
+            if sat_idx in used_sats:
+                continue
+            sat_date = sat.get("recording_date")
+            sat_p1_names = _split_names(sat.get("party1"))
+            if not sat_p1_names:
+                continue
+
+            for enc in encumbrances:
+                if enc.is_satisfied:
+                    continue
+                if not _date_ok(sat_date, enc.recording_date):
+                    continue
+                enc_cred_names = _split_names(enc.creditor)
+                if enc_cred_names and any(
+                    self._names_match(en, sn)
+                    for en in enc_cred_names for sn in sat_p1_names
+                    if en and sn
+                ):
+                    _mark_satisfied(enc, sat)
+                    used_sats.add(sat_idx)
+                    break
+
+        # --- PASS 3: Debtor name match (sat.party1 against enc.debtor) ---
+        # For liens: creditor = property owner, debtor = lien holder.
+        # The satisfaction party1 = the entity being satisfied = the lien holder = enc.debtor.
+        for sat_idx, sat in enumerate(satisfactions):
+            if sat_idx in used_sats:
+                continue
+            sat_date = sat.get("recording_date")
+            sat_p1_names = _split_names(sat.get("party1"))
+            if not sat_p1_names:
+                continue
+
+            for enc in encumbrances:
+                if enc.is_satisfied:
+                    continue
+                if not _date_ok(sat_date, enc.recording_date):
+                    continue
+                enc_debt_names = _split_names(enc.debtor)
+                if enc_debt_names and any(
+                    self._names_match(en, sn)
+                    for en in enc_debt_names for sn in sat_p1_names
+                    if en and sn
+                ):
+                    _mark_satisfied(enc, sat)
+                    used_sats.add(sat_idx)
+                    break
+
+        # --- PASS 4: Cross-match (sat.party2 against enc.creditor or enc.debtor) ---
+        # sat.party2 = borrower/debtor; enc.debtor = borrower (for mortgages)
+        # or enc.creditor = borrower (for liens where roles are swapped)
+        for sat_idx, sat in enumerate(satisfactions):
+            if sat_idx in used_sats:
+                continue
+            sat_date = sat.get("recording_date")
+            sat_p2_names = _split_names(sat.get("party2"))
+            if not sat_p2_names:
+                continue
+
+            for enc in encumbrances:
+                if enc.is_satisfied:
+                    continue
+                if not _date_ok(sat_date, enc.recording_date):
+                    continue
+                # Match sat.party2 against enc.debtor (mortgage borrower match)
+                enc_all_names = _split_names(enc.creditor) + _split_names(enc.debtor)
+                if enc_all_names and any(
+                    self._names_match(en, sn)
+                    for en in enc_all_names for sn in sat_p2_names
+                    if en and sn
+                ):
+                    _mark_satisfied(enc, sat)
+                    used_sats.add(sat_idx)
                     break
 
     def _is_satisfaction_doc(self, doc_type: str) -> bool:
@@ -532,6 +813,105 @@ class ChainBuilder:
         # Fallback: substring check only for completely unknown types
         doc_type_upper = (doc_type or "").upper()
         return any(sat_type in doc_type_upper for sat_type in SATISFACTION_TYPES)
+
+    def rematch_all_satisfactions(self) -> dict:
+        """Re-run satisfaction matching on all folios that have unsatisfied encumbrances.
+
+        This is a standalone operation that works directly with DB data, without
+        rebuilding the full chain. Useful for backfilling satisfaction links after
+        improving the matching algorithm.
+
+        Returns a summary dict with counts.
+        """
+        # Find folios with unsatisfied encumbrances
+        folios = [
+            row[0] for row in self.conn.execute(
+                "SELECT DISTINCT folio FROM encumbrances WHERE is_satisfied = 0 OR is_satisfied IS NULL"
+            ).fetchall()
+        ]
+        logger.info(f"Rematching satisfactions for {len(folios)} folios with unsatisfied encumbrances")
+
+        total_newly_satisfied = 0
+        total_folios_changed = 0
+
+        for folio in folios:
+            # Get documents for this folio
+            documents = self._get_documents(folio)
+
+            # Get current encumbrances from DB
+            enc_rows = self.conn.execute(
+                """
+                SELECT id, encumbrance_type, creditor, debtor, amount, amount_confidence,
+                       recording_date, instrument, book, page, is_satisfied,
+                       satisfaction_instrument, satisfaction_date, chain_period_id
+                FROM encumbrances WHERE folio = ?
+                ORDER BY recording_date
+                """,
+                [folio],
+            ).fetchall()
+
+            if not enc_rows:
+                continue
+
+            # Reconstruct Encumbrance objects
+            encumbrances = []
+            for row in enc_rows:
+                rd = dict(row)
+                rec_date = rd.get("recording_date")
+                if isinstance(rec_date, str):
+                    rec_date = parse_date(rec_date)
+                sat_date = rd.get("satisfaction_date")
+                if isinstance(sat_date, str):
+                    sat_date = parse_date(sat_date)
+                encumbrances.append(Encumbrance(
+                    id=rd.get("id"),
+                    chain_period_id=rd.get("chain_period_id"),
+                    encumbrance_type=rd.get("encumbrance_type") or "",
+                    creditor=rd.get("creditor") or "",
+                    debtor=rd.get("debtor") or "",
+                    amount=rd.get("amount") or 0.0,
+                    amount_confidence=rd.get("amount_confidence") or "unknown",
+                    recording_date=rec_date,
+                    instrument=rd.get("instrument") or "",
+                    book=rd.get("book") or "",
+                    page=rd.get("page") or "",
+                    is_satisfied=bool(rd.get("is_satisfied")),
+                    satisfaction_instrument=rd.get("satisfaction_instrument") or "",
+                    satisfaction_date=sat_date,
+                ))
+
+            # Track which encumbrances were already satisfied before rematch
+            previously_satisfied_ids = {e.id for e in encumbrances if e.is_satisfied}
+
+            # Run the matching
+            self._match_satisfactions(folio, documents, encumbrances)
+
+            # Update DB only for NEWLY satisfied encumbrances
+            newly_satisfied = 0
+            for enc in encumbrances:
+                if enc.is_satisfied and enc.id is not None and enc.id not in previously_satisfied_ids:
+                    newly_satisfied += 1
+                    self.conn.execute(
+                        """
+                        UPDATE encumbrances
+                        SET is_satisfied = 1, satisfaction_instrument = ?, satisfaction_date = ?
+                        WHERE id = ?
+                        """,
+                        [enc.satisfaction_instrument, enc.satisfaction_date, enc.id],
+                    )
+
+            if newly_satisfied > 0:
+                total_newly_satisfied += newly_satisfied
+                total_folios_changed += 1
+
+        self.conn.commit()
+        summary = {
+            "folios_processed": len(folios),
+            "folios_changed": total_folios_changed,
+            "newly_satisfied": total_newly_satisfied,
+        }
+        logger.info(f"Satisfaction rematch complete: {summary}")
+        return summary
 
     def _calculate_total_years(self, periods: list[OwnershipPeriod]) -> float:
         """Calculate total years covered by the chain."""
@@ -619,9 +999,9 @@ class ChainBuilder:
                     folio, owner_name, acquired_from, acquisition_date,
                     disposition_date, acquisition_instrument, acquisition_doc_type,
                     acquisition_price, link_status, confidence_score,
-                    mrta_status, years_covered
+                    mrta_status, years_covered, data_source
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     folio,
@@ -636,6 +1016,7 @@ class ChainBuilder:
                     period.confidence_score,
                     period.mrta_status,
                     period.years_covered,
+                    period.data_source,
                 ],
             )
             period.id = cursor.lastrowid
@@ -722,7 +1103,7 @@ class ChainBuilder:
                 id, owner_name, acquired_from, acquisition_date,
                 disposition_date, acquisition_instrument, acquisition_doc_type,
                 acquisition_price, link_status, confidence_score,
-                mrta_status, years_covered
+                mrta_status, years_covered, data_source
             FROM chain_of_title
             WHERE folio = ?
             ORDER BY (acquisition_date IS NULL), acquisition_date ASC
@@ -746,6 +1127,7 @@ class ChainBuilder:
                 confidence_score=d["confidence_score"] or 1.0,
                 mrta_status=d["mrta_status"] or "pending",
                 years_covered=d["years_covered"] or 0.0,
+                data_source=d.get("data_source") or "ori",
             )
             periods.append(period)
 
@@ -790,3 +1172,178 @@ class ChainBuilder:
             encumbrances.append(enc)
 
         return encumbrances
+
+    def infer_encumbrances_from_judgment(
+        self,
+        folio: str,
+        auction: dict,
+        final_judgment: dict,
+    ) -> ChainResult:
+        """
+        Create judgment-inferred chain period and encumbrance when ORI discovery
+        found no encumbrance-type documents.
+
+        Every foreclosure has a foreclosing lien -- if ORI didn't find it, we
+        infer it from the judgment data so downstream survival analysis has
+        something to work with.  Records are marked ``is_inferred=1``.
+
+        Returns a ChainResult with the inferred period and encumbrance(s).
+        """
+        plaintiff = (
+            final_judgment.get("plaintiff")
+            or auction.get("plaintiff")
+            or ""
+        )
+        defendant = (
+            final_judgment.get("defendant")
+            or auction.get("defendant")
+            or ""
+        )
+        case_number = auction.get("case_number") or ""
+
+        if not plaintiff:
+            logger.warning(
+                f"Cannot infer encumbrances for {folio}: no plaintiff in judgment/auction data"
+            )
+            return ChainResult(folio=folio, issues=["No plaintiff for inference"])
+
+        # Determine encumbrance type from case number and plaintiff name
+        plaintiff_upper = plaintiff.upper()
+        is_cc = "CC" in case_number[6:8] if len(case_number) >= 8 else False
+        is_hoa = any(
+            kw in plaintiff_upper
+            for kw in ("ASSOCIATION", "HOA", "CONDO", "HOMEOWNER", "PROPERTY OWNER")
+        )
+
+        # HOA/CC foreclosures use 'lien'; mortgage foreclosures use 'mortgage'
+        enc_type = "lien" if is_cc or is_hoa else "mortgage"
+
+        # Extract mortgage details from judgment
+        foreclosed_mortgage = final_judgment.get("foreclosed_mortgage") or {}
+        original_amount = foreclosed_mortgage.get("original_amount") or 0.0
+        judgment_amount = final_judgment.get("judgment_amount")
+        if not original_amount and judgment_amount:
+            try:
+                original_amount = float(judgment_amount)
+            except (ValueError, TypeError):
+                original_amount = 0.0
+
+        recording_book = foreclosed_mortgage.get("recording_book") or ""
+        recording_page = foreclosed_mortgage.get("recording_page") or ""
+        instrument_number = foreclosed_mortgage.get("instrument_number") or ""
+        original_date = parse_date(foreclosed_mortgage.get("original_date"))
+        recording_date = parse_date(foreclosed_mortgage.get("recording_date")) or original_date
+
+        # Create an inferred ownership period for the defendant
+        period = OwnershipPeriod(
+            owner_name=defendant,
+            acquisition_date=recording_date,
+            acquisition_doc_type="INFERRED",
+            link_status="inferred",
+            confidence_score=0.3,
+            data_source="inferred",
+        )
+
+        # Check if an inferred chain period already exists (idempotency)
+        existing_chain = self.conn.execute(
+            "SELECT id FROM chain_of_title WHERE folio = ? AND data_source = 'inferred'",
+            [folio],
+        ).fetchone()
+
+        if existing_chain:
+            period.id = existing_chain[0]
+            logger.debug(f"Reusing existing inferred chain period {period.id} for {folio}")
+        else:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO chain_of_title (
+                    folio, owner_name, acquisition_date, acquisition_doc_type,
+                    link_status, confidence_score, data_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    folio,
+                    period.owner_name,
+                    period.acquisition_date,
+                    period.acquisition_doc_type,
+                    period.link_status,
+                    period.confidence_score,
+                    period.data_source,
+                ],
+            )
+            period.id = cursor.lastrowid
+
+        # Check if an inferred encumbrance already exists (idempotency)
+        existing_enc = self.conn.execute(
+            "SELECT id FROM encumbrances WHERE folio = ? AND is_inferred = 1",
+            [folio],
+        ).fetchone()
+
+        if existing_enc:
+            logger.info(
+                f"Inferred encumbrance already exists for {folio} (id={existing_enc[0]}), skipping"
+            )
+            enc = Encumbrance(
+                id=existing_enc[0],
+                chain_period_id=period.id,
+                encumbrance_type=enc_type,
+                creditor=plaintiff,
+                debtor=defendant,
+                amount=original_amount,
+                recording_date=recording_date,
+                instrument=instrument_number,
+                book=recording_book,
+                page=recording_page,
+            )
+        else:
+            enc = Encumbrance(
+                chain_period_id=period.id,
+                encumbrance_type=enc_type,
+                creditor=plaintiff,
+                debtor=defendant,
+                amount=original_amount,
+                amount_confidence="judgment_inferred",
+                recording_date=recording_date,
+                instrument=instrument_number,
+                book=recording_book,
+                page=recording_page,
+            )
+            cursor = self.conn.execute(
+                """
+                INSERT INTO encumbrances (
+                    folio, chain_period_id, encumbrance_type, creditor, debtor,
+                    amount, amount_confidence, recording_date, instrument,
+                    book, page, is_inferred
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                [
+                    folio,
+                    enc.chain_period_id,
+                    enc.encumbrance_type,
+                    enc.creditor,
+                    enc.debtor,
+                    enc.amount,
+                    enc.amount_confidence,
+                    enc.recording_date,
+                    enc.instrument,
+                    enc.book,
+                    enc.page,
+                ],
+            )
+            enc.id = cursor.lastrowid
+            logger.info(
+                f"Created inferred {enc_type} encumbrance for {folio}: "
+                f"creditor={plaintiff}, amount={original_amount}, id={enc.id}"
+            )
+
+        self.conn.commit()
+
+        return ChainResult(
+            folio=folio,
+            periods=[period],
+            encumbrances=[enc],
+            total_years=0.0,
+            is_complete=False,
+            mrta_status="incomplete",
+            issues=["Judgment-inferred: ORI found no encumbrance-type documents"],
+        )

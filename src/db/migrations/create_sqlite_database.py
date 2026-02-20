@@ -1,8 +1,8 @@
 """
-SQLite Schema Migration Script
+SQLite Schema Creation Script
 
-Creates SQLite database with WAL mode from existing DuckDB schema.
-Converts DuckDB-specific syntax to SQLite-compatible DDL.
+Creates the primary SQLite database with WAL mode.
+Defines tables for auctions, parcels, documents, chain of title, and enrichment data.
 
 Usage:
     uv run python -m src.db.migrations.create_sqlite_database

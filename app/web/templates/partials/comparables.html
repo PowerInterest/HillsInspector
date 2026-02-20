@@ -1,0 +1,91 @@
+{% if not pg_available %}
+<div class="alert alert-warning" style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;">
+    <strong>PostgreSQL Unavailable</strong> &mdash; Comparable sales require the PG reference database.
+</div>
+{% elif comparables %}
+
+{% if subdivision %}
+<div style="background: #f0f7ff; border: 1px solid #b3d7ff; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px;">
+    <strong>Subdivision:</strong> {{ subdivision.sub_name }}
+    {% if subdivision.plat_bk %} | Plat Book {{ subdivision.plat_bk }}, Page {{ subdivision.page }}{% endif %}
+</div>
+{% endif %}
+
+<p class="text-muted" style="margin-bottom: 12px;">
+    Qualified (arm's-length) sales of similar properties within the last {{ years }} years.
+    {{ comparables|length }} comparable{{ 's' if comparables|length != 1 }} found.
+</p>
+
+<div class="table-container">
+    <table class="auction-table">
+        <thead>
+            <tr>
+                <th>Sale Date</th>
+                <th>Sale Price</th>
+                <th>Type</th>
+                <th>Address</th>
+                <th>Beds/Baths</th>
+                <th>Sq Ft</th>
+                <th>Year</th>
+                <th>Just Value</th>
+                <th>Grantor/Grantee</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for comp in comparables %}
+            <tr class="auction-row">
+                <td>{{ comp.sale_date }}</td>
+                <td class="money">
+                    {% if comp.sale_amount %}
+                    ${{ "{:,.0f}".format(comp.sale_amount) }}
+                    {% else %}
+                    <span class="text-muted">N/A</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <span class="badge {% if comp.sale_type == 'WD' %}badge-info{% elif comp.sale_type == 'FD' %}badge-danger{% elif comp.sale_type == 'QC' %}badge-secondary{% else %}badge-warning{% endif %}"
+                          title="{{ comp.sale_type_desc or comp.sale_type }}">
+                        {{ comp.sale_type or 'N/A' }}
+                    </span>
+                </td>
+                <td>{{ comp.property_address or '-' }}</td>
+                <td>
+                    {% if comp.beds or comp.baths %}
+                    {{ comp.beds|int if comp.beds else '-' }} / {{ comp.baths if comp.baths else '-' }}
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td>{{ "{:,.0f}".format(comp.heated_area) if comp.heated_area else '-' }}</td>
+                <td>{{ comp.year_built|int if comp.year_built else '-' }}</td>
+                <td class="money">
+                    {% if comp.just_value %}
+                    ${{ "{:,.0f}".format(comp.just_value) }}
+                    {% else %}
+                    -
+                    {% endif %}
+                </td>
+                <td>
+                    <small>
+                        {% if comp.grantor %}<span class="text-muted">From:</span> {{ comp.grantor[:30] }}{% if comp.grantor|length > 30 %}...{% endif %}<br>{% endif %}
+                        {% if comp.grantee %}<span class="text-muted">To:</span> {{ comp.grantee[:30] }}{% if comp.grantee|length > 30 %}...{% endif %}{% endif %}
+                    </small>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="doc-type-legend" style="margin-top: 10px;">
+    <small>
+        <span class="badge badge-info">WD</span> Warranty Deed
+        <span class="badge badge-warning">CT</span> Certificate of Title
+        <span class="badge badge-danger">FD</span> Foreclosure Deed
+        <span class="badge badge-secondary">QC</span> Quit Claim
+    </small>
+</div>
+
+{% else %}
+<p class="empty-state">No comparable sales found for this property in the last {{ years }} years.</p>
+{% endif %}

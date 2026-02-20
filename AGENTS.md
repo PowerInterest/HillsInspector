@@ -10,9 +10,9 @@ A successful `--update` run is measured by **data completeness**, not by steps c
 |--------|--------|-----------------|
 | Final Judgment PDFs | 90%+ of foreclosures | Count `data/Foreclosure/*/documents/*.pdf` vs total auctions |
 | Extracted judgment data | 90%+ of PDFs | `SELECT COUNT(*) FROM auctions WHERE extracted_judgment_data IS NOT NULL` |
-| Chain of title | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM chain_of_title` (V2 DuckDB) |
-| Encumbrances identified | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM encumbrances` (V2 DuckDB) |
-| Lien survival analysis | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM encumbrances WHERE survival_status IS NOT NULL` (V2 DuckDB) |
+| Chain of title | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM chain_of_title` (SQLite) |
+| Encumbrances identified | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM encumbrances` (SQLite) |
+| Lien survival analysis | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM encumbrances WHERE survival_status IS NOT NULL` (SQLite) |
 
 **If any threshold is not met, the run is a FAILURE.** Do not report success. Instead:
 1. Diagnose why the data is missing (query the `status` table, check logs, read the relevant step code)
@@ -25,9 +25,9 @@ The chain of title and encumbrance data are the core deliverable. Without them, 
 ## Project Structure & Module Organization
 - Entry point: `main.py` (flags: `--update`, `--web`, `--new`); orchestration in `src/orchestrator.py`.
 - Scrapers in `src/scrapers/`; ingest helpers in `src/ingest/`; transforms/enrichment in `src/services/`; shared utilities in `src/utils/`.
-- DuckDB schema and scripts in `src/db/`; FastAPI + Jinja app in `app/web/` with API helpers in `app/services/` and DB wiring in `app/web/database.py`.
-- **Primary Database**: `data/property_master_sqlite.db` (SQLite) for transactional data, status tracking, and simple queries.
-- **Analytics Database**: `data/property_master_v2.db` (DuckDB) for complex title chain analysis and heavy-lifting queries.
+- Database schema and scripts in `src/db/`; FastAPI + Jinja app in `app/web/` with API helpers in `app/services/` and DB wiring in `app/web/database.py`.
+- **Operational Database**: `data/property_master_sqlite.db` (SQLite) for transactional data, status tracking, and active pipeline enrichment.
+- **Analytical Database**: PostgreSQL for high-volume historical data (Clerk, Sales, Sunbiz) and complex analytics.
 - **Web Snapshot**: `data/property_master_web.db` (SQLite) refreshable snapshot for read-only web access.
 - **Data Flow (Inbox Strategy)**:
     - Scrapers write raw data (Parquet) and assets (PDFs) to case-specific folders: `data/Foreclosure/{case_number}/`.
@@ -49,8 +49,8 @@ The chain of title and encumbrance data are the core deliverable. Without them, 
 - Modules/files snake_case; classes PascalCase; functions/vars snake_case; constants UPPER_SNAKE.
 - **Data Persistence**:
     - **Raw Data**: Write to Parquet files in `data/Foreclosure/{case_number}/`.
-    - **Transactional**: Use SQLite (`src/db/operations.py`) for property status and updates.
-    - **Analysis**: Use DuckDB (`src/db/v2/`) for complex aggregations and title chains.
+    - **Transactional**: Use SQLite (`src/db/operations.py`) for property status and active pipeline updates.
+    - **Analysis**: Use PostgreSQL for large-scale historical datasets and cross-source linking.
     - **Dataframes**: Use Polars for data manipulation.
 - Ruff formatter target width ~88 chars; keep comments minimal and purposeful.
 

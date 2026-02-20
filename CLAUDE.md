@@ -93,7 +93,9 @@ uv run playwright install chromium
 
 **DataFrames**: Only `polars` - never pandas
 
-**Database**: SQLite (WAL mode) at `data/property_master_sqlite.db` — single unified database. Always access through `PropertyDB` class (`src/db/operations.py`), never open the file directly with `sqlite3.connect()` (PropertyDB sets row_factory, WAL mode, and runs migrations).
+**Database (Pipeline)**: SQLite (WAL mode) at `data/property_master_sqlite.db` — pipeline transactional database. Always access through `PropertyDB` class (`src/db/operations.py`), never open the file directly with `sqlite3.connect()` (PropertyDB sets row_factory, WAL mode, and runs migrations).
+
+**Database (Reference)**: PostgreSQL `hills_sunbiz` at `localhost:5432` (user: `hills`, pass: `hills_dev`) — 2.4M sales records, 530K parcels, fuzzy name matching via `pg_trgm` + `fuzzystrmatch`. Used for property resolution (defendant name → folio), multi-unit detection, and sales chain lookups. See `docs/POSTGRES_REFERENCE.md` for full schema, indexes, and query examples.
 
 **Web**: FastAPI + Jinja2 SSR + HTMX (no React/SPA/client-side JS)
 
@@ -181,13 +183,13 @@ Scrapers -> IngestionService -> PropertyDB (SQLite) -> Analyzers -> Web UI
 
 ### Database Architecture
 
-**Single SQLite Database**: `data/property_master_sqlite.db` (WAL mode)
+**Two databases work together:**
 
-Always access via `PropertyDB` class — never `sqlite3.connect()` directly.
-The DB is accessible through `PropertyDB` (`src/db/operations.py`).
+1. **SQLite** (`data/property_master_sqlite.db`, WAL mode) — Pipeline transactional data. Access via `PropertyDB` class only.
+2. **PostgreSQL** (`hills_sunbiz` on localhost:5432) — Reference data: 2.4M sales, 530K parcels, fuzzy name search. See `docs/POSTGRES_REFERENCE.md`.
 
-**Tables** (auctions & enrichment):
-- `auctions` - Foreclosure/tax deed auction listings
+**SQLite Tables** (auctions & enrichment):
+- `auctions` - Foreclosure/tax deed auction listings (includes `surrogate_folio` for invalid-parcel cases)
 - `status` - Pipeline step completion tracking
 - `parcels` - Property details (owner, specs, coords)
 - `bulk_parcels` - HCPA bulk parcel data (strap, folio, address, legal desc)
@@ -195,16 +197,25 @@ The DB is accessible through `PropertyDB` (`src/db/operations.py`).
 - `market_data` - Zillow/listing data
 - `sales_history` - HCPA sales history
 
-**Tables** (ORI & title chain):
+**SQLite Tables** (ORI & title chain):
 - `documents` - ORI document metadata
 - `chain_of_title` - Ownership history periods
 - `encumbrances` - Liens, mortgages with survival status
 - `ori_search_queue` - Search queue for iterative discovery
 - `linked_identities` - Name change/trust transfer mappings
 
+**PostgreSQL Tables** (reference — read-only from pipeline's perspective):
+- `hcpa_allsales` - 2.4M sales records (grantor/grantee, folio, sale_type, or_book/page)
+- `hcpa_bulk_parcels` - 530K parcels (strap, owner, address, legal desc, units, valuations)
+- `hcpa_parcel_sub_names` - 11.5K subdivision code → name + plat book/page
+- `sunbiz_flr_filings` - 21K UCC financing statements
+- Fuzzy search: `resolve_property_by_name()` function (trigram + metaphone + sales history)
+- **Key join**: Pipeline `parcel_id` ↔ PostgreSQL `strap` column (NOT `folio`)
+
 **Creating New Databases:**
 ```bash
-uv run main.py --new  # Archives old, creates fresh database
+uv run main.py --new  # Archives old SQLite, creates fresh
+uv run python -m sunbiz.pg_loader  # Load/refresh PostgreSQL (idempotent)
 ```
 
 ## Logging

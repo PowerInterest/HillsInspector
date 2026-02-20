@@ -1,4 +1,21 @@
 <div class="timeline-container">
+    {% if chain_gaps %}
+        <div class="chain-gap-box" style="margin-bottom: 12px; padding: 10px 12px; border: 1px solid #e6e9ef; border-radius: 8px; background: #f8fafc;">
+            <div style="font-weight: 700; margin-bottom: 6px;">Chain Diagnostics</div>
+            <ul style="margin: 0; padding-left: 18px;">
+                {% for gap in chain_gaps %}
+                    <li style="margin: 4px 0;">
+                        <strong>{{ gap.gap_type }}</strong>
+                        {% if gap.detail %}: {{ gap.detail }}{% endif %}
+                        {% if gap.seq_prev is not none and gap.seq_next is not none %}
+                            ({{ gap.seq_prev }} → {{ gap.seq_next }})
+                        {% endif %}
+                    </li>
+                {% endfor %}
+            </ul>
+        </div>
+    {% endif %}
+
     {% if not chain_of_title %}
         <div class="no-data">
             <p>No chain of title data is available for this property.</p>
@@ -23,8 +40,10 @@
                                     ) %}
                                     <span class="badge {{ badge_class }}">{{ st }}</span>
                                 {% endif %}
-                                {% if transfer.confidence_score is not none %}
+                                {% if transfer.confidence_score is defined and transfer.confidence_score is not none %}
                                     <span class="badge badge-secondary">Score {{ "{:.2f}".format(transfer.confidence_score) }}</span>
+                                {% elif transfer.link_score is defined and transfer.link_score is not none %}
+                                    <span class="badge badge-secondary">Score {{ "{:.2f}".format(transfer.link_score) }}</span>
                                 {% endif %}
                             </div>
                             <div class="transfer-price">

@@ -15,7 +15,9 @@
         .search-item strong { display:block; font-size:0.95em; }
         .search-item .search-meta { font-size:0.8em; color:#888; }
         .search-item.muted { color:#999; font-style:italic; }
+        .nav-link.is-active { background:#f5f5f5; color:#1f2937; font-weight:600; }
     </style>
+    {% block extra_head %}{% endblock %}
 </head>
 
 <body>
@@ -23,10 +25,11 @@
         <div class="header-content">
             <a href="/" class="logo">HillsInspector</a>
             <nav class="nav">
-                <a href="/" class="nav-link">Dashboard</a>
-                <a href="/auctions" class="nav-link">Auctions</a>
-                <a href="/review/hcpa-failures" class="nav-link">Review Queue</a>
-                <a href="/history" class="nav-link">History</a>
+                <a href="/" class="nav-link{% if request.url.path == '/' %} is-active{% endif %}">Dashboard</a>
+                <a href="/auctions" class="nav-link{% if request.url.path.startswith('/auctions') %} is-active{% endif %}">Auctions</a>
+                <a href="/review/hcpa-failures" class="nav-link{% if request.url.path.startswith('/review') %} is-active{% endif %}">Review Queue</a>
+                <a href="/history" class="nav-link{% if request.url.path.startswith('/history') %} is-active{% endif %}">History</a>
+                <a href="/database" class="nav-link{% if request.url.path.startswith('/database') %} is-active{% endif %}">Database</a>
             </nav>
             <div class="search-box" style="position:relative;">
                 <input type="text" name="q" placeholder="Search address, folio, or owner..." hx-get="/api/search"

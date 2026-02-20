@@ -85,6 +85,7 @@ class ScraperStorage:
         (prop_dir / "vision").mkdir(parents=True, exist_ok=True)
         (prop_dir / "raw").mkdir(parents=True, exist_ok=True)
         (prop_dir / "documents").mkdir(parents=True, exist_ok=True)
+        (prop_dir / "photos").mkdir(parents=True, exist_ok=True)
 
         return prop_dir
 
@@ -290,7 +291,7 @@ class ScraperStorage:
 
     def get_latest(self, property_id: str, scraper: str) -> None:
         """Get latest scrape record. Returns None (no DB cache tracking)."""
-        return None
+        return
 
     # -------------------------------------------------------------------------
     # Record Methods (No-ops for Inbox Pattern)

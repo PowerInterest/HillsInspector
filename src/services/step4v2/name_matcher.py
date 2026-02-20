@@ -44,7 +44,14 @@ class NameMatcher:
     """
 
     # Suffixes to remove from names
+    # Ordered longest-first so " AS NOMINEE" is removed before " NOM"
     SUFFIXES = [
+        " AS NOMINEE",
+        " NOMINEE",
+        " NOM",
+        " AS TRUSTEE",
+        " TRUSTEE",
+        " TRU",
         " JR",
         " SR",
         " II",
@@ -63,6 +70,8 @@ class NameMatcher:
         " LTD",
         " LP",
         " LLP",
+        " NA",
+        " FSB",
     ]
 
     # Titles to remove from names

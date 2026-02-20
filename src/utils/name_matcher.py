@@ -80,6 +80,19 @@ class NameMatcher:
         "STEPHEN": "STEVEN",
         "DICK": "RICHARD",
         "RICK": "RICHARD",
+        # Organization abbreviations (common in ORI records)
+        "ASSN": "ASSOCIATION",
+        "ASSOC": "ASSOCIATION",
+        "NATL": "NATIONAL",
+        "SVCS": "SERVICES",
+        "SVC": "SERVICES",
+        "SVGS": "SAVINGS",
+        "FED": "FEDERAL",
+        "MTG": "MORTGAGE",
+        "NOM": "NOMINEE",
+        "MERSN": "MERS",
+        # Singular/plural normalization (apostrophe stripping creates mismatches)
+        "HOMEOWNER": "HOMEOWNERS",
     }
 
     @classmethod

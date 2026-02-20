@@ -48,6 +48,23 @@
         </div>
     </div>
 
+    <!-- PG Enrichment Badges (Subdivision / Multi-Unit) -->
+    {% if pg_data is defined and pg_data.pg_available %}
+    <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
+        {% if pg_data.subdivision %}
+        <span class="badge" style="background: #2ecc71; color: white; padding: 5px 12px; border-radius: 4px; font-size: 0.85rem;">
+            Subdivision: {{ pg_data.subdivision.sub_name }}
+            {% if pg_data.subdivision.plat_bk %}(Plat {{ pg_data.subdivision.plat_bk }}/{{ pg_data.subdivision.page }}){% endif %}
+        </span>
+        {% endif %}
+        {% if pg_data.multi_unit %}
+        <span class="badge" style="background: #e67e22; color: white; padding: 5px 12px; border-radius: 4px; font-size: 0.85rem;">
+            Multi-Unit: {{ pg_data.multi_unit.units }} units | {{ pg_data.multi_unit.land_use_desc }}
+        </span>
+        {% endif %}
+    </div>
+    {% endif %}
+
     <!-- Tabs (full-width) -->
     <div class="tabs-container property-tabs">
         <div class="tabs">
@@ -55,6 +72,7 @@
             <button class="tab-link" onclick="openTab(event, 'judgment')">Judgment</button>
             <button class="tab-link" onclick="openTab(event, 'chain')">Chain of Title</button>
             <button class="tab-link" onclick="openTab(event, 'liens')">Liens & Encumbrances</button>
+            <button class="tab-link" onclick="openTab(event, 'comparables')">Comparables</button>
             <button class="tab-link" onclick="openTab(event, 'permits')">Permits & NOCs</button>
             <button class="tab-link" onclick="openTab(event, 'tax')">Tax</button>
             <button class="tab-link" onclick="openTab(event, 'documents')">Documents</button>
@@ -64,10 +82,24 @@
         <div id="basic" class="tab-content active">
             <div class="property-detail-grid">
                 <div class="property-column">
+                    {% set photos_fb = (market.photos_with_fallback if market and market.photos_with_fallback else []) %}
                     {% set photos = (market.photos if market and market.photos else []) %}
                     <section class="card property-media">
                         <h2>Photos</h2>
-                        {% if photos %}
+                        {% if photos_fb %}
+                        <div class="media-hero">
+                            <img src="{{ photos_fb[0].url }}" loading="lazy" alt="Property photo"
+                                 {% if photos_fb[0].cdn_fallback %}data-fallback="{{ photos_fb[0].cdn_fallback }}"{% endif %}
+                                 onerror="if(this.dataset.fallback && !this.dataset.tried){this.dataset.tried='1';this.src=this.dataset.fallback}">
+                        </div>
+                        <div class="media-thumbs">
+                            {% for p in photos_fb[1:12] %}
+                            <img src="{{ p.url }}" loading="lazy" alt="Property thumbnail"
+                                 {% if p.cdn_fallback %}data-fallback="{{ p.cdn_fallback }}"{% endif %}
+                                 onerror="if(this.dataset.fallback && !this.dataset.tried){this.dataset.tried='1';this.src=this.dataset.fallback}">
+                            {% endfor %}
+                        </div>
+                        {% elif photos %}
                         <div class="media-hero">
                             <img src="{{ photos[0] }}" loading="lazy" alt="Property photo">
                         </div>
@@ -284,6 +316,15 @@
              hx-swap="innerHTML"
              style="display:none;">
             <div class="htmx-loading">Loading liens...</div>
+        </div>
+
+        <!-- Comparables Tab -->
+        <div id="comparables" class="tab-content"
+             hx-get="/property/{{ property.folio }}/comparables"
+             hx-trigger="tab-show once"
+             hx-swap="innerHTML"
+             style="display:none;">
+            <div class="htmx-loading">Loading comparable sales...</div>
         </div>
 
         <!-- Permits Tab -->

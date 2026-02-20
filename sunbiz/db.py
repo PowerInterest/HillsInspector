@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker
 
 
-DEFAULT_PG_DSN = "postgresql+psycopg://hills:hills_dev@localhost:5432/hills_sunbiz"
+DEFAULT_PG_DSN = "postgresql+psycopg://hills:hills_dev@localhost:5433/hills_sunbiz"
 
 
 def resolve_pg_dsn(explicit_dsn: str | None = None) -> str:
@@ -25,4 +25,3 @@ def get_engine(dsn: str) -> object:
 def get_session_factory(dsn: str) -> sessionmaker[Session]:
     engine = get_engine(dsn)
     return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
-

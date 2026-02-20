@@ -4,182 +4,498 @@
 <!-- Grid.js CSS -->
 <link href="https://cdn.jsdelivr.net/npm/gridjs/dist/theme/mermaid.min.css" rel="stylesheet" />
 <style>
-    .gridjs-wrapper {
-        border-radius: 12px;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    .history-panel {
+        border: 1px solid #d7e1ef;
+        border-radius: 14px;
+        background: linear-gradient(180deg, #f8fbff 0%, #edf3fb 100%);
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+        overflow: hidden;
+        margin-bottom: 1.25rem;
     }
 
-    .status-badge {
-        padding: 4px 8px;
-        border-radius: 6px;
+    .history-panel > summary {
+        list-style: none;
+        cursor: pointer;
+        padding: 14px 16px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid #d7e1ef;
+        user-select: none;
+        background: #eef4fc;
+    }
+
+    .history-panel > summary::-webkit-details-marker {
+        display: none;
+    }
+
+    .history-panel-title {
+        margin: 0;
+        color: #132236;
+        font-size: 1rem;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+    }
+
+    .history-panel-head-right {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .history-panel-toggle {
+        color: #2f435f;
+        font-size: 0.9rem;
+        font-weight: 700;
+        transition: transform 0.15s ease-in-out;
+    }
+
+    .history-panel[open] .history-panel-toggle {
+        transform: rotate(180deg);
+    }
+
+    .history-panel-body {
+        padding: 14px;
+    }
+
+    .history-panel-body.flush {
+        padding: 0;
+    }
+
+    #history-metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin: 0;
+    }
+
+    .metric-card {
+        border: 1px solid #d7e1ef;
+        border-radius: 14px;
+        background: #ffffff;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
+        padding: 16px 18px;
+        min-height: 132px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+
+    .metric-label {
+        margin: 0 0 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        font-size: 0.76rem;
+        font-weight: 700;
+        color: #132236;
+    }
+
+    .metric-value {
+        margin: 0;
+        font-size: 2rem;
+        line-height: 1.05;
+        font-weight: 800;
+        color: #1f4f8d;
+    }
+
+    .metric-subtext {
+        margin: 8px 0 0;
+        font-size: 0.86rem;
+        color: #132236;
+        font-weight: 500;
+    }
+
+    @media (max-width: 1100px) {
+        #history-metrics {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    @media (max-width: 700px) {
+        #history-metrics {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    #history-grid .gridjs-container {
+        border-radius: 0;
+        padding: 10px;
+        background: transparent;
+    }
+
+    #history-grid .gridjs-wrapper {
+        border: 1px solid #d7e1ef;
+        border-radius: 14px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+    }
+
+    #history-grid .gridjs-head {
+        margin-bottom: 0;
+        padding: 12px 12px 0;
+    }
+
+    #history-grid .gridjs-search input {
+        border: 1px solid #cfd9e8 !important;
+        border-radius: 10px !important;
+        padding: 10px 12px !important;
+        background: #ffffff !important;
+        box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+
+    #history-grid .gridjs-search input:focus {
+        border-color: #5b88d7 !important;
+        box-shadow: 0 0 0 3px rgba(91, 136, 215, 0.2) !important;
+    }
+
+    #history-grid .gridjs-th {
+        color: #2f435f;
+        font-weight: 700;
+        font-size: 0.74rem;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        border-bottom: 1px solid #d3deee !important;
+        background: #eaf0f9 !important;
+        padding: 8px 8px !important;
+    }
+
+    #history-grid .gridjs-td {
+        border-bottom: 1px solid #dfe7f2 !important;
+        color: #132236;
+        font-weight: 500;
+        font-size: 0.84rem;
+        padding: 7px 8px !important;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        line-height: 1.22;
+        vertical-align: top;
+    }
+
+    #history-grid .gridjs-table {
+        table-layout: fixed;
+        min-width: 1300px;
+    }
+
+    #history-grid .address-cell {
+        display: block;
+        white-space: normal;
+        line-height: 1.18;
+    }
+
+    #history-grid .address-line1,
+    #history-grid .address-line2 {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    #history-grid .address-line1 {
         font-weight: 600;
-        font-size: 0.8rem;
     }
 
-    .profit {
-        color: #10b981;
-        background: #ecfdf5;
+    #history-grid .address-line2 {
+        color: #37506c;
     }
 
-    .loss {
-        color: #ef4444;
-        background: #fef2f2;
+    #history-grid a.case-link {
+        color: #1f4f8d;
+        font-weight: 700;
+        text-decoration: none;
     }
+
+    #history-grid a.case-link:hover {
+        text-decoration: underline;
+    }
+
+    #history-grid .gridjs-table tbody tr:nth-child(odd) .gridjs-td,
+    #history-grid .gridjs-table tbody tr:nth-child(odd) td {
+        background-color: #f7faff !important;
+    }
+
+    #history-grid .gridjs-table tbody tr:nth-child(even) .gridjs-td,
+    #history-grid .gridjs-table tbody tr:nth-child(even) td {
+        background-color: #eaf1fb !important;
+    }
+
+    #history-grid .gridjs-table tbody tr:hover .gridjs-td,
+    #history-grid .gridjs-table tbody tr:hover td {
+        background-color: #dce8fd !important;
+        transition: background-color 0.12s ease-in-out, transform 0.12s ease-in-out;
+    }
+
+    #history-grid .gridjs-pagination {
+        padding: 10px 12px;
+        border-top: 1px solid #d7e1ef;
+        background: #f7faff;
+    }
+
+    #history-grid .gridjs-pagination .gridjs-pages button {
+        border: 1px solid #c9d5e8 !important;
+        border-radius: 8px !important;
+        background: #ffffff !important;
+        color: #2f435f !important;
+    }
+
+    #history-grid .gridjs-pagination .gridjs-pages button:hover {
+        background: #ecf2fc !important;
+    }
+
+    #top-buyers-table {
+        color: #132236;
+        margin: 0;
+    }
+
+    #top-buyers-table thead th {
+        background: #eaf0f9;
+        color: #2f435f;
+        text-transform: uppercase;
+        font-size: 0.78rem;
+        letter-spacing: 0.02em;
+        border-bottom: 1px solid #d3deee;
+    }
+
+    #top-buyers-table tbody tr:nth-child(odd) td {
+        background: #f7faff;
+    }
+
+    #top-buyers-table tbody tr:nth-child(even) td {
+        background: #eaf1fb;
+    }
+
+    #top-buyers-table tbody tr:hover td {
+        background: #dce8fd;
+    }
+
 </style>
 {% endblock %}
 
 {% block content %}
 <div class="container-fluid mt-4">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <h2>Historical Auction Analysis</h2>
-        <div>
-            <span class="badge bg-primary fs-6">{{ stats.total_auctions }} Recorded Auctions</span>
+    <details class="history-panel" open>
+        <summary>
+            <h2 class="history-panel-title">Historical Auction Analysis</h2>
+            <span class="history-panel-head-right">
+                <span class="badge bg-primary fs-6">{{ stats.total_auctions }} Recorded Auctions</span>
+                <span class="history-panel-toggle">▾</span>
+            </span>
+        </summary>
+        <div class="history-panel-body">
+            <div id="history-metrics">
+                <div class="metric-card">
+                    <p class="metric-label">Investor Share</p>
+                    <h2 class="metric-value">{{ stats.tp_share_pct }}%</h2>
+                    <p class="metric-subtext">of auctions sold to 3rd Parties</p>
+                </div>
+                <div class="metric-card">
+                    <p class="metric-label">Flip Success</p>
+                    <h2 class="metric-value">{{ stats.profitable_flips }}</h2>
+                    <p class="metric-subtext">{{ stats.loss_flips }} Flips at Loss</p>
+                </div>
+                <div class="metric-card">
+                    <p class="metric-label">Avg. Hold Time</p>
+                    <h2 class="metric-value">{{ stats.avg_hold_days }}d</h2>
+                    <p class="metric-subtext">Purchase to Resale</p>
+                </div>
+                <div class="metric-card">
+                    <p class="metric-label">Avg ROI</p>
+                    <h2 class="metric-value">{{ stats.avg_roi_mult }}x</h2>
+                    <p class="metric-subtext">Revenue / Acquisition</p>
+                </div>
+            </div>
         </div>
-    </div>
+    </details>
 
-    <!-- Stats Cards -->
-    <div class="row mb-5">
-        <div class="col-md-3">
-            <div class="card text-center h-100 shadow-sm border-0">
-                <div class="card-body">
-                    <h6 class="text-uppercase text-muted fw-bold small">Investor Share</h6>
-                    <h2 class="display-5 text-primary fw-bold">{{ stats.tp_share_pct }}%</h2>
-                    <p class="text-muted small mb-0">of auctions sold to 3rd Parties</p>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card text-center h-100 shadow-sm border-0">
-                <div class="card-body">
-                    <h6 class="text-uppercase text-muted fw-bold small">Flip Success</h6>
-                    <h2 class="display-5 text-success fw-bold">{{ stats.profitable_flips }}</h2>
-                    <p class="text-muted small mb-0">{{ stats.loss_flips }} Flips at Loss</p>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card text-center h-100 shadow-sm border-0">
-                <div class="card-body">
-                    <h6 class="text-uppercase text-muted fw-bold small">Avg. Hold Time</h6>
-                    <h2 class="display-5 fw-bold">142d</h2>
-                    <p class="text-muted small mb-0">Purchase to Resale</p>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card text-center h-100 shadow-sm border-0">
-                <div class="card-body">
-                    <h6 class="text-uppercase text-muted fw-bold small">Avg ROI</h6>
-                    <h2 class="display-5 fw-bold">{{ stats.avg_roi_mult }}x</h2>
-                    <p class="text-muted small mb-0">Revenue / Acquisition</p>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Data Grid -->
-    <div class="card shadow-sm border-0 mb-5">
-        <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
-            <h5 class="mb-0 fw-bold">📊 Auction & Resale Ledger</h5>
-        </div>
-        <div class="card-body p-0">
+    <details class="history-panel" open>
+        <summary>
+            <h2 class="history-panel-title">📊 Auction & Resale Ledger</h2>
+            <span class="history-panel-toggle">▾</span>
+        </summary>
+        <div class="history-panel-body flush">
             <div id="history-grid"></div>
         </div>
-    </div>
+    </details>
 
-    <div class="row">
-        <!-- Top Buyers Table -->
-        <div class="col-md-6">
-            <div class="card shadow-sm border-0 mb-4">
-                <div class="card-header bg-white py-3">
-                    <h5 class="mb-0 fw-bold">🏛️ Top Institutional Buyers</h5>
-                </div>
-                <div class="table-responsive">
-                    <table class="table table-hover mb-0">
-                        <thead class="table-light">
-                            <tr>
-                                <th>Buyer Name</th>
-                                <th class="text-end">Units</th>
-                                <th class="text-end">Total Capital</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for buyer in stats.top_buyers %}
-                            <tr>
-                                <td>{{ buyer[0] }}</td>
-                                <td class="text-end">{{ buyer[1] }}</td>
-                                <td class="text-end">${{ "{:,.0f}".format(buyer[2]) }}</td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
+    <details class="history-panel" open>
+        <summary>
+            <h2 class="history-panel-title">🏛️ Top Institutional Buyers</h2>
+            <span class="history-panel-toggle">▾</span>
+        </summary>
+        <div class="history-panel-body flush">
+            <div class="table-responsive">
+                <table id="top-buyers-table" class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Buyer Name</th>
+                            <th class="text-end">Units</th>
+                            <th class="text-end">Total Capital</th>
+                            <th class="text-end">Avg ROI</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for buyer in stats.top_buyers %}
+                        <tr>
+                            <td>{{ buyer[0] }}</td>
+                            <td class="text-end">{{ buyer[1] }}</td>
+                            <td class="text-end">${{ "{:,.0f}".format(buyer[2]) }}</td>
+                            <td class="text-end">
+                                {% if buyer[3] is not none %}
+                                {{ "{:.2f}".format(buyer[3]) }}x
+                                {% else %}
+                                —
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
             </div>
         </div>
-    </div>
+    </details>
 </div>
 
 <!-- Grid.js JS -->
 <script src="https://cdn.jsdelivr.net/npm/gridjs/dist/gridjs.umd.js"></script>
 <script>
+    function escapeHtml(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            "\"": "&quot;",
+            "'": "&#39;"
+        }[char]));
+    }
+
     new gridjs.Grid({
         columns: [
-            { name: "Date", width: "120px" },
+            { name: "Date", width: "92px" },
             {
                 name: "Case #",
-                width: "180px",
+                width: "120px",
                 formatter: (cell, row) => {
-                    const url = row.cells[12].data;
-                    return gridjs.html(`<a href="${url}" target="_blank" class="text-decoration-none">${cell}</a>`);
+                    const url = row.cells[16].data;
+                    const caseNumber = String(cell ?? "").replace(/\s*\(document link\)\s*$/i, "").trim() || "—";
+                    const safeCase = escapeHtml(caseNumber);
+                    if (!url) return safeCase;
+                    return gridjs.html(`<a href="${url}" target="_blank" class="case-link">${safeCase}</a>`);
                 }
             },
-            { name: "Address", width: "300px" },
-            { name: "Buyer", width: "150px" },
-            { name: "Status", width: "180px" },
+            {
+                name: "Address",
+                width: "220px",
+                formatter: (cell) => {
+                    if (!cell) return "—";
+                    const fullAddress = String(cell).trim();
+                    const safeFull = escapeHtml(fullAddress);
+                    const parts = fullAddress.split(",").map((part) => part.trim()).filter(Boolean);
+                    const line1 = parts.length > 0 ? parts[0] : fullAddress;
+                    const line2 = parts.length > 1 ? parts.slice(1).join(", ") : "";
+                    const safeLine1 = escapeHtml(line1);
+                    const safeLine2 = escapeHtml(line2);
+                    if (!line2) {
+                        return gridjs.html(
+                            `<span class="address-cell" title="${safeFull}"><span class="address-line1">${safeLine1}</span></span>`
+                        );
+                    }
+                    return gridjs.html(
+                        `<span class="address-cell" title="${safeFull}"><span class="address-line1">${safeLine1}</span><span class="address-line2">${safeLine2}</span></span>`
+                    );
+                }
+            },
+            { name: "Buyer", width: "145px" },
+            {
+                name: "Bed/Bath",
+                width: "72px",
+                formatter: (cell) => cell || '—'
+            },
+            {
+                name: "SqFt",
+                width: "82px",
+                formatter: (cell) => (cell === null || cell === undefined) ? '—' : Number(cell).toLocaleString()
+            },
             {
                 name: "Winning Bid",
-                width: "140px",
-                formatter: (cell) => `$${cell?.toLocaleString()}`
+                width: "108px",
+                formatter: (cell) => (cell === null || cell === undefined) ? '—' : `$${Number(cell).toLocaleString()}`
             },
             {
                 name: "Resale Price",
-                width: "140px",
-                formatter: (cell) => cell ? `$${cell.toLocaleString()}` : '—'
+                width: "108px",
+                formatter: (cell) => (cell === null || cell === undefined) ? '—' : `$${Number(cell).toLocaleString()}`
             },
             {
                 name: "Profit",
-                width: "140px",
+                width: "108px",
                 formatter: (cell) => {
-                    if (!cell) return '—';
-                    const color = cell > 0 ? 'text-success' : 'text-danger';
-                    return gridjs.html(`<span class="${color} fw-bold">$${cell.toLocaleString()}</span>`);
+                    if (cell === null || cell === undefined) return '—';
+                    const amount = Number(cell);
+                    if (!Number.isFinite(amount)) return '—';
+                    const color = amount > 0 ? '#15803d' : (amount < 0 ? '#b91c1c' : '#6b7280');
+                    return gridjs.html(`<span style="color:${color} !important;font-weight:700 !important">$${amount.toLocaleString()}</span>`);
                 }
             },
             {
                 name: "ROI",
-                width: "110px",
-                formatter: (cell) => cell ? `${cell.toFixed(2)}x` : '—'
+                width: "74px",
+                formatter: (cell) => {
+                    if (cell === null || cell === undefined) return '—';
+                    const amount = Number(cell);
+                    if (!Number.isFinite(amount)) return '—';
+                    const color = amount > 1 ? '#15803d' : (amount < 1 ? '#b91c1c' : '#6b7280');
+                    return gridjs.html(`<span style="color:${color} !important;font-weight:700 !important">${amount.toFixed(2)}x</span>`);
+                }
             },
             {
-                name: "Hold",
-                width: "100px",
-                formatter: (cell) => cell ? `${cell}d` : '—'
+                name: "Hold Days",
+                width: "86px",
+                formatter: (cell) => (cell === null || cell === undefined) ? '—' : `${cell}d`
+            },
+            {
+                name: "Permits",
+                width: "72px",
+                formatter: (cell) => cell ? `${cell}` : '0'
+            },
+            {
+                name: "Permit Est. $",
+                width: "104px",
+                formatter: (cell) => (cell === null || cell === undefined) ? '—' : `$${Number(cell).toLocaleString()}`
+            },
+            {
+                name: "Research",
+                width: "78px",
+                formatter: (cell) => {
+                    if (!cell) return '—';
+                    return gridjs.html(`<a href="${cell}" target="_blank" class="btn btn-sm btn-outline-primary">Open</a>`);
+                }
             },
             { name: "Resale Date", hidden: true },
             { name: "Debt", hidden: true },
             { name: "PDF Link", hidden: true }
         ],
             server: {
-                url: "/history/data",
-                then: data => data.map(item => [
-                    item.auction_date, item.case_number, item.address, item.buyer,
-                    item.status, item.winning_bid, item.resale_price, item.profit,
-                    item.roi, item.hold_time, item.resale_date, item.debt, item.pdf_url
-                ])
+                url: "/history/data?limit=50000",
+                then: data => data.map(item => {
+                    const beds = item.bedrooms;
+                    const baths = item.bathrooms;
+                    const bedBath = (beds === null || beds === undefined) && (baths === null || baths === undefined)
+                        ? null
+                        : `${(beds === null || beds === undefined) ? '—' : Number(beds).toFixed(0)}/${(baths === null || baths === undefined) ? '—' : Number(baths).toFixed(1)}`;
+                    return [
+                        item.auction_date, item.case_number, item.address, item.buyer,
+                        bedBath, item.sqft,
+                        item.winning_bid, item.resale_price, item.profit,
+                        item.roi, item.hold_time, item.permits_between_sale,
+                        item.permit_cost_between_sale, item.research_url,
+                        item.resale_date, item.debt, item.pdf_url
+                    ];
+                })
             },
         search: true,
         sort: true,
-        pagination: { limit: 10 },
+        pagination: { limit: 100 },
         className: {
             table: 'table mb-0'
         }

@@ -1,7 +1,12 @@
 # HillsInspector API Endpoints & URLs
 
+## https://hillsborough.maps.arcgis.com/apps/MapSeries/index.html?appid=ea0aa3dabf00443b983e904587455673 has flood data down to a science
+## GIS Viewer: https://hillsborough.maps.arcgis.com/apps/dashboards/30eb1fb6bf3c4d6382f2f5f8fc65f52a
+## Bulk Civil Cases: https://publicrec.hillsclerk.com/Civil/bulkdata/ 
+## Florida DOR NAL File: https://floridarevenue.com/property/dataportal/ 
+## HydroMap: https://hillsborough.maps.arcgis.com/apps/MapSeries/index.html?appid=ea0aa3dabf00443b983e904587455673
 ## External APIs (County Services & Third-Party)
-
+## COunty GIS BUilding Construction Activity: https://hillsborough.maps.arcgis.com/apps/dashboards/8cced676c3154b9787936bd485e7d2b5
 ### Hillsborough County Clerk of Court - ORI (Official Records Index)
 
 | Method | URL Pattern | Description | Source |
@@ -47,7 +52,10 @@
 |--------|-------------|-------------|--------|
 | GET | `https://aca-prod.accela.com/TAMPA/Default.aspx` | City of Tampa permit portal | `permit_scraper.py` |
 | GET | `https://aca-prod.accela.com/HCFL/Default.aspx` | Hillsborough County permit portal | `permit_scraper.py` |
+| GET | `https://aca-prod.accela.com/Tampa/Cap/CapHome.aspx?module=Building&TabName=Building` | Tampa Building module search (date-window form) | `src/services/TampaPermit.py` |
 | GET | `https://aca-prod.accela.com/TAMPA/Cap/GlobalSearchResults.aspx?isNewQuery=yes&QueryText={address}#CAPList` | Tampa global search by address | `permit_scraper.py` |
+| POST | `https://aca-prod.accela.com/TAMPA/Cap/GlobalSearchResults.aspx?QueryText={query}` | Trigger record-list export postback (`__EVENTTARGET=...btnExport`) | `src/services/TampaPermit.py` |
+| GET | `https://aca-prod.accela.com/TAMPA/Export2CSV.ashx?flag={id}` | CSV export download (session-scoped flag) | `src/services/TampaPermit.py` |
 
 ### Tax Payment Status
 
@@ -62,6 +70,52 @@
 | Method | URL Pattern | Description | Source |
 |--------|-------------|-------------|--------|
 | GET | `https://search.sunbiz.org` | FL Dept of State business entity search | `sunbiz_scraper.py` |
+
+### Florida DOS / Sunbiz Bulk SFTP
+
+| Method | URL Pattern | Description | Source |
+|--------|-------------|-------------|--------|
+| SFTP | `sftp://sftp.floridados.gov:22/public/doc` | Sunbiz bulk data root (daily + quarterly datasets) | `sunbiz/sync.py` |
+| SFTP | `sftp://sftp.floridados.gov:22/public/doc/quarterly` | Quarterly snapshot dataset root | `sunbiz/sync.py` |
+
+**SFTP dataset directories under `/public/doc` (verified on February 19, 2026):**
+
+| Directory | Dataset Purpose | Notes |
+|-----------|------------------|-------|
+| `cor` | Corporate filings and corporate events (daily deltas + historical folders). | Includes `Filings`, `Events`, year folders, and `Prior to 2011`. |
+| `fic` | Fictitious Name registrations and associated events/actions (daily deltas + historical folders). | Includes `Filings`, `Events`, year folders, and `Prior to 2011`. |
+| `tm` | Trademark/mark filings daily data and historical year folders. | Includes `Prior to 2011`. |
+| `FLR` | Federal Lien Registration data split by record type. | Subdirs: `FILINGS`, `DEBTORS`, `SECURED`, `EVENTS`. |
+| `gen` | General partnership data (`Filings`, `Events`). | Daily delta style layout. |
+| `quarterly` / `Quarterly` | Quarterly snapshot bundles. | Contains `Cor`, `Fic`, `FLR`, `Gen`, `Non-Profit`, `TradeMarks`. |
+| `cornp` | Legacy corporate/non-profit quarterly-style extract. | `readme.txt` describes active/inactive corp records with RA/officer data. |
+| `notes` | Index/reference text files for legacy corp/event file listings. | Example: `corindex.txt`. |
+| `AG` | Large multi-part corporation/principal archive. | Contains `corprindata.zip` -> `corprindata0.txt`..`corprindata9.txt`. Acronym meaning not explicitly documented in-folder. |
+| `DHE` | Quarterly email export archive files. | Files like `email_2025_q4.zip` -> `email_2025_q4.txt`; in-folder meaning not explicitly documented. |
+| `ficevent-Year2000` | Legacy/placeholder fictitious-name event files. | Contains very old zero-byte `*.dat` placeholders. |
+
+**Quarterly bundle file map (`/public/doc/quarterly`):**
+
+| Quarterly Folder | Typical Files |
+|------------------|--------------|
+| `Cor` | `cordata.zip`, `corevt.zip` |
+| `Fic` | `ficdata.zip`, `ficevt.zip` |
+| `FLR` | `flrf.zip`, `flrd.zip`, `flrs.zip`, `flre.zip` |
+| `Gen` | `Genfile.zip`, `Genevt.zip` |
+| `Non-Profit` | `npcordata.zip` |
+| `TradeMarks` | `TMdata.zip` |
+
+**Primary metadata/readme files discovered on SFTP:**
+- `/public/doc/quarterly/FLR/FLRreadme.txt`
+- `/public/doc/fic/Events/Ficreadme.txt`
+- `/public/doc/cor/Events/COREVENTREADME.txt`
+- `/public/doc/cornp/readme.txt`
+
+**Official reference pages:**
+- `https://dos.fl.gov/sunbiz/other-services/data-downloads`
+- `https://dos.fl.gov/sunbiz/other-services/data-downloads/daily-data/`
+- `https://dos.fl.gov/sunbiz/other-services/data-downloads/quarterly-data/`
+- `https://dos.fl.gov/sunbiz/other-services/data-downloads/data-usage-guide/`
 
 ### FEMA Flood Zones
 
@@ -145,6 +199,12 @@
 |--------|------|-------------|
 | GET | `/history` | Historical auction data page |
 | GET | `/history/data` | Historical data JSON endpoint |
+
+### Database Routes (`app/web/routers/database_view.py`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/database` | Database workspace (`?db=postgres` default, `?db=sqlite` read-only local query mode) |
 
 ### Global Routes (`app/web/main.py`)
 

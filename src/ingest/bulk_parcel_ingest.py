@@ -595,7 +595,7 @@ def download_and_ingest(db_path: str = str(DB_PATH), force: bool = False, ingest
         "parquet_file": str(parquet_path)
     }
 
-    # 4. Ingest to DuckDB (Optional)
+    # 4. Ingest to SQLite (Optional)
     if ingest_to_db:
         # Note: We need to handle the new lat/lon columns in ingest_to_sqlite if we want them in the DB
         # For now, ingest_to_sqlite follows hardcoded schema.

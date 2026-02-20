@@ -1,0 +1,285 @@
+{% extends "base.html" %}
+
+{% block title %}Database - HillsInspector{% endblock %}
+
+{% block extra_head %}
+<style>
+    .database-mode-switch {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+        flex-wrap: wrap;
+    }
+
+    .database-mode-link {
+        display: inline-block;
+        padding: 0.45rem 0.75rem;
+        border-radius: 6px;
+        border: 1px solid #d1d5db;
+        background: #fff;
+        color: #111827;
+        text-decoration: none;
+        font-weight: 600;
+    }
+
+    .database-mode-link.active {
+        background: #2563eb;
+        border-color: #2563eb;
+        color: #fff;
+    }
+
+    .database-mode-link:hover {
+        text-decoration: none;
+    }
+
+    .database-card {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .database-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+
+    .database-open {
+        display: inline-block;
+        padding: 0.5rem 0.9rem;
+        border-radius: 6px;
+        border: 1px solid #2563eb;
+        color: #fff;
+        background: #2563eb;
+        text-decoration: none;
+        font-weight: 600;
+    }
+
+    .database-open:hover {
+        text-decoration: none;
+        background: #1d4ed8;
+    }
+
+    .database-frame {
+        width: 100%;
+        height: calc(100vh - 220px);
+        min-height: 640px;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+    }
+
+    @media (max-width: 900px) {
+        .database-frame {
+            height: calc(100vh - 180px);
+            min-height: 480px;
+        }
+    }
+
+    .sqlite-form-row {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        align-items: center;
+        margin-bottom: 0.75rem;
+    }
+
+    .sqlite-form-row select,
+    .sqlite-form-row input,
+    .sqlite-form-row button,
+    .sqlite-form-row textarea {
+        font-size: 0.95rem;
+    }
+
+    .sqlite-query {
+        width: 100%;
+        min-height: 140px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        padding: 0.65rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+
+    .sqlite-run {
+        display: inline-block;
+        padding: 0.5rem 0.9rem;
+        border-radius: 6px;
+        border: 1px solid #2563eb;
+        background: #2563eb;
+        color: #fff;
+        font-weight: 600;
+        cursor: pointer;
+    }
+
+    .sqlite-run:hover {
+        background: #1d4ed8;
+    }
+
+    .sqlite-table-wrap {
+        overflow-x: auto;
+    }
+
+    .sqlite-table {
+        border-collapse: collapse;
+        width: 100%;
+        min-width: 720px;
+    }
+
+    .sqlite-table th,
+    .sqlite-table td {
+        border: 1px solid #e5e7eb;
+        padding: 0.45rem 0.55rem;
+        text-align: left;
+        vertical-align: top;
+    }
+
+    .sqlite-table th {
+        background: #f8fafc;
+        font-weight: 700;
+    }
+
+    .sqlite-error {
+        color: #991b1b;
+        background: #fef2f2;
+        border: 1px solid #fecaca;
+        border-radius: 6px;
+        padding: 0.65rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="database-mode-switch">
+    <a href="/database?db=postgres" class="database-mode-link{% if selected_backend == 'postgres' %} active{% endif %}">
+        PostgreSQL
+    </a>
+    <a href="/database?db=sqlite" class="database-mode-link{% if selected_backend == 'sqlite' %} active{% endif %}">
+        SQLite
+    </a>
+</div>
+
+<div class="database-card">
+    <div class="database-header">
+        <div>
+            <h1 style="font-size:1.2rem; margin:0;">
+                {% if selected_backend == "postgres" %}
+                PostgreSQL Database
+                {% else %}
+                SQLite Database
+                {% endif %}
+            </h1>
+            <p class="muted" style="margin-top:0.25rem;">
+                {% if selected_backend == "postgres" %}
+                CloudBeaver connection for viewing and querying PostgreSQL data.
+                {% else %}
+                Read-only SQLite query mode for local pipeline data.
+                {% endif %}
+            </p>
+        </div>
+
+        {% if selected_backend == "postgres" and cloudbeaver_pg_url %}
+        <a class="database-open" href="{{ cloudbeaver_pg_url }}" target="_blank" rel="noopener noreferrer">
+            Open In New Tab
+        </a>
+        {% elif selected_backend == "sqlite" and cloudbeaver_sqlite_url %}
+        <a class="database-open" href="{{ cloudbeaver_sqlite_url }}" target="_blank" rel="noopener noreferrer">
+            Open SQLite In CloudBeaver
+        </a>
+        {% endif %}
+    </div>
+</div>
+
+{% if selected_backend == "postgres" %}
+{% if not cloudbeaver_pg_url %}
+<div class="database-card">
+    <p><strong>CLOUDBEAVER_PG_URL</strong> (or <strong>CLOUDBEAVER_URL</strong>) is not configured.</p>
+    <p class="muted">Set it in your environment (example: <code>http://localhost:8978</code>).</p>
+</div>
+{% elif not cloudbeaver_embed_enabled %}
+<div class="database-card">
+    <p>Embedded database view is disabled.</p>
+    <p class="muted">Set <code>CLOUDBEAVER_EMBED=1</code> to render inline.</p>
+</div>
+{% else %}
+<iframe
+    class="database-frame"
+    src="{{ cloudbeaver_pg_url }}"
+    title="CloudBeaver PostgreSQL Browser"
+    loading="lazy"
+    referrerpolicy="no-referrer"
+></iframe>
+{% endif %}
+{% else %}
+<div class="database-card">
+    <p class="muted">
+        SQLite DB path: <code>{{ sqlite_db_path }}</code>
+    </p>
+
+    <form method="get" action="/database">
+        <input type="hidden" name="db" value="sqlite">
+        <div class="sqlite-form-row">
+            <label for="table"><strong>Table:</strong></label>
+            <select id="table" name="table">
+                {% for t in sqlite_tables %}
+                <option value="{{ t }}"{% if t == sqlite_table %} selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+            </select>
+            <label for="max_rows"><strong>Max rows:</strong></label>
+            <input id="max_rows" name="max_rows" type="number" min="1" max="1000" value="{{ max_rows }}">
+            <button class="sqlite-run" type="submit">Preview Table</button>
+        </div>
+    </form>
+
+    <form method="get" action="/database">
+        <input type="hidden" name="db" value="sqlite">
+        <input type="hidden" name="table" value="{{ sqlite_table }}">
+        <input type="hidden" name="max_rows" value="{{ max_rows }}">
+        <div class="sqlite-form-row">
+            <label for="sql"><strong>SQL (read-only):</strong></label>
+        </div>
+        <textarea id="sql" name="sql" class="sqlite-query" placeholder="SELECT * FROM auctions LIMIT 50">{{ sqlite_query }}</textarea>
+        <div class="sqlite-form-row">
+            <button class="sqlite-run" type="submit">Run Query</button>
+            <span class="muted">Only single SELECT/CTE statements are allowed.</span>
+        </div>
+    </form>
+</div>
+
+{% if sqlite_error %}
+<div class="database-card">
+    <div class="sqlite-error"><strong>Query error:</strong> {{ sqlite_error }}</div>
+</div>
+{% endif %}
+
+{% if sqlite_columns and sqlite_rows %}
+<div class="database-card">
+    <p class="muted">Showing {{ sqlite_row_count }} row(s).</p>
+    <div class="sqlite-table-wrap">
+        <table class="sqlite-table">
+            <thead>
+                <tr>
+                    {% for col in sqlite_columns %}
+                    <th>{{ col }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in sqlite_rows %}
+                <tr>
+                    {% for cell in row %}
+                    <td>{{ cell }}</td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

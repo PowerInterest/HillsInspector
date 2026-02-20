@@ -178,8 +178,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-properties",
         type=int,
-        default=500,
-        help="Max property pages to extract (default 500)",
+        default=0,
+        help="Max property pages to extract (0 = no cap, default).",
     )
     parser.add_argument(
         "--checkpoint-every",
@@ -365,11 +365,17 @@ def parse_hills_auction_date_iso(value: Optional[str]) -> Optional[str]:
     if not value:
         return None
     text = _strip_day_ordinal(value.strip())
-    try:
-        dt = datetime.strptime(text, "%B %d, %Y")
-    except ValueError:
-        return None
-    return dt.strftime("%Y-%m-%d")
+    # Normalize common variants seen on listing pages.
+    text = re.sub(r"\s+at\s+\d{1,2}:\d{2}\s*(am|pm)\b.*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+\d{1,2}:\d{2}\s*(am|pm)\b.*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip()
+    for fmt in ("%B %d, %Y", "%b %d, %Y", "%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(text, fmt)
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
 
 
 def parse_iso_date(value: Optional[str]) -> Optional[date]:
@@ -645,6 +651,24 @@ def save_record_csv(path: Path, records: list[ListingRecord]) -> None:
 
 
 def record_from_dict(payload: dict[str, Any]) -> ListingRecord:
+    raw_section_data = payload.get("section_data")
+    section_data: dict[str, dict[str, str]] = {}
+    if isinstance(raw_section_data, dict):
+        for section_name, section_values in raw_section_data.items():
+            if not isinstance(section_name, str) or not isinstance(section_values, dict):
+                continue
+            normalized_section: dict[str, str] = {}
+            for key, value in section_values.items():
+                if not isinstance(key, str):
+                    continue
+                normalized_section[key] = "" if value is None else str(value)
+            section_data[section_name] = normalized_section
+
+    raw_data_sources = payload.get("data_sources")
+    data_sources: list[str] = []
+    if isinstance(raw_data_sources, list):
+        data_sources = [str(x) for x in raw_data_sources]
+
     return ListingRecord(
         property_id=str(payload.get("property_id", "")),
         slug=str(payload.get("slug", "")),
@@ -680,8 +704,8 @@ def record_from_dict(payload: dict[str, Any]) -> ListingRecord:
         photo_urls=[str(x) for x in payload.get("photo_urls", []) if isinstance(x, str)],
         html_path=str(payload.get("html_path", "")),
         text_path=str(payload.get("text_path", "")),
-        section_data=payload.get("section_data") if isinstance(payload.get("section_data"), dict) else {},
-        data_sources=payload.get("data_sources") if isinstance(payload.get("data_sources"), list) else [],
+        section_data=section_data,
+        data_sources=data_sources,
         matched_case_number=payload.get("matched_case_number"),
         matched_folio=payload.get("matched_folio"),
         matched_address=payload.get("matched_address"),
@@ -1030,13 +1054,12 @@ def crawl_all(
             if not is_hills_url(link):
                 continue
             if is_property_url(link):
-                if link not in discovered_property_urls:
-                    discovered_property_urls.add(link)
-                if (
-                    link not in visited
-                    and link not in queue
-                    and (max_properties <= 0 or len(discovered_property_urls) <= max_properties)
-                ):
+                if link in discovered_property_urls:
+                    continue
+                if max_properties > 0 and len(discovered_property_urls) >= max_properties:
+                    continue
+                discovered_property_urls.add(link)
+                if link not in visited and link not in queue:
                     queue.append(link)
             elif is_list_url(link):
                 if link not in visited and link not in queue:

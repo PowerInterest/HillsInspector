@@ -71,4 +71,3 @@ def ensure_duckdb_utc(conn) -> None:
     Kept for backward compatibility with callers that haven't been migrated yet.
     Safe to remove once all call-sites are converted to SQLite.
     """
-    pass

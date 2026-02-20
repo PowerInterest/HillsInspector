@@ -343,7 +343,7 @@
                         <td>${{ "{:,.2f}".format(transfer.acquisition_price or 0) }}</td>
                         <td>
                             {% if transfer.link_status %}{{ transfer.link_status }}{% else %}-{% endif %}
-                            {% if transfer.confidence_score is not none %} ({{ "{:.2f}".format(transfer.confidence_score) }}){% endif %}
+                            {% if transfer.confidence_score is defined and transfer.confidence_score is not none %} ({{ "{:.2f}".format(transfer.confidence_score) }}){% elif transfer.link_score is defined and transfer.link_score is not none %} ({{ "{:.2f}".format(transfer.link_score) }}){% endif %}
                         </td>
                         <td>
                             {% if transfer.acquisition_instrument %}
