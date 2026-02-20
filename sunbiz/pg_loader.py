@@ -27,9 +27,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
 
+from loguru import logger
 import polars as pl
 from sqlalchemy import delete
 from sqlalchemy import select
+from sqlalchemy import text as sa_text
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -54,10 +56,14 @@ from sunbiz.models import HcpaSpecialDistrictSd
 from sunbiz.models import HcpaSpecialDistrictSd2
 from sunbiz.models import HcpaSpecialDistrictTif
 from sunbiz.models import HcpaSubdivision
+from sunbiz.models import DorNalParcel
 from sunbiz.models import IngestFile
 from sunbiz.models import SunbizFlrEvent
 from sunbiz.models import SunbizFlrFiling
 from sunbiz.models import SunbizFlrParty
+from sunbiz.models import SunbizEntityEvent
+from sunbiz.models import SunbizEntityFiling
+from sunbiz.models import SunbizEntityParty
 from sunbiz.models import SunbizRawRecord
 
 
@@ -78,6 +84,74 @@ HCPA_DATASET_PATTERNS = {
         r"^special_districts_\d{2}_\d{2}_\d{4}\.zip$", re.IGNORECASE
     ),
     "latlon": re.compile(r"^LatLon_Table_\d{2}_\d{2}_\d{4}\.zip$", re.IGNORECASE),
+}
+
+
+DEFAULT_DOR_NAL_DIR = Path("data/bulk_data/dor_nal")
+
+# Hillsborough County is DOR county code 39 — used in both the download portal
+# filename ("Hillsborough 39 Final NAL 2025.zip") and the CO_NO column in the CSV.
+DOR_NAL_HILLSBOROUGH_FIPS = "39"
+DOR_NAL_HILLSBOROUGH_CO_NO = "39"
+
+# DOR NAL download URL pattern — final NAL for a given year.
+# The data portal lists files as "Hillsborough 39 Final NAL {year}.zip".
+DOR_NAL_BASE_URL = (
+    "https://floridarevenue.com/property/dataportal/Documents/"
+    "PTO%20Data%20Portal/Tax%20Roll%20Data%20Files/NAL"
+)
+
+# Mapping of DOR NAL CSV column headers to our model fields.
+# The NAL CSV has ~200 columns; we only extract the subset needed
+# for foreclosure analysis. Keys are lowercase CSV header names;
+# values are DorNalParcel attribute names.
+NAL_COLUMN_MAP: dict[str, str] = {
+    # Identifiers
+    "co_no": "county_code",
+    "parcel_id": "parcel_id",
+    # Owner info
+    "own_name": "owner_name",
+    "own_addr1": "owner_address1",
+    "own_addr2": "owner_address2",
+    "own_city": "owner_city",
+    "own_state": "owner_state",
+    "own_zipcd": "owner_zip",
+    # Situs/physical address
+    "phy_addr1": "property_address",
+    "phy_city": "city",
+    "phy_zipcd": "zip_code",
+    # Classification
+    "dor_uc": "property_use_code",
+    # Valuation
+    "jv": "just_value",
+    "jv_hmstd": "just_value_homestead",
+    "av_sd": "assessed_value_school",
+    "av_nsd": "assessed_value_nonschool",
+    "av_hmstd": "assessed_value_homestead",
+    "tv_sd": "taxable_value_school",
+    "tv_nsd": "taxable_value_nonschool",
+    # Legal description (NAL uses 's_legal' for the single legal description field)
+    "s_legal": "legal_description",
+}
+
+# DOR exemption field number → (model bool field, model value field)
+# Exemption codes in DOR NAL (EXMPT_nn_VAL fields):
+#   01/02 = Homestead ($25K each, total $50K)
+#   03    = Widow/widower
+#   04    = Blind
+#   05    = Totally/permanently disabled
+#   06    = Veteran homestead disabled 10%+
+#   07    = Veteran totally disabled / combat-related
+#   08    = Veteran wheelchair/hemiplegic
+#   09    = Deployed service member
+#   10    = Surviving spouse of first responder
+#   41    = Agricultural (classified use)
+DOR_EXEMPTION_FIELDS: dict[str, tuple[str, str]] = {
+    "01": ("homestead_exempt", "homestead_exempt_value"),
+    "03": ("widow_exempt", "widow_exempt_value"),
+    "05": ("disability_exempt", "disability_exempt_value"),
+    "07": ("veteran_exempt", "veteran_exempt_value"),
+    "41": ("ag_exempt", "ag_exempt_value"),
 }
 
 
@@ -363,6 +437,13 @@ def _slice(line: str, start: int, end: int) -> str:
     if start >= len(line):
         return ""
     return line[start:end]
+
+
+def _slice_pos(line: str, start_pos: int, length: int) -> str:
+    """1-based fixed-width slice helper from Sunbiz definitions."""
+    start = max(0, start_pos - 1)
+    end = start + length
+    return _slice(line, start, end)
 
 
 def _collect_input_files(
@@ -708,7 +789,36 @@ def load_sunbiz_flr(
     limit_lines: int | None,
     batch_size: int,
 ) -> dict:
+    """Parse FLR bulk files (flrf/flrd/flrs/flre) into structured PostgreSQL tables.
+
+    The FLR dataset from Florida Secretary of State consists of 4 file types:
+      - flrf.zip (FLRF.TXT) -- Filing records (main)
+      - flrd.zip (FLRD.TXT) -- Debtor party records
+      - flrs.zip (FLRS.TXT) -- Secured party records
+      - flre.zip (FLRE.TXT) -- Event records (amendments, continuations, terminations)
+
+    All 4 must be present for complete data. If only flrf.zip is available,
+    filings load but party/event tables remain empty.
+
+    To sync all FLR files from SFTP::
+
+        uv run python sunbiz/sync.py sync --mode quarterly --pattern "FLR/flr"
+    """
     files = _collect_input_files(root=root, pattern=pattern, limit_files=limit_files)
+
+    # Diagnostic: check for expected FLR file types
+    file_basenames = {p.name.lower() for p in files}
+    expected_flr = {"flrf.zip", "flrd.zip", "flrs.zip", "flre.zip"}
+    found_flr = file_basenames & expected_flr
+    missing_flr = expected_flr - file_basenames
+    if found_flr and missing_flr:
+        print(
+            f"WARNING: Found {sorted(found_flr)} but missing {sorted(missing_flr)}. "
+            f"Party/event tables may remain empty. "
+            f"Sync missing files: uv run python sunbiz/sync.py sync --mode quarterly"
+            f" --pattern 'FLR/flr'"
+        )
+
     session_factory = get_session_factory(dsn)
 
     stats = {
@@ -798,6 +908,330 @@ def load_sunbiz_flr(
                     stmt = pg_insert(SunbizFlrEvent).values(chunk)
                     stmt = stmt.on_conflict_do_nothing(
                         constraint="uq_sunbiz_flr_events_identity"
+                    )
+                    session.execute(stmt)
+                stats["events_inserted"] += len(events)
+
+            _mark_ingest_file(
+                session=session,
+                file_id=file_id,
+                status="loaded",
+                row_count=len(filings) + len(parties) + len(events),
+            )
+            session.commit()
+
+    return stats
+
+
+def _parse_cor_data_line(
+    line: str, file_id: int, source_member: str, line_no: int
+) -> tuple[dict | None, list[dict]]:
+    doc_number = _clean_text(_slice_pos(line, 1, 12))
+    if not doc_number:
+        return None, []
+
+    filing = {
+        "dataset_type": "cor",
+        "doc_number": doc_number,
+        "entity_name": _clean_text(_slice_pos(line, 13, 192)),
+        "status": _clean_text(_slice_pos(line, 205, 1)),
+        "filing_type": _clean_text(_slice_pos(line, 206, 15)),
+        "filed_date": _parse_date_yyyymmdd(_slice_pos(line, 473, 8)),
+        "effective_date": None,
+        "cancellation_date": None,
+        "expiration_date": None,
+        "fei_number": _clean_text(_slice_pos(line, 481, 14)),
+        "state_country": _clean_text(_slice_pos(line, 504, 2)),
+        "principal_address1": _clean_text(_slice_pos(line, 221, 42)),
+        "principal_address2": _clean_text(_slice_pos(line, 263, 42)),
+        "principal_city": _clean_text(_slice_pos(line, 305, 28)),
+        "principal_state": _clean_text(_slice_pos(line, 333, 2)),
+        "principal_zip": _clean_text(_slice_pos(line, 335, 10)),
+        "principal_country": _clean_text(_slice_pos(line, 345, 2)),
+        "mailing_address1": _clean_text(_slice_pos(line, 347, 42)),
+        "mailing_address2": _clean_text(_slice_pos(line, 389, 42)),
+        "mailing_city": _clean_text(_slice_pos(line, 431, 28)),
+        "mailing_state": _clean_text(_slice_pos(line, 459, 2)),
+        "mailing_zip": _clean_text(_slice_pos(line, 461, 10)),
+        "mailing_country": _clean_text(_slice_pos(line, 471, 2)),
+        "source_file_id": file_id,
+        "source_member": source_member,
+        "source_line_number": line_no,
+        "updated_at": _utc_now(),
+        "raw_fields": {
+            "more_than_six_officers": _clean_text(_slice_pos(line, 495, 1)),
+            "last_transaction_date": _clean_text(_slice_pos(line, 496, 8)),
+        },
+    }
+
+    parties: list[dict] = []
+    officer_base = 669
+    officer_block = 128
+    for idx in range(6):
+        base = officer_base + (idx * officer_block)
+        title = _clean_text(_slice_pos(line, base, 4))
+        name = _clean_text(_slice_pos(line, base + 5, 42))
+        if not title and not name:
+            continue
+        parties.append(
+            {
+                "dataset_type": "cor",
+                "doc_number": doc_number,
+                "party_role": "officer",
+                "party_title": title,
+                "party_name": name,
+                "party_name_format": _clean_text(_slice_pos(line, base + 4, 1)),
+                "party_corp_number": None,
+                "party_sequence": idx + 1,
+                "address1": _clean_text(_slice_pos(line, base + 47, 42)),
+                "address2": None,
+                "city": _clean_text(_slice_pos(line, base + 89, 28)),
+                "state": _clean_text(_slice_pos(line, base + 117, 2)),
+                "zip_code": _clean_text(_slice_pos(line, base + 119, 9)),
+                "country": None,
+                "source_file_id": file_id,
+                "source_member": source_member,
+                "source_line_number": line_no,
+                "loaded_at": _utc_now(),
+            }
+        )
+
+    return filing, parties
+
+
+def _parse_cor_event_line(line: str, file_id: int, source_member: str, line_no: int) -> dict | None:
+    event_doc_number = _clean_text(_slice_pos(line, 1, 12))
+    if not event_doc_number:
+        return None
+    return {
+        "dataset_type": "cor",
+        "event_doc_number": event_doc_number,
+        "event_orig_doc_number": None,
+        "event_sequence_number": _parse_int(_slice_pos(line, 13, 5)),
+        "event_code": _clean_text(_slice_pos(line, 18, 20)),
+        "event_description": _clean_text(_slice_pos(line, 38, 40)),
+        "event_effective_date": _parse_date_yyyymmdd(_slice_pos(line, 78, 8)),
+        "event_filing_date": _parse_date_yyyymmdd(_slice_pos(line, 86, 8)),
+        "event_cancellation_date": None,
+        "event_expiration_date": None,
+        "event_name": _clean_text(_slice_pos(line, 211, 192)),
+        "source_file_id": file_id,
+        "source_member": source_member,
+        "source_line_number": line_no,
+        "loaded_at": _utc_now(),
+    }
+
+
+def _parse_gen_data_line(
+    line: str, file_id: int, source_member: str, line_no: int
+) -> tuple[dict | None, list[dict]]:
+    doc_number = _clean_text(_slice_pos(line, 1, 12))
+    if not doc_number:
+        return None, []
+
+    filing = {
+        "dataset_type": "gen",
+        "doc_number": doc_number,
+        "entity_name": _clean_text(_slice_pos(line, 14, 192)),
+        "status": _clean_text(_slice_pos(line, 13, 1)),
+        "filing_type": "GEN",
+        "filed_date": _parse_date_yyyymmdd(_slice_pos(line, 206, 8)),
+        "effective_date": _parse_date_yyyymmdd(_slice_pos(line, 214, 8)),
+        "cancellation_date": _parse_date_yyyymmdd(_slice_pos(line, 222, 8)),
+        "expiration_date": _parse_date_yyyymmdd(_slice_pos(line, 752, 8)),
+        "fei_number": _clean_text(_slice_pos(line, 230, 9)),
+        "state_country": _clean_text(_slice_pos(line, 239, 2)),
+        "principal_address1": _clean_text(_slice_pos(line, 241, 44)),
+        "principal_address2": _clean_text(_slice_pos(line, 285, 44)),
+        "principal_city": _clean_text(_slice_pos(line, 329, 28)),
+        "principal_state": _clean_text(_slice_pos(line, 357, 2)),
+        "principal_zip": _clean_text(_slice_pos(line, 359, 9)),
+        "principal_country": _clean_text(_slice_pos(line, 368, 2)),
+        "mailing_address1": _clean_text(_slice_pos(line, 371, 44)),
+        "mailing_address2": _clean_text(_slice_pos(line, 415, 44)),
+        "mailing_city": _clean_text(_slice_pos(line, 459, 28)),
+        "mailing_state": _clean_text(_slice_pos(line, 487, 2)),
+        "mailing_zip": _clean_text(_slice_pos(line, 489, 9)),
+        "mailing_country": _clean_text(_slice_pos(line, 498, 2)),
+        "source_file_id": file_id,
+        "source_member": source_member,
+        "source_line_number": line_no,
+        "updated_at": _utc_now(),
+        "raw_fields": {
+            "gr_part_type": _clean_text(_slice_pos(line, 501, 1)),
+            "gr_part_seq": _clean_text(_slice_pos(line, 570, 5)),
+        },
+    }
+
+    partner_name = _clean_text(_slice_pos(line, 515, 55))
+    parties: list[dict] = []
+    if partner_name:
+        parties.append(
+            {
+                "dataset_type": "gen",
+                "doc_number": doc_number,
+                "party_role": "partner",
+                "party_title": _clean_text(_slice_pos(line, 501, 1)),
+                "party_name": partner_name,
+                "party_name_format": _clean_text(_slice_pos(line, 502, 1)),
+                "party_corp_number": _clean_text(_slice_pos(line, 503, 12)),
+                "party_sequence": _parse_int(_slice_pos(line, 570, 5)),
+                "address1": _clean_text(_slice_pos(line, 575, 44)),
+                "address2": _clean_text(_slice_pos(line, 619, 44)),
+                "city": _clean_text(_slice_pos(line, 663, 28)),
+                "state": _clean_text(_slice_pos(line, 691, 2)),
+                "zip_code": _clean_text(_slice_pos(line, 693, 9)),
+                "country": _clean_text(_slice_pos(line, 702, 2)),
+                "source_file_id": file_id,
+                "source_member": source_member,
+                "source_line_number": line_no,
+                "loaded_at": _utc_now(),
+            }
+        )
+
+    return filing, parties
+
+
+def _parse_gen_event_line(line: str, file_id: int, source_member: str, line_no: int) -> dict | None:
+    event_doc_number = _clean_text(_slice_pos(line, 1, 12))
+    if not event_doc_number:
+        return None
+    return {
+        "dataset_type": "gen",
+        "event_doc_number": event_doc_number,
+        "event_orig_doc_number": _clean_text(_slice_pos(line, 13, 12)),
+        "event_sequence_number": _parse_int(_slice_pos(line, 25, 5)),
+        "event_code": _clean_text(_slice_pos(line, 30, 20)),
+        "event_description": _clean_text(_slice_pos(line, 50, 40)),
+        "event_effective_date": _parse_date_yyyymmdd(_slice_pos(line, 95, 8)),
+        "event_filing_date": _parse_date_yyyymmdd(_slice_pos(line, 103, 8)),
+        "event_cancellation_date": _parse_date_yyyymmdd(_slice_pos(line, 111, 8)),
+        "event_expiration_date": _parse_date_yyyymmdd(_slice_pos(line, 119, 8)),
+        "event_name": _clean_text(_slice_pos(line, 249, 192)),
+        "source_file_id": file_id,
+        "source_member": source_member,
+        "source_line_number": line_no,
+        "loaded_at": _utc_now(),
+    }
+
+
+def _classify_entity_member(source_member: str) -> str | None:
+    member = Path(source_member).name.lower()
+    if member.startswith("cordata"):
+        return "cor_data"
+    if member.startswith("corevt"):
+        return "cor_event"
+    if re.search(r"\d{8}c\.(txt|dat)$", member):
+        return "cor_data"
+    if re.search(r"\d{8}ce\.(txt|dat)$", member):
+        return "cor_event"
+    if member == "genfile.txt" or member.endswith("gp.txt"):
+        return "gen_data"
+    if member == "genevt.txt" or member.endswith("ge.txt"):
+        return "gen_event"
+    return None
+
+
+def load_sunbiz_entity(
+    dsn: str,
+    root: Path,
+    pattern: str | None,
+    limit_files: int | None,
+    limit_lines: int | None,
+    batch_size: int,
+) -> dict:
+    files = _collect_input_files(root=root, pattern=pattern, limit_files=limit_files)
+    session_factory = get_session_factory(dsn)
+
+    stats = {
+        "files_scanned": len(files),
+        "filings_upserted": 0,
+        "parties_inserted": 0,
+        "events_inserted": 0,
+    }
+
+    with session_factory() as session:
+        for path in files:
+            rel = path.relative_to(root).as_posix()
+            sha = _compute_sha256(path)
+            st = path.stat()
+            modified_at = dt.datetime.fromtimestamp(st.st_mtime, tz=dt.UTC)
+
+            file_id = _upsert_ingest_file(
+                session=session,
+                source_system="sunbiz",
+                category="entity_structured",
+                relative_path=rel,
+                file_sha256=sha,
+                file_size_bytes=st.st_size,
+                file_modified_at=modified_at,
+                status="loading",
+            )
+            session.commit()
+
+            filings: list[dict] = []
+            parties: list[dict] = []
+            events: list[dict] = []
+
+            for source_member, line_no, line in _iter_text_records(path):
+                if limit_lines is not None and (
+                    len(filings) + len(parties) + len(events) >= limit_lines
+                ):
+                    break
+
+                kind = _classify_entity_member(source_member)
+                if kind == "cor_data":
+                    filing, parsed_parties = _parse_cor_data_line(
+                        line, file_id, source_member, line_no
+                    )
+                    if filing:
+                        filings.append(filing)
+                    parties.extend(parsed_parties)
+                elif kind == "cor_event":
+                    event = _parse_cor_event_line(line, file_id, source_member, line_no)
+                    if event:
+                        events.append(event)
+                elif kind == "gen_data":
+                    filing, parsed_parties = _parse_gen_data_line(
+                        line, file_id, source_member, line_no
+                    )
+                    if filing:
+                        filings.append(filing)
+                    parties.extend(parsed_parties)
+                elif kind == "gen_event":
+                    event = _parse_gen_event_line(line, file_id, source_member, line_no)
+                    if event:
+                        events.append(event)
+
+            if filings:
+                for chunk in _chunked(filings, batch_size):
+                    stmt = pg_insert(SunbizEntityFiling).values(chunk)
+                    update_cols = {
+                        col.name: getattr(stmt.excluded, col.name)
+                        for col in SunbizEntityFiling.__table__.columns
+                        if col.name not in {"id"}
+                    }
+                    stmt = stmt.on_conflict_do_update(
+                        constraint="uq_sunbiz_entity_filings_dataset_doc",
+                        set_=update_cols,
+                    )
+                    session.execute(stmt)
+                stats["filings_upserted"] += len(filings)
+
+            if parties:
+                for chunk in _chunked(parties, batch_size):
+                    stmt = pg_insert(SunbizEntityParty).values(chunk)
+                    stmt = stmt.on_conflict_do_nothing(
+                        constraint="uq_sunbiz_entity_parties_identity"
+                    )
+                    session.execute(stmt)
+                stats["parties_inserted"] += len(parties)
+
+            if events:
+                for chunk in _chunked(events, batch_size):
+                    stmt = pg_insert(SunbizEntityEvent).values(chunk)
+                    stmt = stmt.on_conflict_do_nothing(
+                        constraint="uq_sunbiz_entity_events_identity"
                     )
                     session.execute(stmt)
                 stats["events_inserted"] += len(events)
@@ -1544,109 +1978,131 @@ def load_hcpa_bulk(
         session.commit()
 
         latlon_file_id = None
-        if latlon_file:
-            latlon_file_id = _upsert_ingest_file(
-                session=session,
-                source_system="hcpa",
-                category="latlon",
-                relative_path=latlon_file.as_posix(),
-                file_sha256=_compute_sha256(latlon_file),
-                file_size_bytes=latlon_file.stat().st_size,
-                file_modified_at=dt.datetime.fromtimestamp(
-                    latlon_file.stat().st_mtime, tz=dt.UTC
-                ),
-                status="loading",
-            )
-            session.commit()
-
-        if latlon_df is not None and latlon_file_id is not None:
-            latlon_rows = [
-                {
-                    "folio": row["folio"],
-                    "latitude": row["latitude"],
-                    "longitude": row["longitude"],
-                    "source_file_id": latlon_file_id,
-                    "updated_at": _utc_now(),
-                }
-                for row in latlon_df.iter_rows(named=True)
-            ]
-            effective_batch = batch_size
-            if latlon_rows:
-                effective_batch = _effective_batch_size(batch_size, len(latlon_rows[0]))
-            for chunk in _chunked(latlon_rows, effective_batch):
-                _upsert_hcpa_latlon(session, chunk)
+        latlon_marked_loaded = False
+        try:
+            if latlon_file:
+                latlon_file_id = _upsert_ingest_file(
+                    session=session,
+                    source_system="hcpa",
+                    category="latlon",
+                    relative_path=latlon_file.as_posix(),
+                    file_sha256=_compute_sha256(latlon_file),
+                    file_size_bytes=latlon_file.stat().st_size,
+                    file_modified_at=dt.datetime.fromtimestamp(
+                        latlon_file.stat().st_mtime, tz=dt.UTC
+                    ),
+                    status="loading",
+                )
                 session.commit()
+
+            if latlon_df is not None and latlon_file_id is not None:
+                latlon_rows = [
+                    {
+                        "folio": row["folio"],
+                        "latitude": row["latitude"],
+                        "longitude": row["longitude"],
+                        "source_file_id": latlon_file_id,
+                        "updated_at": _utc_now(),
+                    }
+                    for row in latlon_df.iter_rows(named=True)
+                ]
+                effective_batch = batch_size
+                if latlon_rows:
+                    effective_batch = _effective_batch_size(batch_size, len(latlon_rows[0]))
+                for chunk in _chunked(latlon_rows, effective_batch):
+                    _upsert_hcpa_latlon(session, chunk)
+                    session.commit()
+                _mark_ingest_file(
+                    session,
+                    latlon_file_id,
+                    status="loaded",
+                    row_count=len(latlon_rows),
+                    error_message=None,
+                )
+                latlon_marked_loaded = True
+                session.commit()
+
+            keep_cols = [
+                "folio",
+                "pin",
+                "strap",
+                "owner_name",
+                "property_address",
+                "city",
+                "zip_code",
+                "land_use",
+                "land_use_desc",
+                "year_built",
+                "beds",
+                "baths",
+                "stories",
+                "units",
+                "buildings",
+                "heated_area",
+                "lot_size",
+                "assessed_value",
+                "market_value",
+                "just_value",
+                "land_value",
+                "building_value",
+                "extra_features_value",
+                "taxable_value",
+                "last_sale_date",
+                "last_sale_price",
+                "raw_type",
+                "raw_sub",
+                "raw_taxdist",
+                "raw_muni",
+                "raw_legal1",
+                "raw_legal2",
+                "raw_legal3",
+                "raw_legal4",
+                "latitude",
+                "longitude",
+            ]
+            present_cols = [c for c in keep_cols if c in parcels_df.columns]
+            parcels_df = parcels_df.select(present_cols)
+
+            parcel_rows = []
+            for row in parcels_df.iter_rows(named=True):
+                row["source_file_id"] = parcel_file_id
+                row["updated_at"] = _utc_now()
+                parcel_rows.append(row)
+
+            effective_batch = batch_size
+            if parcel_rows:
+                effective_batch = _effective_batch_size(batch_size, len(parcel_rows[0]))
+            for chunk in _chunked(parcel_rows, effective_batch):
+                _upsert_hcpa_parcels(session, chunk)
+                session.commit()
+
             _mark_ingest_file(
-                session,
-                latlon_file_id,
+                session=session,
+                file_id=parcel_file_id,
                 status="loaded",
-                row_count=len(latlon_rows),
+                row_count=len(parcel_rows),
                 error_message=None,
             )
             session.commit()
-
-        keep_cols = [
-            "folio",
-            "pin",
-            "strap",
-            "owner_name",
-            "property_address",
-            "city",
-            "zip_code",
-            "land_use",
-            "land_use_desc",
-            "year_built",
-            "beds",
-            "baths",
-            "stories",
-            "units",
-            "buildings",
-            "heated_area",
-            "lot_size",
-            "assessed_value",
-            "market_value",
-            "just_value",
-            "land_value",
-            "building_value",
-            "extra_features_value",
-            "taxable_value",
-            "last_sale_date",
-            "last_sale_price",
-            "raw_type",
-            "raw_sub",
-            "raw_taxdist",
-            "raw_muni",
-            "raw_legal1",
-            "raw_legal2",
-            "raw_legal3",
-            "raw_legal4",
-            "latitude",
-            "longitude",
-        ]
-        present_cols = [c for c in keep_cols if c in parcels_df.columns]
-        parcels_df = parcels_df.select(present_cols)
-
-        parcel_rows = []
-        for row in parcels_df.iter_rows(named=True):
-            row["source_file_id"] = parcel_file_id
-            row["updated_at"] = _utc_now()
-            parcel_rows.append(row)
-
-        effective_batch = batch_size
-        if parcel_rows:
-            effective_batch = _effective_batch_size(batch_size, len(parcel_rows[0]))
-        for chunk in _chunked(parcel_rows, effective_batch):
-            _upsert_hcpa_parcels(session, chunk)
+        except Exception as exc:
+            session.rollback()
+            if latlon_file_id is not None and not latlon_marked_loaded:
+                _mark_ingest_file(
+                    session=session,
+                    file_id=latlon_file_id,
+                    status="failed",
+                    row_count=None,
+                    error_message=str(exc)[:4000],
+                )
+            _mark_ingest_file(
+                session=session,
+                file_id=parcel_file_id,
+                status="failed",
+                row_count=None,
+                error_message=str(exc)[:4000],
+            )
             session.commit()
-
-        _mark_ingest_file(
-            session=session,
-            file_id=parcel_file_id,
-            status="loaded",
-            row_count=len(parcel_rows),
-            error_message=None,
-        )
-        session.commit()
+            raise
 
     return {
         "parcels_upserted": len(parcels_df),
@@ -1760,6 +2216,440 @@ def load_hcpa_suite(
             limit_rows=limit_rows,
         )
     )
+
+    # Cross-fill lat/lon from hcpa_latlon into hcpa_bulk_parcels
+    engine = get_engine(dsn)
+    with engine.begin() as conn:
+        r = conn.execute(sa_text("""
+            UPDATE hcpa_bulk_parcels bp
+            SET latitude = ll.latitude, longitude = ll.longitude
+            FROM hcpa_latlon ll
+            WHERE bp.folio = ll.folio
+              AND bp.latitude IS NULL
+        """))
+        stats["latlon_crossfill"] = r.rowcount
+        logger.info(f"Cross-filled lat/lon for {r.rowcount} parcels from hcpa_latlon")
+
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# DOR NAL (Name-Address-Legal) download and load
+# ---------------------------------------------------------------------------
+
+
+def _discover_dor_nal_url(tax_year: int, roll_type: str = "F") -> str:
+    """Build the DOR NAL download URL for Hillsborough County.
+
+    The DOR portal structures URLs as:
+      .../NAL/{year}{roll_type}/Hillsborough {fips} {roll_label} NAL {year}.zip
+
+    Where roll_type is 'F' (Final) or 'P' (Preliminary).
+    """
+    roll_label = "Final" if roll_type == "F" else "Preliminary"
+    filename = f"Hillsborough {DOR_NAL_HILLSBOROUGH_FIPS} {roll_label} NAL {tax_year}.zip"
+    encoded = urllib.parse.quote(filename)
+    return f"{DOR_NAL_BASE_URL}/{tax_year}{roll_type}/{encoded}"
+
+
+def download_dor_nal(
+    output_dir: Path,
+    tax_year: int | None = None,
+    roll_type: str = "F",
+    force: bool = False,
+) -> Path:
+    """Download the Hillsborough County NAL ZIP from the DOR data portal.
+
+    Returns the path to the downloaded ZIP file.
+    """
+    if tax_year is None:
+        # Default to current year (final rolls are typically available by Oct)
+        tax_year = dt.datetime.now(dt.UTC).year
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    roll_label = "Final" if roll_type == "F" else "Preliminary"
+    local_filename = f"Hillsborough_{DOR_NAL_HILLSBOROUGH_FIPS}_{roll_label}_NAL_{tax_year}.zip"
+    target = output_dir / local_filename
+
+    if target.exists() and not force:
+        logger.info(f"DOR NAL already downloaded: {target}")
+        return target
+
+    url = _discover_dor_nal_url(tax_year, roll_type)
+    logger.info(f"Downloading DOR NAL from {url} to {target}")
+
+    request = urllib.request.Request(  # noqa: S310
+        url,
+        headers={"User-Agent": "HillsInspector/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=300) as resp:  # noqa: S310
+            with target.open("wb") as fp:
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    fp.write(chunk)
+    except Exception as exc:
+        logger.exception(
+            f"DOR NAL download failed (url={url}, target={target}): {exc}"
+        )
+        if target.exists():
+            target.unlink()
+        raise
+
+    if target.stat().st_size == 0:
+        logger.error(f"DOR NAL download produced empty file for url={url} target={target}")
+        target.unlink()
+        raise RuntimeError(f"Downloaded file is empty (0 bytes). URL may be incorrect: {url}")
+
+    logger.info(f"Downloaded {target.stat().st_size:,} bytes to {target}")
+    return target
+
+
+def _find_nal_csv_member(zip_path: Path) -> str:
+    """Find the NAL CSV file inside the ZIP archive."""
+    with zipfile.ZipFile(zip_path) as zf:
+        members = zf.namelist()
+        # Look for CSV files (DOR uses .csv extension for NAL files)
+        csv_members = [m for m in members if m.lower().endswith(".csv")]
+        if csv_members:
+            # Prefer the one with "NAL" in the name
+            nal_members = [m for m in csv_members if "nal" in m.lower()]
+            return nal_members[0] if nal_members else csv_members[0]
+        # Fallback: look for .txt files (some years used fixed-width .txt)
+        txt_members = [m for m in members if m.lower().endswith(".txt")]
+        if txt_members:
+            nal_txt = [m for m in txt_members if "nal" in m.lower()]
+            return nal_txt[0] if nal_txt else txt_members[0]
+    raise FileNotFoundError(f"No CSV or TXT data member found in {zip_path}. Members: {members}")
+
+
+def _parse_nal_csv_row(
+    row: dict[str, str],
+    file_id: int,
+    tax_year: int,
+    source_file: str,
+    folio_lookup: dict[str, tuple[str, str]],
+) -> dict | None:
+    """Parse a single NAL CSV row into a DorNalParcel dict.
+
+    Args:
+        row: CSV row as {header: value} (lowercase keys).
+        file_id: ingest_files.id for this load.
+        tax_year: Tax year from filename or CLI.
+        source_file: Source filename for tracking.
+        folio_lookup: Maps DOR parcel_id -> (folio, strap) from hcpa_bulk_parcels.
+    """
+    county_code = (row.get("co_no") or "").strip()
+    parcel_id = (row.get("parcel_id") or "").strip()
+    if not county_code or not parcel_id:
+        return None
+
+    # Map standard columns
+    mapped: dict[str, Any] = {
+        "county_code": county_code,
+        "parcel_id": parcel_id,
+        "tax_year": tax_year,
+        "source_file": source_file,
+        "source_file_id": file_id,
+        "loaded_at": _utc_now(),
+    }
+
+    # Map direct text fields
+    for csv_col, model_field in NAL_COLUMN_MAP.items():
+        if csv_col in ("co_no", "parcel_id"):
+            continue  # Already handled
+        val = row.get(csv_col)
+        if val is not None:
+            val = val.strip()
+            if not val:
+                val = None
+        mapped[model_field] = val
+
+    # Parse numeric value fields
+    numeric_fields = [
+        "just_value", "just_value_homestead",
+        "assessed_value_school", "assessed_value_nonschool", "assessed_value_homestead",
+        "taxable_value_school", "taxable_value_nonschool",
+        "homestead_exempt_value", "widow_exempt_value",
+    ]
+    for field in numeric_fields:
+        mapped[field] = _parse_float_value(mapped.get(field))
+
+    # Parse exemption fields from EXMPT_nn_VAL columns
+    for exmpt_code, (bool_field, value_field) in DOR_EXEMPTION_FIELDS.items():
+        # NAL CSV columns are 'exmpt_01', 'exmpt_02', etc. (no '_val' suffix)
+        val_col = f"exmpt_{exmpt_code}"
+        val = _parse_float_value(row.get(val_col))
+        if bool_field == "homestead_exempt":
+            # Homestead is split across EXMPT_01 and EXMPT_02 ($25K each)
+            val_02 = _parse_float_value(row.get("exmpt_02"))
+            total_hmstd = (val or 0.0) + (val_02 or 0.0)
+            mapped[bool_field] = total_hmstd > 0
+            mapped[value_field] = total_hmstd if total_hmstd > 0 else None
+        else:
+            mapped[bool_field] = (val is not None and val > 0)
+            if value_field not in mapped or mapped[value_field] is None:
+                mapped[value_field] = val
+
+    # Save Our Homes differential = JV_HMSTD - AV_HMSTD
+    jv_h = mapped.get("just_value_homestead")
+    av_h = mapped.get("assessed_value_homestead")
+    if jv_h is not None and av_h is not None:
+        diff = float(jv_h) - float(av_h)
+        mapped["soh_differential"] = diff if diff > 0 else None
+    else:
+        mapped["soh_differential"] = None
+
+    # Parse millage rates from SDF-style columns if present in NAL
+    # The NAL may include aggregated millage; if not, leave as None (SDF has detail)
+    mapped["total_millage"] = _parse_float_value(row.get("tot_mill"))
+    mapped["county_millage"] = _parse_float_value(row.get("co_mill"))
+    mapped["school_millage"] = _parse_float_value(row.get("schl_mill"))
+    mapped["city_millage"] = _parse_float_value(row.get("muni_mill"))
+
+    # Compute estimated annual tax
+    tv_nsd = mapped.get("taxable_value_nonschool")
+    total_mill = mapped.get("total_millage")
+    if tv_nsd is not None and total_mill is not None:
+        mapped["estimated_annual_tax"] = round(float(tv_nsd) * float(total_mill) / 1000.0, 2)
+    else:
+        mapped["estimated_annual_tax"] = None
+
+    # Extend legal description with additional lines if present
+    legal_parts = [mapped.get("legal_description") or ""]
+    for suffix in ("lgl_2", "lgl_3", "lgl_4"):
+        part = (row.get(suffix) or "").strip()
+        if part:
+            legal_parts.append(part)
+    full_legal = " ".join(p for p in legal_parts if p).strip()
+    mapped["legal_description"] = full_legal if full_legal else None
+
+    # Map DOR parcel_id to our folio/strap for joins
+    lookup = folio_lookup.get(parcel_id)
+    if lookup:
+        mapped["folio"] = lookup[0]
+        mapped["strap"] = lookup[1]
+    else:
+        mapped["folio"] = None
+        mapped["strap"] = None
+
+    return mapped
+
+
+def _build_folio_lookup(session: Session) -> dict[str, tuple[str, str]]:
+    """Build a mapping of strap -> (folio, strap) from hcpa_bulk_parcels.
+
+    DOR parcel_id for Hillsborough uses the same format as HCPA strap.
+    """
+    from sqlalchemy import text as sa_text
+
+    result = session.execute(
+        sa_text("SELECT folio, strap FROM hcpa_bulk_parcels WHERE strap IS NOT NULL")
+    ).fetchall()
+    lookup: dict[str, tuple[str, str]] = {}
+    for row in result:
+        folio, strap = row[0], row[1]
+        if strap:
+            lookup[strap] = (folio, strap)
+    return lookup
+
+
+def _upsert_dor_nal_parcels(session: Session, rows: list[dict]) -> None:
+    """Upsert a batch of DorNalParcel rows."""
+    if not rows:
+        return
+    stmt = pg_insert(DorNalParcel).values(rows)
+    update_cols = {
+        col.name: getattr(stmt.excluded, col.name)
+        for col in DorNalParcel.__table__.columns
+        if col.name != "id"
+    }
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_dor_nal_parcels_county_parcel_year",
+        set_=update_cols,
+    )
+    session.execute(stmt)
+
+
+def _infer_tax_year_from_path(path: Path) -> int | None:
+    """Extract tax year from a DOR NAL filename like 'Hillsborough 39 Final NAL 2025.zip'."""
+    match = re.search(r"NAL[_ ](\d{4})", path.name, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    # Also try a 4-digit year at end of stem
+    match = re.search(r"(\d{4})", path.stem)
+    if match:
+        year = int(match.group(1))
+        if 2000 <= year <= 2100:
+            return year
+    return None
+
+
+def load_dor_nal(
+    dsn: str,
+    nal_zip: Path,
+    tax_year: int | None = None,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    limit_rows: int | None = None,
+    county_filter: str = DOR_NAL_HILLSBOROUGH_CO_NO,
+) -> dict:
+    """Parse the DOR NAL ZIP and load Hillsborough County parcels into PostgreSQL.
+
+    Args:
+        dsn: PostgreSQL DSN.
+        nal_zip: Path to downloaded NAL ZIP file.
+        tax_year: Override tax year (default: inferred from filename).
+        batch_size: Rows per INSERT batch.
+        limit_rows: Max rows to load (for testing).
+        county_filter: DOR county code to filter (default: '29' for Hillsborough).
+
+    Returns:
+        Stats dict with counts.
+    """
+    import csv
+    import io
+
+    if tax_year is None:
+        tax_year = _infer_tax_year_from_path(nal_zip)
+    if tax_year is None:
+        raise ValueError(
+            f"Cannot infer tax year from filename {nal_zip.name}. "
+            "Pass --tax-year explicitly."
+        )
+
+    member = _find_nal_csv_member(nal_zip)
+    print(f"Parsing NAL member: {member} (tax year {tax_year}, county filter {county_filter})")
+
+    session_factory = get_session_factory(dsn)
+    inserted = 0
+    skipped_county = 0
+    skipped_empty = 0
+
+    with session_factory() as session:
+        # Build folio lookup for parcel_id -> folio/strap mapping
+        print("Building folio lookup from hcpa_bulk_parcels...")
+        folio_lookup = _build_folio_lookup(session)
+        print(f"  {len(folio_lookup):,} strap entries loaded for cross-referencing")
+
+        # Register ingest file
+        file_id = _start_hcpa_ingest_file(
+            session=session,
+            category="dor_nal",
+            source_path=nal_zip,
+            relative_path=f"{nal_zip.as_posix()}::{member}",
+        )
+        session.commit()
+
+        try:
+            # Read CSV from ZIP
+            with zipfile.ZipFile(nal_zip) as zf:
+                with zf.open(member) as fp:
+                    text_stream = io.TextIOWrapper(fp, encoding="latin-1", errors="replace")
+                    reader = csv.DictReader(text_stream)
+
+                    # Normalize header names to lowercase
+                    if reader.fieldnames:
+                        reader.fieldnames = [
+                            f.strip().lower() for f in reader.fieldnames
+                        ]
+                        print(f"  CSV has {len(reader.fieldnames)} columns")
+
+                    batch: list[dict] = []
+                    effective_batch = batch_size
+
+                    for row in reader:
+                        # Normalize all keys to lowercase
+                        row = {k.strip().lower(): v for k, v in row.items()}
+
+                        # Filter to target county
+                        co_no = (row.get("co_no") or "").strip()
+                        if county_filter and co_no != county_filter:
+                            skipped_county += 1
+                            continue
+
+                        parsed = _parse_nal_csv_row(
+                            row=row,
+                            file_id=file_id,
+                            tax_year=tax_year,
+                            source_file=member,
+                            folio_lookup=folio_lookup,
+                        )
+                        if parsed is None:
+                            skipped_empty += 1
+                            continue
+
+                        if inserted == 0:
+                            effective_batch = _effective_batch_size(
+                                batch_size, len(parsed)
+                            )
+
+                        batch.append(parsed)
+                        inserted += 1
+
+                        if limit_rows is not None and inserted >= limit_rows:
+                            break
+
+                        if len(batch) >= effective_batch:
+                            _upsert_dor_nal_parcels(session, batch)
+                            session.commit()
+                            batch.clear()
+                            if inserted % 50000 == 0:
+                                print(f"  ... {inserted:,} rows loaded")
+
+                    if batch:
+                        _upsert_dor_nal_parcels(session, batch)
+                        session.commit()
+
+            _mark_ingest_file(
+                session=session,
+                file_id=file_id,
+                status="loaded",
+                row_count=inserted,
+                error_message=None,
+            )
+            session.commit()
+
+        except Exception as exc:
+            session.rollback()
+            _mark_ingest_file(
+                session=session,
+                file_id=file_id,
+                status="failed",
+                row_count=None,
+                error_message=str(exc)[:4000],
+            )
+            session.commit()
+            raise
+
+    stats = {
+        "tax_year": tax_year,
+        "member": member,
+        "parcels_upserted": inserted,
+        "skipped_other_county": skipped_county,
+        "skipped_empty": skipped_empty,
+        "folio_mapped": sum(1 for _ in [] if False),  # placeholder
+    }
+    # Count how many we mapped
+    with session_factory() as session:
+        from sqlalchemy import text as sa_text
+
+        row = session.execute(
+            sa_text(
+                "SELECT COUNT(*) FROM dor_nal_parcels "
+                "WHERE tax_year = :yr AND county_code = :co AND folio IS NOT NULL"
+            ),
+            {"yr": tax_year, "co": county_filter},
+        ).scalar()
+        stats["folio_mapped"] = row or 0
+
+    print(f"\nDOR NAL load complete:")
+    print(f"  Parcels upserted: {inserted:,}")
+    print(f"  Skipped (other county): {skipped_county:,}")
+    print(f"  Skipped (empty): {skipped_empty:,}")
+    print(f"  Folio mapped: {stats['folio_mapped']:,} / {inserted:,}")
+
     return stats
 
 
@@ -1790,6 +2680,16 @@ def _build_parser() -> argparse.ArgumentParser:
     flr_cmd.add_argument("--limit-files", type=int, default=None)
     flr_cmd.add_argument("--limit-lines", type=int, default=None)
     flr_cmd.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+
+    entity_cmd = sub.add_parser(
+        "load-sunbiz-entity",
+        help="Parse entity datasets (COR/GEN + events) into structured tables.",
+    )
+    entity_cmd.add_argument("--root", type=Path, default=DEFAULT_SUNBIZ_ROOT)
+    entity_cmd.add_argument("--pattern", default=None)
+    entity_cmd.add_argument("--limit-files", type=int, default=None)
+    entity_cmd.add_argument("--limit-lines", type=int, default=None)
+    entity_cmd.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
 
     hcpa_cmd = sub.add_parser(
         "load-hcpa",
@@ -1836,6 +2736,51 @@ def _build_parser() -> argparse.ArgumentParser:
     suite_cmd.add_argument("--force-sync", action="store_true")
     suite_cmd.add_argument("--limit-rows", type=int, default=None)
     suite_cmd.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+
+    # DOR NAL commands
+    dl_nal_cmd = sub.add_parser(
+        "download-dor-nal",
+        help="Download the Hillsborough County NAL ZIP from the Florida DOR portal.",
+    )
+    dl_nal_cmd.add_argument(
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_DOR_NAL_DIR,
+        help=f"Directory to save the ZIP (default: {DEFAULT_DOR_NAL_DIR})",
+    )
+    dl_nal_cmd.add_argument(
+        "--tax-year",
+        type=int,
+        default=None,
+        help="Tax year (default: current year)",
+    )
+    dl_nal_cmd.add_argument(
+        "--roll-type",
+        choices=["F", "P"],
+        default="F",
+        help="Roll type: F=Final (default), P=Preliminary",
+    )
+    dl_nal_cmd.add_argument("--force", action="store_true", help="Re-download even if exists")
+
+    load_nal_cmd = sub.add_parser(
+        "load-dor-nal",
+        help="Parse a DOR NAL ZIP and load Hillsborough County data into PostgreSQL.",
+    )
+    load_nal_cmd.add_argument(
+        "--nal-file",
+        type=Path,
+        default=None,
+        help="Path to NAL ZIP file (default: latest in download dir)",
+    )
+    load_nal_cmd.add_argument(
+        "--downloads-dir",
+        type=Path,
+        default=DEFAULT_DOR_NAL_DIR,
+        help=f"Directory containing NAL ZIPs (default: {DEFAULT_DOR_NAL_DIR})",
+    )
+    load_nal_cmd.add_argument("--tax-year", type=int, default=None)
+    load_nal_cmd.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    load_nal_cmd.add_argument("--limit-rows", type=int, default=None)
 
     return parser
 
@@ -1886,6 +2831,18 @@ def main() -> int:
         print(stats)
         return 0
 
+    if args.command == "load-sunbiz-entity":
+        stats = load_sunbiz_entity(
+            dsn=dsn,
+            root=args.root,
+            pattern=args.pattern,
+            limit_files=args.limit_files,
+            limit_lines=args.limit_lines,
+            batch_size=args.batch_size,
+        )
+        print(stats)
+        return 0
+
     if args.command == "load-hcpa":
         stats = load_hcpa_bulk(
             dsn=dsn,
@@ -1909,6 +2866,41 @@ def main() -> int:
             include_latlon=args.include_latlon,
             sync_first=args.sync_first,
             force_sync=args.force_sync,
+            batch_size=args.batch_size,
+            limit_rows=args.limit_rows,
+        )
+        print(stats)
+        return 0
+
+    if args.command == "download-dor-nal":
+        path = download_dor_nal(
+            output_dir=args.output_dir,
+            tax_year=args.tax_year,
+            roll_type=args.roll_type,
+            force=args.force,
+        )
+        print(f"NAL file: {path}")
+        return 0
+
+    if args.command == "load-dor-nal":
+        nal_file = args.nal_file
+        if nal_file is None:
+            # Find the latest NAL ZIP in downloads dir
+            dl_dir = args.downloads_dir
+            if dl_dir.exists():
+                candidates = sorted(dl_dir.glob("*.zip"), reverse=True)
+                if candidates:
+                    nal_file = candidates[0]
+        if nal_file is None or not nal_file.exists():
+            print(
+                f"No NAL ZIP found. Run 'download-dor-nal' first or pass --nal-file.",
+                file=sys.stderr,
+            )
+            return 1
+        stats = load_dor_nal(
+            dsn=dsn,
+            nal_zip=nal_file,
+            tax_year=args.tax_year,
             batch_size=args.batch_size,
             limit_rows=args.limit_rows,
         )

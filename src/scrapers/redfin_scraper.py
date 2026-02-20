@@ -42,15 +42,22 @@ class RedfinListing:
 
 
 class RedfinScraper:
-    """Scraper for Redfin using real Chrome with persistent profile."""
+    """Scraper for Redfin using real Chrome with persistent profile.
+
+    Can use an externally-provided browser context (for shared sessions)
+    or launch its own (for standalone use).
+    """
 
     # Rate limiting
     LISTING_PAGE_DELAY = (3.0, 6.0)
     DETAIL_PAGE_DELAY = (5.0, 10.0)
     PAGE_SETTLE_SECS = 3000  # ms, after domcontentloaded
 
-    def __init__(self):
+    def __init__(self, context: BrowserContext | None = None, page: Page | None = None):
+        self._external_context = context
+        self._external_page = page
         self._context: BrowserContext | None = None
+        self._pw = None
 
     async def __aenter__(self):
         await self._launch()
@@ -60,6 +67,16 @@ class RedfinScraper:
         await self._close()
 
     async def _launch(self):
+        if self._external_context:
+            self._context = self._external_context
+            self._page = self._external_page or (
+                self._context.pages[0]
+                if self._context.pages
+                else await self._context.new_page()
+            )
+            self._pw = None  # don't own the playwright instance
+            logger.info("Redfin scraper: using external browser context")
+            return
         PROFILE_DIR.mkdir(parents=True, exist_ok=True)
         self._pw = await async_playwright().__aenter__()
         self._context = await self._pw.chromium.launch_persistent_context(
@@ -89,6 +106,8 @@ class RedfinScraper:
         logger.info("Redfin scraper: Chrome launched with user profile")
 
     async def _close(self):
+        if self._external_context:
+            return  # don't close what we don't own
         if self._context:
             with contextlib.suppress(Exception):
                 await self._context.close()
@@ -167,7 +186,7 @@ class RedfinScraper:
 
             await next_btn.click()
             await self.page.wait_for_timeout(self.PAGE_SETTLE_SECS)
-            await self._delay(self.LISTING_PAGE_DELAY)
+            await self.delay(self.LISTING_PAGE_DELAY)
             page_num += 1
 
         logger.info(f"Redfin: scraped {len(all_listings)} total foreclosure listings")
