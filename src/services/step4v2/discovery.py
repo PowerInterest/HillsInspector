@@ -46,8 +46,13 @@ def _parse_json_list(val):
             parsed = json.loads(val)
             if isinstance(parsed, list):
                 return parsed
-        except (json.JSONDecodeError, TypeError):
-            pass
+        except (json.JSONDecodeError, TypeError) as exc:
+            snippet = val[:120].replace("\n", " ")
+            logger.debug(
+                "Failed to parse JSON list from SQLite value: error={}, snippet={}",
+                exc,
+                snippet,
+            )
     return []
 
 
@@ -251,10 +256,10 @@ class IterativeDiscovery:
     processing results to find new search vectors.
     """
 
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: sqlite3.Connection, pg_service=None):
         """Initialize the discovery service."""
         self.conn = conn
-        self.search_queue = SearchQueue(conn)
+        self.search_queue = SearchQueue(conn, pg_service=pg_service)
         self.name_matcher = NameMatcher(conn)
         self.ori_scraper = ORIApiScraper()
 

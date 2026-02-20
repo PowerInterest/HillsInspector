@@ -126,8 +126,14 @@ def robust_json_parse(text: str, context: str = "") -> Optional[Dict[str, Any]]:
     # First try direct parsing
     try:
         return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as err:
+        logger.debug(
+            "Direct JSON parse failed ({}): {} at line {}, col {}",
+            context,
+            err.msg,
+            err.lineno,
+            err.colno,
+        )
 
     # Repair common LLM JSON issues (e.g., stray text, trailing commas, missing quotes).
     try:
@@ -142,16 +148,28 @@ def robust_json_parse(text: str, context: str = "") -> Optional[Dict[str, Any]]:
 
     try:
         return json.loads(fixed)
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as err:
+        logger.debug(
+            "JSON parse failed after missing-comma repair ({}): {} at line {}, col {}",
+            context,
+            err.msg,
+            err.lineno,
+            err.colno,
+        )
 
     # Try removing trailing commas before } or ]
     fixed2 = re.sub(r",\s*([}\]])", r"\1", fixed)
 
     try:
         return json.loads(fixed2)
-    except json.JSONDecodeError:
-        pass
+    except json.JSONDecodeError as err:
+        logger.debug(
+            "JSON parse failed after trailing-comma cleanup ({}): {} at line {}, col {}",
+            context,
+            err.msg,
+            err.lineno,
+            err.colno,
+        )
 
     # Attempt to close any missing braces for truncated outputs.
     fixed3 = _append_missing_braces(fixed2)
@@ -1301,9 +1319,8 @@ class VisionService:
                     if now < resume_at:
                         logger.debug("Skipping suspended endpoint {} ({:.0f}s remaining)", url, resume_at - now)
                         continue
-                    else:
-                        # Suspension expired, allow retry
-                        del VisionService._suspended_endpoints[url]
+                    # Suspension expired, allow retry
+                    del VisionService._suspended_endpoints[url]
                 tried_urls.add(url)
                 try:
                     is_cloud = bool(endpoint.get("api_key"))

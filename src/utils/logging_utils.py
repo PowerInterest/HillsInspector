@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any
+from typing import Any, Self
 
 from loguru import logger
 
@@ -73,7 +73,7 @@ def log_search(
 class Timer:
     """Lightweight context timer for logging durations."""
 
-    def __enter__(self) -> "Timer":
+    def __enter__(self) -> Self:
         self._start = time.perf_counter()
         return self
 
@@ -83,4 +83,3 @@ class Timer:
     @property
     def ms(self) -> float:
         return (time.perf_counter() - self._start) * 1000
-

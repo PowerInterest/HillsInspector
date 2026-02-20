@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import os
 import time
-from contextlib import contextmanager
-from pathlib import Path
+from contextlib import contextmanager, suppress
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 try:
     import fcntl
-except ImportError as exc:  # pragma: no cover - non-POSIX platforms
+except ImportError:  # pragma: no cover - non-POSIX platforms
     fcntl = None  # type: ignore[assignment]
 
 
@@ -35,14 +38,14 @@ def exclusive_db_lock(lock_path: Path, wait_seconds: float = 0) -> None:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             break
-        except BlockingIOError:
+        except BlockingIOError as err:
             if wait_seconds and (time.monotonic() - start) < wait_seconds:
                 time.sleep(0.25)
                 continue
             raise DatabaseLockError(
                 f"Database lock already held. Try stopping the other process or wait "
                 f"for it to finish. Lock file: {lock_path}"
-            )
+            ) from err
 
     try:
         os.ftruncate(fd, 0)
@@ -54,7 +57,5 @@ def exclusive_db_lock(lock_path: Path, wait_seconds: float = 0) -> None:
         finally:
             os.close(fd)
             # Clean up lock file on exit
-            try:
+            with suppress(OSError):
                 lock_path.unlink(missing_ok=True)
-            except OSError:
-                pass  # Best effort cleanup

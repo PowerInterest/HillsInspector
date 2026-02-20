@@ -7,6 +7,7 @@ Uses real examples from the database to ensure:
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -16,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from utils.legal_description import (
     parse_legal_description,
     generate_search_permutations,
-    LegalDescription,
 )
 
 
@@ -231,9 +231,6 @@ def analyze_poor_cases():
                 print(f"    Legal: {case['legal_description'][:70]}...")
                 print(f"    Extracted: lot={result['lot']}, lots={result['lots']}, block={result['block']}")
                 print(f"    Subdiv: {result['subdivision']}")
-
-
-import re
 
 if __name__ == "__main__":
     print("=" * 80)
