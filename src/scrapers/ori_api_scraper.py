@@ -1,5 +1,7 @@
 import asyncio
 import concurrent.futures
+import json
+import os
 import random
 import time
 from datetime import UTC, datetime
@@ -124,7 +126,11 @@ class ORIApiScraper:
         "(COR) CORRECTIVE",
     ]
 
-    def __init__(self):
+    def __init__(
+        self,
+        capture_requests: bool | None = None,
+        capture_dir: str | Path | None = None,
+    ):
         self.session = requests.Session()
         # Initialize session cookies
         try:
@@ -145,6 +151,178 @@ class ORIApiScraper:
         # Threshold for entering cool-down mode
         self.API_COOLDOWN_THRESHOLD = 5  # After 5 consecutive 400s, cool down
         self.API_COOLDOWN_DURATION = 300  # 5 minutes cool-down
+        capture_env = os.getenv("ORI_CAPTURE_REQUESTS", "").strip().lower()
+        self.capture_requests = (
+            capture_requests
+            if capture_requests is not None
+            else capture_env in {"1", "true", "yes", "on"}
+        )
+        capture_dir_value = capture_dir or os.getenv("ORI_CAPTURE_DIR", "logs/ori_captures")
+        self.capture_dir = Path(capture_dir_value)
+        self._capture_seq = 0
+        if self.capture_requests:
+            self.capture_dir.mkdir(parents=True, exist_ok=True)
+            logger.info("ORI request capture enabled -> {}", self.capture_dir)
+
+    def _safe_capture_slug(self, text: str, max_len: int = 80) -> str:
+        """Create a filesystem-safe slug for capture file names."""
+        slug = "".join(ch if ch.isalnum() else "_" for ch in text).strip("_")
+        if not slug:
+            slug = "capture"
+        return slug[:max_len]
+
+    @staticmethod
+    def _normalize_result(doc: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize ORI API result dict to consistent field names/types.
+
+        The ORI API uses inconsistent field names (BookNum vs Book, PageNum vs
+        Page) and returns some fields as integers (RecordDate as Unix timestamp,
+        BookNum/PageNum as ints).  This normalizer ensures every consumer gets a
+        consistent dict with string values and standard key names.
+        """
+        # Copy so we don't mutate the original
+        d = dict(doc)
+
+        # RecordDate: Unix timestamp (int) → "YYYY-MM-DD" string
+        rd = d.get("RecordDate")
+        if isinstance(rd, (int, float)) and rd > 946684800:  # after 2000-01-01
+            import contextlib
+            from datetime import datetime
+            with contextlib.suppress(ValueError, OSError, OverflowError):
+                d["RecordDate"] = datetime.fromtimestamp(rd, tz=UTC).strftime("%Y-%m-%d")
+
+        # BookNum → Book (canonical name), ensure string
+        if "BookNum" in d and "Book" not in d:
+            d["Book"] = str(d["BookNum"]).strip() if d["BookNum"] else ""
+        elif "Book" in d and d["Book"] is not None:
+            d["Book"] = str(d["Book"]).strip()
+
+        # PageNum → Page (canonical name), ensure string
+        if "PageNum" in d and "Page" not in d:
+            d["Page"] = str(d["PageNum"]).strip() if d["PageNum"] else ""
+        elif "Page" in d and d["Page"] is not None:
+            d["Page"] = str(d["Page"]).strip()
+
+        # Instrument: ensure string
+        inst = d.get("Instrument")
+        if inst is not None:
+            d["Instrument"] = str(inst).strip()
+
+        # SalesPrice: ensure float or None
+        sp = d.get("SalesPrice")
+        if sp is not None and not isinstance(sp, float):
+            try:
+                d["SalesPrice"] = float(sp)
+            except (ValueError, TypeError):
+                d["SalesPrice"] = None
+
+        # ID: ORI ID can be very long; truncate for DB compatibility
+        ori_id = d.get("ID")
+        if ori_id is not None:
+            d["ID"] = str(ori_id)[:64]
+
+        # PartiesOne/PartiesTwo: ensure list of strings
+        for key in ("PartiesOne", "PartiesTwo"):
+            parties = d.get(key)
+            if parties and isinstance(parties, list):
+                d[key] = [str(p) if not isinstance(p, str) else p for p in parties]
+
+        return d
+
+    def _capture_query_label(self, payload: Dict[str, Any] | None) -> str:
+        """Build a short label for capture file names from request payload."""
+        if not payload:
+            return "search"
+        if payload.get("CaseNum"):
+            return f"case_{payload['CaseNum']}"
+        party = payload.get("Party") or payload.get("PartyName")
+        if party:
+            return f"party_{party}"
+        legal = payload.get("Legal")
+        if legal:
+            if isinstance(legal, list) and len(legal) >= 2:
+                return f"legal_{legal[1]}"
+            return f"legal_{legal}"
+        if payload.get("Instrument"):
+            return f"instrument_{payload['Instrument']}"
+        if payload.get("QueryID"):
+            return f"cqid_{payload['QueryID']}"
+        return "search"
+
+    def _capture_event(
+        self,
+        endpoint: str,
+        query_label: str,
+        request_data: Dict[str, Any] | None = None,
+        response_data: Dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Persist raw request/response payloads when capture mode is enabled."""
+        if not self.capture_requests:
+            return
+        try:
+            timestamp = now_utc().strftime("%Y%m%d_%H%M%S_%f")
+            seq = self._capture_seq
+            self._capture_seq += 1
+            endpoint_slug = self._safe_capture_slug(endpoint, max_len=48)
+            query_slug = self._safe_capture_slug(query_label, max_len=64)
+            file_path = self.capture_dir / f"{timestamp}_{seq:06d}_{endpoint_slug}_{query_slug}.json"
+            payload = {
+                "captured_at": now_utc().isoformat(),
+                "endpoint": endpoint,
+                "query_label": query_label,
+                "request": request_data,
+                "response": response_data,
+                "error": error,
+            }
+            file_path.write_text(
+                json.dumps(payload, indent=2, default=str),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("Failed to write ORI capture file: {}", exc)
+
+    async def _capture_playwright_response(
+        self,
+        endpoint: str,
+        query_label: str,
+        response: Any,
+        response_json: Dict[str, Any] | List[Any] | None,
+        page_url: str,
+    ) -> None:
+        """Capture Playwright response payloads for browser-based searches."""
+        if not self.capture_requests:
+            return
+
+        request = response.request
+        request_data = {
+            "url": request.url,
+            "method": request.method,
+            "headers": request.headers,
+            "post_data": request.post_data,
+            "page_url": page_url,
+        }
+        try:
+            response_headers = await response.all_headers()
+        except Exception as exc:
+            logger.debug(
+                f"Response headers unavailable for {response.url} during capture: {exc}"
+            )
+            response_headers = None
+
+        response_data = {
+            "url": response.url,
+            "status": response.status,
+            "status_text": response.status_text,
+            "headers": response_headers,
+            "body_json": response_json,
+        }
+        self._capture_event(
+            endpoint=endpoint,
+            query_label=query_label,
+            request_data=request_data,
+            response_data=response_data,
+        )
 
     def search_by_legal(
         self,
@@ -330,14 +508,56 @@ class ORIApiScraper:
             try:
                 resp = requests.post(api_url, json=payload, headers=headers, timeout=30)
             except requests.RequestException as e:
+                self._capture_event(
+                    endpoint="pav_keywordsearch",
+                    query_label=self._capture_query_label(payload),
+                    request_data={
+                        "url": api_url,
+                        "method": "POST",
+                        "headers": headers,
+                        "json": payload,
+                    },
+                    error=str(e),
+                )
                 logger.warning(f"Instrument search request failed for {instrument}: {e}")
                 return []
 
             if resp.status_code != 200:
+                self._capture_event(
+                    endpoint="pav_keywordsearch",
+                    query_label=self._capture_query_label(payload),
+                    request_data={
+                        "url": api_url,
+                        "method": "POST",
+                        "headers": headers,
+                        "json": payload,
+                    },
+                    response_data={
+                        "status_code": resp.status_code,
+                        "headers": dict(resp.headers),
+                        "body_text": resp.text,
+                    },
+                    error=f"status={resp.status_code}",
+                )
                 logger.warning(f"Instrument search API returned {resp.status_code} for {instrument}")
                 return []
 
             data = resp.json()
+            self._capture_event(
+                endpoint="pav_keywordsearch",
+                query_label=self._capture_query_label(payload),
+                request_data={
+                    "url": api_url,
+                    "method": "POST",
+                    "headers": headers,
+                    "json": payload,
+                },
+                response_data={
+                    "status_code": resp.status_code,
+                    "headers": dict(resp.headers),
+                    "body_json": data,
+                },
+            )
             raw_items = data.get("Data", [])
             if not raw_items:
                 log_search(source="ORI_CQID", query=f"instrument:{instrument}", results_raw=0, duration_ms=t.ms)
@@ -407,6 +627,13 @@ class ORIApiScraper:
                     return []
 
                 api_data = await api_response.json()
+                await self._capture_playwright_response(
+                    endpoint="pav_keywordsearch_browser",
+                    query_label=f"instrument_{instrument}",
+                    response=api_response,
+                    response_json=api_data,
+                    page_url=url,
+                )
 
                 if not api_data.get("Data"):
                     logger.debug(f"No results for instrument: {instrument} (API fast-detect)")
@@ -529,6 +756,13 @@ class ORIApiScraper:
                     return []
 
                 api_data = await api_response.json()
+                await self._capture_playwright_response(
+                    endpoint="pav_keywordsearch_browser",
+                    query_label=f"book_page_{book}_{page}",
+                    response=api_response,
+                    response_json=api_data,
+                    page_url=url,
+                )
 
                 if not api_data.get("Data"):
                     logger.debug(f"No results for book/page: {book}/{page} (API fast-detect)")
@@ -662,10 +896,25 @@ class ORIApiScraper:
             )
             response.raise_for_status()
             data = response.json()
+            self._capture_event(
+                endpoint="oriutilities_documentsearch",
+                query_label=self._capture_query_label(payload),
+                request_data={
+                    "url": self.SEARCH_URL,
+                    "method": "POST",
+                    "headers": self.HEADERS,
+                    "json": payload,
+                },
+                response_data={
+                    "status_code": response.status_code,
+                    "headers": dict(response.headers),
+                    "body_json": data,
+                },
+            )
             # Reset error counters on success
             self.consecutive_api_errors = 0
             self.last_api_error_ts = 0.0
-            return data.get("ResultList", [])
+            return [self._normalize_result(r) for r in data.get("ResultList", [])]
         except requests.HTTPError as e:
             status = e.response.status_code if e.response else None
             self.consecutive_api_errors += 1
@@ -685,9 +934,28 @@ class ORIApiScraper:
                 resp_text = e.response.text if e.response is not None else None
             except Exception as exc:
                 resp_text = f"<unreadable response body: {exc}>"
+            response_headers = (
+                dict(e.response.headers) if e.response is not None else None
+            )
             logger.error(f"ORI API payload (error): {payload}")
             if resp_text:
                 logger.error(f"ORI API response body (truncated): {resp_text[:500]}")
+            self._capture_event(
+                endpoint="oriutilities_documentsearch",
+                query_label=self._capture_query_label(payload),
+                request_data={
+                    "url": self.SEARCH_URL,
+                    "method": "POST",
+                    "headers": self.HEADERS,
+                    "json": payload,
+                },
+                response_data={
+                    "status_code": status,
+                    "headers": response_headers,
+                    "body_text": resp_text,
+                },
+                error=str(e),
+            )
             return []
         except Exception as e:
             self.consecutive_api_errors += 1
@@ -701,6 +969,17 @@ class ORIApiScraper:
 
             logger.error(f"Error searching ORI (consecutive={self.consecutive_api_errors}): {e}")
             logger.error(f"ORI API payload (exception): {payload}")
+            self._capture_event(
+                endpoint="oriutilities_documentsearch",
+                query_label=self._capture_query_label(payload),
+                request_data={
+                    "url": self.SEARCH_URL,
+                    "method": "POST",
+                    "headers": self.HEADERS,
+                    "json": payload,
+                },
+                error=str(e),
+            )
             return []
 
     def download_pdf(self, doc: Dict, output_dir: Path, prefer_browser: bool = False) -> Optional[Path]:
@@ -878,12 +1157,11 @@ class ORIApiScraper:
         import asyncio
         current_loop = asyncio.get_running_loop()
 
-        if self.browser is not None:
+        if self.browser is not None and getattr(self, "_browser_loop", None) is not current_loop:
             # Browser was created in a different (now-dead) event loop
-            if getattr(self, '_browser_loop', None) is not current_loop:
-                logger.debug("Browser event-loop mismatch — recreating")
-                self.browser = None
-                self.playwright = None
+            logger.debug("Browser event-loop mismatch — recreating")
+            self.browser = None
+            self.playwright = None
 
         if self.browser is None:
             self.playwright = await async_playwright().start()
@@ -1008,6 +1286,13 @@ class ORIApiScraper:
                     return []
 
                 api_data = await api_response.json()
+                await self._capture_playwright_response(
+                    endpoint="pav_keywordsearch_browser",
+                    query_label=f"legal_{legal_desc}",
+                    response=api_response,
+                    response_json=api_data,
+                    page_url=url,
+                )
 
                 # Fast path: zero results - bail immediately
                 if not api_data.get("Data"):
@@ -1195,6 +1480,13 @@ asyncio.run(main())
                 return []
 
             api_data = await api_response.json()
+            await self._capture_playwright_response(
+                endpoint="pav_keywordsearch_browser",
+                query_label=f"party_{party_name}",
+                response=api_response,
+                response_json=api_data,
+                page_url=url,
+            )
 
             if not api_data.get("Data"):
                 logger.info(
@@ -1358,6 +1650,13 @@ asyncio.run(main())
                 return []
 
             api_data = await api_response.json()
+            await self._capture_playwright_response(
+                endpoint="pav_keywordsearch_browser",
+                query_label=f"party_instrument_{party_name}_{instrument}",
+                response=api_response,
+                response_json=api_data,
+                page_url=url,
+            )
 
             if not api_data.get("Data"):
                 logger.info(

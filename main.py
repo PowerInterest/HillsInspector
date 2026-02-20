@@ -315,7 +315,8 @@ def handle_web(port: int, use_ngrok: bool = False):
             # doesn't even have to be reachable
             s.connect(('10.255.255.255', 1))
             IP = s.getsockname()[0]
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"Falling back to localhost IP detection: {exc}")
             IP = '127.0.0.1'
         finally:
             s.close()
@@ -325,10 +326,6 @@ def handle_web(port: int, use_ngrok: bool = False):
         refresh_web_snapshot(DB_PATH)
     except DatabaseSnapshotError as exc:
         logger.warning(f"Web snapshot refresh skipped: {exc}")
-    try:
-        refresh_web_snapshot(Path("data/history.db"), snapshot_name="history_web.db")
-    except DatabaseSnapshotError as exc:
-        logger.warning(f"History snapshot refresh skipped: {exc}")
 
     ip_addr = get_ip()
     logger.info(f"Starting FastAPI Web Server (app/web) on port {port}...")

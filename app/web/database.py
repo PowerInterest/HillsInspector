@@ -589,8 +589,10 @@ def get_property_by_case(case_number: str) -> Optional[Dict[str, Any]]:
         try:
             if isinstance(auction.get("extracted_judgment_data"), str):
                 auction["extracted_judgment_data"] = json.loads(auction["extracted_judgment_data"])
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                f"Could not parse extracted_judgment_data for case {case_number}: {exc}"
+            )
         return {
             "folio": folio,
             "auction": auction,
@@ -979,7 +981,8 @@ def get_dashboard_stats() -> Dict[str, Any]:
                 SELECT COUNT(DISTINCT folio) FROM encumbrances
             """).fetchone()
             stats["encumbrances_coverage"] = enc_row[0] if enc_row else 0
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"Encumbrances coverage query failed: {exc}")
             stats["encumbrances_coverage"] = 0
 
         try:
@@ -987,7 +990,8 @@ def get_dashboard_stats() -> Dict[str, Any]:
                 SELECT COUNT(DISTINCT folio) FROM chain_of_title
             """).fetchone()
             stats["chain_coverage"] = chain_row[0] if chain_row else 0
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"Chain coverage query failed: {exc}")
             stats["chain_coverage"] = 0
 
         try:
@@ -1000,7 +1004,8 @@ def get_dashboard_stats() -> Dict[str, Any]:
             """).fetchone()
             stats["total_survived_liens"] = surv_row[0] if surv_row else 0
             stats["total_survived_debt"] = surv_row[1] if surv_row else 0
-        except Exception:
+        except Exception as exc:
+            logger.debug(f"Survived liens query failed: {exc}")
             stats["total_survived_liens"] = 0
             stats["total_survived_debt"] = 0
 
@@ -1062,7 +1067,7 @@ def _safe_float(value: Any) -> float | None:
         return None
     try:
         return float(value)
-    except Exception:
+    except (TypeError, ValueError):
         return None
 
 
@@ -1132,10 +1137,64 @@ def get_market_snapshot(folio: str) -> Dict[str, Any]:
     """
     Market snapshot for a folio.
 
-    - Blended estimate: simple mean of available *estimate* values (no bulk data).
-    - Show Zestimate separately from list price.
-    - Photos come from latest HomeHarvest record.
+    Tries PG ``property_market`` first (consolidated, with local photos).
+    Falls back to SQLite market_data + home_harvest if PG unavailable.
     """
+    # --- Try PG consolidated snapshot first ---
+    try:
+        from app.web.pg_database import get_pg_queries
+        pg = get_pg_queries()
+        snap = pg.get_pg_market_snapshot(folio) if pg.available else None
+        if snap:
+            # Build local photo URLs (served via /properties/{folio}/photos/{name})
+            local_photos = []
+            cdn_photos = snap.get("photo_cdn_urls") or []
+            for path in snap.get("photo_local_paths") or []:
+                # path like "Foreclosure/{case}/photos/001_abc.jpg"
+                filename = path.rsplit("/", 1)[-1] if "/" in path else path
+                local_photos.append(f"/properties/{folio}/photos/{filename}")
+
+            # Build fallback-aware photo list: local first, CDN as data-fallback
+            photos_with_fallback = []
+            for i, local_url in enumerate(local_photos):
+                cdn_fallback = cdn_photos[i] if i < len(cdn_photos) else None
+                photos_with_fallback.append({
+                    "url": local_url,
+                    "cdn_fallback": cdn_fallback,
+                })
+            # For any CDN URLs beyond what we downloaded locally
+            for cdn_url in cdn_photos[len(local_photos):]:
+                photos_with_fallback.append({
+                    "url": cdn_url,
+                    "cdn_fallback": None,
+                })
+
+            # Also produce a flat photo URL list for backward compat
+            flat_photos = [p["url"] for p in photos_with_fallback]
+
+            return {
+                "blended_estimate": float(snap["zestimate"]) if snap.get("zestimate") else None,
+                "estimates": {
+                    "zillow_zestimate": float(snap["zestimate"]) if snap.get("zestimate") else None,
+                    "redfin_estimate": float(snap["list_price"]) if snap.get("list_price") else None,
+                    "homeharvest_estimated_value": None,
+                },
+                "list_prices": {
+                    "redfin_list_price": float(snap["list_price"]) if snap.get("list_price") else None,
+                },
+                "sources": {
+                    "zillow": snap.get("zillow_json"),
+                    "redfin": snap.get("redfin_json"),
+                    "homeharvest": snap.get("homeharvest_json"),
+                },
+                "photos": flat_photos,
+                "photos_with_fallback": photos_with_fallback,
+                "pg_snapshot": snap,
+            }
+    except Exception as e:
+        logger.debug(f"PG market snapshot failed for {folio}, falling back to SQLite: {e}")
+
+    # --- Fallback: original SQLite logic ---
     conn = get_connection()
     try:
         # Latest HomeHarvest row
@@ -1224,6 +1283,14 @@ def get_market_snapshot(folio: str) -> Dict[str, Any]:
         except Exception as err:
             logger.debug(f"Redfin market_data lookup failed for {folio}: {err}")
 
+        # Zillow photos supplement HomeHarvest + Redfin photos
+        if zillow:
+            raw_json = _safe_json((zillow or {}).get("raw_json"))
+            if isinstance(raw_json, dict):
+                for url in raw_json.get("photos") or []:
+                    if isinstance(url, str) and url.strip():
+                        photos.append(url.strip())
+
         # Estimates (for blending)
         zestimate = _safe_float((zillow or {}).get("zestimate"))
         homeharvest_estimated = _safe_float((homeharvest or {}).get("estimated_value"))
@@ -1272,14 +1339,34 @@ def get_market_snapshot(folio: str) -> Dict[str, Any]:
 def get_bulk_homeharvest_photos(folios: List[str]) -> Dict[str, str]:
     """Return latest photo per folio (for cards).
 
-    Checks HomeHarvest first, then falls back to first Redfin photo from raw_json.
+    Tries PG property_market local thumbnails first, then falls back to
+    HomeHarvest/Redfin/Zillow CDN URLs from SQLite.
     """
     result: Dict[str, str] = {}
     if not folios:
         return result
+
+    # --- Try PG thumbnails first ---
+    try:
+        from app.web.pg_database import get_pg_queries
+        pg = get_pg_queries()
+        if pg.available:
+            pg_thumbs = pg.get_pg_bulk_thumbnails(folios)
+            for strap, path in pg_thumbs.items():
+                # Convert relative path to serve URL
+                filename = path.rsplit("/", 1)[-1] if "/" in path else path
+                result[str(strap)] = f"/properties/{strap}/photos/{filename}"
+    except Exception as e:
+        logger.debug(f"PG bulk thumbnails failed: {e}")
+
+    # --- Fallback: SQLite for folios still missing ---
+    missing = [f for f in folios if str(f) not in result and f]
+    if not missing:
+        return result
+
     conn = get_connection()
     try:
-        placeholders = ",".join(["?"] * len(folios))
+        placeholders = ",".join(["?"] * len(missing))
 
         # Primary: HomeHarvest primary_photo
         rows = conn.execute(
@@ -1296,14 +1383,14 @@ def get_bulk_homeharvest_photos(folios: List[str]) -> Dict[str, str]:
             FROM latest
             WHERE rn = 1
             """,
-            folios,
+            missing,
         ).fetchall()
         for folio, primary_photo in rows:
             if folio and primary_photo:
                 result[str(folio)] = str(primary_photo)
 
         # Fallback: Redfin photos from raw_json for folios still missing a photo
-        missing = [f for f in folios if str(f) not in result and f]
+        missing = [f for f in missing if str(f) not in result and f]
         if missing:
             missing_ph = ",".join(["?"] * len(missing))
             redfin_rows = conn.execute(
@@ -1323,6 +1410,35 @@ def get_bulk_homeharvest_photos(folios: List[str]) -> Dict[str, str]:
                 missing,
             ).fetchall()
             for folio, raw_json in redfin_rows:
+                if not folio or not raw_json:
+                    continue
+                parsed = _safe_json(raw_json)
+                if isinstance(parsed, dict):
+                    photos = parsed.get("photos") or []
+                    if photos and isinstance(photos[0], str):
+                        result[str(folio)] = photos[0]
+
+        # Fallback 2: Zillow photos from raw_json for folios still missing
+        missing2 = [f for f in folios if str(f) not in result and f]
+        if missing2:
+            missing2_ph = ",".join(["?"] * len(missing2))
+            zillow_rows = conn.execute(
+                f"""
+                WITH latest AS (
+                    SELECT folio, raw_json,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY folio
+                            ORDER BY created_at DESC
+                        ) AS rn
+                    FROM market_data
+                    WHERE folio IN ({missing2_ph})
+                      AND source = 'Zillow'
+                )
+                SELECT folio, raw_json FROM latest WHERE rn = 1
+                """,
+                missing2,
+            ).fetchall()
+            for folio, raw_json in zillow_rows:
                 if not folio or not raw_json:
                     continue
                 parsed = _safe_json(raw_json)
