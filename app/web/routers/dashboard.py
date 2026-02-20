@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from typing import Optional
 from datetime import date
 
-from app.web.database import (
+from app.web.pg_web import (
     get_upcoming_auctions,
     get_upcoming_auctions_with_enrichments,
     get_auction_count,

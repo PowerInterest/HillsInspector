@@ -1,22 +1,22 @@
 """
-Review routes - manual review queues for failed scrapes.
+Review routes - triage queues for foreclosures missing data.
+All reads from PostgreSQL — no SQLite.
 """
-from fastapi import APIRouter, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
-from loguru import logger
 
-from app.web.database import (
-    get_failed_hcpa_scrapes,
-    get_failed_hcpa_count,
-    mark_hcpa_reviewed,
-    DatabaseLockedError,
-    DatabaseUnavailableError,
-)
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse
+from loguru import logger
+from sqlalchemy import text
+
 from app.web.template_filters import get_templates
+from sunbiz.db import get_engine, resolve_pg_dsn
 
 router = APIRouter()
-
 templates = get_templates()
+
+
+def _engine():
+    return get_engine(resolve_pg_dsn())
 
 
 @router.get("/hcpa-failures", response_class=HTMLResponse)
@@ -25,17 +25,38 @@ async def hcpa_failures(
     page: int = 1,
     per_page: int = 25,
     message: str | None = None,
-    error: str | None = None
+    error: str | None = None,
 ):
     """
-    Review queue for auctions where HCPA scrape failed.
-    These need manual intervention to get legal description for ORI search.
+    Foreclosures missing strap/folio (cannot do property enrichment).
+    Replaces the old SQLite HCPA-failure review queue.
     """
     offset = (page - 1) * per_page
+    try:
+        with _engine().connect() as conn:
+            total = conn.execute(
+                text("SELECT COUNT(*) FROM foreclosures WHERE strap IS NULL")
+            ).scalar() or 0
 
-    failed_auctions = get_failed_hcpa_scrapes(limit=per_page, offset=offset)
-    total = get_failed_hcpa_count()
-    total_pages = (total + per_page - 1) // per_page if total > 0 else 1
+            rows = conn.execute(
+                text("""
+                    SELECT case_number_raw, case_number_norm, auction_date,
+                           property_address, auction_status, folio, strap
+                    FROM foreclosures
+                    WHERE strap IS NULL
+                    ORDER BY auction_date DESC
+                    LIMIT :lim OFFSET :off
+                """),
+                {"lim": per_page, "off": offset},
+            ).mappings().fetchall()
+
+            failed_auctions = [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning(f"review query failed: {e}")
+        failed_auctions = []
+        total = 0
+
+    total_pages = max(1, (total + per_page - 1) // per_page)
 
     return templates.TemplateResponse(
         "review/hcpa_failures.html",
@@ -49,45 +70,7 @@ async def hcpa_failures(
                 "page": page,
                 "per_page": per_page,
                 "total": total,
-                "total_pages": total_pages
-            }
-        }
+                "total_pages": total_pages,
+            },
+        },
     )
-
-
-@router.post("/hcpa-failures/{case_number}/mark-reviewed")
-async def mark_reviewed(
-    request: Request,
-    case_number: str,
-    notes: str = Form(default="")
-):
-    """Mark an auction as manually reviewed."""
-    try:
-        success = mark_hcpa_reviewed(case_number, notes)
-        if success:
-            return RedirectResponse(
-                url=f"/review/hcpa-failures?message=Case+{case_number}+marked+as+reviewed",
-                status_code=303
-            )
-        return RedirectResponse(
-            url=f"/review/hcpa-failures?error=Failed+to+update+case+{case_number}",
-            status_code=303
-        )
-    except DatabaseLockedError:
-        logger.warning(f"Database locked when trying to mark {case_number} as reviewed")
-        return RedirectResponse(
-            url="/review/hcpa-failures?error=Database+is+locked.+Please+try+again+later.",
-            status_code=303
-        )
-    except DatabaseUnavailableError as e:
-        logger.error(f"Database unavailable when marking {case_number} as reviewed: {e}")
-        return RedirectResponse(
-            url="/review/hcpa-failures?error=Database+unavailable.+Please+check+the+logs.",
-            status_code=303
-        )
-    except Exception as e:
-        logger.error(f"Error marking {case_number} as reviewed: {e}")
-        return RedirectResponse(
-            url=f"/review/hcpa-failures?error=Error:+{type(e).__name__}",
-            status_code=303
-        )
