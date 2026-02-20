@@ -1,6 +1,5 @@
 """
-Geocode parcels missing latitude/longitude and store results in DuckDB.
-Uses Nominatim (OpenStreetMap) with simple on-disk caching.
+Backfill parcels missing latitude/longitude from local bulk_parcels data.
 """
 from __future__ import annotations
 
@@ -8,18 +7,25 @@ import argparse
 from loguru import logger
 
 from src.db.operations import PropertyDB
-from src.services.geocoder import geocode_address
 
 
 def geocode_missing(limit: int | None = None):
+    """Backfill missing coordinates from bulk_parcels (no external geocoder)."""
     db = PropertyDB()
     db.ensure_geocode_columns()
     conn = db.connect()
     query = """
-        SELECT folio, parcel_id, property_address
-        FROM parcels
-        WHERE (latitude IS NULL OR longitude IS NULL)
-          AND property_address IS NOT NULL
+        SELECT
+            p.folio,
+            p.parcel_id,
+            COALESCE(bp_strap.latitude, bp_folio.latitude) AS latitude,
+            COALESCE(bp_strap.longitude, bp_folio.longitude) AS longitude,
+            COALESCE(bp_strap.property_address, bp_folio.property_address, p.property_address) AS source_address
+        FROM parcels p
+        LEFT JOIN bulk_parcels bp_strap ON bp_strap.strap = p.folio
+        LEFT JOIN bulk_parcels bp_folio ON bp_folio.folio = p.folio
+        WHERE p.folio IS NOT NULL
+          AND (p.latitude IS NULL OR p.longitude IS NULL)
     """
     params = []
     if limit:
@@ -27,22 +33,32 @@ def geocode_missing(limit: int | None = None):
         params.append(limit)
 
     rows = conn.execute(query, params).fetchall()
-    logger.info(f"Found {len(rows)} parcels needing geocode")
+    logger.info(f"Found {len(rows)} parcels needing coordinate backfill")
 
     updated = 0
-    for folio, parcel_id, address in rows:
-        coords = geocode_address(
-            address,
-            source="tools/geocode_missing_parcels",
-            folio=str(folio),
-        )
-        if coords:
-            lat, lon = coords
-            db.update_parcel_coordinates(parcel_id or folio, lat, lon)
+    unresolved = 0
+    for folio, parcel_id, lat, lon, source_address in rows:
+        if lat is None or lon is None:
+            unresolved += 1
+            logger.warning(
+                f"No bulk_parcels coordinates for folio={folio} address={source_address!r}"
+            )
+            continue
+        try:
+            lat_val = float(lat)
+            lon_val = float(lon)
+            db.update_parcel_coordinates(parcel_id or folio, lat_val, lon_val)
             updated += 1
-            logger.info(f"Geocoded {address} -> ({lat}, {lon})")
+            logger.info(f"Backfilled folio={folio} -> ({lat_val}, {lon_val})")
+        except Exception:
+            unresolved += 1
+            logger.exception(
+                f"Failed coordinate update for folio={folio} parcel_id={parcel_id}"
+            )
 
-    logger.success(f"Updated {updated} parcels with coordinates")
+    logger.success(
+        f"Coordinate backfill complete: updated={updated}, unresolved={unresolved}, total={len(rows)}"
+    )
 
 
 def main():

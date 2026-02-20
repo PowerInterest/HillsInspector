@@ -261,7 +261,7 @@ class PipelineOrchestrator:
 
         # Services
         self.tax_scraper = TaxScraper(storage=self.storage)
-        self.permit_scraper = PermitScraper(headless=True, use_vision=True, storage=self.storage)
+        self.permit_scraper = PermitScraper(headless=True)
         self.market_scraper = MarketScraper(headless=True, storage=self.storage)
         self.sunbiz_scraper = SunbizScraper(headless=True, storage=self.storage)
         self.fema_checker = FEMAFloodChecker(storage=self.storage)
@@ -1517,16 +1517,12 @@ class PipelineOrchestrator:
     async def _run_permit_scraper(self, case_number: str, parcel_id: str, address: str):
         if self.db.is_status_step_complete(case_number, "step_permits_checked"):
             return
-        if self.db.folio_has_permits(parcel_id):
-            await self.db_writer.enqueue(
-                "generic_call",
-                {"func": self.db.mark_status_step_complete, "args": [case_number, "step_permits_checked", 7]},
-            )
-            return
 
-        # Validate address - can't search permits without a real address
-        if not address or address.strip().lower() in ("unknown", "n/a", "none", ""):
-            logger.warning(f"Skipping permit check for {case_number}: invalid address '{address}'")
+        # Validate: need at least a strap/parcel_id or a usable address
+        has_strap = bool(parcel_id and parcel_id.strip())
+        addr_valid = address and address.strip().lower() not in ("unknown", "n/a", "none", "")
+        if not has_strap and not addr_valid:
+            logger.warning(f"Skipping permit check for {case_number}: no parcel_id or address")
             await self.db_writer.enqueue(
                 "generic_call",
                 {"func": self.db.mark_status_step_complete, "args": [case_number, "step_permits_checked", 7]},
@@ -1535,13 +1531,19 @@ class PipelineOrchestrator:
 
         async with self.permit_semaphore:
             try:
-                permits = await self.permit_scraper.get_permits_for_property(
-                    case_number, address, "Tampa"
+                # PermitScraper.fetch_all is sync (ArcGIS HTTP + Playwright CSV export)
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: self.permit_scraper.fetch_all(
+                        strap=parcel_id if has_strap else None,
+                        address=address if addr_valid else None,
+                    ),
                 )
-                if permits:
-                    await self.db_writer.enqueue(
-                        "save_permits", {"folio": parcel_id, "permits": permits}
-                    )
+                county = result.get("county", {})
+                tampa = result.get("tampa", {})
+                logger.info(
+                    f"Permits for {case_number}: county={county.get('written', 0)} tampa={tampa.get('written', 0)}"
+                )
                 await self.db_writer.enqueue(
                     "generic_call",
                     {"func": self.db.mark_status_step_complete, "args": [case_number, "step_permits_checked", 7]},
@@ -1551,7 +1553,7 @@ class PipelineOrchestrator:
                     {"func": self.db.mark_step_complete, "args": [case_number, "needs_permit_check"]},
                 )
             except Exception as e:
-                logger.error(f"Permit scraper failed: {e}")
+                logger.error(f"Permit scraper failed for {case_number}: {e}")
                 await self.db_writer.enqueue(
                     "generic_call",
                     {"func": self.db.mark_status_step_failed, "args": [case_number, str(e)[:200], 7]},
@@ -2638,90 +2640,162 @@ async def run_full_update(
     db.checkpoint()
 
     # =========================================================================
-    # STEP 15: Geocode Missing Parcel Coordinates
+    # STEP 15: Backfill Missing Parcel Coordinates from Bulk Parcel Data
     # =========================================================================
     if geocode_missing_parcels:
-        from src.services.geocoder import geocode_address
-        import re
-
         db.ensure_geocode_columns()
+        logger.info("Step 15: starting coordinate backfill from bulk_parcels (no external geocoder)")
 
-        query = """
+        missing_count_query = """
+            SELECT COUNT(DISTINCT p.folio) AS missing_count
+            FROM parcels p
+            JOIN auctions a
+              ON COALESCE(a.parcel_id, a.folio) = p.folio
+            WHERE p.folio IS NOT NULL
+              AND (p.latitude IS NULL OR p.longitude IS NULL)
+        """
+        candidate_query = """
             SELECT DISTINCT
                 p.folio,
-                COALESCE(
-                    CASE WHEN p.property_address GLOB '*[0-9]*' THEN p.property_address END,
-                    CASE WHEN bp.property_address GLOB '*[0-9]*' THEN bp.property_address END
-                ) AS property_address,
-                p.city,
-                p.zip_code
+                COALESCE(bp_strap.latitude, bp_folio.latitude) AS latitude,
+                COALESCE(bp_strap.longitude, bp_folio.longitude) AS longitude,
+                COALESCE(bp_strap.property_address, bp_folio.property_address, p.property_address)
+                    AS property_address
+            FROM parcels p
+            JOIN auctions a
+              ON COALESCE(a.parcel_id, a.folio) = p.folio
+            LEFT JOIN bulk_parcels bp_strap ON bp_strap.strap = p.folio
+            LEFT JOIN bulk_parcels bp_folio ON bp_folio.folio = p.folio
+            WHERE p.folio IS NOT NULL
+              AND (p.latitude IS NULL OR p.longitude IS NULL)
+        """
+        unresolved_query = """
+            SELECT p.folio, COALESCE(bp.property_address, p.property_address) AS property_address
             FROM parcels p
             JOIN auctions a
               ON COALESCE(a.parcel_id, a.folio) = p.folio
             LEFT JOIN bulk_parcels bp ON bp.strap = p.folio
-            WHERE (p.latitude IS NULL OR p.longitude IS NULL)
-              AND COALESCE(
-                    CASE WHEN p.property_address GLOB '*[0-9]*' THEN p.property_address END,
-                    CASE WHEN bp.property_address GLOB '*[0-9]*' THEN bp.property_address END
-                  ) IS NOT NULL
+            WHERE p.folio IS NOT NULL
+              AND (p.latitude IS NULL OR p.longitude IS NULL)
+            ORDER BY p.folio
+            LIMIT 10
         """
+
+        try:
+            missing_before_rows = db.execute_query(missing_count_query)
+            missing_before = int(missing_before_rows[0]["missing_count"]) if missing_before_rows else 0
+            logger.info(f"Step 15: parcels missing coords before backfill: {missing_before}")
+        except Exception:
+            logger.exception("Step 15: failed to count parcels missing coordinates before backfill")
+            missing_before = -1
+
         params: list[object] = []
         if geocode_limit is not None:
-            query += " LIMIT ?"
+            candidate_query += " LIMIT ?"
             params.append(geocode_limit)
 
         try:
-            rows = db.execute_query(query, tuple(params))
-        except Exception as exc:
-            logger.error(f"Failed to query parcels needing geocode: {exc}")
+            rows = db.execute_query(candidate_query, tuple(params))
+            logger.info(
+                f"Step 15: candidate rows fetched from bulk_parcels={len(rows)} limit={geocode_limit}"
+            )
+        except Exception:
+            logger.exception("Step 15: failed to query candidate coordinate backfill rows")
             rows = []
 
-        logger.info(f"Found {len(rows)} parcels needing geocode")
         updated = 0
+        skipped_missing_bulk_coords = 0
+        failed_updates = 0
+        seen_folios: set[str] = set()
+
         for row in rows:
-            folio = row.get("folio")
-            address = (row.get("property_address") or "").strip()
-            if not folio or not address:
+            folio = str(row.get("folio") or "").strip()
+            if not folio or folio in seen_folios:
                 continue
+            seen_folios.add(folio)
 
-            if re.search(r",\s*FL[\s\-]", address, re.IGNORECASE):
-                full_address = re.sub(r"FL-\s*", "FL ", address)
-            else:
-                city = (row.get("city") or "Tampa").strip()
-                zip_code = (row.get("zip_code") or "").strip()
-                full_address = f"{address}, {city}, FL {zip_code}".strip()
+            lat = row.get("latitude")
+            lon = row.get("longitude")
+            address = (row.get("property_address") or "").strip()
 
-            coords = geocode_address(
-                full_address,
-                source="parcels",
-                folio=str(folio),
-            )
-            if not coords:
+            if lat is None or lon is None:
+                skipped_missing_bulk_coords += 1
+                logger.warning(
+                    f"Step 15: no bulk coords for folio={folio} address={address!r}; leaving unresolved"
+                )
                 storage.record_scrape(
-                    property_id=str(folio),
+                    property_id=folio,
                     scraper="geocode",
                     success=False,
-                    error="No geocode result",
-                    vision_data={"address": full_address},
-                    prompt_version="v1",
+                    error="No bulk_parcels coordinate match",
+                    vision_data={"address": address, "source": "bulk_parcels"},
+                    prompt_version="v2",
                 )
                 continue
 
-            lat, lon = coords
-            db.update_parcel_coordinates(str(folio), lat, lon)
-            updated += 1
-            logger.info(f"Geocoded {folio}: ({lat}, {lon})")
-            storage.record_scrape(
-                property_id=str(folio),
-                scraper="geocode",
-                success=True,
-                vision_data={"address": full_address, "latitude": lat, "longitude": lon},
-                prompt_version="v1",
-            )
+            try:
+                lat_val = float(lat)
+                lon_val = float(lon)
+                db.update_parcel_coordinates(folio, lat_val, lon_val)
+                updated += 1
+                logger.info(
+                    f"Step 15: backfilled folio={folio} latitude={lat_val} longitude={lon_val}"
+                )
+                storage.record_scrape(
+                    property_id=folio,
+                    scraper="geocode",
+                    success=True,
+                    vision_data={
+                        "address": address,
+                        "latitude": lat_val,
+                        "longitude": lon_val,
+                        "source": "bulk_parcels",
+                    },
+                    prompt_version="v2",
+                )
+            except Exception:
+                failed_updates += 1
+                logger.exception(f"Step 15: failed coordinate update for folio={folio}")
+                storage.record_scrape(
+                    property_id=folio,
+                    scraper="geocode",
+                    success=False,
+                    error="Coordinate backfill update error",
+                    vision_data={
+                        "address": address,
+                        "latitude": lat,
+                        "longitude": lon,
+                        "source": "bulk_parcels",
+                    },
+                    prompt_version="v2",
+                )
 
-        logger.success(f"Geocoded {updated}/{len(rows)} parcels")
+        try:
+            missing_after_rows = db.execute_query(missing_count_query)
+            missing_after = int(missing_after_rows[0]["missing_count"]) if missing_after_rows else 0
+            logger.info(f"Step 15: parcels missing coords after backfill: {missing_after}")
+        except Exception:
+            logger.exception("Step 15: failed to count parcels missing coordinates after backfill")
+            missing_after = -1
 
-        # CHECKPOINT: Persist geocoding results
+        try:
+            unresolved_samples = db.execute_query(unresolved_query)
+            if unresolved_samples:
+                logger.warning(f"Step 15: unresolved coordinate sample (up to 10): {unresolved_samples}")
+        except Exception:
+            logger.exception("Step 15: failed to query unresolved coordinate sample")
+
+        logger.success(
+            "Step 15 complete: updated={}, missing_bulk_coords={}, failed_updates={}, "
+            "missing_before={}, missing_after={}",
+            updated,
+            skipped_missing_bulk_coords,
+            failed_updates,
+            missing_before,
+            missing_after,
+        )
+
+        # CHECKPOINT: Persist coordinate backfill results
         db.checkpoint()
 
     # Final checkpoint to ensure all data is persisted
