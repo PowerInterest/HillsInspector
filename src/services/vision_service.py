@@ -1055,12 +1055,15 @@ class VisionService:
     """
 
     # API Configuration - Remote vLLM servers (with failover)
+    # 10.10.0.76 (truckws.dbag.lab) has GLM-4V-Flash + Qwen3-VL-30B + Qwen3-VL-8B
     # 10.10.0.33 has Qwen3-VL-8B with 262k context
     # 10.10.1.5 has 262k context, 10.10.2.27 only has 11k - prioritize the larger one
     # 192.168.86.26:1234 is LM Studio on Windows (uses different model ID)
     _LOCAL_ENDPOINTS = [
         {"url": "http://10.10.1.5:8002/v1/chat/completions", "model": "zai-org/GLM-4.6V-Flash"},
+        {"url": "http://10.10.0.76:6969/v1/chat/completions", "model": "zai-org/glm-4.6v-flash"},
         {"url": "http://192.168.86.26:6969/v1/chat/completions", "model": "zai-org/glm-4.6v-flash"},
+        {"url": "http://10.10.0.76:6969/v1/chat/completions", "model": "qwen/qwen3-vl-30b"},
         {"url": "http://10.10.0.33:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
         {"url": "http://10.10.1.5:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
         {"url": "http://10.10.2.27:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
@@ -1315,23 +1318,35 @@ class VisionService:
             return None
 
         errors = []
-        tried_urls: set[str] = set()
+        tried_endpoints: set[tuple[str, str]] = set()
 
         def _attempt(endpoints: list[dict], read_timeout: int) -> Optional[requests.Response]:
             now = time.monotonic()
             for endpoint in endpoints:
                 url = endpoint["url"]
-                if url in tried_urls:
+                model = endpoint["model"]
+                endpoint_key = (url, model)
+                if endpoint_key in tried_endpoints:
+                    logger.debug(
+                        "Skipping already-tried endpoint {} (model: {})",
+                        url,
+                        model,
+                    )
                     continue
                 # Skip endpoints that are temporarily suspended (recently timed out)
                 resume_at = VisionService._suspended_endpoints.get(url)
                 if resume_at is not None:
                     if now < resume_at:
-                        logger.debug("Skipping suspended endpoint {} ({:.0f}s remaining)", url, resume_at - now)
+                        logger.debug(
+                            "Skipping suspended endpoint {} (model: {}) ({:.0f}s remaining)",
+                            url,
+                            model,
+                            resume_at - now,
+                        )
                         continue
                     # Suspension expired, allow retry
                     del VisionService._suspended_endpoints[url]
-                tried_urls.add(url)
+                tried_endpoints.add(endpoint_key)
                 try:
                     is_cloud = bool(endpoint.get("api_key"))
                     label = "cloud" if is_cloud else "local"
@@ -1346,12 +1361,12 @@ class VisionService:
                         "Trying {} vision endpoint: {} (model: {}, timeout={}+{}s)",
                         label,
                         url,
-                        endpoint["model"],
+                        model,
                         VisionService._CONNECT_TIMEOUT,
                         ep_read_timeout,
                     )
                     payload_copy = payload.copy()
-                    payload_copy["model"] = endpoint["model"]
+                    payload_copy["model"] = model
                     headers = {}
                     if endpoint.get("api_key"):
                         headers["Authorization"] = f"Bearer {endpoint['api_key']}"
@@ -1374,20 +1389,26 @@ class VisionService:
                         )
                         err_body = f"(unreadable: {type(body_err).__name__})"
                     logger.warning(
-                        "Vision endpoint {} returned HTTP {}: {}",
+                        "Vision endpoint {} (model: {}) returned HTTP {}: {}",
                         url,
+                        model,
                         response.status_code,
                         err_body,
                     )
-                    errors.append(f"{url}: HTTP {response.status_code}")
+                    errors.append(f"{url} ({model}): HTTP {response.status_code}")
                     # Suspend endpoints returning 429 (quota) or 5xx (server error)
                     if response.status_code == 429 or response.status_code >= 500:
                         suspend_secs = VisionService._SUSPEND_HTTP_ERROR
                         VisionService._suspended_endpoints[url] = time.monotonic() + suspend_secs
-                        logger.info("Suspended endpoint {} for {}s after HTTP {}", url, suspend_secs, response.status_code)
+                        logger.info(
+                            "Suspended endpoint {} for {}s after HTTP {}",
+                            url,
+                            suspend_secs,
+                            response.status_code,
+                        )
                 except requests.exceptions.Timeout as e:
-                    logger.warning("Timeout on endpoint {}: {}", url, e)
-                    errors.append(f"{url}: Timeout")
+                    logger.warning("Timeout on endpoint {} (model: {}): {}", url, model, e)
+                    errors.append(f"{url} ({model}): Timeout")
                     # Read timeout = slow but alive → short suspension.
                     # Connect timeout = unreachable → long suspension.
                     is_connect_timeout = "connect" in str(e).lower() or "NewConnection" in str(e)
@@ -1397,16 +1418,21 @@ class VisionService:
                         else VisionService._SUSPEND_READ_TIMEOUT
                     )
                     VisionService._suspended_endpoints[url] = time.monotonic() + suspend_secs
-                    logger.info("Suspended endpoint {} for {}s after timeout (connect={})", url, suspend_secs, is_connect_timeout)
+                    logger.info(
+                        "Suspended endpoint {} for {}s after timeout (connect={})",
+                        url,
+                        suspend_secs,
+                        is_connect_timeout,
+                    )
                     continue
                 except requests.exceptions.ConnectionError as e:
-                    logger.warning("Connection error on endpoint {}: {}", url, e)
-                    errors.append(f"{url}: Connection error")
+                    logger.warning("Connection error on endpoint {} (model: {}): {}", url, model, e)
+                    errors.append(f"{url} ({model}): Connection error")
                     VisionService._suspended_endpoints[url] = time.monotonic() + VisionService._SUSPEND_CONN_REFUSED
                     continue
                 except Exception as e:
-                    logger.warning("Error on endpoint {}: {}", url, e)
-                    errors.append(f"{url}: {e}")
+                    logger.warning("Error on endpoint {} (model: {}): {}", url, model, e)
+                    errors.append(f"{url} ({model}): {e}")
                     continue
             return None
 
@@ -1416,7 +1442,11 @@ class VisionService:
 
         # If healthy endpoints failed, try remaining endpoints with a shorter timeout.
         if VisionService._health_check_done and VisionService._healthy_endpoints is not None:
-            extras = [ep for ep in self.API_ENDPOINTS if ep["url"] not in tried_urls]
+            extras = [
+                ep
+                for ep in self.API_ENDPOINTS
+                if (ep["url"], ep["model"]) not in tried_endpoints
+            ]
             if extras:
                 fallback_timeout = min(timeout, 60)
                 logger.warning(
