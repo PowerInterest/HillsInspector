@@ -5,6 +5,8 @@
 {% set insurance_required = enrich.insurance_required | default(false) %}
 {% set permits_open = enrich.permits_open | default(0) %}
 {% set permits_total = enrich.permits_total | default(0) %}
+{% set liens_survived = enrich.liens_survived | default(0) %}
+{% set liens_uncertain = enrich.liens_uncertain | default(0) %}
 {% set liens_surviving = enrich.liens_surviving | default(0) %}
 {% set liens_total_amount = enrich.liens_total_amount | default(0) %}
 {% set liens_total = enrich.liens_total | default(0) %}
@@ -58,8 +60,14 @@
 
         <!-- Encumbrances / Liens -->
         {% if liens_surviving > 0 %}
-        <span class="badge-enrichment badge-liens" title="{{ liens_total }} encumbrances, {{ liens_surviving }} surviving">
-            ⚠️ {{ liens_surviving }} Surviving
+        <span class="badge-enrichment badge-liens" title="{{ liens_total }} encumbrances, {{ liens_survived }} survived, {{ liens_uncertain }} uncertain">
+            {% if liens_survived > 0 and liens_uncertain > 0 %}
+            ⚠️ {{ liens_survived }} Survived + {{ liens_uncertain }} Uncertain
+            {% elif liens_survived > 0 %}
+            ⚠️ {{ liens_survived }} Survived
+            {% else %}
+            ⚠️ {{ liens_uncertain }} Uncertain
+            {% endif %}
         </span>
         {% elif liens_total > 0 %}
         <span class="badge-enrichment badge-liens-clear" title="{{ liens_total }} encumbrances analyzed, none surviving">

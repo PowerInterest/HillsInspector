@@ -43,11 +43,43 @@ def _sort_sql(sort_by: str, sort_order: str) -> str:
         "final_judgment_amount": "f.final_judgment_amount",
         "net_equity": (
             "(COALESCE(f.market_value, bp.market_value, 0) - "
-            "COALESCE(f.final_judgment_amount, 0))"
+            "COALESCE(f.final_judgment_amount, 0) - "
+            "COALESCE(enc.est_surviving_debt, 0))"
         ),
     }
     expr = allowed.get(sort_by, "f.auction_date")
     return f"{expr} {direction}, f.foreclosure_id DESC"
+
+
+def _encumbrance_lateral_join(table_alias: str) -> str:
+    """Lateral aggregate for encumbrance counts + estimated surviving debt."""
+    return f"""
+        LEFT JOIN LATERAL (
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE COALESCE(oe.is_satisfied, FALSE) = FALSE
+                ) AS liens_total,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(oe.is_satisfied, FALSE) = FALSE
+                      AND UPPER(COALESCE(oe.survival_status, '')) = 'SURVIVED'
+                ) AS liens_survived,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(oe.is_satisfied, FALSE) = FALSE
+                      AND UPPER(COALESCE(oe.survival_status, '')) = 'UNCERTAIN'
+                ) AS liens_uncertain,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(oe.is_satisfied, FALSE) = FALSE
+                      AND UPPER(COALESCE(oe.survival_status, '')) IN ('SURVIVED', 'UNCERTAIN')
+                ) AS liens_surviving,
+                COALESCE(SUM(oe.amount) FILTER (
+                    WHERE COALESCE(oe.is_satisfied, FALSE) = FALSE
+                      AND UPPER(COALESCE(oe.survival_status, '')) IN ('SURVIVED', 'UNCERTAIN')
+                ), 0)::numeric AS est_surviving_debt
+            FROM ori_encumbrances oe
+            WHERE ({table_alias}.strap IS NOT NULL AND oe.strap = {table_alias}.strap)
+               OR ({table_alias}.folio IS NOT NULL AND oe.folio = {table_alias}.folio)
+        ) enc ON TRUE
+    """
 
 
 def _jsonable(val: Any) -> Any:
@@ -106,12 +138,21 @@ def get_upcoming_auctions(
             COALESCE(f.year_built, bp.year_built) AS year_built,
             COALESCE(f.market_value, bp.market_value) AS hcpa_market_value,
             COALESCE(f.land_use, bp.land_use_desc) AS land_use_desc,
-            0::numeric AS est_surviving_debt,
-            (COALESCE(f.unsatisfied_encumbrance_count, 0) > 2) AS is_toxic_title,
+            COALESCE(enc.est_surviving_debt, 0)::numeric AS est_surviving_debt,
+            (
+                COALESCE(f.unsatisfied_encumbrance_count, 0) > 2
+                OR COALESCE(enc.liens_surviving, 0) > 0
+            ) AS is_toxic_title,
             (
                 COALESCE(f.market_value, bp.market_value, 0)
                 - COALESCE(f.final_judgment_amount, 0)
+                - COALESCE(enc.est_surviving_debt, 0)
             ) AS net_equity,
+            COALESCE(enc.liens_survived, 0)::integer AS liens_survived,
+            COALESCE(enc.liens_uncertain, 0)::integer AS liens_uncertain,
+            COALESCE(enc.liens_surviving, 0)::integer AS liens_surviving,
+            COALESCE(enc.est_surviving_debt, 0)::numeric AS liens_total_amount,
+            COALESCE(enc.liens_total, 0)::integer AS liens_total,
             COALESCE(f.latitude, bp.latitude) AS latitude,
             COALESCE(f.longitude, bp.longitude) AS longitude
         FROM foreclosures f
@@ -133,6 +174,7 @@ def get_upcoming_auctions(
             ORDER BY bp2.source_file_id DESC NULLS LAST
             LIMIT 1
         ) bp ON TRUE
+        {_encumbrance_lateral_join("f")}
         WHERE f.auction_date >= :start_date
           AND f.auction_date <= :end_date
           {type_clause}
@@ -170,12 +212,21 @@ def get_upcoming_auctions(
                         COALESCE(f.year_built, bp.year_built) AS year_built,
                         COALESCE(f.market_value, bp.market_value) AS hcpa_market_value,
                         COALESCE(f.land_use, bp.land_use_desc) AS land_use_desc,
-                        0::numeric AS est_surviving_debt,
-                        (COALESCE(f.unsatisfied_encumbrance_count, 0) > 2) AS is_toxic_title,
+                        COALESCE(enc.est_surviving_debt, 0)::numeric AS est_surviving_debt,
+                        (
+                            COALESCE(f.unsatisfied_encumbrance_count, 0) > 2
+                            OR COALESCE(enc.liens_surviving, 0) > 0
+                        ) AS is_toxic_title,
                         (
                             COALESCE(f.market_value, bp.market_value, 0)
                             - COALESCE(f.final_judgment_amount, 0)
+                            - COALESCE(enc.est_surviving_debt, 0)
                         ) AS net_equity,
+                        COALESCE(enc.liens_survived, 0)::integer AS liens_survived,
+                        COALESCE(enc.liens_uncertain, 0)::integer AS liens_uncertain,
+                        COALESCE(enc.liens_surviving, 0)::integer AS liens_surviving,
+                        COALESCE(enc.est_surviving_debt, 0)::numeric AS liens_total_amount,
+                        COALESCE(enc.liens_total, 0)::integer AS liens_total,
                         COALESCE(f.latitude, bp.latitude) AS latitude,
                         COALESCE(f.longitude, bp.longitude) AS longitude
                     FROM foreclosures_history f
@@ -197,6 +248,7 @@ def get_upcoming_auctions(
                         ORDER BY bp2.source_file_id DESC NULLS LAST
                         LIMIT 1
                     ) bp ON TRUE
+                    {_encumbrance_lateral_join("f")}
                     {fallback_where}
                     ORDER BY {order_sql}
                     LIMIT :lim OFFSET :off
@@ -232,6 +284,26 @@ def get_upcoming_auctions_with_enrichments(
 
     foreclosure_ids = [a.get("id") for a in auctions if a.get("id") is not None]
     enrich_by_id: dict[int, dict[str, Any]] = {}
+    for auction in auctions:
+        foreclosure_id = int(auction.get("id") or 0)
+        liens_survived = int(auction.get("liens_survived") or 0)
+        liens_uncertain = int(auction.get("liens_uncertain") or 0)
+        liens_surviving = int(auction.get("liens_surviving") or 0)
+        liens_total_amount = float(auction.get("liens_total_amount") or 0)
+        liens_total = int(auction.get("liens_total") or 0)
+        enrich_by_id[foreclosure_id] = {
+            "permits_total": 0,
+            "permits_open": 0,
+            "liens_survived": liens_survived,
+            "liens_uncertain": liens_uncertain,
+            "liens_surviving": liens_surviving,
+            "liens_total_amount": liens_total_amount,
+            "liens_total": liens_total,
+            "flood_zone": None,
+            "flood_risk": None,
+            "insurance_required": False,
+            "has_enrichments": liens_total > 0,
+        }
     if foreclosure_ids:
         try:
             with _engine().connect() as conn:
@@ -254,17 +326,31 @@ def get_upcoming_auctions_with_enrichments(
                 ).fetchall()
                 for r in rows:
                     m = dict(r._mapping)  # noqa: SLF001
-                    enrich_by_id[int(m["foreclosure_id"])] = {
-                        "permits_total": int(m.get("permits_total") or 0),
-                        "permits_open": int(m.get("permits_open") or 0),
-                        "liens_surviving": 0,
-                        "liens_total_amount": 0,
-                        "liens_total": 0,
-                        "flood_zone": None,
-                        "flood_risk": None,
-                        "insurance_required": False,
-                        "has_enrichments": True,
-                    }
+                    foreclosure_id = int(m["foreclosure_id"])
+                    base = enrich_by_id.get(
+                        foreclosure_id,
+                        {
+                            "permits_total": 0,
+                            "permits_open": 0,
+                            "liens_survived": 0,
+                            "liens_uncertain": 0,
+                            "liens_surviving": 0,
+                            "liens_total_amount": 0.0,
+                            "liens_total": 0,
+                            "flood_zone": None,
+                            "flood_risk": None,
+                            "insurance_required": False,
+                            "has_enrichments": False,
+                        },
+                    )
+                    permits_total = int(m.get("permits_total") or 0)
+                    permits_open = int(m.get("permits_open") or 0)
+                    base["permits_total"] = permits_total
+                    base["permits_open"] = permits_open
+                    base["has_enrichments"] = bool(
+                        base.get("has_enrichments") or permits_total > 0
+                    )
+                    enrich_by_id[foreclosure_id] = base
         except Exception as e:
             logger.debug(f"get_upcoming_auctions_with_enrichments aggregation failed: {e}")
 
@@ -274,13 +360,15 @@ def get_upcoming_auctions_with_enrichments(
             {
                 "permits_total": 0,
                 "permits_open": 0,
-                "liens_surviving": 0,
-                "liens_total_amount": 0,
-                "liens_total": 0,
+                "liens_survived": int(auction.get("liens_survived") or 0),
+                "liens_uncertain": int(auction.get("liens_uncertain") or 0),
+                "liens_surviving": int(auction.get("liens_surviving") or 0),
+                "liens_total_amount": float(auction.get("liens_total_amount") or 0),
+                "liens_total": int(auction.get("liens_total") or 0),
                 "flood_zone": None,
                 "flood_risk": None,
                 "insurance_required": False,
-                "has_enrichments": False,
+                "has_enrichments": bool(auction.get("liens_total")),
             },
         )
     return auctions
@@ -427,10 +515,20 @@ def get_auctions_by_date(auction_date: date) -> list[dict[str, Any]]:
                         COALESCE(f.heated_area, bp.heated_area) AS heated_area,
                         COALESCE(f.year_built, bp.year_built) AS year_built,
                         COALESCE(f.market_value, bp.market_value) AS hcpa_market_value,
-                        0::numeric AS est_surviving_debt,
+                        COALESCE(enc.liens_survived, 0)::integer AS liens_survived,
+                        COALESCE(enc.liens_uncertain, 0)::integer AS liens_uncertain,
+                        COALESCE(enc.est_surviving_debt, 0)::numeric AS est_surviving_debt,
+                        COALESCE(enc.liens_surviving, 0)::integer AS liens_surviving,
+                        COALESCE(enc.est_surviving_debt, 0)::numeric AS liens_total_amount,
+                        COALESCE(enc.liens_total, 0)::integer AS liens_total,
+                        (
+                            COALESCE(f.unsatisfied_encumbrance_count, 0) > 2
+                            OR COALESCE(enc.liens_surviving, 0) > 0
+                        ) AS is_toxic_title,
                         (
                             COALESCE(f.market_value, bp.market_value, 0)
                             - COALESCE(f.final_judgment_amount, 0)
+                            - COALESCE(enc.est_surviving_debt, 0)
                         ) AS net_equity
                     FROM foreclosures f
                     LEFT JOIN LATERAL (
@@ -448,6 +546,7 @@ def get_auctions_by_date(auction_date: date) -> list[dict[str, Any]]:
                         ORDER BY bp2.source_file_id DESC NULLS LAST
                         LIMIT 1
                     ) bp ON TRUE
+                    {_encumbrance_lateral_join("f")}
                     WHERE f.auction_date = :auction_date
                     ORDER BY f.case_number_raw
                 """),

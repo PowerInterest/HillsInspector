@@ -358,6 +358,117 @@ def _pg_permits_for_property(foreclosure_id: int) -> list[dict[str, Any]]:
         return []
 
 
+def _as_float(value: Any) -> float:
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalized_survival_status(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _pg_encumbrances_for_property(
+    conn: Any,
+    *,
+    strap: str | None,
+    folio: str | None,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    if not strap and not folio:
+        return []
+    where_clauses: list[str] = []
+    params: dict[str, Any] = {"lim": max(1, min(limit, 2000))}
+    if strap:
+        where_clauses.append("oe.strap = :strap")
+        params["strap"] = strap
+    if folio:
+        where_clauses.append("oe.folio = :folio")
+        params["folio"] = folio
+    if not where_clauses:
+        return []
+
+    rows = conn.execute(
+        sa_text(f"""
+            SELECT
+                oe.id,
+                oe.recording_date,
+                oe.encumbrance_type::text AS encumbrance_type,
+                oe.amount,
+                oe.amount_confidence,
+                oe.survival_status,
+                oe.survival_reason,
+                COALESCE(oe.is_satisfied, FALSE) AS is_satisfied,
+                oe.instrument_number AS instrument,
+                oe.instrument_number,
+                oe.book,
+                oe.page,
+                oe.case_number,
+                oe.party1,
+                oe.party2,
+                oe.raw_document_type,
+                CASE
+                    WHEN oe.encumbrance_type::text = 'mortgage'
+                        THEN COALESCE(NULLIF(oe.party2, ''), NULLIF(oe.party1, ''), '')
+                    ELSE COALESCE(NULLIF(oe.party1, ''), NULLIF(oe.party2, ''), '')
+                END AS creditor
+            FROM ori_encumbrances oe
+            WHERE {" OR ".join(where_clauses)}
+            ORDER BY oe.recording_date DESC NULLS LAST, oe.id DESC
+            LIMIT :lim
+        """),
+        params,
+    ).mappings().fetchall()
+
+    encumbrances: list[dict[str, Any]] = []
+    for row in rows:
+        encumbrance = dict(row)
+        encumbrance["is_joined"] = False
+        encumbrance["is_inferred"] = False
+        encumbrances.append(encumbrance)
+    return encumbrances
+
+
+def _summarize_encumbrances(encumbrances: list[dict[str, Any]]) -> dict[str, Any]:
+    # Treat UNCERTAIN as risk-bearing until proven extinguished.
+    risk_statuses = {"SURVIVED", "UNCERTAIN"}
+    liens_total = 0
+    liens_survived = 0
+    liens_uncertain = 0
+    liens_surviving = 0
+    liens_total_amount = 0.0
+    surviving_unknown_amount = 0
+
+    for enc in encumbrances:
+        if bool(enc.get("is_satisfied")):
+            continue
+        liens_total += 1
+        status = _normalized_survival_status(enc.get("survival_status"))
+        if status == "SURVIVED":
+            liens_survived += 1
+        elif status == "UNCERTAIN":
+            liens_uncertain += 1
+        if status in risk_statuses:
+            amount = enc.get("amount")
+            if amount is None:
+                surviving_unknown_amount += 1
+            else:
+                liens_total_amount += _as_float(amount)
+    liens_surviving = liens_survived + liens_uncertain
+
+    return {
+        "liens_total": liens_total,
+        "liens_survived": liens_survived,
+        "liens_uncertain": liens_uncertain,
+        "liens_surviving": liens_surviving,
+        "liens_total_amount": liens_total_amount,
+        "surviving_unknown_amount": surviving_unknown_amount,
+    }
+
+
 def _pg_market_snapshot(auction: dict[str, Any], parcel: dict[str, Any] | None) -> dict[str, Any]:
     zestimate = auction.get("zestimate")
     list_price = auction.get("list_price")
@@ -459,12 +570,21 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
                 or auction.get("assessed_value")
                 or 0
             )
-            net_equity = float(market_value or 0) - float(
-                auction.get("final_judgment_amount") or 0
-            )
 
             foreclosure_id = int(auction.get("foreclosure_id"))
             permits = _pg_permits_for_property(foreclosure_id)
+            encumbrances = _pg_encumbrances_for_property(
+                conn,
+                strap=auction.get("strap"),
+                folio=auction.get("folio"),
+            )
+            enc_summary = _summarize_encumbrances(encumbrances)
+            est_surviving_debt = _as_float(enc_summary["liens_total_amount"])
+            net_equity = (
+                _as_float(market_value)
+                - _as_float(auction.get("final_judgment_amount"))
+                - est_surviving_debt
+            )
             enrichments = {
                 "permits_total": len(permits),
                 "permits_open": sum(
@@ -472,13 +592,15 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
                     for p in permits
                     if str(p.get("status") or "").lower() in {"open", "active", "issued"}
                 ),
-                "liens_surviving": 0,
-                "liens_total_amount": 0,
-                "liens_total": 0,
+                "liens_survived": int(enc_summary["liens_survived"]),
+                "liens_uncertain": int(enc_summary["liens_uncertain"]),
+                "liens_surviving": int(enc_summary["liens_surviving"]),
+                "liens_total_amount": est_surviving_debt,
+                "liens_total": int(enc_summary["liens_total"]),
                 "flood_zone": None,
                 "flood_risk": None,
                 "insurance_required": False,
-                "has_enrichments": len(permits) > 0,
+                "has_enrichments": bool(len(permits) > 0 or enc_summary["liens_total"] > 0),
             }
 
             auction_payload = {
@@ -499,6 +621,7 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
                 "judgment_extracted_at": auction.get("step_judgment_extracted"),
                 "has_valid_parcel_id": bool(auction.get("strap") or auction.get("folio")),
                 "folio": strap_or_folio,
+                "est_surviving_debt": est_surviving_debt,
             }
 
             return {
@@ -506,15 +629,16 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
                 "auction": auction_payload,
                 "parcel": parcel_dict,
                 "parcels_data": parcel_dict,
-                "encumbrances": [],
+                "encumbrances": encumbrances,
                 "chain": _pg_chain_for_property(strap_or_folio, case_number),
                 "nocs": [],
                 "sales": get_pg_queries().get_sales_history(strap_or_folio),
                 "net_equity": net_equity,
                 "market_value": market_value,
-                "est_surviving_debt": 0,
+                "est_surviving_debt": est_surviving_debt,
                 "is_toxic_title": bool(
                     (auction.get("unsatisfied_encumbrance_count") or 0) > 2
+                    or enc_summary["liens_surviving"] > 0
                 ),
                 "market": market,
                 "enrichments": enrichments,
