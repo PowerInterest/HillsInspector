@@ -1,299 +1,304 @@
 # HillsInspector MASTERPLAN
 
-**Updated: 2026-02-20**
+**Updated: 2026-02-21 (full reality sync for agent startup)**
+
+## 0) Agent Startup Context
+
+This document is the startup source of truth for active work.
+
+- Canonical pipeline entry point: `Controller.py`
+- Canonical operational database: PostgreSQL
+- Success is measured by **data completeness thresholds**, not by "no exceptions"
+- Legacy commands (`main.py --update`, `--run-step`) are not valid workflow
+
+Critical runtime behavior:
+
+- Steps `hcpa_suite`, `clerk_bulk`, `dor_nal`, `sunbiz_flr`, `sunbiz_entity`, `county_permits`, `tampa_permits` are dispatched as background workers.
+- Step `market_data` is also background-dispatched.
+- A `Controller.py` summary can return before those workers finish, so completion must be verified via logs + table-level validation.
 
 ## 1) Mission
 
-Single PG-first pipeline that answers: *"Is this foreclosure property worth buying at auction, or is the title toxic?"*
+Build and operate a single PG-first foreclosure intelligence pipeline that answers:
 
-One entry point (`Controller.py`), one database (PostgreSQL), two phases:
-- **Phase A**: Bulk data refresh (idempotent, no per-property scraping)
-- **Phase B**: Per-auction enrichment (scraping, PDF extraction, ORI search, survival analysis)
+- Is this property investable at auction?
+- What encumbrances survive the sale?
+- What is realistic net equity after judgment + surviving debt?
 
-## 2) Current Architecture
+## 2) Canonical Pipeline Architecture
 
-```
-Controller.py
-  → PgPipelineController (src/services/pg_pipeline_controller.py)
+## Phase A: Bulk Refresh
 
-    Phase A: Bulk Data Refresh
-      1.  HCPA suite         → hcpa_bulk_parcels (530K), hcpa_allsales (2.4M)
-      2.  Clerk bulk         → clerk_civil_cases (73K), clerk_civil_parties (271K)
-      3.  DOR NAL            → dor_nal_parcels (524K)
-      4.  Sunbiz UCC         → sunbiz_flr_filings (21K)
-      5.  Sunbiz entities    → sunbiz_entity_filings (81)
-      6.  County permits     → county_permits (89K)
-      7.  Tampa permits      → tampa_accela_records (1K)
-      8.  Foreclosure refresh → foreclosures hub (1.3K) + foreclosure_events
-      9.  Trust accounts     → TrustAccount (3.4K)
-      10. Title chain        → foreclosure_title_chain (5.8K)
-      11. Market data        → property_market (126)
+| # | Step Name | Implementation | Primary Outputs | Execution Mode |
+|---|-----------|----------------|-----------------|----------------|
+| 1 | `hcpa_suite` | `sunbiz.pg_loader.load_hcpa_suite` | `hcpa_bulk_parcels`, `hcpa_allsales`, related HCPA tables | background worker |
+| 2 | `clerk_bulk` | `PgClerkBulkService.update()` | `clerk_civil_cases`, `clerk_civil_parties`, events/index tables | background worker |
+| 3 | `dor_nal` | `PgNalService.update()` | `dor_nal_parcels` | background worker |
+| 4 | `sunbiz_flr` | `PgFlrService.update()` | `sunbiz_flr_*` | background worker |
+| 5 | `sunbiz_entity` | `load_sunbiz_entity` | `sunbiz_entity_*` | background worker |
+| 6 | `county_permits` | `CountyPermitService.sync_postgres()` | `county_permits` | background worker |
+| 7 | `tampa_permits` | `TampaPermitService.sync_date_range()` | `tampa_accela_records` | background worker |
+| 8 | `foreclosure_refresh` | `PgForeclosureService.refresh()` | `foreclosures` hub refresh | inline |
+| 9 | `trust_accounts` | `PgTrustAccountsService.run()` | `TrustAccount`, `TrustAccountSummary` | inline |
+| 10 | `title_chain` | `TitleChainController.run()` | `foreclosure_title_events`, `foreclosure_title_chain`, `foreclosure_title_summary` | inline |
 
-    Phase B: Per-Auction Enrichment                         ← NEW (2026-02-20)
-      12. Auction scrape     → PgAuctionService  → foreclosures
-      13. Judgment extract   → PgJudgmentService → foreclosures.judgment_data
-      14. ORI search         → PgOriService      → ori_encumbrances
-      15. Survival analysis  → PgSurvivalService → ori_encumbrances.survival_status
-      16. Final refresh      → re-join all Phase B data into foreclosures hub
-```
+## Phase B: Per-Auction Enrichment
 
-## 3) Implementation Status
+| # | Step Name | Implementation | Primary Outputs | Execution Mode |
+|---|-----------|----------------|-----------------|----------------|
+| 11 | `auction_scrape` | `PgAuctionService.run()` | refreshed auction rows in `foreclosures` | inline |
+| 12 | `judgment_extract` | `PgJudgmentService.run()` | `foreclosures.judgment_data`, `step_judgment_extracted` | inline |
+| 13 | `ori_search` | `PgOriService.run()` | `ori_encumbrances`, `step_ori_searched` | inline |
+| 14 | `survival_analysis` | `PgSurvivalService.run()` | `ori_encumbrances.survival_status`, `step_survival_analyzed` | inline |
+| 15 | `final_refresh` | `scripts.refresh_foreclosures.refresh()` | recomputed foreclosure hub metrics | inline |
+| 16 | `market_data` | `dispatch_market_data_worker()` | `property_market` + post-market refresh | background worker |
 
-### Phase A: Bulk Data Refresh — DONE
-All 11 steps working. Staleness-aware skip/run logic with `--force-all` override.
+## 3) Current Implementation Reality (Code-Verified)
 
-| Step | Service | Status |
-|------|---------|--------|
-| 1. HCPA suite | `sunbiz.pg_loader.load_hcpa_suite` | Done |
-| 2. Clerk bulk | `PgClerkBulkService.update` | Done |
-| 3. DOR NAL | `PgNalService.update` | Done |
-| 4. Sunbiz UCC | `PgFlrService.update` | Done |
-| 5. Sunbiz entity | `SunbizMirror.sync` + `load_sunbiz_entity` | Done |
-| 6. County permits | `CountyPermitService.sync_postgres` | Done |
-| 7. Tampa permits | `TampaPermitService.sync_date_range` | Done |
-| 8. Foreclosure refresh | `PgForeclosureService.refresh` | Done |
-| 9. Trust accounts | `TrustAccountsService.run` | Done |
-| 10. Title chain | `TitleChainController.run` | Done |
-| 11. Market data | `MarketDataService.run_batch` | Done |
+Implemented and wired:
 
-### Phase B: Per-Auction Enrichment — SERVICES CREATED, NEEDS VALIDATION
+- PG-first controller orchestration is active in `Controller.py` + `src/services/pg_pipeline_controller.py`.
+- ORI search and survival analysis write to `ori_encumbrances` via `PgOriService` + `PgSurvivalService`.
+- Property detail (`app/web/routers/properties.py`) now loads encumbrances from `ori_encumbrances` and computes:
+  - `liens_total`
+  - `liens_surviving` (SURVIVED + UNCERTAIN)
+  - `est_surviving_debt`
+  - `net_equity`
 
-| Step | Service | File | Status |
-|------|---------|------|--------|
-| 12. Auction scrape | `PgAuctionService` | `src/services/pg_auction_service.py` | **Created** — needs end-to-end test |
-| 13. Judgment extract | `PgJudgmentService` | `src/services/pg_judgment_service.py` | **Created** — needs end-to-end test |
-| 14. ORI search | `PgOriService` | `src/services/pg_ori_service.py` | **Created** — needs end-to-end test |
-| 15. Survival analysis | `PgSurvivalService` | `src/services/pg_survival_service.py` | **Created** — needs end-to-end test |
-| 16. Final refresh | `refresh_foreclosures.refresh()` | `scripts/refresh_foreclosures.py` | **Wired** — re-runs after Phase B |
+Still incomplete (high-priority web/product gaps):
 
-All 4 services are wired into `PgPipelineController.run()` with CLI flags:
-- `--skip-auction-scrape`, `--skip-judgment-extract`, `--skip-ori-search`, `--skip-survival`
-- `--auction-limit N`, `--judgment-limit N`, `--ori-limit N`, `--survival-limit N`
+- Market tab/detail payload is still largely placeholder-shaped in `_pg_market_snapshot` and not a direct `property_market` representation.
+- `property.sources` provenance is returned as `[]`.
+- NOCs are returned as `[]` in permits view.
+- Tax tab lien rows are returned as `[]`.
+- Chain tab sets `document_id = None` for every chain item, so no chain document links render.
+- Several auction/judgment fields are hardcoded `None` (`plaintiff`, `plaintiff_max_bid`, `foreclosure_type`, `lis_pendens_date`).
+- Encumbrance UI metadata flags `is_joined` / `is_inferred` are always `False` today.
 
-### Phase C: SQLite Deletion — NOT STARTED
+Operational gap:
 
-| File | Lines | Replacement | Status |
-|------|-------|-------------|--------|
-| `src/orchestrator.py` | 2,729 | Phase B services | Not deleted yet |
-| `src/db/operations.py` (PropertyDB) | ~1,500 | PG queries | Not deleted yet |
-| `src/services/pg_hydrate_service.py` | ~200 | Eliminated (backwards direction) | Not deleted yet |
-| `src/services/homeharvest_service.py` | ~150 | `hcpa_allsales` in PG | Not deleted yet |
-| `src/ingest/bulk_parcel_ingest.py` | ~400 | `sunbiz/pg_loader.py` | Not deleted yet |
-| `src/scrapers/hcpa_gis_scraper.py` | ~300 | `hcpa_bulk_parcels` | Not deleted yet |
-| `src/scrapers/tax_scraper.py` | ~200 | `dor_nal_parcels` | Not deleted yet |
-| `src/scrapers/permit_scraper.py` | ~300 | `county_permits` | Not deleted yet |
-| `app/web/database.py` | ~800 | `pg_web.py` / `pg_database.py` | Not deleted yet |
-| `main.py --update` path | ~200 | `Controller.py` | Not deleted yet |
+- Controller run summaries are not persisted to `pipeline_runs` / `pipeline_run_steps` tables yet.
+- No scheduler-owned, auditable daily run loop is implemented.
 
-### Phase D: Data Quality Hardening — NOT STARTED
-- Buyer resolution (`sold_to` unknown rate reduction)
-- Nightly reconciliation SQL assertions
-- Case-number normalization edge cases
+## 4) Definition of Done: Completeness Gates
 
-### Phase E: Full Web PG Migration — PARTIALLY DONE
-- Dashboard, API, properties routers already use `pg_web.py` / `pg_database.py`
-- History router still uses `database.py` (SQLite)
-- Review router still uses `database.py` (SQLite)
+A run is successful only if all gates are met.
 
-### Phase F: Operational Reliability — NOT STARTED
-- `pipeline_runs` + `pipeline_run_steps` PG tables
-- Step-level run logs persisted to PG
-- Alertable thresholds for stale datasets
+Target gates:
 
-## 4) What Each Phase B Service Does
+- Final Judgment PDFs: >= 90% of active foreclosures
+- Extracted judgment data: >= 90% of active foreclosures with PDFs
+- Chain coverage: >= 80% of active foreclosures with judgment data
+- Encumbrance coverage: >= 80% of active foreclosures with judgment data and strap
+- Survival coverage: >= 80% of active foreclosures with judgment data and strap
 
-### Step 12: PgAuctionService (`pg_auction_service.py`)
-- Calculates scrape window (today → 60 days out)
-- Skips dates already in PG `foreclosures`
-- Calls `AuctionScraper.scrape_date()` per weekday (Playwright → clerk website)
-- AuctionScraper downloads Final Judgment PDFs to `data/Foreclosure/{case}/documents/`
-- UPSERTs each `Property` object into PG `foreclosures` table
-- Stores plaintiff/defendant in `judgment_data` jsonb (partial, pre-extraction)
-- PG trigger `normalize_foreclosure()` handles case-number normalization + strap↔folio cross-fill
+Validation commands/queries:
 
-### Step 13: PgJudgmentService (`pg_judgment_service.py`)
-- Scans `data/Foreclosure/*/documents/` for PDFs without `_extracted.json` cache
-- Calls `FinalJudgmentProcessor.process_pdf()` (VisionService OCR) for each
-- Processor saves `{stem}_extracted.json` next to PDF (disk cache, survives DB rebuilds)
-- Scans all `_extracted.json` files and UPDATEs `foreclosures.judgment_data` in PG
-- Sets `step_judgment_extracted` timestamp on each foreclosure
-
-### Step 14: PgOriService (`pg_ori_service.py`)
-- Queries PG for foreclosures where `step_ori_searched IS NULL` and `strap IS NOT NULL`
-- Joins to `hcpa_bulk_parcels` for legal description fields (`raw_legal1`..`raw_legal4`)
-- Generates search terms from legal description + judgment data
-- Calls `ORIApiScraper.search_by_legal()` for each term (API, not Playwright)
-- Classifies results using `type_normalizer` (mortgage, judgment, lis_pendens, lien, etc.)
-- INSERTs encumbrance-type documents into PG `ori_encumbrances` (ON CONFLICT DO UPDATE)
-- Falls back to judgment-inferred encumbrances when ORI finds 0 docs
-- Sets `step_ori_searched` timestamp on each foreclosure
-
-### Step 15: PgSurvivalService (`pg_survival_service.py`)
-- Queries PG for foreclosures where `step_survival_analyzed IS NULL` AND `step_ori_searched IS NOT NULL`
-- Only processes foreclosures that have unanalyzed encumbrances in `ori_encumbrances`
-- Loads encumbrances from PG `ori_encumbrances` (maps party1→creditor, party2→debtor)
-- Loads judgment data from PG `foreclosures.judgment_data`
-- Loads chain from PG `foreclosure_title_chain`
-- Reads `homestead_exempt` flag from `foreclosures` table
-- Calls `SurvivalService.analyze()` (stateless, same logic as SQLite version)
-- UPDATEs `survival_status` + `survival_reason` back to PG `ori_encumbrances`
-- Sets `step_survival_analyzed` timestamp on each foreclosure
-
-### Step 16: Final Refresh
-- Re-runs `refresh_foreclosures.refresh()` to:
-  - Count encumbrances per strap → `foreclosures.encumbrance_count`
-  - Count UCC exposure → `foreclosures.ucc_active_count`
-  - Cross-fill coords, property specs, tax data for newly-scraped auctions
-  - Archive past auctions
-
-## 5) What Stays As-Is (no changes needed)
-
-| File | Purpose |
-|------|---------|
-| `src/scrapers/auction_scraper.py` | Stateless Playwright scraper — returns Property objects |
-| `src/scrapers/ori_api_scraper.py` | Stateless ORI API + browser search — returns document dicts |
-| `src/services/final_judgment_processor.py` | Stateless PDF extraction — returns JSON + disk cache |
-| `src/services/lien_survival/survival_service.py` | Stateless analysis — returns survival results dict |
-| `src/services/vision_service.py` | OCR engine (GLM-4.6V-Flash + Gemini fallback) |
-| `sunbiz/pg_loader.py` | Phase A bulk loaders |
-| `src/services/pg_pipeline_controller.py` | Phase A+B orchestrator |
-| `src/services/pg_title_chain_controller.py` | PG-only title chain builder |
-| `scripts/refresh_foreclosures.py` | Hub table joins + enrichment |
-| `src/db/migrations/create_foreclosures.py` | DDL + PG functions |
-| `app/web/pg_web.py` + `pg_database.py` | PG web queries |
-
-## 6) What's Left To Do (ordered by priority)
-
-### Priority 1: Validate Phase B end-to-end
-Run each Phase B step individually and verify data lands in PG correctly.
 ```bash
-# Test auction scraping (5 per date)
-uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr \
-  --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits \
-  --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain \
-  --skip-judgment-extract --skip-ori-search --skip-survival \
-  --auction-limit 5
-
-# Test judgment extraction (10 PDFs)
-uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr \
-  --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits \
-  --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain \
-  --skip-auction-scrape --skip-ori-search --skip-survival \
-  --judgment-limit 10
-
-# Test ORI search (5 properties)
-uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr \
-  --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits \
-  --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain \
-  --skip-auction-scrape --skip-judgment-extract --skip-survival \
-  --ori-limit 5
-
-# Test survival (5 properties)
-uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr \
-  --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits \
-  --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain \
-  --skip-auction-scrape --skip-judgment-extract --skip-ori-search \
-  --survival-limit 5
+# Count foreclosure case folders with at least one PDF
+uv run python - <<'PY'
+from pathlib import Path
+root = Path("data/Foreclosure")
+with_pdf = sum(1 for d in root.glob("*/documents") if any(d.glob("*.pdf")))
+print(with_pdf)
+PY
 ```
 
-Verify with:
 ```sql
-SELECT COUNT(*) FROM foreclosures WHERE archived_at IS NULL;
-SELECT COUNT(*) FILTER (WHERE judgment_data IS NOT NULL) * 100.0 / COUNT(*)
-  FROM foreclosures WHERE archived_at IS NULL;
-SELECT COUNT(DISTINCT strap) FROM ori_encumbrances;
-SELECT COUNT(*) FILTER (WHERE survival_status IS NOT NULL) * 100.0 / COUNT(*)
-  FROM ori_encumbrances;
+-- Denominator: active foreclosure rows
+SELECT COUNT(*) AS active_foreclosures
+FROM foreclosures
+WHERE archived_at IS NULL;
+
+-- Judgment extraction coverage
+SELECT
+  COUNT(*) FILTER (WHERE judgment_data IS NOT NULL) AS with_judgment_data,
+  COUNT(*) AS total_active,
+  ROUND(
+    100.0 * COUNT(*) FILTER (WHERE judgment_data IS NOT NULL) / NULLIF(COUNT(*), 0),
+    2
+  ) AS pct_with_judgment_data
+FROM foreclosures
+WHERE archived_at IS NULL;
+
+-- Chain coverage for active foreclosures with judgment data
+WITH scope AS (
+  SELECT foreclosure_id
+  FROM foreclosures
+  WHERE archived_at IS NULL
+    AND judgment_data IS NOT NULL
+)
+SELECT
+  COUNT(DISTINCT c.foreclosure_id) AS covered,
+  (SELECT COUNT(*) FROM scope) AS total,
+  ROUND(
+    100.0 * COUNT(DISTINCT c.foreclosure_id) / NULLIF((SELECT COUNT(*) FROM scope), 0),
+    2
+  ) AS pct
+FROM foreclosure_title_chain c
+JOIN scope s ON s.foreclosure_id = c.foreclosure_id;
+
+-- Encumbrance coverage for active foreclosures with judgment data + strap
+WITH scope AS (
+  SELECT DISTINCT foreclosure_id, strap
+  FROM foreclosures
+  WHERE archived_at IS NULL
+    AND judgment_data IS NOT NULL
+    AND strap IS NOT NULL
+)
+SELECT
+  COUNT(DISTINCT s.foreclosure_id) FILTER (WHERE oe.id IS NOT NULL) AS covered,
+  COUNT(DISTINCT s.foreclosure_id) AS total,
+  ROUND(
+    100.0 * COUNT(DISTINCT s.foreclosure_id) FILTER (WHERE oe.id IS NOT NULL)
+    / NULLIF(COUNT(DISTINCT s.foreclosure_id), 0),
+    2
+  ) AS pct
+FROM scope s
+LEFT JOIN ori_encumbrances oe ON oe.strap = s.strap;
+
+-- Survival coverage for active foreclosures with judgment data + strap
+WITH scope AS (
+  SELECT DISTINCT foreclosure_id, strap
+  FROM foreclosures
+  WHERE archived_at IS NULL
+    AND judgment_data IS NOT NULL
+    AND strap IS NOT NULL
+)
+SELECT
+  COUNT(DISTINCT s.foreclosure_id) FILTER (WHERE oe.survival_status IS NOT NULL) AS covered,
+  COUNT(DISTINCT s.foreclosure_id) AS total,
+  ROUND(
+    100.0 * COUNT(DISTINCT s.foreclosure_id) FILTER (WHERE oe.survival_status IS NOT NULL)
+    / NULLIF(COUNT(DISTINCT s.foreclosure_id), 0),
+    2
+  ) AS pct
+FROM scope s
+LEFT JOIN ori_encumbrances oe ON oe.strap = s.strap;
 ```
 
-### Priority 2: Fix bugs found during validation
-Likely issues:
-- ORI search term generation may need tuning (legal description parsing)
-- Satisfaction matching in PgOriService is basic (no 4-pass matching like ChainBuilder)
-- PgSurvivalService maps `party1→creditor` but ORI uses party1=grantor for mortgages (party roles differ by doc type)
-- Foreclosure dates may need type casting in survival service
+Required failure loop if any gate misses target:
 
-### Priority 3: Enhance PgOriService with iterative discovery
-Current `PgOriService` does single-pass legal description search only. The SQLite pipeline's `IterativeDiscovery` does:
-- Multi-pass: legal → instrument → party name → book/page → gap-bounded searches
-- Up to 15 iterations expanding search from found documents
-- Cross-property contamination filtering (lot/block check)
+1. Diagnose root cause (`step_*` columns, worker logs, target selectors in services)
+2. Re-run only affected stages using valid skip-flag combinations
+3. Re-validate gates
+4. Repeat until thresholds pass
 
-Options:
-1. Port `IterativeDiscovery` to work with PG search queue table (most thorough)
-2. Add party name + instrument search passes to `PgOriService` (medium effort)
-3. Keep current single-pass for now, rely on existing 16K migrated encumbrances (quickest)
-
-### Priority 4: Delete SQLite pipeline (~7,000 lines)
-Once Phase B is validated end-to-end:
-1. Delete `src/orchestrator.py` (2,729 lines)
-2. Delete `src/db/operations.py` PropertyDB class (~1,500 lines)
-3. Delete `src/services/pg_hydrate_service.py` (backwards PG→SQLite, no longer needed)
-4. Delete `src/services/homeharvest_service.py` (replaced by `hcpa_allsales`)
-5. Delete `src/ingest/bulk_parcel_ingest.py` (replaced by `sunbiz/pg_loader.py`)
-6. Delete `src/scrapers/hcpa_gis_scraper.py` (replaced by `hcpa_bulk_parcels`)
-7. Delete `src/scrapers/tax_scraper.py` (replaced by `dor_nal_parcels`)
-8. Delete `src/scrapers/permit_scraper.py` (replaced by `county_permits`)
-9. Delete `app/web/database.py` (replaced by `pg_web.py` / `pg_database.py`)
-10. Remove `main.py --update` path
-11. Delete SQLite step4v2 services: `discovery.py`, `search_queue.py`, `chain_builder.py`, `name_matcher.py`
-12. Update `CLAUDE.md` to remove SQLite references
-
-### Priority 5: Web migration completion
-- Migrate `app/web/routers/history.py` from `database.py` → `pg_database.py`
-- Migrate `app/web/routers/review.py` from `database.py` → `pg_database.py`
-- Delete `app/web/database.py`
-- Verify all endpoints work with SQLite file absent
-
-### Priority 6: Operational reliability
-- Add `pipeline_runs` + `pipeline_run_steps` PG tables
-- Persist controller JSON summaries to PG
-- Add threshold alerts for stale datasets
-- Daily scheduled controller runs
-
-### Priority 7: Data quality hardening
-- Buyer resolution (`sold_to` unknown rate reduction)
-- FEMA flood zone batch job (quick API, deferred)
-- Market data coverage improvement (126/1,408 = 9%)
-
-## 7) Runbook
+## 5) Runbook (Valid Commands Only)
 
 ```bash
-# Full pipeline (Phase A + B)
+# Full pipeline (Phase A + Phase B)
 uv run Controller.py
 
-# Force all sources to refresh
+# Force all sources
 uv run Controller.py --force-all
 
-# Phase A only (bulk refresh, skip scraping)
-uv run Controller.py --skip-auction-scrape --skip-judgment-extract \
-  --skip-ori-search --skip-survival
+# Quick bounded sanity run
+uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --survival-limit 5 --limit 5
 
-# Phase B only (skip bulk refresh)
-uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr \
-  --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits \
-  --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain
+# Phase A only (skip per-auction enrichment + final refresh)
+uv run Controller.py --skip-auction-scrape --skip-judgment-extract --skip-ori-search --skip-survival --skip-final-refresh
 
-# ORI search with limit
-uv run Controller.py --ori-limit 20 --skip-auction-scrape
+# Phase B core only (skip bulk refresh and market background dispatch)
+uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain --skip-market-data
 
-# Legacy SQLite pipeline (deprecated — do not use for new work)
-uv run main.py --update
+# Market-only worker
+uv run python -m src.services.market_data_worker
+
+# Final refresh only
+uv run python scripts/refresh_foreclosures.py
+
+# Web app
+uv run python -m app.web.main
+
+# (Re)create PG schema functions/triggers
+uv run python -m src.db.migrations.create_foreclosures --dsn <postgres-dsn>
 ```
 
-## 8) PG Data Domains
+Background-worker verification after controller runs:
 
-| Domain | Tables | Owner Process |
-|--------|--------|---------------|
-| Foreclosure hub | `foreclosures`, `foreclosures_history`, `foreclosure_events` | `refresh_foreclosures.py` |
-| Title chain | `foreclosure_title_chain`, `foreclosure_title_events`, `foreclosure_title_summary` | `TitleChainController` |
-| Encumbrances | `ori_encumbrances`, `ori_encumbrance_assignments`, `ori_encumbrance_satisfactions` | `PgOriService` + `PgSurvivalService` |
-| Parcels/Sales | `hcpa_bulk_parcels`, `hcpa_allsales`, `hcpa_parcel_sub_names` | `load_hcpa_suite` |
-| Clerk | `clerk_civil_cases`, `clerk_civil_parties`, `clerk_civil_events`, `clerk_disposed_cases`, `clerk_garnishment_cases`, `clerk_name_index` | `PgClerkBulkService` |
-| Tax | `dor_nal_parcels` | `PgNalService` |
-| UCC/Sunbiz | `sunbiz_flr_filings`, `sunbiz_flr_parties`, `sunbiz_flr_events` | `PgFlrService` |
-| Entities | `sunbiz_entity_filings`, `sunbiz_entity_parties`, `sunbiz_entity_events` | `load_sunbiz_entity` |
-| Permits | `county_permits`, `tampa_accela_records` | `CountyPermitService`, `TampaPermitService` |
-| Market | `property_market` | `MarketDataService` |
-| Trust | `TrustAccount`, `TrustAccountSummary` | `TrustAccountsService` |
-| Historical | `historical_auctions` | `HistoryService` (dormant) |
+```bash
+# Inspect latest bulk-step worker logs
+ls -1t logs/step_workers/*.log | head
+
+# Inspect latest market worker log
+ls -1t logs/market_data_worker_*.log | head
+```
+
+## 6) Explicitly Removed / Invalid Workflow
+
+Do not use:
+
+- `uv run main.py --update`
+- `Controller.py --run-step ...` (flag does not exist)
+- SQLite fallback execution paths for pipeline decisions
+- Archived legacy services under `docs/archive/legacy_sqlite/` as runtime dependencies
+
+## 7) Priority Execution Plan (What Is Next)
+
+## Priority 1: Close web bridge gaps to make UI fully investment-grade
+
+1. Wire property market payload directly from `property_market` into property detail + market tab.
+2. Populate `property.sources` provenance from actual source JSON timestamps/URLs.
+3. Populate NOCs (ORI doc-type based) in permits tab.
+4. Populate tax-tab lien rows from PG encumbrance/tax data.
+5. Attach chain document IDs/links for chain timeline rows.
+
+Acceptance criteria:
+
+- Property pages show non-placeholder market estimates/photos when `property_market` exists.
+- Data Sources table renders at least one row when source payload exists.
+- Permits tab includes NOCs when recorded docs exist.
+- Tax tab lists tax-related encumbrance rows.
+- Chain tab renders working document links for rows with discoverable files.
+
+## Priority 1: Make runs operationally auditable
+
+1. Add `pipeline_runs` + `pipeline_run_steps` tables.
+2. Persist controller summary payloads for every run.
+3. Record background worker dispatch + completion states.
+4. Add scheduler for daily controller execution with logs.
+
+Acceptance criteria:
+
+- Every run has one persisted run record + per-step records.
+- Background steps have explicit final outcome, not only dispatch state.
+- Daily run history is queryable in PG.
+
+## Priority 1: Raise and hold completeness thresholds
+
+1. Clear `step_judgment_extracted IS NULL` backlog.
+2. Clear `step_ori_searched IS NULL` backlog.
+3. Clear `step_survival_analyzed IS NULL` backlog.
+4. Re-run `final_refresh` after enrichment updates.
+5. Re-validate all gates in Section 4.
+
+Useful backlog queries:
+
+```sql
+SELECT COUNT(*) AS pending_judgment
+FROM foreclosures
+WHERE archived_at IS NULL AND step_judgment_extracted IS NULL;
+
+SELECT COUNT(*) AS pending_ori
+FROM foreclosures
+WHERE archived_at IS NULL AND step_ori_searched IS NULL;
+
+SELECT COUNT(*) AS pending_survival
+FROM foreclosures
+WHERE archived_at IS NULL AND step_ori_searched IS NOT NULL AND step_survival_analyzed IS NULL;
+```
+
+## Priority 2: Data quality hardening
+
+1. Improve buyer-name resolution coverage (`sold_to` unknown reduction).
+2. Add FEMA flood-zone enrichment feed into web-facing enrichments.
+3. Increase `property_market` coverage and freshness for active auction set.
+
+## 8) Fast Handoff Checklist For Any Agent
+
+1. Read this file before coding.
+2. Confirm you are using only valid commands in Section 5.
+3. Choose one priority track from Section 7 and state acceptance criteria before edits.
+4. After changes, run the relevant validation gates in Section 4.
+5. Do not claim success unless gate thresholds are met.

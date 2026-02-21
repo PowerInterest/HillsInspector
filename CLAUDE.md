@@ -1,223 +1,185 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for coding agents working in this repository.
 
-## Pipeline Success Criteria (READ THIS FIRST)
+## Core Rule
 
-A successful `--update` run is measured by **data completeness**, not by steps completing without errors. The pipeline's purpose is to produce actionable foreclosure analysis. If the output data is missing, the run has failed regardless of whether the code ran without exceptions.
+Treat `MASTERPLAN.md` as the startup source of truth.
 
-**After any `--update` run, you MUST validate these thresholds:**
+If this file and `MASTERPLAN.md` ever diverge, follow `MASTERPLAN.md` and fix this file.
 
-| Metric | Target | Validation Query |
-|--------|--------|-----------------|
-| Final Judgment PDFs | 90%+ of foreclosures | Count `data/Foreclosure/*/documents/*.pdf` vs total auctions |
-| Extracted judgment data | 90%+ of PDFs | `SELECT COUNT(*) FROM auctions WHERE extracted_judgment_data IS NOT NULL` |
-| Chain of title | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM chain_of_title` |
-| Encumbrances identified | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM encumbrances` |
-| Lien survival analysis | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT folio) FROM encumbrances WHERE survival_status IS NOT NULL` |
+## Pipeline Success Criteria (Required)
 
-**If any threshold is not met, the run is a FAILURE.** Do not report success. Instead:
-1. Diagnose why the data is missing (query the `status` table, check logs, read the relevant step code)
-2. Fix the root cause
-3. Re-run the affected steps
-4. Keep iterating until thresholds are met
+A `Controller.py` run is successful only when data completeness targets are met.
 
-The chain of title and encumbrance data are the core deliverable. Without them, the pipeline produces no investment-grade analysis. Judgment PDFs and enrichment data are intermediate steps toward that goal.
+Do not report success based only on step execution without validation.
 
-## Final Judgment PDF — The Critical Document
+| Metric | Target |
+|--------|--------|
+| Final Judgment PDFs | >= 90% of active foreclosures |
+| Extracted judgment data | >= 90% of active foreclosures with PDFs |
+| Chain coverage | >= 80% of active foreclosures with judgment data |
+| Encumbrance coverage | >= 80% of active foreclosures with judgment data + strap |
+| Survival coverage | >= 80% of active foreclosures with judgment data + strap |
 
-The Final Judgment PDF is **THE** critical piece of information for this entire project. Every downstream analysis (chain of title, encumbrances, lien survival) depends on it. The auction website sometimes has incorrect or missing links to the actual judgment document. **The pipeline must make all attempts to locate the Final Judgment**, including:
+Validation SQL:
 
-1. **Primary**: Download from the clerk link on the auction page
-2. **Fallback**: Search ORI by case number (`_search_judgment_by_case_number`) when the instrument number is empty or the primary link fails
-3. **Recovery (CC cases / thin extractions)**: When extracted judgment data is missing critical fields (legal description, mortgage details) — especially for County Court (CC) cases — the downloaded PDF may be a fee order, not the real Final Judgment. Recovery strategy:
-   - Extract party names from whatever PDF was downloaded (even if thin)
-   - Search ORI by party name to find related recorded documents
-   - Look for **(LP) LIS PENDENS** — the LP is filed at the start of a foreclosure and is recorded under the **real CA (Circuit Court) case number**
-   - Any other documents found (liens, assignments, etc.) provide property identifiers (address, legal description, parcel number) as a bonus
-   - Search ORI by the LP's case number for **(JUD) JUDGMENT** documents
-   - Download and extract the **real** Final Judgment with full mortgage/lien data
-4. If all strategies fail, log clearly and flag the case for manual review — do not silently skip it
+```sql
+-- Active denominator
+SELECT COUNT(*) AS active_foreclosures
+FROM foreclosures
+WHERE archived_at IS NULL;
 
-**Case number format**: `29YYYYCCNNNNNN` = County Court (HOA liens, code enforcement, small claims). `29YYYYCANNNNNN` = Circuit Court (mortgage foreclosure). CC cases often reference or are related to a CA case for the same property. Do NOT dismiss CC cases as low-value — follow the chain to the real foreclosure judgment.
+-- Judgment extraction coverage
+SELECT
+  COUNT(*) FILTER (WHERE judgment_data IS NOT NULL) AS with_judgment_data,
+  COUNT(*) AS total_active,
+  ROUND(
+    100.0 * COUNT(*) FILTER (WHERE judgment_data IS NOT NULL) / NULLIF(COUNT(*), 0),
+    2
+  ) AS pct
+FROM foreclosures
+WHERE archived_at IS NULL;
 
-Never treat a missing judgment as acceptable. If a case has no PDF, investigate why and add new retrieval strategies as needed. Never suggest skipping CC cases or lowering success thresholds — find the real judgment instead.
+-- Chain coverage
+WITH scope AS (
+  SELECT foreclosure_id
+  FROM foreclosures
+  WHERE archived_at IS NULL
+    AND judgment_data IS NOT NULL
+)
+SELECT
+  COUNT(DISTINCT c.foreclosure_id) AS covered,
+  (SELECT COUNT(*) FROM scope) AS total
+FROM foreclosure_title_chain c
+JOIN scope s ON s.foreclosure_id = c.foreclosure_id;
 
-## Foreclosing Lien — Every Foreclosure Has One
+-- Encumbrance coverage
+WITH scope AS (
+  SELECT DISTINCT foreclosure_id, strap
+  FROM foreclosures
+  WHERE archived_at IS NULL
+    AND judgment_data IS NOT NULL
+    AND strap IS NOT NULL
+)
+SELECT
+  COUNT(DISTINCT s.foreclosure_id) FILTER (WHERE oe.id IS NOT NULL) AS covered,
+  COUNT(DISTINCT s.foreclosure_id) AS total
+FROM scope s
+LEFT JOIN ori_encumbrances oe ON oe.strap = s.strap;
 
-Every foreclosure auction has a foreclosing lien — that is how the law works. There must be a lis pendens recorded to initiate a foreclosure. If the survival analysis reports "Could not identify foreclosing lien", **the code is at fault**, not the data. Possible causes:
+-- Survival coverage
+WITH scope AS (
+  SELECT DISTINCT foreclosure_id, strap
+  FROM foreclosures
+  WHERE archived_at IS NULL
+    AND judgment_data IS NOT NULL
+    AND strap IS NOT NULL
+)
+SELECT
+  COUNT(DISTINCT s.foreclosure_id) FILTER (WHERE oe.survival_status IS NOT NULL) AS covered,
+  COUNT(DISTINCT s.foreclosure_id) AS total
+FROM scope s
+LEFT JOIN ori_encumbrances oe ON oe.strap = s.strap;
+```
 
-1. **Encumbrance type mismatch**: The ORI stores doc types like `(MTG) MORTGAGE` but survival code expects normalized `mortgage`. Always match broadly (check for "MORTGAGE" or "MTG" substring, not exact equality).
-2. **ORI didn't find the mortgage**: The iterative discovery search terms may not have matched the property's legal description. Check the search queue for exhaustion vs. success.
-3. **Plaintiff name doesn't match creditor**: The mortgage may have been assigned/transferred. The current servicer (plaintiff) name differs from the original lender (creditor in ORI). Use fuzzy matching.
-4. **Chain builder didn't classify it as an encumbrance**: Check `_classify_encumbrance` and the document type mapping.
+If any target is missed:
 
-Never log "foreclosing lien not found" and move on. Investigate the root cause and fix the matching logic.
+1. Diagnose root cause (`step_*` columns, service target queries, logs).
+2. Re-run only affected stages.
+3. Re-validate.
+4. Repeat until thresholds pass.
 
-## Project Overview
+## Canonical Commands
 
-HillsInspector is a data ingestion and analysis pipeline for Hillsborough County real estate foreclosure and tax deed auctions. It aggregates data from multiple county sources (auction listings, property appraiser, official records, permits) to assess property equity and lien survival.
+```bash
+# Full pipeline
+uv run Controller.py
 
-## Commands
+# Force all loaders
+uv run Controller.py --force-all
 
-```powershell
-# Run quick test (5 auctions)
-uv run main.py --update --start-date YYYY-MM-DD --end-date YYYY-MM-DD --auction-limit 5
+# Quick sanity run
+uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --survival-limit 5 --limit 5
 
-# Full update (scrape, extract, analyze, enrich)
-uv run main.py --update
+# Phase A only
+uv run Controller.py --skip-auction-scrape --skip-judgment-extract --skip-ori-search --skip-survival --skip-final-refresh
 
-# Start web dashboard (NiceGUI on port 8089)
-uv run main.py --web
+# Phase B core only
+uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain --skip-market-data
 
-# Reset database (archives old, creates new)
-uv run main.py --new
+# Market worker only
+uv run python -m src.services.market_data_worker
 
-# Alternative web server (FastAPI on port 8080)
+# Final refresh only
+uv run python scripts/refresh_foreclosures.py
+
+# Web app
 uv run python -m app.web.main
 
-# Linting and type checking (run after modifying files)
-uv run ruff check <path> --fix
-uv run ty check <path>
-
-# Install dependencies
-uv sync
-
-# Install Playwright browsers
-uv run playwright install chromium
+# PG schema/functions
+uv run python -m src.db.migrations.create_foreclosures --dsn <postgres-dsn>
 ```
 
-## Tech Stack Constraints
+## Controller Behavior You Must Account For
 
-**Package Manager**: Only `uv` - never pip or poetry
+- Bulk steps are background-dispatched:
+  - `hcpa_suite`, `clerk_bulk`, `dor_nal`, `sunbiz_flr`, `sunbiz_entity`, `county_permits`, `tampa_permits`
+- Market step is background-dispatched:
+  - `market_data`
+- A controller run can finish before those workers complete.
 
-**DataFrames**: Only `polars` - never pandas
+Always verify worker completion:
 
-**Database (Pipeline)**: SQLite (WAL mode) at `data/property_master_sqlite.db` — pipeline transactional database. Always access through `PropertyDB` class (`src/db/operations.py`), never open the file directly with `sqlite3.connect()` (PropertyDB sets row_factory, WAL mode, and runs migrations).
-
-**Database (Reference)**: PostgreSQL `hills_sunbiz` at `localhost:5432` (user: `hills`, pass: `hills_dev`) — 2.4M sales records, 530K parcels, fuzzy name matching via `pg_trgm` + `fuzzystrmatch`. Used for property resolution (defendant name → folio), multi-unit detection, and sales chain lookups. See `docs/POSTGRES_REFERENCE.md` for full schema, indexes, and query examples.
-
-**Web**: FastAPI + Jinja2 SSR + HTMX (no React/SPA/client-side JS)
-
-**OCR/Vision**: Qwen-VL via VisionService (`src/services/vision_service.py`) at `http://10.10.1.5:6969` - never EasyOCR
-
-**Shell**: PowerShell 7 on Windows - never bash/cmd
-
-**Browser Automation**: Always use **real Chrome** (`channel="chrome"`) with `devtools=True` and a persistent browser profile from `data/browser_profiles/`. Never use bare Playwright Chromium — it gets blocked by CloudFront/bot detection. Apply stealth to every page immediately after creation:
-```python
-from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
-
-async def apply_stealth(page):
-    """Apply stealth settings to a page to avoid bot detection."""
-    await Stealth().apply_stealth_async(page)
-
-# Launch with real Chrome + profile:
-context = await playwright.chromium.launch_persistent_context(
-    user_data_dir="data/browser_profiles/<profile_name>",
-    channel="chrome",
-    headless=False,
-    devtools=True,
-    args=["--disable-blink-features=AutomationControlled"],
-)
-page = context.pages[0] if context.pages else await context.new_page()
-await apply_stealth(page)
-```
-
-**Browser Profiles**: Stored in `data/browser_profiles/`. Use `user_chrome` (copy of user's real Chrome profile with cookies/history) for sites with aggressive bot detection (Redfin, Zillow). Use `market_bakeoff_chrome` for general scraping. Never use a fresh/empty profile for sites that block bots.
-
-**Never take screenshots** of property websites — that is what bots do. Use CDP debugger tools (`cdp = await context.new_cdp_session(page)`) for inspecting page state, typing input, and extracting data. Use `Input.insertText` or `Input.dispatchKeyEvent` via CDP for typing into React inputs where Playwright's `fill()` doesn't trigger events.
-
-## SQLite Critical Patterns
-
-- **Row factory**: `PropertyDB` sets `sqlite3.Row` — use `dict(row)` to convert rows, never `dict(zip(columns, row))`
-- **WAL mode**: Requires explicit `conn.commit()` for writes to be visible to other connections
-- **UNIQUE constraints**: SQLite treats NULL as distinct — use `COALESCE` in expression indexes for nullable columns
-- **No RETURNING**: Use `cursor.lastrowid` instead of `INSERT ... RETURNING id`
-- **Date arithmetic**: Use `date('now', '-7 days')` not `CURRENT_DATE - INTERVAL 7 DAY`
-
-## Architecture
-
-### Pipeline Flow (`src/orchestrator.py` — legacy reference in `src/pipeline_OLD.py`)
-
-| Step | Description | Skip If |
-|------|-------------|---------|
-| 1 | Scrape Foreclosure Auctions | Past/today dates; future dates where DB count >= calendar count |
-| 1.5 | Scrape Tax Deed Auctions | Same as Step 1 |
-| 2 | Extract Final Judgment PDFs | `case_number` has `extracted_judgment_data` |
-| 3 | HCPA GIS - Sales History | `folio` has records in `sales_history` |
-| 4 | ORI Ingestion & Chain of Title | `folio` has chain AND `last_analyzed_case_number` = current case |
-| 5 | Lien Survival Analysis | `folio` has `survival_status` AND same case |
-| 6 | Sunbiz Entity Lookup | Only runs if party is LLC/Corp/Trust |
-| 7 | Building Permits | `folio` has permit data |
-| 8 | FEMA Flood Zone | `folio` has flood data |
-| 9 | Market Data - Zillow | Always runs (refresh) |
-| 10 | Market Data - Realtor.com | `folio` has realtor data |
-| 11 | Property Enrichment (HCPA) | `folio` has `owner_name` |
-| 12 | Tax Payment Status | `folio` has tax data |
-
-**Key identifiers:**
-- `folio` (parcel_id) - Unique property identifier. Same property in multiple auctions = same folio.
-- `case_number` - Unique per foreclosure filing. New case for same property = re-analyze.
-- `last_analyzed_case_number` - Tracks which case triggered the last chain/survival analysis.
-
-### Key Directories
-- `src/scrapers/` - Data acquisition from county websites (auction, tax deed, HCPA, ORI, permits)
-- `src/services/` - Business logic (ingestion, chain building, lien analysis, vision/OCR)
-- `src/analyzers/` - Lien survival rules, encumbrance calculations
-- `src/db/` - SQLite operations and schema
-- `app/web/` - FastAPI web interface with Jinja2 templates
-- `data/properties/{folio}/` - Raw data per property (PDFs, images, parquet)
-
-### Core Classes
-- `PropertyDB` (`src/db/operations.py`) - All database operations
-- `IngestionService` (`src/services/ingestion_service.py`) - Full property ingestion pipeline
-- `TitleChainService` (`src/services/title_chain_service.py`) - Chain of title analysis
-- `LienSurvivalAnalyzer` (`src/services/lien_survival_analyzer.py`) - Determines which liens survive foreclosure
-- `AuctionScraper` / `TaxDeedScraper` - Scrape auction listings
-- `ORIScraper` / `ORIApiScraper` - Official Records Index document search
-- `HCPAScraper` - Hillsborough County Property Appraiser data
-
-### Data Flow
-Scrapers -> IngestionService -> PropertyDB (SQLite) -> Analyzers -> Web UI
-
-### Database Architecture
-
-**Two databases work together:**
-
-1. **SQLite** (`data/property_master_sqlite.db`, WAL mode) — Pipeline transactional data. Access via `PropertyDB` class only.
-2. **PostgreSQL** (`hills_sunbiz` on localhost:5432) — Reference data: 2.4M sales, 530K parcels, fuzzy name search. See `docs/POSTGRES_REFERENCE.md`.
-
-**SQLite Tables** (auctions & enrichment):
-- `auctions` - Foreclosure/tax deed auction listings (includes `surrogate_folio` for invalid-parcel cases)
-- `status` - Pipeline step completion tracking
-- `parcels` - Property details (owner, specs, coords)
-- `bulk_parcels` - HCPA bulk parcel data (strap, folio, address, legal desc)
-- `permits` - Building permit data
-- `market_data` - Zillow/listing data
-- `sales_history` - HCPA sales history
-
-**SQLite Tables** (ORI & title chain):
-- `documents` - ORI document metadata
-- `chain_of_title` - Ownership history periods
-- `encumbrances` - Liens, mortgages with survival status
-- `ori_search_queue` - Search queue for iterative discovery
-- `linked_identities` - Name change/trust transfer mappings
-
-**PostgreSQL Tables** (reference — read-only from pipeline's perspective):
-- `hcpa_allsales` - 2.4M sales records (grantor/grantee, folio, sale_type, or_book/page)
-- `hcpa_bulk_parcels` - 530K parcels (strap, owner, address, legal desc, units, valuations)
-- `hcpa_parcel_sub_names` - 11.5K subdivision code → name + plat book/page
-- `sunbiz_flr_filings` - 21K UCC financing statements
-- Fuzzy search: `resolve_property_by_name()` function (trigram + metaphone + sales history)
-- **Key join**: Pipeline `parcel_id` ↔ PostgreSQL `strap` column (NOT `folio`)
-
-**Creating New Databases:**
 ```bash
-uv run main.py --new  # Archives old SQLite, creates fresh
-uv run python -m sunbiz.pg_loader  # Load/refresh PostgreSQL (idempotent)
+ls -1t logs/step_workers/*.log | head
+ls -1t logs/market_data_worker_*.log | head
 ```
 
-## Logging
+## Tech Constraints
 
-Uses `loguru`. Single log at `logs/`. Configure via `src/utils/logging_config.py`.
+- Package manager: `uv` only.
+- DataFrames: `polars` only.
+- Runtime pipeline DB: PostgreSQL only.
+- Do not reintroduce SQLite fallback logic into active pipeline/web paths.
+
+## Pipeline Architecture (Current)
+
+### Phase A (bulk)
+
+1. `hcpa_suite`
+2. `clerk_bulk`
+3. `dor_nal`
+4. `sunbiz_flr`
+5. `sunbiz_entity`
+6. `county_permits`
+7. `tampa_permits`
+8. `foreclosure_refresh`
+9. `trust_accounts`
+10. `title_chain`
+
+### Phase B (enrichment)
+
+11. `auction_scrape`
+12. `judgment_extract`
+13. `ori_search`
+14. `survival_analysis`
+15. `final_refresh`
+16. `market_data`
+
+## Web-Readiness Checklist
+
+Before claiming web completion, verify these are true in code and UI:
+
+1. Property detail uses real `property_market` payload (not placeholder-only snapshot shaping).
+2. Encumbrances render from `ori_encumbrances` with survival statuses.
+3. `property.sources` provenance is populated when source data exists.
+4. NOCs are populated in permits tab.
+5. Tax tab lien rows are populated.
+6. Chain rows provide document links when files are available.
+
+## Invalid / Stale Workflow (Do Not Use)
+
+- Any legacy entrypoint besides `Controller.py`.
+- Any nonexistent controller flags.
+- Any instruction that assumes SQLite is the active pipeline backing store.
