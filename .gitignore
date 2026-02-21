@@ -149,3 +149,11 @@ node_modules/
 /playwright/.auth/
 datav2/
 pipelinev2/
+
+# Archived legacy pipeline code (reference-only, not active runtime code)
+docs/archive/legacy_sqlite/
+
+# Local operational artifacts
+backups/
+logs/
+.claude/

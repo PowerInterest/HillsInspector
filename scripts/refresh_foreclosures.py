@@ -10,25 +10,25 @@ Sources:
   - dor_nal_parcels        (tax / homestead)
   - property_market        (Zillow / listing)
   - hcpa_allsales          (resale analytics)
-  - SQLite auctions        (upcoming auction ingestion)
-  - SQLite encumbrances    (ORI encumbrance sync)
   - sunbiz_flr_*           (UCC exposure)
 
 Run:  uv run python scripts/refresh_foreclosures.py
       uv run python scripts/refresh_foreclosures.py --migrate   # create tables first
-      uv run python scripts/refresh_foreclosures.py --sync-encumbrances  # one-time SQLite→PG
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
+import sys
 import time
 from pathlib import Path
 
 from loguru import logger
 from sqlalchemy import text
+
+if __package__ in {None, ""}:
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from sunbiz.db import get_engine, resolve_pg_dsn
 
@@ -400,12 +400,16 @@ def _load_judgment_data(conn: object) -> int:
     strap_map: dict[str, int] = {r[2]: r[0] for r in rows if r[2]}
 
     updated = 0
+    parse_errors = 0
+    unmatched = 0
     for json_path in FORECLOSURE_DATA_DIR.rglob("*_extracted.json"):
         case_number = json_path.parent.parent.name
 
         try:
             jd = json.loads(json_path.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as exc:
+            parse_errors += 1
+            logger.warning("Skipping invalid judgment JSON {}: {}", json_path, exc)
             continue
 
         # Match: case_number first, then strap from JSON parcel_id
@@ -415,6 +419,7 @@ def _load_judgment_data(conn: object) -> int:
             if parcel_id:
                 fid = strap_map.get(parcel_id)
         if not fid:
+            unmatched += 1
             continue
 
         pdf_path = None
@@ -437,263 +442,18 @@ def _load_judgment_data(conn: object) -> int:
         )
         updated += 1
 
-    return updated
-
-
-# ---------------------------------------------------------------------------
-# Step 7 — Ingest upcoming auctions from SQLite pipeline
-# ---------------------------------------------------------------------------
-
-def _resolve_sqlite_path() -> Path | None:
-    """Find the SQLite database path from .env or default location."""
-    import os
-
-    from dotenv import load_dotenv
-
-    load_dotenv()
-    db_path = os.environ.get("HILLS_SQLITE_DB")
-    if db_path:
-        p = Path(db_path)
-        if p.exists():
-            return p
-    # Fallback
-    for candidate in [
-        Path("/home/user/hills_data/property_master_sqlite.db"),
-        Path("data/property_master_sqlite.db"),
-    ]:
-        if candidate.exists() and candidate.stat().st_size > 0:
-            return candidate
-    return None
-
-
-def _ingest_upcoming_auctions(conn: object) -> int:
-    """Read upcoming auctions from SQLite and upsert into PG foreclosures."""
-    sqlite_path = _resolve_sqlite_path()
-    if not sqlite_path:
-        logger.warning("SQLite database not found — skipping upcoming auction ingestion")
-        return 0
-
-    sconn = sqlite3.connect(str(sqlite_path))
-    sconn.row_factory = sqlite3.Row
-    try:
-        rows = sconn.execute("""
-            SELECT case_number, auction_date, parcel_id, property_address,
-                   final_judgment_amount, auction_type, plaintiff, defendant,
-                   judgment_date, assessed_value
-            FROM auctions
-            WHERE auction_date >= date('now')
-              AND case_number IS NOT NULL
-        """).fetchall()
-    finally:
-        sconn.close()
-
-    if not rows:
-        return 0
-
-    inserted = 0
-    for row in rows:
-        r = dict(row)
-        conn.execute(  # type: ignore[union-attr]
-            text("""
-                INSERT INTO foreclosures (
-                    case_number_raw, auction_date, auction_type,
-                    strap, property_address,
-                    final_judgment_amount, assessed_value,
-                    judgment_date
-                ) VALUES (
-                    :case_number, CAST(:auction_date AS DATE),
-                    COALESCE(:auction_type, 'foreclosure'),
-                    NULLIF(:parcel_id, ''),
-                    :property_address,
-                    :final_judgment_amount, :assessed_value,
-                    CAST(NULLIF(:judgment_date, '') AS DATE)
-                )
-                ON CONFLICT (case_number_raw, auction_date) DO UPDATE SET
-                    property_address = COALESCE(EXCLUDED.property_address, foreclosures.property_address),
-                    strap = COALESCE(EXCLUDED.strap, foreclosures.strap),
-                    final_judgment_amount = COALESCE(EXCLUDED.final_judgment_amount, foreclosures.final_judgment_amount),
-                    assessed_value = COALESCE(EXCLUDED.assessed_value, foreclosures.assessed_value)
-            """),
-            {
-                "case_number": r["case_number"],
-                "auction_date": r["auction_date"],
-                "auction_type": (r.get("auction_type") or "foreclosure").lower(),
-                "parcel_id": r.get("parcel_id") or "",
-                "property_address": r.get("property_address"),
-                "final_judgment_amount": r.get("final_judgment_amount"),
-                "assessed_value": r.get("assessed_value"),
-                "judgment_date": r.get("judgment_date") or "",
-            },
+    if parse_errors:
+        logger.warning(
+            "Judgment extraction ingest skipped {} unreadable JSON files",
+            parse_errors,
         )
-        inserted += 1
+    if unmatched:
+        logger.info(
+            "Judgment extraction ingest had {} files that did not match foreclosures",
+            unmatched,
+        )
 
-    return inserted
-
-
-# ---------------------------------------------------------------------------
-# ORI Encumbrance sync: SQLite → PG (one-time or periodic)
-# ---------------------------------------------------------------------------
-
-def _sync_ori_encumbrances(conn: object) -> int:
-    """Migrate encumbrances from SQLite to PG ori_encumbrances.
-
-    Maps SQLite encumbrances columns to the PG ori_encumbrances schema.
-    Idempotent: unique constraint on (folio, instrument_number, book, page, book_type).
-    """
-    sqlite_path = _resolve_sqlite_path()
-    if not sqlite_path:
-        logger.warning("SQLite database not found — skipping ORI encumbrance sync")
-        return 0
-
-    sconn = sqlite3.connect(str(sqlite_path))
-    sconn.row_factory = sqlite3.Row
-    try:
-        rows = sconn.execute("""
-            SELECT id, folio, encumbrance_type, creditor, debtor,
-                   amount, amount_confidence, recording_date, instrument,
-                   book, page, is_satisfied, satisfaction_instrument,
-                   satisfaction_date, survival_status, survival_reason,
-                   is_inferred, chain_period_id
-            FROM encumbrances
-        """).fetchall()
-    finally:
-        sconn.close()
-
-    if not rows:
-        logger.info("No encumbrances found in SQLite")
-        return 0
-
-    logger.info(f"Syncing {len(rows)} encumbrances from SQLite to PG ori_encumbrances")
-
-    # Build strap→folio lookup from PG
-    folio_map: dict[str, str] = {}
-    pg_rows = conn.execute(  # type: ignore[union-attr]
-        text("SELECT DISTINCT strap, folio FROM hcpa_bulk_parcels WHERE strap IS NOT NULL AND folio IS NOT NULL")
-    ).fetchall()
-    for pr in pg_rows:
-        folio_map[pr[0]] = pr[1]
-
-    # Build case_number→strap lookup for judgment-inferred encumbrances
-    # (these have case_number as folio instead of real strap)
-    case_strap_map: dict[str, str] = {}
-    # From SQLite auctions
-    try:
-        sconn2 = sqlite3.connect(str(sqlite_path))
-        sconn2.row_factory = sqlite3.Row
-        case_rows = sconn2.execute(
-            "SELECT case_number, parcel_id FROM auctions WHERE parcel_id IS NOT NULL AND parcel_id != ''"
-        ).fetchall()
-        for cr in case_rows:
-            case_strap_map[cr["case_number"]] = cr["parcel_id"]
-        sconn2.close()
-    except Exception:
-        pass
-    # From PG foreclosures (covers address-resolved cases)
-    fc_rows = conn.execute(  # type: ignore[union-attr]
-        text("SELECT case_number_raw, strap FROM foreclosures WHERE strap IS NOT NULL")
-    ).fetchall()
-    for fr in fc_rows:
-        if fr[0] not in case_strap_map:
-            case_strap_map[fr[0]] = fr[1]
-
-    # Valid PG enum values
-    valid_types = {
-        "mortgage", "judgment", "lis_pendens", "lien",
-        "easement", "satisfaction", "release", "assignment", "other",
-    }
-
-    inserted = 0
-    skipped = 0
-    for row in rows:
-        r = dict(row)
-        raw_folio = r["folio"]  # SQLite folio = HCPA strap format OR case_number
-
-        # If the "folio" is actually a case number, look up the real strap
-        if raw_folio and (raw_folio.startswith("29") and ("CA" in raw_folio or "CC" in raw_folio)):
-            strap = case_strap_map.get(raw_folio)
-            if not strap:
-                skipped += 1
-                continue  # Can't resolve — skip
-        else:
-            strap = raw_folio
-
-        pg_folio = folio_map.get(strap) if strap else None
-
-        enc_type = r["encumbrance_type"] or "other"
-        if enc_type not in valid_types:
-            enc_type = "other"
-
-        instrument = r.get("instrument") or ""
-        # Synthetic key for rows without instrument numbers (unique constraint needs non-empty)
-        if not instrument:
-            instrument = f"SQ{r['id']}"
-
-        book = r.get("book") or ""
-        page = r.get("page") or ""
-
-        # Use savepoint so individual row errors don't kill the whole transaction
-        conn.execute(text("SAVEPOINT enc_row"))  # type: ignore[union-attr]
-        try:
-            conn.execute(  # type: ignore[union-attr]
-                text("""
-                    INSERT INTO ori_encumbrances (
-                        folio, strap, instrument_number, book, page, book_type,
-                        encumbrance_type, party1, party2,
-                        amount, amount_confidence,
-                        recording_date, is_satisfied,
-                        satisfaction_instrument, satisfaction_date,
-                        survival_status, survival_reason,
-                        discovered_at, updated_at
-                    ) VALUES (
-                        :folio, :strap, :instrument, NULLIF(:book, ''), NULLIF(:page, ''), 'OR',
-                        CAST(:enc_type AS encumbrance_type_enum), :party1, :party2,
-                        :amount, :amount_confidence,
-                        CAST(NULLIF(:recording_date, '') AS DATE),
-                        :is_satisfied,
-                        NULLIF(:satisfaction_instrument, ''),
-                        CAST(NULLIF(:satisfaction_date, '') AS DATE),
-                        :survival_status, :survival_reason,
-                        now(), now()
-                    )
-                    ON CONFLICT (folio, COALESCE(instrument_number, ''),
-                                 COALESCE(book, ''), COALESCE(page, ''),
-                                 COALESCE(book_type, 'OR'))
-                    DO UPDATE SET
-                        survival_status = COALESCE(EXCLUDED.survival_status, ori_encumbrances.survival_status),
-                        survival_reason = COALESCE(EXCLUDED.survival_reason, ori_encumbrances.survival_reason),
-                        amount = COALESCE(EXCLUDED.amount, ori_encumbrances.amount),
-                        updated_at = now()
-                """),
-                {
-                    "folio": pg_folio,
-                    "strap": strap,
-                    "instrument": instrument,
-                    "book": book,
-                    "page": page,
-                    "enc_type": enc_type,
-                    "party1": r.get("creditor"),
-                    "party2": r.get("debtor"),
-                    "amount": r.get("amount"),
-                    "amount_confidence": r.get("amount_confidence"),
-                    "recording_date": r.get("recording_date") or "",
-                    "is_satisfied": bool(r.get("is_satisfied")),
-                    "satisfaction_instrument": r.get("satisfaction_instrument") or "",
-                    "satisfaction_date": r.get("satisfaction_date") or "",
-                    "survival_status": r.get("survival_status"),
-                    "survival_reason": r.get("survival_reason"),
-                },
-            )
-            conn.execute(text("RELEASE SAVEPOINT enc_row"))  # type: ignore[union-attr]
-            inserted += 1
-        except Exception as exc:
-            conn.execute(text("ROLLBACK TO SAVEPOINT enc_row"))  # type: ignore[union-attr]
-            skipped += 1
-            if skipped <= 3:
-                logger.warning(f"Skipped encumbrance SQLite id={r['id']}: {exc}")
-
-    if skipped:
-        logger.warning(f"Skipped {skipped} encumbrances due to errors")
-    return inserted
+    return updated
 
 
 # ---------------------------------------------------------------------------
@@ -735,19 +495,13 @@ def _log_unresolved_coord_sample(conn: object, *, limit: int = 10) -> None:
     logger.warning(f"Unresolved coordinate sample (up to {limit}): {sample}")
 
 
-def refresh(dsn: str | None = None, sync_encumbrances: bool = False) -> dict[str, int]:
+def refresh(dsn: str | None = None) -> dict[str, int]:
     """Run all refresh steps. Returns rowcounts per step."""
     engine = get_engine(resolve_pg_dsn(dsn))
     counts: dict[str, int] = {}
 
     t0 = time.monotonic()
     with engine.begin() as conn:
-        # Step 0: Sync ORI encumbrances from SQLite (if requested)
-        if sync_encumbrances:
-            n = _sync_ori_encumbrances(conn)
-            counts["ori_encumbrances_synced"] = n
-            logger.info(f"Step 0: synced {n} ORI encumbrances from SQLite")
-
         # Step 1: Seed / update from foreclosures_history
         r = conn.execute(text(UPSERT_SQL))
         counts["upserted"] = r.rowcount
@@ -817,49 +571,24 @@ def refresh(dsn: str | None = None, sync_encumbrances: bool = False) -> dict[str
         n = _load_judgment_data(conn)
         counts["judgments"] = n
         logger.info(f"Step 6: loaded {n} judgment extractions from disk")
-
-        # Step 7: Ingest upcoming auctions from SQLite
-        n = _ingest_upcoming_auctions(conn)
-        counts["upcoming_auctions"] = n
-        logger.info(f"Step 7: ingested {n} upcoming auctions from SQLite")
-
-        # Step 7.5: Re-enrich newly ingested auctions
-        # (repeat strap resolve + encumbrance counts + lat/lon + property data for new rows)
-        if n > 0:
-            r = conn.execute(text(RESOLVE_STRAP_SQL))
-            counts["strap_resolved_2"] = r.rowcount
-
-            missing_before_2 = _count_missing_coords(conn)
-            r = conn.execute(text(ENRICH_COORDS_PROPERTY_SQL))
-            counts["enriched_coords"] = r.rowcount
-            counts["coords_missing_after_2"] = _count_missing_coords(conn)
-            logger.info(
-                "Step 7.5: enriched coords/property for {} rows; missing_coords {} -> {}",
-                r.rowcount,
-                missing_before_2,
-                counts["coords_missing_after_2"],
-            )
-            if counts["coords_missing_after_2"] > 0:
-                _log_unresolved_coord_sample(conn, limit=10)
-
-            # Tax data
-            r = conn.execute(text("""
-                UPDATE foreclosures f SET
-                    homestead_exempt = dn.homestead_exempt,
-                    estimated_annual_tax = dn.estimated_annual_tax
-                FROM (
-                    SELECT DISTINCT ON (dn2.strap) dn2.strap, dn2.homestead_exempt, dn2.estimated_annual_tax
-                    FROM dor_nal_parcels dn2
-                    ORDER BY dn2.strap, dn2.tax_year DESC
-                ) dn
-                WHERE f.strap = dn.strap
-                  AND f.homestead_exempt IS NULL
-            """))
-            counts["enriched_tax"] = r.rowcount
-
-            r = conn.execute(text(ENCUMBRANCE_SQL))
-            counts["encumbrances_2"] = r.rowcount
-            logger.info(f"Step 7.5: re-enriched {r.rowcount} new auction rows")
+        upcoming = (
+            conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM foreclosures
+                    WHERE auction_date >= CURRENT_DATE
+                      AND archived_at IS NULL
+                    """
+                )
+            ).scalar()
+            or 0
+        )
+        counts["upcoming_auctions"] = int(upcoming)
+        logger.info(
+            "Step 7: {} upcoming auctions currently present in foreclosures",
+            upcoming,
+        )
 
     elapsed = time.monotonic() - t0
     logger.info(f"Refresh complete in {elapsed:.1f}s — {counts}")
@@ -875,10 +604,6 @@ def main() -> None:
         "--migrate", action="store_true",
         help="Run DDL migration before refreshing",
     )
-    parser.add_argument(
-        "--sync-encumbrances", action="store_true",
-        help="Sync ORI encumbrances from SQLite to PG (one-time migration)",
-    )
     args = parser.parse_args()
 
     if args.migrate:
@@ -886,7 +611,7 @@ def main() -> None:
 
         migrate(dsn=args.dsn)
 
-    refresh(dsn=args.dsn, sync_encumbrances=args.sync_encumbrances)
+    refresh(dsn=args.dsn)
 
 
 if __name__ == "__main__":

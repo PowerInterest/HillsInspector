@@ -13,36 +13,39 @@ A data ingestion and analysis pipeline for Hillsborough County real estate, focu
     app/*  holds the web application code, any heavy data manipulation should be done under /src/services
     logs/  one log file for the whole project using loguru
     utils/  has utility functions for the project
-    main.py  the main entry point for the project
+    Controller.py  the PG-first pipeline entry point for the project
 
 
 ## Usage
 
-**All operations are handled via the `main.py` entry point.**
+**Pipeline startup is handled via `Controller.py` (PG-first).**
 
-### 1. Run a Quick Sanity Update
-Runs the pipeline for a single day with a small auction cap to verify functionality.
+### 1. Run Full Pipeline
+Runs Phase A (bulk refresh) + Phase B (per-auction enrichment).
 ```powershell
-uv run main.py --update --start-date YYYY-MM-DD --end-date YYYY-MM-DD --auction-limit 5
+uv run Controller.py
 ```
 
-### 2. Run Full Update
-Runs the complete pipeline: scraping auctions (next 60 days), downloading judgments, analyzing liens, and enriching property data.
+### 2. Quick Sanity Run
+Runs the controller with narrow limits for auction/judgment/ORI/survival steps.
 ```powershell
-uv run main.py --update
+uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --survival-limit 5 --limit 5
 ```
 
-### 2.5. Process Limited Date Range
-To process only auctions within a specific date range, use `--start-date` and `--end-date`:
+### 3. Run Phase A Only (bulk refresh)
 ```powershell
-uv run python main.py --update --start-date 2025-12-18 --end-date 2025-12-18
+uv run Controller.py --skip-auction-scrape --skip-judgment-extract --skip-ori-search --skip-survival --skip-final-refresh
 ```
-This is useful for testing a single day's auctions or reprocessing a specific period.
 
-### 3. Start Web Server
+### 4. Run Phase B Only (enrichment)
+```powershell
+uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain --skip-market-data
+```
+
+### 5. Start Web Server
 Launches the local web dashboard to view results.
 ```powershell
-uv run main.py --web
+uv run python -m app.web.main
 ```
 Database tab (CloudBeaver):
 - `CLOUDBEAVER_PG_URL` (or fallback `CLOUDBEAVER_URL`, default `http://localhost:8978`) controls PostgreSQL embed.
@@ -52,10 +55,9 @@ The `/database` page includes both backends:
 - `PostgreSQL` tab (default, primary workflow)
 - `SQLite` tab (read-only local query/table preview)
 
-### 4. Reset Database
-Archives the existing database and creates a fresh one.
+### 6. Reset/Initialize PG Schema
 ```powershell
-uv run main.py --new
+uv run python -m src.db.migrations.create_foreclosures --dsn <postgres-dsn>
 ```
 
 ## Technical Stack & Rules
@@ -132,7 +134,7 @@ We provide a `Makefile` to streamline the setup process.
 
 4.  **Verify Installation**:
     ```powershell
-    uv run python main.py --help
+    uv run Controller.py --help
     ```
 
 ## Final Judgment Retrieval (current approach)

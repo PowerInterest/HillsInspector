@@ -8,6 +8,7 @@ Tables:
 - clerk_disposed_cases: Monthly disposed cases report
 - clerk_garnishment_cases: Weekly return-of-service and garnishment report
 - clerk_name_index: Complete alphabetical party index (20+ years, Circuit + County)
+- official_records_daily_instruments: Daily Official Records D/P/M instrument feed
 
 Data sources:
 - https://publicrec.hillsclerk.com/Civil/bulkdata/
@@ -15,6 +16,7 @@ Data sources:
 - https://publicrec.hillsclerk.com/Civil/Circuit%20and%20County%20Civil%20with%20Return%20of%20Service%20and%20Garnishment%20Data/
 - https://publicrec.hillsclerk.com/Civil/alpha_index/Circuit/
 - https://publicrec.hillsclerk.com/Civil/alpha_index/County/
+- https://publicrec.hillsclerk.com/OfficialRecords/DailyIndexes/
 """
 
 from __future__ import annotations
@@ -26,9 +28,13 @@ from sqlalchemy import Boolean
 from sqlalchemy import Date
 from sqlalchemy import DateTime
 from sqlalchemy import Index
+from sqlalchemy import Integer
+from sqlalchemy import Numeric
 from sqlalchemy import String
+from sqlalchemy import Time
 from sqlalchemy import Text
 from sqlalchemy import UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped
 from sqlalchemy.orm import mapped_column
 
@@ -272,4 +278,55 @@ class ClerkNameIndex(Base):
             postgresql_using="gin",
             postgresql_ops={"business_name": "gin_trgm_ops"},
         ),
+    )
+
+
+class OfficialRecordsDailyInstrument(Base):
+    """Daily Official Records index row (D + P + M merged by instrument)."""
+
+    __tablename__ = "official_records_daily_instruments"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    snapshot_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    snapshot_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    action: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    county_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    instrument_number: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    doc_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    doc_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    facc_doc_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    legal_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    book_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    book_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    page_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    recording_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    recording_time: Mapped[dt.time | None] = mapped_column(Time, nullable=True)
+    consideration_amount: Mapped[float | None] = mapped_column(Numeric(19, 4), nullable=True)
+
+    parties_from_json: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    parties_to_json: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    parties_from_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parties_to_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    source_d_file: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_p_file: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_m_file: Mapped[str | None] = mapped_column(Text, nullable=True)
+    loaded_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "instrument_number",
+            name="uq_official_records_daily_instruments_instrument",
+        ),
+        Index("idx_ori_daily_snapshot_date", "snapshot_date"),
+        Index("idx_ori_daily_recording_date", "recording_date"),
+        Index("idx_ori_daily_doc_type", "doc_type"),
+        Index("idx_ori_daily_facc_doc_type", "facc_doc_type"),
     )

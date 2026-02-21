@@ -4,6 +4,7 @@ PostgreSQL Clerk Bulk Data Service -- standalone sync + load.
 Downloads monthly civil case/event/party CSVs from the Hillsborough County
 Clerk of Court bulk data page and loads them into PostgreSQL.
 Also downloads disposed-case and return-of-service/garnishment CSV feeds.
+Also ingests OfficialRecords DailyIndexes D/P/M files.
 
 Orchestrator usage (fire-and-forget)::
 
@@ -99,8 +100,10 @@ class PgClerkBulkService:
             "disposed_count": 0,
             "garnishment_count": 0,
             "name_index_count": 0,
+            "official_records_count": 0,
             "latest_loaded_at": None,
             "loaded_files": [],
+            "state_errors": [],
         }
         if not self._available:
             logger.warning("PgClerkBulkService.get_current_state: PG unavailable")
@@ -115,11 +118,12 @@ class PgClerkBulkService:
                         WHERE table_name IN (
                             'clerk_civil_cases', 'clerk_civil_events',
                             'clerk_civil_parties', 'clerk_disposed_cases',
-                            'clerk_garnishment_cases', 'clerk_name_index'
+                            'clerk_garnishment_cases', 'clerk_name_index',
+                            'official_records_daily_instruments'
                         )
                     """)
                 ).scalar()
-                state["tables_exist"] = (row or 0) >= 5
+                state["tables_exist"] = (row or 0) >= 7
 
                 if not state["tables_exist"]:
                     logger.info(
@@ -136,6 +140,7 @@ class PgClerkBulkService:
                     ("clerk_disposed_cases", "disposed_count"),
                     ("clerk_garnishment_cases", "garnishment_count"),
                     ("clerk_name_index", "name_index_count"),
+                    ("official_records_daily_instruments", "official_records_count"),
                 ]:
                     try:
                         count = conn.execute(
@@ -143,7 +148,9 @@ class PgClerkBulkService:
                         ).scalar()
                         state[key] = count or 0
                     except SQLAlchemyError as exc:
-                        logger.debug(f"PgClerkBulkService: count {table} failed: {exc}")
+                        msg = f"count {table} failed: {exc}"
+                        state["state_errors"].append(msg)
+                        logger.warning(f"PgClerkBulkService: {msg}")
 
                 # Latest load info from ingest_files
                 try:
@@ -166,9 +173,9 @@ class PgClerkBulkService:
                     if rows and rows[0][2]:
                         state["latest_loaded_at"] = rows[0][2]
                 except SQLAlchemyError as exc:
-                    logger.debug(
-                        f"PgClerkBulkService: ingest_files query failed: {exc}"
-                    )
+                    msg = f"ingest_files query failed: {exc}"
+                    state["state_errors"].append(msg)
+                    logger.warning(f"PgClerkBulkService: {msg}")
 
         except SQLAlchemyError as exc:
             logger.error(
@@ -188,8 +195,14 @@ class PgClerkBulkService:
             f"parties={state['parties_count']:,}, "
             f"disposed={state['disposed_count']:,}, "
             f"garnishment={state['garnishment_count']:,}, "
+            f"official_records={state['official_records_count']:,}, "
             f"loaded_files={len(state['loaded_files'])}"
         )
+        if state["state_errors"]:
+            logger.warning(
+                "PgClerkBulkService state had {} query errors",
+                len(state["state_errors"]),
+            )
         return state
 
     # ------------------------------------------------------------------
@@ -215,6 +228,7 @@ class PgClerkBulkService:
             "parties": {},
             "disposed": {},
             "garnishment": {},
+            "official_records": {},
             "error": None,
         }
 
@@ -234,6 +248,7 @@ class PgClerkBulkService:
                 load_clerk_disposed,
                 load_clerk_garnishment,
                 load_clerk_name_index,
+                load_official_records_daily,
             )
         except ImportError as exc:
             result["error"] = f"Failed to import pg_loader_clerk: {exc}"
@@ -244,6 +259,7 @@ class PgClerkBulkService:
             return result
 
         started_at = dt.datetime.now(dt.UTC)
+        download_errors = 0
         logger.info(
             f"PgClerkBulkService.update: starting "
             f"(download_dir={self.download_dir}, force={force_download})"
@@ -268,15 +284,16 @@ class PgClerkBulkService:
                 force=force_download,
             )
             result["download"] = dl_stats
+            download_errors = int(dl_stats.get("errors", 0) or 0)
             logger.info(
                 f"PgClerkBulkService download: "
                 f"{dl_stats.get('downloaded', 0)} new, "
                 f"{dl_stats.get('skipped', 0)} skipped, "
                 f"{dl_stats.get('errors', 0)} errors"
             )
-            if dl_stats.get("errors", 0) > 0:
+            if download_errors > 0:
                 logger.warning(
-                    f"PgClerkBulkService: {dl_stats['errors']} download errors "
+                    f"PgClerkBulkService: {download_errors} download errors "
                     f"(continuing with available files)"
                 )
         except Exception as exc:
@@ -294,8 +311,9 @@ class PgClerkBulkService:
             ("parties", load_clerk_parties),
             ("disposed", load_clerk_disposed),
             ("garnishment", load_clerk_garnishment),
+            ("official_records", load_official_records_daily),
         ]
-        all_ok = True
+        all_ok = download_errors == 0
         for step_name, loader_fn in load_steps:
             try:
                 logger.info(f"PgClerkBulkService: loading {step_name} ...")
@@ -355,6 +373,7 @@ class PgClerkBulkService:
                 f"events={result['events'].get('rows_inserted', '?')}, "
                 f"parties={result['parties'].get('rows_upserted', '?')}, "
                 f"garnishment={result['garnishment'].get('rows_inserted', '?')}"
+                f", official_records={result['official_records'].get('rows_upserted', '?')}"
             )
         else:
             logger.warning(

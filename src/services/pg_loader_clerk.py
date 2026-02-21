@@ -8,6 +8,8 @@ and disposed-case CSV files from:
     https://publicrec.hillsclerk.com/Civil/CircuitCivilDisposedCases/
 and return-of-service/garnishment weekly CSV files from:
     https://publicrec.hillsclerk.com/Civil/Circuit%20and%20County%20Civil%20with%20Return%20of%20Service%20and%20Garnishment%20Data/
+and Official Records daily indexes from:
+    https://publicrec.hillsclerk.com/OfficialRecords/DailyIndexes/
 
 Examples:
     uv run python sunbiz/pg_loader_clerk.py download-clerk-bulk
@@ -15,6 +17,7 @@ Examples:
     uv run python sunbiz/pg_loader_clerk.py load-clerk-events --root data/bulk_data/clerk_civil
     uv run python sunbiz/pg_loader_clerk.py load-clerk-parties --root data/bulk_data/clerk_civil
     uv run python sunbiz/pg_loader_clerk.py load-clerk-garnishment --root data/bulk_data/clerk_civil
+    uv run python sunbiz/pg_loader_clerk.py load-clerk-official-records --root data/bulk_data/clerk_civil
     uv run python sunbiz/pg_loader_clerk.py load-all --root data/bulk_data/clerk_civil
     uv run python sunbiz/pg_loader_clerk.py load-all --sync-first
 """
@@ -55,6 +58,7 @@ from src.services.models_clerk import ClerkCivilParty
 from src.services.models_clerk import ClerkDisposedCase
 from src.services.models_clerk import ClerkGarnishmentCase
 from src.services.models_clerk import ClerkNameIndex
+from src.services.models_clerk import OfficialRecordsDailyInstrument
 
 CLERK_BULK_URL = "https://publicrec.hillsclerk.com/Civil/bulkdata/"
 CLERK_DISPOSED_URL = "https://publicrec.hillsclerk.com/Civil/CircuitCivilDisposedCases/"
@@ -62,6 +66,7 @@ CLERK_GARNISHMENT_URL = (
     "https://publicrec.hillsclerk.com/Civil/"
     "Circuit%20and%20County%20Civil%20with%20Return%20of%20Service%20and%20Garnishment%20Data/"
 )
+OFFICIAL_RECORDS_DAILY_URL = "https://publicrec.hillsclerk.com/OfficialRecords/DailyIndexes/"
 DEFAULT_CLERK_DIR = Path("data/bulk_data/clerk_civil")
 DEFAULT_ALPHA_DIR = Path("data/bulk_data/clerk_alpha_index")
 DEFAULT_BATCH_SIZE = 2000
@@ -87,6 +92,14 @@ GARNISHMENT_FILE_PATTERN = re.compile(
 )
 NAME_INDEX_FILE_PATTERN = re.compile(
     r"CivilNameIndex", re.IGNORECASE,
+)
+OFFICIAL_RECORDS_FILE_PATTERN = re.compile(
+    r"^(?:[DP]\d{8}\d{2}id\.29|M\d{8}\d{2}d\.29)$",
+    re.IGNORECASE,
+)
+OFFICIAL_RECORDS_D_FILE_PATTERN = re.compile(
+    r"^D(\d{8})(\d{2})id\.29$",
+    re.IGNORECASE,
 )
 # UCN format: county(2) + year(4) + court_type(2) + sequence(6) + party_designator(4) + location(2)
 # Example: 292019CA123456A001HC → case_number = 292019CA123456
@@ -164,6 +177,61 @@ def _parse_date_from_filename(filename: str) -> dt.date | None:
             pass
 
     return None
+
+
+def _sort_files_oldest_first(paths: list[Path]) -> list[Path]:
+    """Sort files so older snapshots are loaded before newer ones.
+
+    Upsert loaders should process chronological snapshots in ascending order so
+    the latest snapshot wins on conflicts.
+    """
+
+    def sort_key(path: Path) -> tuple[int, dt.date, str]:
+        snapshot_date = _parse_date_from_filename(path.name)
+        if snapshot_date is None:
+            # Unknown patterns first so dated snapshots still win later.
+            return (0, dt.date.min, path.name.lower())
+        return (1, snapshot_date, path.name.lower())
+
+    return sorted(paths, key=sort_key)
+
+
+def _parse_time_value(value: str | None) -> dt.time | None:
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    for fmt in ("%H:%M", "%H:%M:%S", "%I:%M %p", "%I:%M:%S %p"):
+        try:
+            return dt.datetime.strptime(text, fmt).time()
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def _parse_decimal(value: str | None) -> float | None:
+    if value is None:
+        return None
+    text = value.strip().replace(",", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
 
 
 def _compute_sha256(path: Path) -> str:
@@ -344,8 +412,8 @@ def _mark_ingest_file(
 # ---------------------------------------------------------------------------
 
 
-def _fetch_csv_listing(base_url: str) -> list[str]:
-    """Fetch a clerk listing page and extract CSV filenames."""
+def _fetch_listing_filenames(base_url: str) -> list[str]:
+    """Fetch an index page and extract linked filenames."""
     request = urllib.request.Request(  # noqa: S310 - fixed HTTPS endpoint constant
         base_url,
         headers={"User-Agent": "HillsInspector/1.0"},
@@ -353,22 +421,29 @@ def _fetch_csv_listing(base_url: str) -> list[str]:
     with urllib.request.urlopen(request, timeout=60) as resp:  # noqa: S310 - fixed HTTPS endpoint
         page_html = resp.read().decode("utf-8", errors="replace")
 
-    # Extract CSV links from the page
-    csv_pattern = re.compile(r'href="([^"]*\.csv)"', re.IGNORECASE)
     filenames: list[str] = []
-    for match in csv_pattern.finditer(page_html):
+    href_pattern = re.compile(r'href="([^"]+)"', re.IGNORECASE)
+    for match in href_pattern.finditer(page_html):
         href = match.group(1)
+        if href in {"../", "./"} or href.endswith("/"):
+            continue
+        if "?" in href:
+            href = href.split("?", 1)[0]
+        if not href:
+            continue
         # Extract just the filename from path or URL
         name = href.rsplit("/", 1)[-1]
         # URL-decode the filename
         name = urllib.parse.unquote(name)
-        filenames.append(name)
+        if name and name not in filenames:
+            filenames.append(name)
 
     if not filenames:
-        # Fallback: look for anchor text containing .csv
-        text_pattern = re.compile(r">([^<]*\.csv)<", re.IGNORECASE)
+        text_pattern = re.compile(r">([^<]+)<", re.IGNORECASE)
         for match in text_pattern.finditer(page_html):
-            filenames.append(match.group(1).strip())
+            name = match.group(1).strip()
+            if name and "." in name and "/" not in name and name not in filenames:
+                filenames.append(name)
 
     return filenames
 
@@ -385,7 +460,7 @@ def download_clerk_bulk(
         output_dir: Directory to save CSV files.
         force: Re-download even if file exists locally.
         file_types: Filter to specific types: 'case', 'event', 'party',
-            'disposed', 'garnishment'. None = all.
+            'disposed', 'garnishment', 'official_records'. None = all.
 
     Returns:
         Dict with download stats.
@@ -397,6 +472,7 @@ def download_clerk_bulk(
         "party": PARTY_FILE_PATTERN,
         "disposed": DISPOSED_FILE_PATTERN,
         "garnishment": GARNISHMENT_FILE_PATTERN,
+        "official_records": OFFICIAL_RECORDS_FILE_PATTERN,
     }
 
     # Filter to requested types
@@ -406,13 +482,17 @@ def download_clerk_bulk(
         active_patterns = patterns
 
     listing_by_category: dict[str, tuple[str, list[str]]] = {
-        "case": (CLERK_BULK_URL, _fetch_csv_listing(CLERK_BULK_URL)),
-        "event": (CLERK_BULK_URL, _fetch_csv_listing(CLERK_BULK_URL)),
-        "party": (CLERK_BULK_URL, _fetch_csv_listing(CLERK_BULK_URL)),
-        "disposed": (CLERK_DISPOSED_URL, _fetch_csv_listing(CLERK_DISPOSED_URL)),
+        "case": (CLERK_BULK_URL, _fetch_listing_filenames(CLERK_BULK_URL)),
+        "event": (CLERK_BULK_URL, _fetch_listing_filenames(CLERK_BULK_URL)),
+        "party": (CLERK_BULK_URL, _fetch_listing_filenames(CLERK_BULK_URL)),
+        "disposed": (CLERK_DISPOSED_URL, _fetch_listing_filenames(CLERK_DISPOSED_URL)),
         "garnishment": (
             CLERK_GARNISHMENT_URL,
-            _fetch_csv_listing(CLERK_GARNISHMENT_URL),
+            _fetch_listing_filenames(CLERK_GARNISHMENT_URL),
+        ),
+        "official_records": (
+            OFFICIAL_RECORDS_DAILY_URL,
+            _fetch_listing_filenames(OFFICIAL_RECORDS_DAILY_URL),
         ),
     }
 
@@ -495,7 +575,7 @@ def load_clerk_cases(
                  CauseOfAction, CauseDescription, CaseStatus,
                  JudgmentCode, JudgmentDescription, JudgmentDate
     """
-    files = sorted(root.glob("Bulk Data Case File_*.csv"))
+    files = _sort_files_oldest_first(list(root.glob("Bulk Data Case File_*.csv")))
     if limit_files:
         files = files[:limit_files]
 
@@ -641,7 +721,7 @@ def load_clerk_events(
 
     CSV columns: CaseNbr, EventCode, Event, EventDate1, NameFirst, NameMid, NameLast
     """
-    files = sorted(root.glob("Bulk Data Event File_*.csv"))
+    files = _sort_files_oldest_first(list(root.glob("Bulk Data Event File_*.csv")))
     if limit_files:
         files = files[:limit_files]
 
@@ -781,7 +861,7 @@ def load_clerk_parties(
     CSV columns: CaseNbr, Party, Name, Address1, Address2, City, State, ZIP,
                  BarNum, PhoneNum, Email
     """
-    files = sorted(root.glob("Bulk Data Party File_*.csv"))
+    files = _sort_files_oldest_first(list(root.glob("Bulk Data Party File_*.csv")))
     if limit_files:
         files = files[:limit_files]
 
@@ -932,9 +1012,9 @@ def load_clerk_disposed(
     These files may not exist on the clerk site (not currently listed),
     but the table and loader are ready if they appear.
     """
-    files = sorted(root.glob("Odyssey-JobOutput-*.csv"))
+    files = _sort_files_oldest_first(list(root.glob("Odyssey-JobOutput-*.csv")))
     if not files:
-        files = sorted(root.glob("*disposed*.csv"))
+        files = _sort_files_oldest_first(list(root.glob("*disposed*.csv")))
     if limit_files:
         files = files[:limit_files]
 
@@ -1088,7 +1168,9 @@ def load_clerk_garnishment(
 
     Source pattern: ReturnOfServiceAndGarnishmentData_YYYY-MM-DD.csv
     """
-    files = sorted(root.glob("ReturnOfServiceAndGarnishmentData_*.csv"))
+    files = _sort_files_oldest_first(
+        list(root.glob("ReturnOfServiceAndGarnishmentData_*.csv"))
+    )
     if limit_files:
         files = files[:limit_files]
 
@@ -1260,6 +1342,252 @@ def _insert_garnishment_batch(session: Session, rows: list[dict]) -> None:
     stmt = pg_insert(ClerkGarnishmentCase).values(rows)
     stmt = stmt.on_conflict_do_nothing(
         index_elements=[ClerkGarnishmentCase.row_hash],
+    )
+    session.execute(stmt)
+
+
+# ---------------------------------------------------------------------------
+# Official Records daily indexes loader (D/P/M)
+# ---------------------------------------------------------------------------
+
+
+def _parse_official_records_map(path: Path | None) -> dict[str, str]:
+    """Parse M file (doc type -> FACC doc type)."""
+    if path is None or not path.exists():
+        return {}
+
+    mapping: dict[str, str] = {}
+    with path.open("r", encoding="utf-8-sig", errors="replace") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            parts = line.split("|")
+            doc_type = _clean_text(parts[0] if len(parts) > 0 else None)
+            facc_doc_type = _clean_text(parts[1] if len(parts) > 1 else None)
+            if not doc_type or doc_type.upper() == "EOF":
+                continue
+            mapping[doc_type.upper()] = facc_doc_type or ""
+    return mapping
+
+
+def _parse_official_records_parties(path: Path | None) -> dict[str, dict[str, list[str]]]:
+    """Parse P file into instrument -> {from:[], to:[]} mapping."""
+    if path is None or not path.exists():
+        return {}
+
+    parties_by_instrument: dict[str, dict[str, list[str]]] = {}
+    with path.open("r", encoding="utf-8-sig", errors="replace") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line:
+                continue
+            parts = line.split("|")
+            instrument = _clean_text(parts[2] if len(parts) > 2 else None)
+            direction = (_clean_text(parts[4] if len(parts) > 4 else None) or "").upper()
+            party_name = _clean_text(parts[5] if len(parts) > 5 else None)
+            if not instrument or not party_name:
+                continue
+
+            bucket = parties_by_instrument.setdefault(
+                instrument,
+                {"from": [], "to": []},
+            )
+            key = "from" if direction in {"FRM", "FROM", "F"} else "to"
+            if party_name not in bucket[key]:
+                bucket[key].append(party_name)
+    return parties_by_instrument
+
+
+def load_official_records_daily(
+    dsn: str,
+    root: Path,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    skip_unchanged: bool = True,
+    limit_files: int | None = None,
+) -> dict:
+    """
+    Load Official Records DailyIndexes D/P/M files into one instrument-level table.
+
+    - D file: document-level rows
+    - P file: party rows (joined by instrument)
+    - M file: doc-type map to FACC type
+    """
+    files = sorted(
+        f for f in root.glob("D*id.29")
+        if f.is_file() and OFFICIAL_RECORDS_D_FILE_PATTERN.match(f.name)
+    )
+    if limit_files:
+        files = files[:limit_files]
+
+    if not files:
+        logger.info("No OfficialRecords D files found")
+        return {"files_found": 0, "files_loaded": 0, "rows_upserted": 0}
+
+    logger.info(f"Found {len(files)} OfficialRecords D files in {root}")
+    session_factory = get_session_factory(dsn)
+    stats = {"files_found": len(files), "files_loaded": 0, "files_skipped": 0, "rows_upserted": 0}
+
+    with session_factory() as session:
+        for d_path in files:
+            m = OFFICIAL_RECORDS_D_FILE_PATTERN.match(d_path.name)
+            if not m:
+                continue
+            day_token = m.group(1)
+            seq = m.group(2)
+            snapshot_date = dt.datetime.strptime(day_token, "%Y%m%d").date()
+            snapshot_sequence = int(seq)
+
+            p_path = root / f"P{day_token}{seq}id.29"
+            m_path = root / f"M{day_token}{seq}d.29"
+            if not p_path.exists():
+                p_path = None
+            if not m_path.exists():
+                m_path = None
+
+            d_sha = _compute_sha256(d_path)
+            p_sha = _compute_sha256(p_path) if p_path else ""
+            m_sha = _compute_sha256(m_path) if m_path else ""
+            triad_sha = hashlib.sha256(
+                f"D:{d_sha}|P:{p_sha}|M:{m_sha}".encode()
+            ).hexdigest()
+
+            file_size = d_path.stat().st_size
+            if p_path:
+                file_size += p_path.stat().st_size
+            if m_path:
+                file_size += m_path.stat().st_size
+
+            modified_at = dt.datetime.fromtimestamp(d_path.stat().st_mtime, tz=dt.UTC)
+            if p_path:
+                p_mod = dt.datetime.fromtimestamp(p_path.stat().st_mtime, tz=dt.UTC)
+                modified_at = max(modified_at, p_mod)
+            if m_path:
+                m_mod = dt.datetime.fromtimestamp(m_path.stat().st_mtime, tz=dt.UTC)
+                modified_at = max(modified_at, m_mod)
+
+            rel = d_path.relative_to(root).as_posix() if root in d_path.parents else d_path.name
+            existing = _get_existing_ingest_file(session, "clerk_civil", rel)
+            if (
+                skip_unchanged
+                and existing
+                and existing.status == "loaded"
+                and existing.file_sha256 == triad_sha
+            ):
+                logger.debug(f"Skipping unchanged OfficialRecords triad: {d_path.name}")
+                stats["files_skipped"] += 1
+                continue
+
+            file_id = _upsert_ingest_file(
+                session=session,
+                source_system="clerk_civil",
+                category="official_records_daily",
+                relative_path=rel,
+                file_sha256=triad_sha,
+                file_size_bytes=file_size,
+                file_modified_at=modified_at,
+                status="loading",
+            )
+            session.commit()
+
+            try:
+                doc_type_map = _parse_official_records_map(m_path)
+                parties_by_instrument = _parse_official_records_parties(p_path)
+
+                rows: list[dict] = []
+                row_count = 0
+                eff_batch = batch_size
+                with d_path.open("r", encoding="utf-8-sig", errors="replace") as f:
+                    for raw in f:
+                        line = raw.strip()
+                        if not line:
+                            continue
+                        parts = line.split("|")
+
+                        instrument_number = _clean_text(parts[2] if len(parts) > 2 else None)
+                        if not instrument_number:
+                            continue
+
+                        doc_type = _clean_text(parts[3] if len(parts) > 3 else None)
+                        parties = parties_by_instrument.get(
+                            instrument_number,
+                            {"from": [], "to": []},
+                        )
+
+                        mapped = {
+                            "snapshot_date": snapshot_date,
+                            "snapshot_sequence": snapshot_sequence,
+                            "action": _clean_text(parts[0] if len(parts) > 0 else None),
+                            "county_number": _parse_int(parts[1] if len(parts) > 1 else None),
+                            "instrument_number": instrument_number,
+                            "doc_type": doc_type,
+                            "doc_description": _clean_text(parts[4] if len(parts) > 4 else None),
+                            "facc_doc_type": doc_type_map.get((doc_type or "").upper()) or None,
+                            "legal_description": _clean_text(parts[5] if len(parts) > 5 else None),
+                            "book_type": _clean_text(parts[6] if len(parts) > 6 else None),
+                            "book_number": _clean_text(parts[7] if len(parts) > 7 else None),
+                            "page_number": _clean_text(parts[8] if len(parts) > 8 else None),
+                            "page_count": _parse_int(parts[10] if len(parts) > 10 else None),
+                            "recording_date": _parse_date_mdy(parts[11] if len(parts) > 11 else None),
+                            "recording_time": _parse_time_value(parts[12] if len(parts) > 12 else None),
+                            "consideration_amount": _parse_decimal(parts[13] if len(parts) > 13 else None),
+                            "parties_from_json": parties["from"] or None,
+                            "parties_to_json": parties["to"] or None,
+                            "parties_from_text": "; ".join(parties["from"]) or None,
+                            "parties_to_text": "; ".join(parties["to"]) or None,
+                            "source_d_file": d_path.name,
+                            "source_p_file": p_path.name if p_path else None,
+                            "source_m_file": m_path.name if m_path else None,
+                            "loaded_at": _utc_now(),
+                        }
+
+                        if row_count == 0:
+                            eff_batch = _effective_batch_size(batch_size, len(mapped))
+
+                        rows.append(mapped)
+                        row_count += 1
+                        if len(rows) >= eff_batch:
+                            _upsert_official_records_batch(session, rows)
+                            session.commit()
+                            rows.clear()
+
+                if rows:
+                    _upsert_official_records_batch(session, rows)
+                    session.commit()
+
+                _mark_ingest_file(session, file_id, "loaded", row_count=row_count)
+                session.commit()
+                stats["files_loaded"] += 1
+                stats["rows_upserted"] += row_count
+                logger.info(
+                    f"Loaded {row_count:,} official-record rows from {d_path.name} "
+                    f"(P={'yes' if p_path else 'no'}, M={'yes' if m_path else 'no'})"
+                )
+            except Exception as exc:
+                session.rollback()
+                _mark_ingest_file(
+                    session, file_id, "failed", error_message=str(exc)[:4000]
+                )
+                session.commit()
+                logger.error(f"Failed to load official-record triad {d_path.name}: {exc}")
+                raise
+
+    return stats
+
+
+def _upsert_official_records_batch(session: Session, rows: list[dict]) -> None:
+    if not rows:
+        return
+    rows = _dedup_by_key(rows, "instrument_number")
+    stmt = pg_insert(OfficialRecordsDailyInstrument).values(rows)
+    update_cols = {
+        col.name: getattr(stmt.excluded, col.name)
+        for col in OfficialRecordsDailyInstrument.__table__.columns
+        if col.name not in {"id", "instrument_number"}
+    }
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_official_records_daily_instruments_instrument",
+        set_=update_cols,
     )
     session.execute(stmt)
 
@@ -1499,6 +1827,11 @@ def load_all(
         dsn, root, batch_size, skip_unchanged
     )
 
+    logger.info("--- Loading Official Records DailyIndexes (D/P/M) ---")
+    all_stats["official_records"] = load_official_records_daily(
+        dsn, root, batch_size, skip_unchanged
+    )
+
     logger.info("--- Loading name index (alpha_index) ---")
     all_stats["name_index"] = load_clerk_name_index(
         dsn, DEFAULT_ALPHA_DIR, batch_size, skip_unchanged
@@ -1533,7 +1866,7 @@ def _build_parser() -> argparse.ArgumentParser:
     dl_cmd.add_argument(
         "--file-types",
         nargs="+",
-        choices=["case", "event", "party", "disposed", "garnishment"],
+        choices=["case", "event", "party", "disposed", "garnishment", "official_records"],
         default=None, help="Filter to specific file types.",
     )
 
@@ -1569,6 +1902,15 @@ def _build_parser() -> argparse.ArgumentParser:
     garnishment_cmd.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     garnishment_cmd.add_argument("--no-skip-unchanged", action="store_true")
     garnishment_cmd.add_argument("--limit-files", type=int, default=None)
+
+    official_cmd = sub.add_parser(
+        "load-clerk-official-records",
+        help="Parse OfficialRecords DailyIndexes D/P/M files.",
+    )
+    official_cmd.add_argument("--root", type=Path, default=DEFAULT_CLERK_DIR)
+    official_cmd.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    official_cmd.add_argument("--no-skip-unchanged", action="store_true")
+    official_cmd.add_argument("--limit-files", type=int, default=None)
 
     ni_cmd = sub.add_parser(
         "load-clerk-name-index",
@@ -1667,6 +2009,17 @@ def main() -> int:
             limit_files=args.limit_files,
         )
         logger.info(f"Garnishment loader stats: {stats}")
+        return 0
+
+    if args.command == "load-clerk-official-records":
+        stats = load_official_records_daily(
+            dsn=dsn,
+            root=args.root,
+            batch_size=args.batch_size,
+            skip_unchanged=not args.no_skip_unchanged,
+            limit_files=args.limit_files,
+        )
+        logger.info(f"Official records loader stats: {stats}")
         return 0
 
     if args.command == "load-clerk-name-index":

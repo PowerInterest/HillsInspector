@@ -23,8 +23,10 @@ class PgForeclosureService:
 
     def __init__(self, dsn: str | None = None) -> None:
         self._available = False
+        self._dsn: str | None = None
         try:
             resolved = resolve_pg_dsn(dsn)
+            self._dsn = resolved
             self._engine = get_engine(resolved)
             with self._engine.connect() as conn:
                 conn.execute(text("SELECT 1 FROM foreclosures LIMIT 0"))
@@ -278,22 +280,8 @@ class PgForeclosureService:
     # Refresh (delegates to the refresh script logic)
     # ------------------------------------------------------------------
 
-    def needs_encumbrance_sync(self) -> bool:
-        """Check if ori_encumbrances is empty (needs SQLite sync)."""
-        if not self._available:
-            return False
-        try:
-            with self._engine.connect() as conn:
-                count = conn.execute(
-                    text("SELECT COUNT(*) FROM ori_encumbrances")
-                ).scalar() or 0
-                return count == 0
-        except Exception as exc:
-            logger.warning(f"needs_encumbrance_sync check failed: {exc}")
-            return False
-
-    def refresh(self, sync_encumbrances: bool = False) -> dict[str, int]:
+    def refresh(self) -> dict[str, int]:
         """Run the full idempotent refresh. Returns rowcounts per step."""
         from scripts.refresh_foreclosures import refresh as _refresh
 
-        return _refresh(sync_encumbrances=sync_encumbrances)
+        return _refresh(dsn=self._dsn)

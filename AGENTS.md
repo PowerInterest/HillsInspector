@@ -2,9 +2,9 @@
 
 ## Pipeline Success Criteria (READ THIS FIRST)
 
-A successful `--update` run is measured by **data completeness**, not by steps completing without errors. The pipeline's purpose is to produce actionable foreclosure analysis. If the output data is missing, the run has failed regardless of whether the code ran without exceptions.
+A successful `Controller.py` pipeline run is measured by **data completeness**, not by steps completing without errors. The pipeline's purpose is to produce actionable foreclosure analysis. If the output data is missing, the run has failed regardless of whether the code ran without exceptions.
 
-**After any `--update` run, you MUST validate these thresholds:**
+**After any `Controller.py` run, you MUST validate these thresholds:**
 
 | Metric | Target | Validation Query |
 |--------|--------|-----------------|
@@ -23,7 +23,7 @@ A successful `--update` run is measured by **data completeness**, not by steps c
 The chain of title and encumbrance data are the core deliverable. Without them, the pipeline produces no investment-grade analysis. Judgment PDFs and enrichment data are intermediate steps toward that goal.
 
 ## Project Structure & Module Organization
-- Entry point: `main.py` (flags: `--update`, `--web`, `--new`); orchestration in `src/orchestrator.py`.
+- Entry point: `Controller.py`; orchestration in `src/services/pg_pipeline_controller.py`.
 - Scrapers in `src/scrapers/`; ingest helpers in `src/ingest/`; transforms/enrichment in `src/services/`; shared utilities in `src/utils/`.
 - Database schema and scripts in `src/db/`; FastAPI + Jinja app in `app/web/` with API helpers in `app/services/` and DB wiring in `app/web/database.py`.
 - **Operational Database**: `data/property_master_sqlite.db` (SQLite) for transactional data, status tracking, and active pipeline enrichment.
@@ -38,9 +38,9 @@ The chain of title and encumbrance data are the core deliverable. Without them, 
 
 ## Build, Test, and Development Commands
 - `uv sync` installs locked dependencies; avoid pip/poetry.
-- Quick sanity run: `uv run main.py --update --start-date YYYY-MM-DD --end-date YYYY-MM-DD --auction-limit 5`.
-- `uv run main.py --update` does the full scrape/analysis; `uv run main.py --web` launches the dashboard; `uv run main.py --new` resets the DB (archives old DB first).
-- **When developing/testing**: Use `--start-step <step #>` to limit `--update` to the step you're working on (e.g., `--start-step 5` for ORI ingestion). Only run a full update when explicitly requested by the user.
+- Quick sanity run: `uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --survival-limit 5 --limit 5`.
+- `uv run Controller.py` runs the full PG-first pipeline; `uv run python -m app.web.main` launches the dashboard.
+- **When developing/testing**: Use controller skip flags and per-step limits (for example `--skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain --skip-market-data` for Phase B only). Only run the full pipeline when explicitly requested by the user.
 - `uv run ruff check .` (add `--fix` when safe) for linting; `uv run ty check` for typing; `uv run pytest` for unit tests.
 - One-time scraper setup: `uv run playwright install chromium`.
 
@@ -57,7 +57,7 @@ The chain of title and encumbrance data are the core deliverable. Without them, 
 ## Testing Guidelines
 - Use pytest; name files `test_*.py` mirroring module paths.
 - Prefer schema/column presence checks and aggregate assertions for pipelines; include fixture HTML/PDF snippets for scrapers in `tests/fixtures/`.
-- Run `uv run pytest` plus a quick `--update` sanity run before PRs.
+- Run `uv run pytest` plus a quick `Controller.py` sanity run before PRs.
 - After every change, run `uv run ruff check .` and `uv run ty check`.
 
 ## Commit & Pull Request Guidelines
