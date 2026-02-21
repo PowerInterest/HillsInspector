@@ -1,7 +1,6 @@
 import asyncio
 import json
 import re
-from contextlib import suppress
 from datetime import date, timedelta
 from pathlib import Path
 from typing import List, Optional, Dict, Any, TYPE_CHECKING
@@ -13,7 +12,6 @@ from playwright_stealth import Stealth
 from src.models.property import Property
 
 from src.services.final_judgment_processor import FinalJudgmentProcessor
-from src.scrapers.hcpa_gis_scraper import scrape_hcpa_property
 from src.utils.logging_utils import log_search, Timer
 from src.utils.time import today_local
 
@@ -343,10 +341,6 @@ class AuctionScraper:
                     hcpa_url=hcpa_url,
                     has_valid_parcel_id=bool(parcel_id_text),
                 )
-                
-                # Check for HCPA enrichment
-                if hcpa_url:
-                     await self._enrich_with_hcpa(prop, browser_context=page.context)
 
                 properties.append(prop)
 
@@ -451,27 +445,6 @@ class AuctionScraper:
                     hcpa_url=hcpa_url,
                     has_valid_parcel_id=bool(parcel_id_text),  # FALSE for mobile homes/unresolved
                 )
-
-                # Immediately enrich with HCPA data if we have the URL
-                hcpa_failed = False
-                hcpa_error = None
-                if hcpa_url:
-                    # Pass browser context to avoid spawning new browser instances
-                    hcpa_result = await self._enrich_with_hcpa(prop, browser_context=page.context)
-                    if not hcpa_result.get("success"):
-                        # HCPA scrape failed - mark for manual review
-                        hcpa_failed = True
-                        hcpa_error = hcpa_result.get("error", "Unknown HCPA scrape error")
-                        logger.warning(f"HCPA scrape failed for {case_number}: {hcpa_error}")
-                else:
-                    # No HCPA URL available - also mark as failed
-                    hcpa_failed = True
-                    hcpa_error = "No HCPA URL available on auction page"
-
-                # Store HCPA failure status on Property (orchestrator writes to DB)
-                if hcpa_failed:
-                    prop.hcpa_scrape_failed = True
-                    prop.hcpa_scrape_error = hcpa_error
 
                 properties.append(prop)
 
@@ -1136,105 +1109,6 @@ class AuctionScraper:
         except ValueError:
             return None
 
-    async def _enrich_with_hcpa(self, prop: Property, browser_context=None) -> Dict[str, Any]:
-        """
-        Scrape HCPA GIS immediately after auction scrape to get enrichment data.
-
-        Args:
-            prop: Property to enrich
-            browser_context: Optional Playwright BrowserContext to create page from (avoids new browser)
-
-        Returns dict with HCPA data that can be compared to bulk data.
-        """
-        result = {"success": False, "hcpa_data": None, "error": None}
-
-        if not prop.hcpa_url:
-            result["error"] = "No HCPA URL available"
-            return result
-
-        # Extract parcel ID from HCPA URL
-        # Format 1: https://gis.hcpafl.org/propertysearch/#/parcel/basic/{parcel_id}
-        # Format 2: http://www.hcpafl.org/CamaDisplay.aspx?...ParcelID={parcel_id}
-        hcpa_parcel_id = None
-
-        match = re.search(r'/parcel/basic/([A-Za-z0-9]+)', prop.hcpa_url)
-        if match:
-            hcpa_parcel_id = match.group(1)
-        else:
-            match = re.search(r'ParcelID=([A-Za-z0-9]+)', prop.hcpa_url)
-            if match:
-                hcpa_parcel_id = match.group(1)
-
-        if not hcpa_parcel_id:
-            result["error"] = f"Could not extract parcel ID from URL: {prop.hcpa_url}"
-            return result
-        logger.info(f"Enriching {prop.case_number} with HCPA data (parcel: {hcpa_parcel_id})")
-
-        hcpa_page = None
-        try:
-            # Create dedicated page from context if provided (avoids browser spawn)
-            if browser_context:
-                hcpa_page = await browser_context.new_page()
-                await apply_stealth(hcpa_page)
-                hcpa_data = await scrape_hcpa_property(
-                    parcel_id=hcpa_parcel_id, 
-                    storage=self.storage,
-                    page=hcpa_page,
-                    storage_key=prop.case_number
-                )
-            else:
-                # Fallback: let HCPA scraper create its own browser
-                hcpa_data = await scrape_hcpa_property(
-                    parcel_id=hcpa_parcel_id,
-                    storage=self.storage,
-                    storage_key=prop.case_number
-                )
-
-            if hcpa_data:
-                result["success"] = True
-                result["hcpa_data"] = hcpa_data
-
-                # Enrich property with HCPA data
-                if hcpa_data.get("folio"):
-                    # Store the folio from HCPA for comparison
-                    result["hcpa_folio"] = hcpa_data["folio"]
-
-                if hcpa_data.get("legal_description"):
-                    prop.legal_description = hcpa_data["legal_description"]
-
-                if hcpa_data.get("property_info", {}).get("site_address"):
-                    # Only update if we don't have an address or HCPA is more complete
-                    hcpa_addr = hcpa_data["property_info"]["site_address"]
-                    if not prop.address or len(hcpa_addr) > len(prop.address):
-                        prop.address = hcpa_addr
-
-                if hcpa_data.get("building_info", {}).get("year_built"):
-                    with suppress(ValueError, TypeError):
-                        prop.year_built = int(hcpa_data["building_info"]["year_built"])
-
-                if hcpa_data.get("image_url"):
-                    prop.image_url = hcpa_data["image_url"]
-
-                if hcpa_data.get("sales_history"):
-                    prop.sales_history = hcpa_data["sales_history"]
-
-                # Property object is now enriched (orchestrator writes to DB)
-                logger.success(f"HCPA enrichment successful for {prop.case_number}: legal='{prop.legal_description[:50] if prop.legal_description else 'N/A'}...'")
-
-        except Exception as e:
-            result["error"] = str(e)
-            logger.error(f"HCPA enrichment failed for {prop.case_number}: {e}")
-        finally:
-            # Close the dedicated HCPA page if we created one
-            if hcpa_page:
-                try:
-                    await hcpa_page.close()
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to close HCPA page for case {prop.case_number}: {e}"
-                    )
-
-        return result
 
 if __name__ == "__main__":
     # Test run

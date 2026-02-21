@@ -93,6 +93,16 @@ class ControllerSettings:
 
 
 class PgPipelineController:
+    BACKGROUND_BULK_STEPS: set[str] = {
+        "hcpa_suite",
+        "clerk_bulk",
+        "dor_nal",
+        "sunbiz_flr",
+        "sunbiz_entity",
+        "county_permits",
+        "tampa_permits",
+    }
+
     def __init__(self, settings: ControllerSettings) -> None:
         self.settings = settings
         self.dsn = resolve_pg_dsn(settings.dsn)
@@ -130,7 +140,6 @@ class PgPipelineController:
                 self._run_trust_accounts,
             ),
             ("title_chain", self.settings.skip_title_chain, self._run_title_chain),
-            ("market_data", self.settings.skip_market_data, self._run_market_data),
             # Phase B: per-auction enrichment (scraping + analysis)
             (
                 "auction_scrape",
@@ -158,6 +167,9 @@ class PgPipelineController:
                 self.settings.skip_final_refresh,
                 self._run_final_refresh,
             ),
+            # Run market data after core foreclosure analysis so it never blocks
+            # auction scrape / judgment / ORI / survival progression.
+            ("market_data", self.settings.skip_market_data, self._run_market_data),
         ]
 
         for name, skip, fn in steps:
@@ -184,16 +196,42 @@ class PgPipelineController:
 
         logger.info(f"Step start: {name}")
         try:
-            payload = fn()
+            if self._should_dispatch_bulk_step(name):
+                from src.services.controller_step_dispatcher import dispatch_controller_step
+
+                payload = dispatch_controller_step(
+                    step_name=name,
+                    dsn=self.dsn,
+                    force_all=self.settings.force_all,
+                )
+            else:
+                payload = fn()
             payload_dict = payload if isinstance(payload, dict) else {"result": payload}
-            status = "skipped" if payload_dict.get("skipped") else "ok"
+            failed, failure_reason = self._is_failed_payload(payload_dict)
+            if failed:
+                status = "failed"
+            else:
+                status = "skipped" if payload_dict.get("skipped") else "ok"
             result = {
                 "name": name,
                 "status": status,
                 "elapsed_seconds": round(time.monotonic() - started, 2),
                 "payload": self._json_safe(payload_dict),
             }
-            logger.info(f"Step complete: {name} ({result['status']})")
+            if failure_reason:
+                result["reason"] = failure_reason
+            elif isinstance(payload_dict.get("reason"), str) and payload_dict.get("reason"):
+                result["reason"] = payload_dict["reason"]
+
+            if status == "failed":
+                logger.error(
+                    "Step failed (payload): {} reason={} payload={}",
+                    name,
+                    failure_reason or "unknown",
+                    self._json_safe(payload_dict),
+                )
+            else:
+                logger.info(f"Step complete: {name} ({result['status']})")
             return result
         except Exception as exc:
             tb = traceback.format_exc(limit=8)
@@ -204,6 +242,22 @@ class PgPipelineController:
                 "elapsed_seconds": round(time.monotonic() - started, 2),
                 "error": str(exc),
             }
+
+    @staticmethod
+    def _is_failed_payload(payload: dict[str, Any]) -> tuple[bool, str | None]:
+        if payload.get("success") is False:
+            return True, "success_false"
+        if payload.get("error") not in (None, ""):
+            return True, "error_present"
+
+        update = payload.get("update")
+        if isinstance(update, dict):
+            if update.get("success") is False:
+                return True, "update_success_false"
+            if update.get("error") not in (None, ""):
+                return True, "update_error_present"
+
+        return False, None
 
     def _run_hcpa_suite(self) -> dict[str, Any]:
         state = self._get_hcpa_state()
@@ -399,17 +453,19 @@ class PgPipelineController:
         svc = PgForeclosureService(dsn=self.dsn)
         if not svc.available:
             return {"skipped": True, "reason": "service_unavailable"}
-        # Auto-sync encumbrances from SQLite if PG table is empty
-        sync_enc = svc.needs_encumbrance_sync()
-        if sync_enc:
-            logger.info("ori_encumbrances is empty — will sync from SQLite")
-        stats = svc.refresh(sync_encumbrances=sync_enc)
-        return {"update": stats, "encumbrance_sync_triggered": sync_enc}
+        stats = svc.refresh()
+        return {"update": stats}
 
     def _run_trust_accounts(self) -> dict[str, Any]:
-        from src.services.trust_accounts import TrustAccountsService
+        from src.services.pg_trust_accounts import PgTrustAccountsService
 
-        svc = TrustAccountsService(pg_dsn=self.dsn)
+        svc = PgTrustAccountsService(dsn=self.dsn)
+        if not svc.available:
+            return {
+                "skipped": True,
+                "reason": "service_unavailable",
+                "details": svc.unavailable_reason,
+            }
         stats = svc.run(force_reprocess=self.settings.force_all)
         return {"update": stats}
 
@@ -426,43 +482,12 @@ class PgPipelineController:
         return {"update": result}
 
     def _run_market_data(self) -> dict[str, Any]:
-        import asyncio
+        from src.services.market_data_dispatcher import dispatch_market_data_worker
 
-        from src.services.market_data_service import MarketDataService
+        return dispatch_market_data_worker(dsn=self.dsn)
 
-        # Query foreclosures missing market data
-        with self.engine.connect() as conn:
-            rows = conn.execute(
-                text("""
-                    SELECT f.strap, f.folio, f.case_number_raw AS case_number,
-                           f.property_address
-                    FROM foreclosures f
-                    LEFT JOIN property_market pm ON f.strap = pm.strap
-                    WHERE f.strap IS NOT NULL
-                      AND f.property_address IS NOT NULL
-                      AND (pm.strap IS NULL OR pm.zestimate IS NULL)
-                    ORDER BY f.auction_date DESC
-                """)
-            ).fetchall()
-
-        if not rows:
-            return {"skipped": True, "reason": "no_properties_need_market_data"}
-
-        properties = [dict(r._mapping) for r in rows]  # noqa: SLF001
-        logger.info(f"Market data: {len(properties)} foreclosures need market data")
-
-        svc = MarketDataService(dsn=self.dsn)
-        result = asyncio.run(svc.run_batch(properties))
-
-        # Re-run foreclosure refresh to wire property_market → foreclosures
-        try:
-            from scripts.refresh_foreclosures import refresh as _refresh
-            refresh_counts = _refresh(dsn=self.dsn)
-            result["foreclosure_refresh"] = refresh_counts
-        except Exception as exc:
-            logger.warning(f"Post-market foreclosure refresh failed: {exc}")
-
-        return {"properties_queried": len(properties), "update": result}
+    def _should_dispatch_bulk_step(self, name: str) -> bool:
+        return name in self.BACKGROUND_BULK_STEPS
 
     # ------------------------------------------------------------------
     # Phase B: per-auction enrichment

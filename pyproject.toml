@@ -40,9 +40,6 @@ dependencies = [
 ]
 requires-python = ">=3.12,<3.13"
 
-[tool.setuptools]
-py_modules = ["main", "data_store"]
-
 # ==============================================================================
 # Ruff Configuration - Linting and Formatting
 # ==============================================================================
@@ -375,16 +372,10 @@ addopts = [
     "-ra",
     "--strict-markers",
     "--strict-config",
-    "--cov=db",
-    "--cov=services",
-    "--cov=tui",
-    "--cov=utils",
-    "--cov=web",
-    "--cov=workflows",
-    "--cov=main",
+    "--cov=src",
+    "--cov=app",
+    "--cov=sunbiz",
     "--cov=config",
-    "--cov=database",
-    "--cov=util",
     "--cov-report=term-missing",
     "--cov-report=html",
 ]

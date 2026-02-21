@@ -7,7 +7,7 @@ This service:
    - real_auction_balances (money in escrow)
    - registry_trust_balances (registry/trust balances)
 4. Computes movement against prior report snapshots (entered/changed/stable/dropped).
-5. Aligns real-auction entry amounts to prior-business-day winning bids from history DB.
+5. Aligns real-auction entry amounts to prior-business-day winning bids from PG datasets.
 6. Classifies counterparties (bank / third_party_bidder / unknown).
 7. Upserts analysis rows into `TrustAccount` and aggregates into
    `TrustAccountSummary`.
@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -31,7 +30,6 @@ from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.db.sqlite_paths import resolve_sqlite_db_path_str
 from sunbiz.db import get_engine, resolve_pg_dsn
 
 if TYPE_CHECKING:
@@ -141,15 +139,11 @@ class TrustAccountsService:
     def __init__(
         self,
         pg_dsn: str | None = None,
-        history_db_path: str = "data/history_web.db",
-        auctions_sqlite_path: str | None = None,
         download_dir: str = "data/tmp/trust_accounts",
         request_timeout: int = 20,
     ):
         self.pg_dsn = resolve_pg_dsn(pg_dsn)
         self._engine = get_engine(self.pg_dsn)
-        self.history_db_path = history_db_path
-        self.auctions_sqlite_path = auctions_sqlite_path or resolve_sqlite_db_path_str()
         self.download_dir = Path(download_dir)
         self.download_dir.mkdir(parents=True, exist_ok=True)
         self.request_timeout = request_timeout
@@ -478,7 +472,13 @@ class TrustAccountsService:
         if out_path.exists():
             return out_path
 
-        logger.info("TrustAccounts: downloading {}", url)
+        logger.info(
+            "TrustAccounts: downloading report source={} report_date={} url={} path={}",
+            source,
+            report_date,
+            url,
+            out_path,
+        )
         response = requests.get(url, timeout=self.request_timeout)
         response.raise_for_status()
         out_path.write_bytes(response.content)
@@ -1037,26 +1037,43 @@ class TrustAccountsService:
         return written
 
     def _load_history_winning_bids(self) -> dict[str, dict[float, int]]:
-        history_path = Path(self.history_db_path)
-        if not history_path.exists():
-            logger.warning(
-                "TrustAccounts: history DB {} not found; bid alignment disabled",
-                history_path,
+        try:
+            with self._engine.connect() as conn:
+                sources: list[str] = []
+                for table in ("historical_auctions", "foreclosures_history", "foreclosures"):
+                    if not self._table_exists(conn, table):
+                        continue
+                    if self._table_has_columns(
+                        conn,
+                        table,
+                        {"auction_date", "auction_status", "winning_bid"},
+                    ):
+                        sources.append(table)
+                if not sources:
+                    logger.warning(
+                        "TrustAccounts winning-bid context unavailable: no source tables present"
+                    )
+                    return {}
+
+                union_sql = "\nUNION ALL\n".join(
+                    [
+                        f"""
+                        SELECT auction_date::text AS auction_date, winning_bid
+                        FROM {table}
+                        WHERE LOWER(auction_status) = 'foreclosure sold'
+                          AND winning_bid IS NOT NULL
+                        """
+                        for table in sources
+                    ]
+                )
+                rows = conn.execute(text(union_sql)).mappings().all()
+        except SQLAlchemyError as exc:
+            logger.opt(exception=True).warning(
+                "TrustAccounts winning-bid context query failed (dsn={}): {}",
+                self._dsn_tag(self.pg_dsn),
+                exc,
             )
-            return {}
-
-        conn = sqlite3.connect(str(history_path))
-        conn.row_factory = sqlite3.Row
-
-        rows = conn.execute(
-            """
-            SELECT auction_date, winning_bid
-            FROM auctions
-            WHERE status = 'Foreclosure Sold'
-              AND winning_bid IS NOT NULL
-            """
-        ).fetchall()
-        conn.close()
+            raise
 
         result: dict[str, dict[float, int]] = defaultdict(dict)
         for row in rows:
@@ -1067,23 +1084,44 @@ class TrustAccountsService:
         return result
 
     def _load_known_third_party_bidders(self) -> tuple[set[str], set[str]]:
-        history_path = Path(self.history_db_path)
-        if not history_path.exists():
-            return set(), set()
+        try:
+            with self._engine.connect() as conn:
+                sources: list[str] = []
+                for table in ("historical_auctions", "foreclosures_history", "foreclosures"):
+                    if not self._table_exists(conn, table):
+                        continue
+                    if self._table_has_columns(
+                        conn,
+                        table,
+                        {"buyer_type", "sold_to"},
+                    ):
+                        sources.append(table)
+                if not sources:
+                    logger.warning(
+                        "TrustAccounts bidder context unavailable: no source tables present"
+                    )
+                    return set(), set()
 
-        conn = sqlite3.connect(str(history_path))
-        conn.row_factory = sqlite3.Row
-
-        rows = conn.execute(
-            """
-            SELECT DISTINCT sold_to
-            FROM auctions
-            WHERE buyer_type = 'Third Party'
-              AND sold_to IS NOT NULL
-              AND sold_to != ''
-            """
-        ).fetchall()
-        conn.close()
+                union_sql = "\nUNION\n".join(
+                    [
+                        f"""
+                        SELECT DISTINCT sold_to
+                        FROM {table}
+                        WHERE buyer_type = 'Third Party'
+                          AND sold_to IS NOT NULL
+                          AND sold_to != ''
+                        """
+                        for table in sources
+                    ]
+                )
+                rows = conn.execute(text(union_sql)).mappings().all()
+        except SQLAlchemyError as exc:
+            logger.opt(exception=True).warning(
+                "TrustAccounts bidder context query failed (dsn={}): {}",
+                self._dsn_tag(self.pg_dsn),
+                exc,
+            )
+            raise
 
         exact: set[str] = set()
         core: set[str] = set()
@@ -1101,74 +1139,51 @@ class TrustAccountsService:
 
     def _load_upcoming_auction_context(self, conn: Connection) -> dict[str, dict[str, str]]:
         today_iso = datetime.now(tz=UTC).date().isoformat()
-        rows: list[dict[str, Any]] = []
-
-        # First try PostgreSQL auctions table (if available in this environment).
         try:
-            has_pg_auctions = conn.execute(
-                text(
-                    """
-                    SELECT 1
-                    FROM information_schema.tables
-                    WHERE table_schema = 'public'
-                      AND table_name = 'auctions'
-                    LIMIT 1
-                    """
-                )
-            ).first()
-            if has_pg_auctions:
-                rows = [
-                    dict(row)
-                    for row in conn.execute(
-                        text(
-                            """
-                            SELECT case_number, auction_date, plaintiff
-                            FROM auctions
-                            WHERE case_number IS NOT NULL
-                              AND case_number != ''
-                              AND auction_date IS NOT NULL
-                              AND auction_date::date >= CAST(:today_iso AS date)
-                            """
-                        ),
-                        {"today_iso": today_iso},
-                    ).mappings().all()
-                ]
-            else:
-                logger.info(
-                    "TrustAccounts: PG auctions table missing, falling back to SQLite"
-                )
-        except SQLAlchemyError as e:
-            logger.info(
-                "TrustAccounts: PG auctions context unavailable, falling back to SQLite ({})",
-                e,
-            )
-
-        # Fallback to the pipeline SQLite auctions table.
-        if not rows:
-            sqlite_path = Path(self.auctions_sqlite_path)
-            if sqlite_path.exists():
-                sqlite_conn = sqlite3.connect(str(sqlite_path))
-                sqlite_conn.row_factory = sqlite3.Row
-                rows = [
-                    dict(row)
-                    for row in sqlite_conn.execute(
-                        """
-                        SELECT case_number, auction_date, plaintiff
-                        FROM auctions
-                        WHERE case_number IS NOT NULL
-                          AND case_number != ''
-                          AND auction_date IS NOT NULL
-                          AND auction_date >= ?
-                        """,
-                        (today_iso,),
-                    ).fetchall()
-                ]
-                sqlite_conn.close()
-            else:
+            if not self._table_exists(conn, "foreclosures"):
                 logger.warning(
-                    "TrustAccounts: SQLite auctions fallback DB not found: {}",
-                    sqlite_path,
+                    "TrustAccounts PG context unavailable: missing table 'foreclosures'"
                 )
+                return {}
+
+            columns = self._table_columns(conn, "foreclosures")
+            required = {"case_number_raw", "auction_date"}
+            missing = sorted(required - columns)
+            if missing:
+                logger.warning(
+                    "TrustAccounts PG context unavailable: foreclosures missing columns {}",
+                    ",".join(missing),
+                )
+                return {}
+
+            plaintiff_expr = (
+                "judgment_data->>'plaintiff_name'" if "judgment_data" in columns else "''"
+            )
+            archived_clause = "AND archived_at IS NULL" if "archived_at" in columns else ""
+            rows = conn.execute(
+                text(
+                    f"""
+                    SELECT
+                        case_number_raw AS case_number,
+                        auction_date::text AS auction_date,
+                        {plaintiff_expr} AS plaintiff
+                    FROM foreclosures
+                    WHERE case_number_raw IS NOT NULL
+                      AND case_number_raw != ''
+                      AND auction_date IS NOT NULL
+                      AND auction_date >= CAST(:today_iso AS date)
+                      {archived_clause}
+                    """
+                ),
+                {"today_iso": today_iso},
+            ).mappings().all()
+        except SQLAlchemyError as exc:
+            logger.opt(exception=True).warning(
+                "TrustAccounts PG context query failed (dsn={}): {}",
+                self._dsn_tag(self.pg_dsn),
+                exc,
+            )
+            raise
 
         result: dict[str, dict[str, str]] = {}
         for row in rows:
@@ -1188,7 +1203,64 @@ class TrustAccountsService:
             if record["auction_date"] < current["auction_date"]:
                 result[short_case] = record
 
+        if not result:
+            logger.warning(
+                "TrustAccounts PG context returned no upcoming auctions (today={}, source=foreclosures)",
+                today_iso,
+            )
+
         return result
+
+    def _dsn_tag(self, dsn: str) -> str:
+        if "@" not in dsn:
+            return dsn
+        return dsn.rsplit("@", 1)[-1]
+
+    def _table_exists(self, conn: Connection, table_name: str) -> bool:
+        row = conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_name = :table_name
+                LIMIT 1
+                """
+            ),
+            {"table_name": table_name},
+        ).first()
+        return row is not None
+
+    def _table_columns(self, conn: Connection, table_name: str) -> set[str]:
+        rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = :table_name
+                """
+            ),
+            {"table_name": table_name},
+        ).mappings().all()
+        return {str(r["column_name"]) for r in rows}
+
+    def _table_has_columns(
+        self,
+        conn: Connection,
+        table_name: str,
+        required_columns: set[str],
+    ) -> bool:
+        columns = self._table_columns(conn, table_name)
+        missing = sorted(required_columns - columns)
+        if missing:
+            logger.warning(
+                "TrustAccounts context skip: table={} missing columns={}",
+                table_name,
+                ",".join(missing),
+            )
+            return False
+        return True
 
     def _normalize_case_number(self, value: str | None) -> str | None:
         if not value:

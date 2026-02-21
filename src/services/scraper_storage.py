@@ -43,36 +43,19 @@ Usage:
 import json
 import hashlib
 from pathlib import Path
-from typing import Optional, Dict, Any, TYPE_CHECKING
+from typing import Optional, Dict, Any
 from loguru import logger
 from src.utils.time import now_utc
-from src.db.sqlite_paths import resolve_sqlite_db_path_str
-
-if TYPE_CHECKING:
-    from src.db.operations import PropertyDB
 
 
 class ScraperStorage:
     """
     Manages filesystem storage for all scraper outputs, organized by property.
-    Database tracking is handled by the orchestrator via DatabaseWriter (inbox pattern).
     """
 
     BASE_DIR = Path("data/Foreclosure")
-    DB_PATH = resolve_sqlite_db_path_str()
 
-    def __init__(
-        self,
-        db_path: str | None = None,
-        db: "PropertyDB | None" = None,
-    ):
-        self.db = db
-        if db_path:
-            self.db_path = db_path
-        elif db:
-            self.db_path = db.db_path
-        else:
-            self.db_path = self.DB_PATH
+    def __init__(self):
         self.BASE_DIR.mkdir(parents=True, exist_ok=True)
 
     def _get_property_dir(self, property_id: str) -> Path:

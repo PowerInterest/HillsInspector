@@ -67,10 +67,15 @@ class MarketDataService:
         """
         sources = sources or ["redfin", "zillow", "homeharvest"]
         summary = {"redfin": 0, "zillow": 0, "homeharvest": 0, "photos": 0}
-        matched_straps: set[str] = set()
+        browser_phase_error: str | None = None
 
-        # Filter out properties that already have market data in PG
-        need_market = []
+        # Check existing PG state per-property to decide which sources to run.
+        # A property is "done" only when ALL three sources have been attempted.
+        need_redfin: list[dict] = []
+        need_zillow: list[dict] = []
+        need_hh: list[dict] = []
+        already_complete = 0
+
         for prop in properties:
             strap = prop.get("strap", "")
             addr = (prop.get("property_address") or "").strip()
@@ -78,21 +83,37 @@ class MarketDataService:
                 continue
             if not strap:
                 continue
-            if self._has_market_data(strap):
-                matched_straps.add(strap)
-                continue
-            need_market.append(prop)
 
+            state = self._get_market_state(strap)
+            if state and state["has_redfin"] and state["has_zillow"] and state["has_hh"]:
+                already_complete += 1
+                continue
+
+            if not state or not state["has_redfin"]:
+                need_redfin.append(prop)
+            if not state or not state["has_zillow"]:
+                need_zillow.append(prop)
+            if not state or not state["has_hh"]:
+                need_hh.append(prop)
+
+        total_need = len({p["strap"] for p in need_redfin + need_zillow + need_hh})
         logger.info(
-            f"MarketDataService: {len(need_market)} properties need data "
-            f"({len(matched_straps)} already have it)"
+            f"MarketDataService: {total_need} properties need data "
+            f"({already_complete} already complete across all sources), "
+            f"redfin={len(need_redfin)}, zillow={len(need_zillow)}, hh={len(need_hh)}"
         )
-        if not need_market:
+        if not total_need:
             return summary
 
+        # Track straps that got new data this run (for photo download scope)
+        all_need = {p["strap"]: p for p in need_redfin + need_zillow + need_hh}
+        need_market = list(all_need.values())
+
         # --- Browser-based sources (Redfin + Zillow) ---
-        run_redfin = "redfin" in sources
-        run_zillow = "zillow" in sources
+        run_redfin = "redfin" in sources and need_redfin
+        run_zillow = "zillow" in sources and need_zillow
+        redfin_matched: set[str] = set()
+
         if run_redfin or run_zillow:
             pw = None
             context = None
@@ -101,35 +122,31 @@ class MarketDataService:
 
                 if run_redfin:
                     redfin_matched = await self._run_redfin(
-                        context, page, need_market, matched_straps,
+                        context, page, need_redfin, set(),
                     )
                     summary["redfin"] = len(redfin_matched)
-                    matched_straps.update(redfin_matched)
                     logger.info(f"Redfin done: {summary['redfin']} properties matched")
 
                 if run_zillow:
-                    remaining = [
-                        p for p in need_market
-                        if p.get("strap", "") not in matched_straps
-                    ]
-                    if remaining:
-                        # Navigate to Zillow homepage before starting
-                        await page.goto(
-                            "https://www.zillow.com",
-                            wait_until="domcontentloaded",
-                            timeout=60000,
-                        )
-                        await page.wait_for_timeout(3000)
+                    # Zillow runs for all properties that need it,
+                    # regardless of Redfin results (different data: zestimate vs list_price)
+                    already_have_zillow = set()
+                    await page.goto(
+                        "https://www.zillow.com",
+                        wait_until="domcontentloaded",
+                        timeout=60000,
+                    )
+                    await page.wait_for_timeout(3000)
 
-                        zillow_matched = await self._run_zillow(
-                            page, cdp, remaining, matched_straps,
-                        )
-                        summary["zillow"] = len(zillow_matched)
-                        matched_straps.update(zillow_matched)
-                        logger.info(f"Zillow done: {summary['zillow']} properties matched")
+                    zillow_matched = await self._run_zillow(
+                        page, cdp, need_zillow, already_have_zillow,
+                    )
+                    summary["zillow"] = len(zillow_matched)
+                    logger.info(f"Zillow done: {summary['zillow']} properties matched")
 
             except Exception as exc:
-                logger.error(f"MarketDataService browser phase failed: {exc}")
+                browser_phase_error = str(exc)
+                logger.exception("MarketDataService browser phase failed")
             finally:
                 if context:
                     with contextlib.suppress(Exception):
@@ -139,15 +156,10 @@ class MarketDataService:
                         await pw.stop()
 
         # --- HomeHarvest (no browser) ---
-        if "homeharvest" in sources:
-            still_remaining = [
-                p for p in need_market
-                if p.get("strap", "") not in matched_straps
-            ]
-            if still_remaining:
-                hh_count = await self._run_homeharvest(still_remaining)
-                summary["homeharvest"] = hh_count
-                logger.info(f"HomeHarvest done: {hh_count} properties matched")
+        if "homeharvest" in sources and need_hh:
+            hh_count = await self._run_homeharvest(need_hh)
+            summary["homeharvest"] = hh_count
+            logger.info(f"HomeHarvest done: {hh_count} properties matched")
 
         # --- Photo download ---
         try:
@@ -156,6 +168,9 @@ class MarketDataService:
         except Exception as exc:
             logger.error(f"Photo download failed: {exc}")
 
+        if browser_phase_error:
+            summary["error"] = f"browser_phase_failed:{browser_phase_error}"
+
         logger.success(f"MarketDataService complete: {summary}")
         return summary
 
@@ -163,24 +178,32 @@ class MarketDataService:
     # PG helpers
     # ------------------------------------------------------------------
 
-    def _has_market_data(self, strap: str) -> bool:
-        """Check if PG property_market already has data for this strap."""
+    def _get_market_state(self, strap: str) -> dict | None:
+        """Check what market data exists in PG for this strap.
+
+        Returns None if no row, or dict with source flags.
+        """
         try:
             with self._engine.connect() as conn:
                 row = conn.execute(
                     text(
-                        "SELECT zestimate, list_price, redfin_json, zillow_json "
+                        "SELECT redfin_json IS NOT NULL AS has_redfin, "
+                        "       zillow_json IS NOT NULL AS has_zillow, "
+                        "       homeharvest_json IS NOT NULL AS has_hh "
                         "FROM property_market WHERE strap = :strap"
                     ),
                     {"strap": strap},
                 ).fetchone()
                 if not row:
-                    return False
-                # Has data if any valuation or raw JSON is present
-                return any(row[i] is not None for i in range(4))
+                    return None
+                return {
+                    "has_redfin": row.has_redfin,
+                    "has_zillow": row.has_zillow,
+                    "has_hh": row.has_hh,
+                }
         except Exception as exc:
-            logger.debug(f"Market existing-data check failed for strap={strap}: {exc}")
-            return False
+            logger.debug(f"Market state check failed for strap={strap}: {exc}")
+            return None
 
     def _upsert_redfin(self, strap: str, folio: str | None, case_number: str, payload: dict) -> None:
         """Upsert Redfin data into PG property_market.
@@ -369,6 +392,28 @@ class MarketDataService:
                 conn.execute(stmt)
         except Exception as e:
             logger.error(f"PG HomeHarvest upsert failed for {strap}: {e}")
+
+    def _mark_source_attempted(
+        self, strap: str, folio: str | None, case_number: str, source: str,
+    ) -> None:
+        """Save a tombstone so we don't re-scrape a source that found nothing."""
+        col = {"redfin": "redfin_json", "zillow": "zillow_json", "homeharvest": "homeharvest_json"}.get(source)
+        if not col:
+            return
+        row = {"strap": strap, "folio": folio, "case_number": case_number, col: {"_attempted": True, "_found": False}}
+        stmt = pg_insert(PropertyMarket).values([row])
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["strap"],
+            set_={
+                col: text(f"COALESCE(property_market.{col}, EXCLUDED.{col})"),
+                "updated_at": text("NOW()"),
+            },
+        )
+        try:
+            with self._engine.begin() as conn:
+                conn.execute(stmt)
+        except Exception as e:
+            logger.debug(f"PG tombstone upsert failed for {strap}/{source}: {e}")
 
     # ------------------------------------------------------------------
     # Photo download
@@ -610,6 +655,7 @@ class MarketDataService:
                     logger.success(f"Redfin Tier 2: saved for {strap}")
                 else:
                     consecutive_failures += 1
+                    self._mark_source_attempted(strap, folio, case, "redfin")
                     logger.debug(f"Redfin Tier 2: no data for {addr}")
 
                 await scraper.delay(scraper.DETAIL_PAGE_DELAY)
@@ -692,6 +738,7 @@ class MarketDataService:
                     f"(zest={listing.zestimate}, photos={len(listing.photos)})"
                 )
             else:
+                self._mark_source_attempted(strap, folio, case, "zillow")
                 logger.debug(f"Zillow: no useful data for '{addr}'")
 
             # Delay between searches
@@ -746,6 +793,7 @@ class MarketDataService:
                 df = scrape_property(**kwargs)
 
                 if df is None or df.empty:
+                    self._mark_source_attempted(strap, folio, case, "homeharvest")
                     logger.debug(f"HomeHarvest: no data for '{addr}'")
                 else:
                     # Convert pandas row to dict at boundary

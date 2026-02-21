@@ -83,7 +83,7 @@ def test_multiple_lots_extraction():
             failed += 1
 
     print(f"\nResults: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_subdivision_extraction():
@@ -124,7 +124,7 @@ def test_subdivision_extraction():
             failed += 1
 
     print(f"\nResults: {passed} passed, {failed} failed")
-    return failed == 0
+    assert failed == 0
 
 
 def test_permutation_generation():
