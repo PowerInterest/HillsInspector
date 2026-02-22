@@ -722,7 +722,8 @@ def load_record_jsonl(path: Path) -> list[ListingRecord]:
                 continue
             try:
                 payload = json.loads(line)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
+                logger.warning(f"Skipping invalid JSON line: {exc}")
                 continue
             if isinstance(payload, dict):
                 records.append(record_from_dict(payload))
@@ -738,7 +739,8 @@ def load_crawl_checkpoint(path: Path) -> Optional[CrawlCheckpoint]:
         return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning(f"Failed to load checkpoint from {path}: {exc}")
         return None
     if not isinstance(payload, dict):
         return None
@@ -751,7 +753,8 @@ def load_crawl_checkpoint(path: Path) -> Optional[CrawlCheckpoint]:
             list_pages_visited=int(payload.get("list_pages_visited", 0) or 0),
             property_pages_visited=int(payload.get("property_pages_visited", 0) or 0),
         )
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        logger.warning(f"Invalid checkpoint data type/format: {exc}")
         return None
 
 
@@ -781,8 +784,10 @@ def download_photos(records: list[ListingRecord], photos_dir: Path) -> dict[str,
                     target.write_bytes(response.content)
                     downloaded += 1
                 else:
+                    logger.warning(f"Failed to download {url}: Status {response.status_code}, Content-Type: {ctype}")
                     failed += 1
-            except requests.RequestException:
+            except requests.RequestException as exc:
+                logger.error(f"Failed to download {url}: {exc}")
                 failed += 1
     return {"downloaded": downloaded, "failed": failed}
 
