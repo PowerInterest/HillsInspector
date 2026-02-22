@@ -50,6 +50,7 @@ class ControllerSettings:
     skip_final_refresh: bool = False
     skip_trust_accounts: bool = False
     skip_title_chain: bool = False
+    skip_title_breaks: bool = False
     skip_market_data: bool = False
     # Phase B: per-auction enrichment
     skip_auction_scrape: bool = False
@@ -92,6 +93,7 @@ class ControllerSettings:
     identifier_recovery_limit: int | None = None
     ori_limit: int | None = None
     survival_limit: int | None = None
+    title_breaks_limit: int | None = None
 
 
 class PgPipelineController:
@@ -142,6 +144,7 @@ class PgPipelineController:
                 self._run_trust_accounts,
             ),
             ("title_chain", self.settings.skip_title_chain, self._run_title_chain),
+            ("title_breaks", self.settings.skip_title_breaks, self._run_title_breaks),
             # Phase B: per-auction enrichment (scraping + analysis)
             (
                 "auction_scrape",
@@ -477,7 +480,6 @@ class PgPipelineController:
         return {"update": stats}
 
     def _run_title_chain(self) -> dict[str, Any]:
-        backfill_count = self._backfill_deed_parties()
         config = TitleChainConfig(
             dsn=self.dsn,
             foreclosure_id=self.settings.foreclosure_id,
@@ -487,160 +489,13 @@ class PgPipelineController:
             similarity_threshold=self.settings.similarity_threshold,
         )
         result = TitleChainController(config).run()
-        result["deed_parties_backfilled"] = backfill_count
         return {"update": result}
 
-    def _backfill_deed_parties(self) -> int:
-        """Fetch missing grantor/grantee from PAV for active-foreclosure deeds.
+    def _run_title_breaks(self) -> dict[str, Any]:
+        from src.services.pg_title_break_service import PgTitleBreakService
 
-        Queries hcpa_allsales rows tied to active foreclosures that have a
-        doc_num but NULL grantor/grantee and no matching record in
-        official_records_daily_instruments.  Hits the PAV instrument search API
-        and inserts results so fn_title_chain can resolve party names.
-        """
-        import requests as _requests
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-        from src.services.models_clerk import OfficialRecordsDailyInstrument
-
-        _PAV_URL = (
-            "https://publicaccess.hillsclerk.com"
-            "/PAVDirectSearch/api/CustomQuery/KeywordSearch"
-        )
-        _PAV_HEADERS = {
-            "Content-Type": "application/json",
-            "Origin": "https://publicaccess.hillsclerk.com",
-            "Referer": "https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html",
-        }
-
-        engine = get_engine(self.dsn)
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text("""
-                    SELECT s.doc_num, MAX(s.sale_date) AS sale_date
-                    FROM hcpa_allsales s
-                    JOIN foreclosures f ON s.folio = f.folio
-                    LEFT JOIN official_records_daily_instruments p
-                      ON s.doc_num = p.instrument_number
-                    WHERE f.archived_at IS NULL
-                      AND (s.grantor IS NULL OR s.grantee IS NULL)
-                      AND s.doc_num IS NOT NULL
-                      AND trim(s.doc_num) <> ''
-                      AND p.id IS NULL
-                    GROUP BY s.doc_num
-                    ORDER BY MAX(s.sale_date) DESC NULLS LAST
-                """)
-            ).fetchall()
-
-        if not rows:
-            logger.info("deed_parties_backfill: nothing to backfill")
-            return 0
-
-        logger.info(f"deed_parties_backfill: {len(rows)} instruments to fetch")
-        sess = _requests.Session()
-        success = 0
-
-        for row in rows:
-            doc_num = row.doc_num
-            payload = {
-                "QueryID": 320,
-                "Keywords": [{"Id": 1006, "Value": doc_num}],
-                "QueryLimit": 50,
-            }
-            parsed = None
-            for attempt in range(1, 4):
-                try:
-                    resp = sess.post(
-                        _PAV_URL, json=payload, headers=_PAV_HEADERS, timeout=30
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        parsed = self._parse_pav_parties(
-                            data.get("Data") or [], doc_num
-                        )
-                        break
-                    if resp.status_code == 429:
-                        time.sleep(2 * attempt)
-                        continue
-                    break
-                except _requests.RequestException:
-                    time.sleep(1)
-
-            if parsed is None:
-                time.sleep(0.5)
-                continue
-
-            stmt = (
-                pg_insert(OfficialRecordsDailyInstrument)
-                .values(
-                    snapshot_date=row.sale_date or dt.date(1900, 1, 1),
-                    instrument_number=doc_num,
-                    doc_type=parsed["doc_type"] or None,
-                    recording_date=self._parse_pav_record_date(parsed["record_date"]),
-                    parties_from_text=parsed["from_text"],
-                    parties_to_text=parsed["to_text"],
-                )
-                .on_conflict_do_nothing(index_elements=["instrument_number"])
-            )
-            with engine.begin() as conn:
-                result = conn.execute(stmt)
-            if (result.rowcount or 0) > 0:
-                success += 1
-            time.sleep(1.0)
-
-        logger.info(f"deed_parties_backfill: {success}/{len(rows)} enriched")
-        return success
-
-    @staticmethod
-    def _parse_pav_parties(
-        rows: list[dict], target_instrument: str
-    ) -> dict[str, str | None] | None:
-        parties_from: list[str] = []
-        parties_to: list[str] = []
-        doc_type = ""
-        record_date = ""
-        for row in rows:
-            cols = row.get("DisplayColumnValues") or []
-            if len(cols) < 9:
-                continue
-            vals = [str(c.get("Value") or "").strip() for c in cols[:9]]
-            vals.extend([""] * (9 - len(vals)))
-            person_type, name, instrument = vals[0].upper(), vals[1], vals[8]
-            if instrument != target_instrument:
-                continue
-            if not doc_type:
-                doc_type = vals[3]
-            if not record_date:
-                record_date = vals[2]
-            if name:
-                if "2" in person_type or "GRANTEE" in person_type:
-                    if name not in parties_to:
-                        parties_to.append(name)
-                elif name not in parties_from:
-                    parties_from.append(name)
-        if not parties_from and not parties_to:
-            return None
-        return {
-            "doc_type": doc_type,
-            "record_date": record_date,
-            "from_text": "; ".join(parties_from)[:1000] or None,
-            "to_text": "; ".join(parties_to)[:1000] or None,
-        }
-
-    @staticmethod
-    def _parse_pav_record_date(value: str | None) -> dt.date | None:
-        if not value:
-            return None
-        text_value = value.strip()
-        if not text_value:
-            return None
-        for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y", "%Y-%m-%d"):
-            try:
-                return dt.datetime.strptime(text_value, fmt).date()
-            except ValueError:
-                continue
-        logger.debug(f"deed_parties_backfill: unparseable PAV record_date={value!r}")
-        return None
+        svc = PgTitleBreakService(dsn=self.dsn)
+        return svc.run(limit=self.settings.title_breaks_limit)
 
     def _run_market_data(self) -> dict[str, Any]:
         from src.services.market_data_dispatcher import dispatch_market_data_worker
@@ -707,25 +562,24 @@ class PgPipelineController:
             "latest_loaded_at": None,
         }
         with self.engine.connect() as conn:
-            table_count = conn.execute(
-                text(
-                    """
+            table_count = (
+                conn.execute(
+                    text(
+                        """
                     SELECT COUNT(*)
                     FROM information_schema.tables
                     WHERE table_name IN ('hcpa_bulk_parcels', 'hcpa_allsales')
                     """
-                )
-            ).scalar() or 0
+                    )
+                ).scalar()
+                or 0
+            )
             state["tables_exist"] = table_count == 2
             if not state["tables_exist"]:
                 return state
 
-            state["parcels_count"] = conn.execute(
-                text("SELECT COUNT(*) FROM hcpa_bulk_parcels")
-            ).scalar() or 0
-            state["sales_count"] = conn.execute(
-                text("SELECT COUNT(*) FROM hcpa_allsales")
-            ).scalar() or 0
+            state["parcels_count"] = conn.execute(text("SELECT COUNT(*) FROM hcpa_bulk_parcels")).scalar() or 0
+            state["sales_count"] = conn.execute(text("SELECT COUNT(*) FROM hcpa_allsales")).scalar() or 0
             state["latest_loaded_at"] = conn.execute(
                 text(
                     """
@@ -748,9 +602,10 @@ class PgPipelineController:
             "latest_loaded_at": None,
         }
         with self.engine.connect() as conn:
-            table_count = conn.execute(
-                text(
-                    """
+            table_count = (
+                conn.execute(
+                    text(
+                        """
                     SELECT COUNT(*)
                     FROM information_schema.tables
                     WHERE table_name IN (
@@ -759,21 +614,17 @@ class PgPipelineController:
                         'sunbiz_entity_events'
                     )
                     """
-                )
-            ).scalar() or 0
+                    )
+                ).scalar()
+                or 0
+            )
             state["tables_exist"] = table_count == 3
             if not state["tables_exist"]:
                 return state
 
-            state["filings_count"] = conn.execute(
-                text("SELECT COUNT(*) FROM sunbiz_entity_filings")
-            ).scalar() or 0
-            state["parties_count"] = conn.execute(
-                text("SELECT COUNT(*) FROM sunbiz_entity_parties")
-            ).scalar() or 0
-            state["events_count"] = conn.execute(
-                text("SELECT COUNT(*) FROM sunbiz_entity_events")
-            ).scalar() or 0
+            state["filings_count"] = conn.execute(text("SELECT COUNT(*) FROM sunbiz_entity_filings")).scalar() or 0
+            state["parties_count"] = conn.execute(text("SELECT COUNT(*) FROM sunbiz_entity_parties")).scalar() or 0
+            state["events_count"] = conn.execute(text("SELECT COUNT(*) FROM sunbiz_entity_events")).scalar() or 0
             state["latest_loaded_at"] = conn.execute(
                 text(
                     """
@@ -790,26 +641,25 @@ class PgPipelineController:
     def _get_table_state(self, table_name: str, time_col: str) -> dict[str, Any]:
         state = {"table_exists": False, "row_count": 0, "latest_at": None}
         with self.engine.connect() as conn:
-            exists = conn.execute(
-                text(
-                    """
+            exists = (
+                conn.execute(
+                    text(
+                        """
                     SELECT COUNT(*)
                     FROM information_schema.tables
                     WHERE table_name = :table_name
                     """
-                ),
-                {"table_name": table_name},
-            ).scalar() or 0
+                    ),
+                    {"table_name": table_name},
+                ).scalar()
+                or 0
+            )
             state["table_exists"] = exists > 0
             if not state["table_exists"]:
                 return state
 
-            state["row_count"] = conn.execute(
-                text(f"SELECT COUNT(*) FROM {table_name}")
-            ).scalar() or 0
-            state["latest_at"] = conn.execute(
-                text(f"SELECT MAX({time_col}) FROM {table_name}")
-            ).scalar()
+            state["row_count"] = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}")).scalar() or 0
+            state["latest_at"] = conn.execute(text(f"SELECT MAX({time_col}) FROM {table_name}")).scalar()
         return state
 
     def _resolve_tampa_window(self) -> tuple[dt.date, dt.date]:
@@ -882,9 +732,7 @@ def _parse_date(value: str | None) -> dt.date | None:
 
 
 def parse_args() -> ControllerSettings:
-    parser = argparse.ArgumentParser(
-        description="PG-first controller: update loaders + foreclosure refresh + title chain"
-    )
+    parser = argparse.ArgumentParser(description="PG-first controller: update loaders + foreclosure refresh + title chain")
     parser.add_argument("--dsn", help="PostgreSQL DSN override")
     parser.add_argument("--force-all", action="store_true", help="Force all loaders to run")
     parser.add_argument("--fail-fast", action="store_true", help="Stop after first failure")
@@ -900,6 +748,7 @@ def parse_args() -> ControllerSettings:
     parser.add_argument("--skip-final-refresh", action="store_true")
     parser.add_argument("--skip-trust-accounts", action="store_true")
     parser.add_argument("--skip-title-chain", action="store_true")
+    parser.add_argument("--skip-title-breaks", action="store_true")
     parser.add_argument("--skip-market-data", action="store_true")
     # Phase B toggles
     parser.add_argument("--skip-auction-scrape", action="store_true")
@@ -949,6 +798,7 @@ def parse_args() -> ControllerSettings:
     )
     parser.add_argument("--ori-limit", type=int, help="Max foreclosures for ORI search")
     parser.add_argument("--survival-limit", type=int, help="Max foreclosures for survival analysis")
+    parser.add_argument("--title-breaks-limit", type=int, help="Max foreclosures for title break resolution")
 
     args = parser.parse_args()
 
@@ -967,6 +817,7 @@ def parse_args() -> ControllerSettings:
         skip_final_refresh=bool(args.skip_final_refresh),
         skip_trust_accounts=bool(args.skip_trust_accounts),
         skip_title_chain=bool(args.skip_title_chain),
+        skip_title_breaks=bool(args.skip_title_breaks),
         skip_market_data=bool(args.skip_market_data),
         skip_auction_scrape=bool(args.skip_auction_scrape),
         skip_judgment_extract=bool(args.skip_judgment_extract),
@@ -994,4 +845,5 @@ def parse_args() -> ControllerSettings:
         identifier_recovery_limit=args.identifier_recovery_limit,
         ori_limit=args.ori_limit,
         survival_limit=args.survival_limit,
+        title_breaks_limit=args.title_breaks_limit,
     )
