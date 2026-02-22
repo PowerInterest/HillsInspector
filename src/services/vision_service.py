@@ -1060,12 +1060,12 @@ class VisionService:
     # 10.10.1.5 has 262k context, 10.10.2.27 only has 11k - prioritize the larger one
     # 192.168.86.26:1234 is LM Studio on Windows (uses different model ID)
     _LOCAL_ENDPOINTS = [
-        {"url": "http://10.10.1.5:1234/v1/chat/completions", "model": "glm-4.6v"},
+        {"url": "http://10.10.1.5:8002/v1/chat/completions", "model": "zai-org/GLM-4.6V-Flash"},
         {"url": "http://10.10.0.76:6969/v1/chat/completions", "model": "zai-org/glm-4.6v-flash"},
         {"url": "http://192.168.86.26:6969/v1/chat/completions", "model": "zai-org/glm-4.6v-flash"},
         {"url": "http://10.10.0.76:6969/v1/chat/completions", "model": "qwen/qwen3-vl-30b"},
         {"url": "http://10.10.0.33:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
-        # 10.10.1.5:6969 is down — only 1234 (glm-4.6v) is active
+        {"url": "http://10.10.1.5:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
         {"url": "http://10.10.2.27:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
         {"url": "http://192.168.86.26:1234/v1/chat/completions", "model": "qwen/qwen3-vl-8b"},
     ]
@@ -1125,9 +1125,9 @@ class VisionService:
     # When an endpoint times out or errors, suspend it to avoid wasting time.
     # Tiered durations: dead servers get longer suspension, slow servers shorter.
     _suspended_endpoints: dict[str, float] = {}
-    _SUSPEND_CONN_REFUSED = 600   # 10 min — server is down
-    _SUSPEND_READ_TIMEOUT = 120   # 2 min — server is slow but alive, retry soon
-    _SUSPEND_HTTP_ERROR = 300     # 5 min — rate limited or server error
+    _SUSPEND_CONN_REFUSED = 600  # 10 min — server is down
+    _SUSPEND_READ_TIMEOUT = 120  # 2 min — server is slow but alive, retry soon
+    _SUSPEND_HTTP_ERROR = 300  # 5 min — rate limited or server error
 
     # Connect timeout: fail fast on dead servers.  Read timeout: be patient.
     _CONNECT_TIMEOUT = 10  # seconds
@@ -1352,11 +1352,7 @@ class VisionService:
                     label = "cloud" if is_cloud else "local"
                     # Cloud endpoints are fast — cap read timeout.
                     # Local endpoints get the full scaled timeout.
-                    ep_read_timeout = (
-                        min(read_timeout, VisionService._CLOUD_READ_TIMEOUT)
-                        if is_cloud
-                        else read_timeout
-                    )
+                    ep_read_timeout = min(read_timeout, VisionService._CLOUD_READ_TIMEOUT) if is_cloud else read_timeout
                     logger.info(
                         "Trying {} vision endpoint: {} (model: {}, timeout={}+{}s)",
                         label,
@@ -1413,9 +1409,7 @@ class VisionService:
                     # Connect timeout = unreachable → long suspension.
                     is_connect_timeout = "connect" in str(e).lower() or "NewConnection" in str(e)
                     suspend_secs = (
-                        VisionService._SUSPEND_CONN_REFUSED
-                        if is_connect_timeout
-                        else VisionService._SUSPEND_READ_TIMEOUT
+                        VisionService._SUSPEND_CONN_REFUSED if is_connect_timeout else VisionService._SUSPEND_READ_TIMEOUT
                     )
                     VisionService._suspended_endpoints[url] = time.monotonic() + suspend_secs
                     logger.info(
@@ -1442,11 +1436,7 @@ class VisionService:
 
         # If healthy endpoints failed, try remaining endpoints with a shorter timeout.
         if VisionService._health_check_done and VisionService._healthy_endpoints is not None:
-            extras = [
-                ep
-                for ep in self.API_ENDPOINTS
-                if (ep["url"], ep["model"]) not in tried_endpoints
-            ]
+            extras = [ep for ep in self.API_ENDPOINTS if (ep["url"], ep["model"]) not in tried_endpoints]
             if extras:
                 fallback_timeout = min(timeout, 60)
                 logger.warning(
@@ -1578,8 +1568,7 @@ class VisionService:
         except Exception as e:
             logger.exception("Vision API error while analyzing {}: {}", image_path, e)
             logger.error(
-                "Vision image analysis returning None for {} after exception; "
-                "caller must treat this as extraction failure.",
+                "Vision image analysis returning None for {} after exception; caller must treat this as extraction failure.",
                 image_path,
             )
             return None

@@ -1811,7 +1811,7 @@ def _load_latlon_dataframe(latlon_file: Path) -> pl.DataFrame:
             "LatLon file must include folio/strap and latitude/longitude columns."
         )
 
-    return (
+    normalized = (
         df.select(
             pl.col(folio_col).cast(pl.Utf8).alias("folio"),
             pl.col(lat_col).cast(pl.Float64).alias("latitude"),
@@ -1820,6 +1820,20 @@ def _load_latlon_dataframe(latlon_file: Path) -> pl.DataFrame:
         .filter(pl.col("folio").is_not_null())
         .with_columns(pl.col("folio").str.strip_chars())
     )
+
+    # LatLon extracts can contain duplicate folio rows; ON CONFLICT upserts must
+    # not include duplicate keys in a single statement.
+    before_rows = len(normalized)
+    deduped = normalized.unique(subset=["folio"], keep="first")
+    dropped = before_rows - len(deduped)
+    if dropped > 0:
+        logger.warning(
+            "LatLon duplicate folios detected: dropped {} duplicate rows ({} -> {})",
+            dropped,
+            before_rows,
+            len(deduped),
+        )
+    return deduped
 
 
 def _normalize_hcpa_parcels(df: pl.DataFrame) -> pl.DataFrame:

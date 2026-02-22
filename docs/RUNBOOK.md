@@ -94,7 +94,7 @@ uv run Controller.py [OPTIONS]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--hcpa-download-dir` | `data/bulk_data/hcpa` | HCPA bulk file directory |
-| `--include-hcpa-latlon` | off | Include lat/lon file in load |
+| `--include-hcpa-latlon` | on | Include lat/lon file in load (`--no-include-hcpa-latlon` disables) |
 
 ### Sunbiz Options
 

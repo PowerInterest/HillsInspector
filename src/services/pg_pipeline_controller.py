@@ -67,7 +67,7 @@ class ControllerSettings:
     tampa_stale_days: int = 3
     # HCPA options
     hcpa_download_dir: Path = DEFAULT_HCPA_DOWNLOAD_DIR
-    include_hcpa_latlon: bool = False
+    include_hcpa_latlon: bool = True
     # Sunbiz entity options
     sunbiz_data_dir: Path = DEFAULT_SUNBIZ_DATA_DIR
     sunbiz_manifest: Path = DEFAULT_SUNBIZ_MANIFEST
@@ -755,7 +755,12 @@ def parse_args() -> ControllerSettings:
     parser.add_argument("--skip-survival", action="store_true")
 
     parser.add_argument("--hcpa-download-dir", default=str(DEFAULT_HCPA_DOWNLOAD_DIR))
-    parser.add_argument("--include-hcpa-latlon", action="store_true")
+    parser.add_argument(
+        "--include-hcpa-latlon",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include HCPA lat/lon file during HCPA load (use --no-include-hcpa-latlon to disable).",
+    )
 
     parser.add_argument("--sunbiz-data-dir", default=str(DEFAULT_SUNBIZ_DATA_DIR))
     parser.add_argument("--sunbiz-manifest", default=str(DEFAULT_SUNBIZ_MANIFEST))
@@ -815,7 +820,7 @@ def parse_args() -> ControllerSettings:
         skip_ori_search=bool(args.skip_ori_search),
         skip_survival=bool(args.skip_survival),
         hcpa_download_dir=Path(args.hcpa_download_dir),
-        include_hcpa_latlon=bool(args.include_hcpa_latlon),
+        include_hcpa_latlon=args.include_hcpa_latlon,
         sunbiz_data_dir=Path(args.sunbiz_data_dir),
         sunbiz_manifest=Path(args.sunbiz_manifest),
         county_where=args.county_where,

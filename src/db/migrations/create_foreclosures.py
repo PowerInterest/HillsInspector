@@ -56,7 +56,6 @@ DDL: list[str] = [
     END;
     $$ LANGUAGE plpgsql IMMUTABLE;
     """,
-
     # ------------------------------------------------------------------
     # 2. Main table
     # ------------------------------------------------------------------
@@ -144,7 +143,6 @@ DDL: list[str] = [
         UNIQUE (case_number_raw, auction_date)
     );
     """,
-
     # ------------------------------------------------------------------
     # 3. History table (aged rows copied from foreclosures)
     # ------------------------------------------------------------------
@@ -157,7 +155,6 @@ DDL: list[str] = [
     ALTER TABLE foreclosures_history
     ADD COLUMN IF NOT EXISTS moved_to_history_at TIMESTAMPTZ NOT NULL DEFAULT now();
     """,
-
     # ------------------------------------------------------------------
     # 4. Child table (docket timeline)
     # ------------------------------------------------------------------
@@ -172,7 +169,6 @@ DDL: list[str] = [
         party_name          TEXT
     );
     """,
-
     # ------------------------------------------------------------------
     # 5. Normalize trigger function
     # ------------------------------------------------------------------
@@ -213,7 +209,6 @@ DDL: list[str] = [
     END;
     $$ LANGUAGE plpgsql;
     """,
-
     # Drop + re-create trigger (no IF NOT EXISTS for triggers)
     "DROP TRIGGER IF EXISTS trg_normalize_foreclosure ON foreclosures;",
     """
@@ -221,7 +216,6 @@ DDL: list[str] = [
     BEFORE INSERT OR UPDATE ON foreclosures
     FOR EACH ROW EXECUTE FUNCTION normalize_foreclosure();
     """,
-
     # ------------------------------------------------------------------
     # 6. Indexes (time-first)
     # ------------------------------------------------------------------
@@ -237,10 +231,8 @@ DDL: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_fch_strap        ON foreclosures_history(strap);",
     "CREATE INDEX IF NOT EXISTS idx_fch_folio        ON foreclosures_history(folio);",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_fch_case_date_unique ON foreclosures_history(case_number_raw, auction_date);",
-
     "CREATE INDEX IF NOT EXISTS idx_fe_foreclosure   ON foreclosure_events(foreclosure_id);",
     "CREATE INDEX IF NOT EXISTS idx_fe_date          ON foreclosure_events(event_date);",
-
     # ------------------------------------------------------------------
     # 7. Chain helpers (PG-only title chain analysis)
     # ------------------------------------------------------------------
@@ -278,7 +270,6 @@ DDL: list[str] = [
         );
     $$ LANGUAGE sql STABLE;
     """,
-
     r"""
     CREATE OR REPLACE FUNCTION entity_match_score(a TEXT, b TEXT)
     RETURNS NUMERIC AS $$
@@ -305,7 +296,6 @@ DDL: list[str] = [
         FROM names;
     $$ LANGUAGE sql STABLE;
     """,
-
     r"""
     CREATE OR REPLACE FUNCTION is_same_entity(
         a TEXT,
@@ -318,7 +308,6 @@ DDL: list[str] = [
         SELECT COALESCE(score >= p_threshold, FALSE) FROM scored;
     $$ LANGUAGE sql STABLE;
     """,
-
     r"""
     CREATE OR REPLACE FUNCTION first_valid_resale(
         p_folio TEXT,
@@ -359,7 +348,6 @@ DDL: list[str] = [
         LIMIT 1;
     $$ LANGUAGE sql STABLE;
     """,
-
     r"""
     CREATE OR REPLACE FUNCTION fn_title_chain(
         p_folio TEXT,
@@ -400,14 +388,25 @@ DDL: list[str] = [
                 s.sale_date,
                 s.sale_type::TEXT AS sale_type,
                 s.sale_amount,
-                s.grantor::TEXT AS grantor,
-                s.grantee::TEXT AS grantee,
+                COALESCE(s.grantor, ori_g.grantor_agg)::TEXT AS grantor,
+                COALESCE(s.grantee, ori_g.grantee_agg)::TEXT AS grantee,
                 s.or_book::TEXT AS or_book,
                 s.or_page::TEXT AS or_page,
                 s.doc_num::TEXT AS doc_num,
-                normalize_party_name(s.grantor) AS grantor_norm,
-                normalize_party_name(s.grantee) AS grantee_norm
+                normalize_party_name(COALESCE(s.grantor, ori_g.grantor_agg)) AS grantor_norm,
+                normalize_party_name(COALESCE(s.grantee, ori_g.grantee_agg)) AS grantee_norm
             FROM hcpa_allsales s
+            LEFT JOIN LATERAL (
+                SELECT
+                    p.parties_from_text AS grantor_agg,
+                    p.parties_to_text AS grantee_agg
+                FROM official_records_daily_instruments p
+                WHERE (s.grantor IS NULL OR s.grantee IS NULL)
+                  AND s.doc_num IS NOT NULL AND p.instrument_number = s.doc_num
+                  AND (p.parties_from_text IS NOT NULL OR p.parties_to_text IS NOT NULL)
+                ORDER BY p.recording_date DESC NULLS LAST
+                LIMIT 1
+            ) ori_g ON TRUE
             WHERE s.folio = p_folio
               AND s.sale_date IS NOT NULL
               AND s.sale_date <= p_as_of_date
@@ -468,7 +467,6 @@ DDL: list[str] = [
         ORDER BY s.seq_no;
     $$ LANGUAGE sql STABLE;
     """,
-
     r"""
     CREATE OR REPLACE FUNCTION fn_title_chain_gaps(
         p_folio TEXT,
@@ -620,11 +618,9 @@ DDL: list[str] = [
             g.missing_to_date NULLS LAST;
     $$ LANGUAGE sql STABLE;
     """,
-
     # ------------------------------------------------------------------
     # 8. PG functions for web app
     # ------------------------------------------------------------------
-
     # 8a. get_dashboard_auctions — single function for dashboard page
     r"""
     CREATE OR REPLACE FUNCTION get_dashboard_auctions(
@@ -716,7 +712,6 @@ DDL: list[str] = [
     END;
     $$ LANGUAGE plpgsql STABLE;
     """,
-
     # 8b. get_dashboard_stats — summary stats for dashboard header
     r"""
     CREATE OR REPLACE FUNCTION get_dashboard_stats(p_days_ahead INT DEFAULT 60)
@@ -743,7 +738,6 @@ DDL: list[str] = [
     END;
     $$ LANGUAGE plpgsql STABLE;
     """,
-
     # 8c. get_property_encumbrances — all encumbrances for a property
     r"""
     CREATE OR REPLACE FUNCTION get_property_encumbrances(p_strap TEXT)
@@ -771,7 +765,6 @@ DDL: list[str] = [
     END;
     $$ LANGUAGE plpgsql STABLE;
     """,
-
     # 8d-1. strap_to_folio — HCPA strap → 10-digit PG folio
     r"""
     CREATE OR REPLACE FUNCTION strap_to_folio(p_strap TEXT)
@@ -779,7 +772,6 @@ DDL: list[str] = [
         SELECT folio FROM hcpa_bulk_parcels WHERE strap = p_strap LIMIT 1;
     $$ LANGUAGE sql STABLE;
     """,
-
     # 8d-2. folio_to_strap — 10-digit PG folio → HCPA strap
     r"""
     CREATE OR REPLACE FUNCTION folio_to_strap(p_folio TEXT)
@@ -787,7 +779,6 @@ DDL: list[str] = [
         SELECT strap FROM hcpa_bulk_parcels WHERE folio = p_folio LIMIT 1;
     $$ LANGUAGE sql STABLE;
     """,
-
     # 8d. get_property_permits — combined county + tampa permits
     # Accepts strap (HCPA format), resolves to 10-digit folio for county_permits join
     r"""
@@ -830,7 +821,6 @@ DDL: list[str] = [
     END;
     $$ LANGUAGE plpgsql STABLE;
     """,
-
     # 8e. compute_net_equity — compute net equity for a property
     r"""
     CREATE OR REPLACE FUNCTION compute_net_equity(p_strap TEXT)
@@ -866,7 +856,6 @@ DDL: list[str] = [
     END;
     $$ LANGUAGE plpgsql STABLE;
     """,
-
     # 8f. get_ucc_exposure — UCC filing exposure for an owner name
     r"""
     CREATE OR REPLACE FUNCTION get_ucc_exposure(p_owner_name TEXT)
@@ -905,7 +894,6 @@ DDL: list[str] = [
     END;
     $$ LANGUAGE plpgsql STABLE;
     """,
-
     # ------------------------------------------------------------------
     # 9. Property timeline view
     # ------------------------------------------------------------------
@@ -963,6 +951,7 @@ DDL: list[str] = [
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def migrate(dsn: str | None = None) -> None:
     """Run all DDL statements inside a single transaction."""
