@@ -373,18 +373,8 @@ DDL: list[str] = [
         link_ok BOOLEAN,
         link_reason TEXT
     ) AS $$
-        WITH ordered AS (
+        WITH raw_sales AS (
             SELECT
-                row_number() OVER (
-                    ORDER BY
-                        s.sale_date,
-                        COALESCE(s.or_book, ''),
-                        COALESCE(s.or_page, ''),
-                        COALESCE(s.doc_num, ''),
-                        COALESCE(s.sale_amount, 0),
-                        COALESCE(s.grantor, ''),
-                        COALESCE(s.grantee, '')
-                )::INT AS seq_no,
                 s.sale_date,
                 s.sale_type::TEXT AS sale_type,
                 s.sale_amount,
@@ -392,9 +382,7 @@ DDL: list[str] = [
                 COALESCE(s.grantee, ori_g.grantee_agg)::TEXT AS grantee,
                 s.or_book::TEXT AS or_book,
                 s.or_page::TEXT AS or_page,
-                s.doc_num::TEXT AS doc_num,
-                normalize_party_name(COALESCE(s.grantor, ori_g.grantor_agg)) AS grantor_norm,
-                normalize_party_name(COALESCE(s.grantee, ori_g.grantee_agg)) AS grantee_norm
+                s.doc_num::TEXT AS doc_num
             FROM hcpa_allsales s
             LEFT JOIN LATERAL (
                 SELECT
@@ -410,6 +398,42 @@ DDL: list[str] = [
             WHERE s.folio = p_folio
               AND s.sale_date IS NOT NULL
               AND s.sale_date <= p_as_of_date
+        ),
+        deduped_sales AS (
+            SELECT DISTINCT
+                rs.sale_date,
+                rs.sale_type,
+                rs.sale_amount,
+                rs.grantor,
+                rs.grantee,
+                rs.or_book,
+                rs.or_page,
+                rs.doc_num
+            FROM raw_sales rs
+        ),
+        ordered AS (
+            SELECT
+                row_number() OVER (
+                    ORDER BY
+                        s.sale_date,
+                        COALESCE(s.or_book, ''),
+                        COALESCE(s.or_page, ''),
+                        COALESCE(s.doc_num, ''),
+                        COALESCE(s.sale_amount, 0),
+                        COALESCE(s.grantor, ''),
+                        COALESCE(s.grantee, '')
+                )::INT AS seq_no,
+                s.sale_date,
+                s.sale_type,
+                s.sale_amount,
+                s.grantor,
+                s.grantee,
+                s.or_book,
+                s.or_page,
+                s.doc_num,
+                normalize_party_name(s.grantor) AS grantor_norm,
+                normalize_party_name(s.grantee) AS grantee_norm
+            FROM deduped_sales s
         ),
         annotated AS (
             SELECT

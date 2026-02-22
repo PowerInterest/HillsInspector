@@ -946,7 +946,7 @@ class PgForeclosureIdentifierRecoveryService:
                     "name": html.unescape(values[1]),
                     "record_date": values[2],
                     "doc_type": values[3],
-                    "book_type": values[4],
+                    "book_type": "OR" if values[4] in ("O", "OR", "") else values[4],
                     "book_num": values[5],
                     "page_num": values[6],
                     "legal": values[7],

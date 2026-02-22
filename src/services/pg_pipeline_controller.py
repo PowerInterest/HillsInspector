@@ -477,6 +477,7 @@ class PgPipelineController:
         return {"update": stats}
 
     def _run_title_chain(self) -> dict[str, Any]:
+        backfill_count = self._backfill_deed_parties()
         config = TitleChainConfig(
             dsn=self.dsn,
             foreclosure_id=self.settings.foreclosure_id,
@@ -486,7 +487,160 @@ class PgPipelineController:
             similarity_threshold=self.settings.similarity_threshold,
         )
         result = TitleChainController(config).run()
+        result["deed_parties_backfilled"] = backfill_count
         return {"update": result}
+
+    def _backfill_deed_parties(self) -> int:
+        """Fetch missing grantor/grantee from PAV for active-foreclosure deeds.
+
+        Queries hcpa_allsales rows tied to active foreclosures that have a
+        doc_num but NULL grantor/grantee and no matching record in
+        official_records_daily_instruments.  Hits the PAV instrument search API
+        and inserts results so fn_title_chain can resolve party names.
+        """
+        import requests as _requests
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from src.services.models_clerk import OfficialRecordsDailyInstrument
+
+        _PAV_URL = (
+            "https://publicaccess.hillsclerk.com"
+            "/PAVDirectSearch/api/CustomQuery/KeywordSearch"
+        )
+        _PAV_HEADERS = {
+            "Content-Type": "application/json",
+            "Origin": "https://publicaccess.hillsclerk.com",
+            "Referer": "https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html",
+        }
+
+        engine = get_engine(self.dsn)
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT s.doc_num, MAX(s.sale_date) AS sale_date
+                    FROM hcpa_allsales s
+                    JOIN foreclosures f ON s.folio = f.folio
+                    LEFT JOIN official_records_daily_instruments p
+                      ON s.doc_num = p.instrument_number
+                    WHERE f.archived_at IS NULL
+                      AND (s.grantor IS NULL OR s.grantee IS NULL)
+                      AND s.doc_num IS NOT NULL
+                      AND trim(s.doc_num) <> ''
+                      AND p.id IS NULL
+                    GROUP BY s.doc_num
+                    ORDER BY MAX(s.sale_date) DESC NULLS LAST
+                """)
+            ).fetchall()
+
+        if not rows:
+            logger.info("deed_parties_backfill: nothing to backfill")
+            return 0
+
+        logger.info(f"deed_parties_backfill: {len(rows)} instruments to fetch")
+        sess = _requests.Session()
+        success = 0
+
+        for row in rows:
+            doc_num = row.doc_num
+            payload = {
+                "QueryID": 320,
+                "Keywords": [{"Id": 1006, "Value": doc_num}],
+                "QueryLimit": 50,
+            }
+            parsed = None
+            for attempt in range(1, 4):
+                try:
+                    resp = sess.post(
+                        _PAV_URL, json=payload, headers=_PAV_HEADERS, timeout=30
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        parsed = self._parse_pav_parties(
+                            data.get("Data") or [], doc_num
+                        )
+                        break
+                    if resp.status_code == 429:
+                        time.sleep(2 * attempt)
+                        continue
+                    break
+                except _requests.RequestException:
+                    time.sleep(1)
+
+            if parsed is None:
+                time.sleep(0.5)
+                continue
+
+            stmt = (
+                pg_insert(OfficialRecordsDailyInstrument)
+                .values(
+                    snapshot_date=row.sale_date or dt.date(1900, 1, 1),
+                    instrument_number=doc_num,
+                    doc_type=parsed["doc_type"] or None,
+                    recording_date=self._parse_pav_record_date(parsed["record_date"]),
+                    parties_from_text=parsed["from_text"],
+                    parties_to_text=parsed["to_text"],
+                )
+                .on_conflict_do_nothing(index_elements=["instrument_number"])
+            )
+            with engine.begin() as conn:
+                result = conn.execute(stmt)
+            if (result.rowcount or 0) > 0:
+                success += 1
+            time.sleep(1.0)
+
+        logger.info(f"deed_parties_backfill: {success}/{len(rows)} enriched")
+        return success
+
+    @staticmethod
+    def _parse_pav_parties(
+        rows: list[dict], target_instrument: str
+    ) -> dict[str, str | None] | None:
+        parties_from: list[str] = []
+        parties_to: list[str] = []
+        doc_type = ""
+        record_date = ""
+        for row in rows:
+            cols = row.get("DisplayColumnValues") or []
+            if len(cols) < 9:
+                continue
+            vals = [str(c.get("Value") or "").strip() for c in cols[:9]]
+            vals.extend([""] * (9 - len(vals)))
+            person_type, name, instrument = vals[0].upper(), vals[1], vals[8]
+            if instrument != target_instrument:
+                continue
+            if not doc_type:
+                doc_type = vals[3]
+            if not record_date:
+                record_date = vals[2]
+            if name:
+                if "2" in person_type or "GRANTEE" in person_type:
+                    if name not in parties_to:
+                        parties_to.append(name)
+                elif name not in parties_from:
+                    parties_from.append(name)
+        if not parties_from and not parties_to:
+            return None
+        return {
+            "doc_type": doc_type,
+            "record_date": record_date,
+            "from_text": "; ".join(parties_from)[:1000] or None,
+            "to_text": "; ".join(parties_to)[:1000] or None,
+        }
+
+    @staticmethod
+    def _parse_pav_record_date(value: str | None) -> dt.date | None:
+        if not value:
+            return None
+        text_value = value.strip()
+        if not text_value:
+            return None
+        for fmt in ("%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y", "%Y-%m-%d"):
+            try:
+                return dt.datetime.strptime(text_value, fmt).date()
+            except ValueError:
+                continue
+        logger.debug(f"deed_parties_backfill: unparseable PAV record_date={value!r}")
+        return None
 
     def _run_market_data(self) -> dict[str, Any]:
         from src.services.market_data_dispatcher import dispatch_market_data_worker

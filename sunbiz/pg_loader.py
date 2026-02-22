@@ -1311,7 +1311,28 @@ def _start_hcpa_ingest_file(
 
 
 def _clear_previous_source_rows(session: Session, model: Any, file_id: int) -> None:
-    session.execute(delete(model).where(model.source_file_id == file_id))
+    """Clear prior rows for the same source/category snapshot before reload.
+
+    `ingest_files` uses upsert semantics keyed by (source_system, relative_path),
+    so `file_id` can either be reused or newly created depending on path changes.
+    To keep snapshot tables from accumulating duplicates across file_ids, we clear
+    every row whose `source_file_id` belongs to the same source/category as the
+    current batch.
+    """
+    source_meta = session.execute(
+        select(IngestFile.source_system, IngestFile.category).where(IngestFile.id == file_id)
+    ).one_or_none()
+    if source_meta is None:
+        # Defensive fallback: if metadata is missing, clear rows tagged to this file_id.
+        session.execute(delete(model).where(model.source_file_id == file_id))
+        return
+
+    source_system, category = source_meta
+    related_file_ids = select(IngestFile.id).where(
+        IngestFile.source_system == source_system,
+        IngestFile.category == category,
+    )
+    session.execute(delete(model).where(model.source_file_id.in_(related_file_ids)))
 
 
 def _parse_int_value(value: object | None) -> int | None:

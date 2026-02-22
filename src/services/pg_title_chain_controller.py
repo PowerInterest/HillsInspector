@@ -331,19 +331,23 @@ class TitleChainController:
                 s.doc_num,
                 s.or_book,
                 s.or_page,
-                s.grantor,
-                s.grantee,
+                COALESCE(s.grantor, ori.parties_from_text) AS grantor,
+                COALESCE(s.grantee, ori.parties_to_text)  AS grantee,
                 s.sale_amount,
                 concat_ws(
                     ' ',
                     coalesce(s.sale_type, 'UNK'),
-                    coalesce(s.grantor, ''),
+                    coalesce(s.grantor, ori.parties_from_text, ''),
                     '->',
-                    coalesce(s.grantee, '')
+                    coalesce(s.grantee, ori.parties_to_text, '')
                 ) AS description,
                 s.id
             FROM controller_scope sc
             JOIN hcpa_allsales s ON s.folio = sc.folio
+            LEFT JOIN official_records_daily_instruments ori
+              ON s.doc_num IS NOT NULL
+             AND ori.instrument_number = s.doc_num
+             AND (s.grantor IS NULL OR s.grantee IS NULL)
             WHERE sc.folio IS NOT NULL
               AND s.sale_date IS NOT NULL
               AND s.sale_date <= sc.auction_date

@@ -154,7 +154,8 @@ def get_upcoming_auctions(
             COALESCE(enc.est_surviving_debt, 0)::numeric AS liens_total_amount,
             COALESCE(enc.liens_total, 0)::integer AS liens_total,
             COALESCE(f.latitude, bp.latitude) AS latitude,
-            COALESCE(f.longitude, bp.longitude) AS longitude
+            COALESCE(f.longitude, bp.longitude) AS longitude,
+            (pm.photo_cdn_urls->>0)::text AS photo_url
         FROM foreclosures f
         LEFT JOIN LATERAL (
             SELECT
@@ -174,6 +175,14 @@ def get_upcoming_auctions(
             ORDER BY bp2.source_file_id DESC NULLS LAST
             LIMIT 1
         ) bp ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT pm2.photo_cdn_urls
+            FROM property_market pm2
+            WHERE (f.strap IS NOT NULL AND pm2.strap = f.strap)
+               OR (f.folio IS NOT NULL AND pm2.folio = f.folio)
+            ORDER BY pm2.updated_at DESC NULLS LAST
+            LIMIT 1
+        ) pm ON TRUE
         {_encumbrance_lateral_join("f")}
         WHERE f.auction_date >= :start_date
           AND f.auction_date <= :end_date
@@ -228,7 +237,8 @@ def get_upcoming_auctions(
                         COALESCE(enc.est_surviving_debt, 0)::numeric AS liens_total_amount,
                         COALESCE(enc.liens_total, 0)::integer AS liens_total,
                         COALESCE(f.latitude, bp.latitude) AS latitude,
-                        COALESCE(f.longitude, bp.longitude) AS longitude
+                        COALESCE(f.longitude, bp.longitude) AS longitude,
+                        (pm.photo_cdn_urls->>0)::text AS photo_url
                     FROM foreclosures_history f
                     LEFT JOIN LATERAL (
                         SELECT
@@ -245,9 +255,17 @@ def get_upcoming_auctions(
                         FROM hcpa_bulk_parcels bp2
                         WHERE (f.strap IS NOT NULL AND bp2.strap = f.strap)
                            OR (f.folio IS NOT NULL AND bp2.folio = f.folio)
-                        ORDER BY bp2.source_file_id DESC NULLS LAST
+                            ORDER BY bp2.source_file_id DESC NULLS LAST
+                            LIMIT 1
+                        ) bp ON TRUE
+                    LEFT JOIN LATERAL (
+                        SELECT pm2.photo_cdn_urls
+                        FROM property_market pm2
+                        WHERE (f.strap IS NOT NULL AND pm2.strap = f.strap)
+                           OR (f.folio IS NOT NULL AND pm2.folio = f.folio)
+                        ORDER BY pm2.updated_at DESC NULLS LAST
                         LIMIT 1
-                    ) bp ON TRUE
+                    ) pm ON TRUE
                     {_encumbrance_lateral_join("f")}
                     {fallback_where}
                     ORDER BY {order_sql}

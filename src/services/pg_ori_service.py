@@ -973,7 +973,7 @@ class PgOriService:
                     row.get("recording_date").isoformat()
                     if row.get("recording_date") else ""
                 ),
-                "BookType": str(row.get("book_type") or "OR").strip() or "OR",
+                "BookType": "OR" if str(row.get("book_type") or "OR").strip() in ("O", "OR", "") else str(row.get("book_type")).strip(),
                 "Book": str(row.get("book_number") or "").strip(),
                 "Page": str(row.get("page_number") or "").strip(),
                 "Legal": legal_blob,
@@ -1413,7 +1413,7 @@ class PgOriService:
             name = values[1]
             record_date = values[2]
             doc_type = values[3]
-            book_type = values[4]
+            book_type = "OR" if values[4] in ("O", "OR", "") else values[4]
             book_num = values[5]
             page_num = values[6]
             legal = values[7]
@@ -1774,6 +1774,9 @@ class PgOriService:
                 book_type = str(
                     doc.get("BookType") or doc.get("book_type") or "OR"
                 ).strip()
+                # PAV API returns 'O' for Official Records; normalize to 'OR'
+                if book_type == "O":
+                    book_type = "OR"
                 amount = doc.get("SalesPrice") or doc.get("sales_price")
                 case_number = doc.get("CaseNum") or doc.get("case_number")
                 legal = (
