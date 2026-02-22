@@ -420,7 +420,7 @@ dev = [
 
 [[package]]
 name = "homeharvest"
-version = "0.8.11"
+version = "0.8.18"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pandas" },
@@ -428,9 +428,9 @@ dependencies = [
     { name = "requests" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/13/27/a1530a28e8abf4fd78095aa4f29937fd0779b92a98c4a4488e9215f89e93/homeharvest-0.8.11.tar.gz", hash = "sha256:120e92386f382a7e0142b63ba02a6dcf66f3268be5073476724a6a97715e50d0", size = 146199, upload-time = "2025-12-18T05:43:28.233Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/21/f6/707e9e54a8b74254ce0012ed5ccbdf547a29ac33b5b1f788d05ac5a9da01/homeharvest-0.8.18.tar.gz", hash = "sha256:2855e01abb8b364445196dd56a7466e912da95260847532530c213a6dac9632f", size = 145832, upload-time = "2025-12-26T07:33:30.722Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/23/9b/b735a8c1efb3bc51c3fd222a3efb8fa0a075e90cc9b792ea1bb703cc9b95/homeharvest-0.8.11-py3-none-any.whl", hash = "sha256:c6ae68d32a4da35db3fda19140997104d1f1efa079b736317b529b1bf3910af9", size = 149931, upload-time = "2025-12-18T05:43:26.614Z" },
+    { url = "https://files.pythonhosted.org/packages/92/b7/69fa62e43cd0ae1cc1004795d3104677892922c8733874e3a71500fa2ed6/homeharvest-0.8.18-py3-none-any.whl", hash = "sha256:87bcca5313e8ecf51e48c588d8dd370426c859349d8f9c88f3a515edfde09ae9", size = 149543, upload-time = "2025-12-26T07:33:29.354Z" },
 ]
 
 [[package]]

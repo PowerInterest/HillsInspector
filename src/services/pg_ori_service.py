@@ -522,7 +522,11 @@ class PgOriService:
                 continue
 
             deed_docs = self._search_instrument_pav(deed_inst, stats)
-            self._merge_docs(docs_by_inst, deed_docs)
+            filtered = [
+                d for d in deed_docs
+                if self._matches_property(d, property_tokens)
+            ]
+            self._merge_docs(docs_by_inst, filtered)
 
             if deed.get("sale_type") in {"CT", "CD"}:
                 for doc in deed_docs:
@@ -1112,6 +1116,7 @@ class PgOriService:
             "legal_tokens": legal_tokens,
             "owner_tokens": owner_tokens,
             "street_tokens": street_tokens,
+            "case_number": (target.get("case_number") or "").strip().upper(),
         }
 
     @staticmethod
@@ -1140,9 +1145,14 @@ class PgOriService:
             hits = sum(1 for t in owner_tokens if t in parties_text)
             if hits >= 1:
                 return True
-        # LP/JUD docs are often case-indexed with sparse legal text; keep them.
+        # LP/JUD docs: keep only if they belong to this foreclosure case.
         doc_type = normalize_document_type(doc.get("DocType") or "")
-        return doc_type in {"lis_pendens", "judgment"}
+        if doc_type in {"lis_pendens", "judgment"}:
+            doc_case = (doc.get("CaseNum") or "").strip().upper()
+            prop_case = (tokens.get("case_number") or "").strip().upper()
+            if doc_case and prop_case and doc_case == prop_case:
+                return True
+        return False
 
     def _extract_references_from_doc(
         self,
