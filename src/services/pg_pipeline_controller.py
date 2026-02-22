@@ -54,6 +54,7 @@ class ControllerSettings:
     # Phase B: per-auction enrichment
     skip_auction_scrape: bool = False
     skip_judgment_extract: bool = False
+    skip_identifier_recovery: bool = False
     skip_ori_search: bool = False
     skip_survival: bool = False
     # Staleness windows
@@ -88,6 +89,7 @@ class ControllerSettings:
     # Phase B limits
     auction_limit: int | None = None
     judgment_limit: int | None = None
+    identifier_recovery_limit: int | None = None
     ori_limit: int | None = None
     survival_limit: int | None = None
 
@@ -150,6 +152,11 @@ class PgPipelineController:
                 "judgment_extract",
                 self.settings.skip_judgment_extract,
                 self._run_judgment_extract,
+            ),
+            (
+                "identifier_recovery",
+                self.settings.skip_identifier_recovery,
+                self._run_identifier_recovery,
             ),
             (
                 "ori_search",
@@ -505,6 +512,16 @@ class PgPipelineController:
         svc = PgJudgmentService(dsn=self.dsn)
         return svc.run(limit=self.settings.judgment_limit)
 
+    def _run_identifier_recovery(self) -> dict[str, Any]:
+        from src.services.pg_foreclosure_identifier_recovery_service import (
+            PgForeclosureIdentifierRecoveryService,
+        )
+
+        svc = PgForeclosureIdentifierRecoveryService(dsn=self.dsn)
+        if not svc.available:
+            return {"skipped": True, "reason": "service_unavailable"}
+        return svc.run(limit=self.settings.identifier_recovery_limit)
+
     def _run_ori_search(self) -> dict[str, Any]:
         from src.services.pg_ori_service import PgOriService
 
@@ -733,6 +750,7 @@ def parse_args() -> ControllerSettings:
     # Phase B toggles
     parser.add_argument("--skip-auction-scrape", action="store_true")
     parser.add_argument("--skip-judgment-extract", action="store_true")
+    parser.add_argument("--skip-identifier-recovery", action="store_true")
     parser.add_argument("--skip-ori-search", action="store_true")
     parser.add_argument("--skip-survival", action="store_true")
 
@@ -765,6 +783,11 @@ def parse_args() -> ControllerSettings:
     # Phase B limits
     parser.add_argument("--auction-limit", type=int, help="Max auctions per date to scrape")
     parser.add_argument("--judgment-limit", type=int, help="Max PDFs to extract")
+    parser.add_argument(
+        "--identifier-recovery-limit",
+        type=int,
+        help="Max unresolved foreclosures for identifier recovery (<=0 means all)",
+    )
     parser.add_argument("--ori-limit", type=int, help="Max foreclosures for ORI search")
     parser.add_argument("--survival-limit", type=int, help="Max foreclosures for survival analysis")
 
@@ -788,6 +811,7 @@ def parse_args() -> ControllerSettings:
         skip_market_data=bool(args.skip_market_data),
         skip_auction_scrape=bool(args.skip_auction_scrape),
         skip_judgment_extract=bool(args.skip_judgment_extract),
+        skip_identifier_recovery=bool(args.skip_identifier_recovery),
         skip_ori_search=bool(args.skip_ori_search),
         skip_survival=bool(args.skip_survival),
         hcpa_download_dir=Path(args.hcpa_download_dir),
@@ -808,6 +832,7 @@ def parse_args() -> ControllerSettings:
         similarity_threshold=args.similarity_threshold,
         auction_limit=args.auction_limit,
         judgment_limit=args.judgment_limit,
+        identifier_recovery_limit=args.identifier_recovery_limit,
         ori_limit=args.ori_limit,
         survival_limit=args.survival_limit,
     )

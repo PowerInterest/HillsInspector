@@ -15,10 +15,11 @@ Phase A (bulk data refresh — idempotent, no per-property scraping):
 Phase B (per-auction enrichment — scraping + analysis):
   11. Scrape upcoming auctions (Playwright → clerk website → PG)
   12. Extract judgment PDFs (VisionService → disk JSON → PG)
-  13. ORI document search (Playwright → ORI website → PG ori_encumbrances)
-  14. Lien survival analysis (pure computation → PG ori_encumbrances)
-  15. Final refresh (pick up Phase B data)
-  16. Market data (Redfin/Zillow/HomeHarvest; background by default)
+  13. Recover missing strap/folio from final-judgment data
+  14. ORI document search (Playwright → ORI website → PG ori_encumbrances)
+  15. Lien survival analysis (pure computation → PG ori_encumbrances)
+  16. Final refresh (pick up Phase B data)
+  17. Market data (Redfin/Zillow/HomeHarvest; background by default)
 
 Usage:
   uv run Controller.py                           # Full pipeline
