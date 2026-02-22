@@ -52,7 +52,7 @@ async def hcpa_failures(
 
             failed_auctions = [dict(r) for r in rows]
     except Exception as e:
-        logger.warning(f"review query failed: {e}")
+        logger.exception("review query failed")
         failed_auctions = []
         total = 0
 

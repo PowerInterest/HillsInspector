@@ -265,7 +265,7 @@ def _pg_documents_for_property(identifier: str) -> list[dict[str, Any]]:
             try:
                 rel_path = str(pdf.resolve().relative_to(project_root.resolve()))
             except Exception as exc:
-                logger.warning(f"Failed to resolve relative PDF path for case={case_num} file={pdf}: {exc}")
+                logger.exception(f"Failed to resolve relative PDF path for case={case_num} file={pdf}")
                 rel_path = str(pdf.resolve())
             docs.append({
                 "id": next_id,
@@ -368,7 +368,7 @@ def _doc_mtime_iso(file_path: str | None) -> str | None:
         if abs_path.is_file():
             return datetime.fromtimestamp(abs_path.stat().st_mtime, tz=UTC_TZ).isoformat(timespec="seconds")
     except Exception as exc:
-        logger.warning(f"Failed to read document mtime for {file_path!r}: {exc}")
+        logger.exception(f"Failed to read document mtime for {file_path!r}")
     return None
 
 
@@ -609,11 +609,32 @@ def _pg_nocs_for_property(
     return nocs
 
 
+def _pg_flr_liens_for_property(conn: Any, *, owner_name: str | None) -> list[dict[str, Any]]:
+    """Query Sunbiz Federal Lien Registry (FLR) for UCC/federal tax liens by owner name."""
+    if not owner_name or len(owner_name.strip()) < 3:
+        return []
+    rows = (
+        conn.execute(
+            sa_text("""
+            SELECT doc_number, filing_date, filing_type,
+                   secured_party, debtor_name, similarity_score
+            FROM get_ucc_exposure(:name)
+            ORDER BY similarity_score DESC, filing_date DESC
+        """),
+            {"name": owner_name.strip()},
+        )
+        .mappings()
+        .fetchall()
+    )
+    return [dict(r) for r in rows]
+
+
 def _pg_tax_status_for_property(
     *,
     strap: str | None,
     folio: str | None,
     identifier: str,
+    owner_name: str | None = None,
 ) -> dict[str, Any]:
     try:
         with _pg_engine().connect() as conn:
@@ -625,6 +646,7 @@ def _pg_tax_status_for_property(
                     "tax_warrant": False,
                     "total_amount_due": None,
                     "liens": [],
+                    "flr_liens": [],
                 }
 
             row = (
@@ -644,6 +666,7 @@ def _pg_tax_status_for_property(
                 .fetchone()
             )
             liens = _pg_tax_liens_for_property(conn, strap=strap, folio=folio)
+            flr_liens = _pg_flr_liens_for_property(conn, owner_name=owner_name)
             liens_total = sum(_as_float(item.get("amount")) for item in liens)
             amount = row.get("estimated_annual_tax") if row else None
             tax_warrant = any("WARRANT" in str(item.get("raw_document_type") or "").upper() for item in liens)
@@ -653,6 +676,7 @@ def _pg_tax_status_for_property(
                 "tax_warrant": tax_warrant,
                 "total_amount_due": liens_total if liens_total > 0 else _to_optional_float(amount),
                 "liens": liens,
+                "flr_liens": flr_liens,
             }
     except Exception as exc:
         logger.exception(f"Tax status lookup failed for strap={strap!r} folio={folio!r} identifier={identifier!r}: {exc}")
@@ -662,6 +686,7 @@ def _pg_tax_status_for_property(
             "tax_warrant": False,
             "total_amount_due": None,
             "liens": [],
+            "flr_liens": [],
         }
 
 
@@ -855,7 +880,7 @@ def _pg_market_snapshot(
                 .fetchone()
             )
     except Exception as exc:
-        logger.warning(f"Market snapshot lookup failed for strap={strap!r} folio={folio!r}: {exc}")
+        logger.exception(f"Market snapshot lookup failed for strap={strap!r} folio={folio!r}")
         market_row = None
 
     row = dict(market_row) if market_row else None
@@ -910,13 +935,29 @@ def _pg_market_snapshot(
 
 
 def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
-    try:
-        with _pg_engine().connect() as conn:
+    with _pg_engine().connect() as conn:
+        row = (
+            conn.execute(
+                sa_text("""
+                SELECT *
+                FROM foreclosures
+                WHERE case_number_raw = :identifier
+                   OR strap = :identifier
+                   OR folio = :identifier
+                ORDER BY auction_date DESC, updated_at DESC NULLS LAST
+                LIMIT 1
+            """),
+                {"identifier": identifier},
+            )
+            .mappings()
+            .fetchone()
+        )
+        if not row:
             row = (
                 conn.execute(
                     sa_text("""
                     SELECT *
-                    FROM foreclosures
+                    FROM foreclosures_history
                     WHERE case_number_raw = :identifier
                        OR strap = :identifier
                        OR folio = :identifier
@@ -928,202 +969,182 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
                 .mappings()
                 .fetchone()
             )
-            if not row:
-                row = (
-                    conn.execute(
-                        sa_text("""
-                        SELECT *
-                        FROM foreclosures_history
-                        WHERE case_number_raw = :identifier
-                           OR strap = :identifier
-                           OR folio = :identifier
-                        ORDER BY auction_date DESC, updated_at DESC NULLS LAST
-                        LIMIT 1
-                    """),
-                        {"identifier": identifier},
-                    )
-                    .mappings()
-                    .fetchone()
+        if not row:
+            return None
+
+        auction = dict(row)
+        case_number = auction.get("case_number_raw")
+        strap_or_folio = auction.get("strap") or auction.get("folio") or identifier
+
+        parcel = None
+        parcel_clauses: list[str] = []
+        parcel_params: dict[str, Any] = {}
+        if auction.get("strap"):
+            parcel_clauses.append("strap = :strap")
+            parcel_params["strap"] = auction.get("strap")
+        if auction.get("folio"):
+            parcel_clauses.append("folio = :folio")
+            parcel_params["folio"] = auction.get("folio")
+        if parcel_clauses:
+            parcel = (
+                conn.execute(
+                    sa_text(f"""
+                    SELECT *
+                    FROM hcpa_bulk_parcels
+                    WHERE {" OR ".join(parcel_clauses)}
+                    ORDER BY source_file_id DESC NULLS LAST
+                    LIMIT 1
+                """),
+                    parcel_params,
                 )
-            if not row:
-                return None
-
-            auction = dict(row)
-            case_number = auction.get("case_number_raw")
-            strap_or_folio = auction.get("strap") or auction.get("folio") or identifier
-
-            parcel = None
-            parcel_clauses: list[str] = []
-            parcel_params: dict[str, Any] = {}
-            if auction.get("strap"):
-                parcel_clauses.append("strap = :strap")
-                parcel_params["strap"] = auction.get("strap")
-            if auction.get("folio"):
-                parcel_clauses.append("folio = :folio")
-                parcel_params["folio"] = auction.get("folio")
-            if parcel_clauses:
-                parcel = (
-                    conn.execute(
-                        sa_text(f"""
-                        SELECT *
-                        FROM hcpa_bulk_parcels
-                        WHERE {" OR ".join(parcel_clauses)}
-                        ORDER BY source_file_id DESC NULLS LAST
-                        LIMIT 1
-                    """),
-                        parcel_params,
-                    )
-                    .mappings()
-                    .fetchone()
-                )
-            parcel_dict = dict(parcel) if parcel else {}
-
-            judgment_data = auction.get("judgment_data")
-            if isinstance(judgment_data, str):
-                try:
-                    judgment_data = json.loads(judgment_data)
-                except json.JSONDecodeError:
-                    judgment_data = None
-            if not isinstance(judgment_data, dict):
-                judgment_data = None
-
-            judgment_map = judgment_data or {}
-            plaintiff = str(judgment_map.get("plaintiff") or "").strip() or None
-            foreclosure_type = str(judgment_map.get("foreclosure_type") or "").strip() or None
-            lis_pendens_block = judgment_map.get("lis_pendens")
-            lis_pendens_date = None
-            if isinstance(lis_pendens_block, dict):
-                lis_pendens_date = lis_pendens_block.get("recording_date") or lis_pendens_block.get("date")
-            if not lis_pendens_date:
-                lis_pendens_date = judgment_map.get("lis_pendens_date")
-
-            defendant = None
-            defendants = judgment_map.get("defendants")
-            if isinstance(defendants, list):
-                names = [str(v).strip() for v in defendants if str(v).strip()]
-                if names:
-                    defendant = ", ".join(names[:3])
-            elif isinstance(defendants, str):
-                defendant = defendants.strip() or None
-            if not defendant:
-                defendant = str(judgment_map.get("defendant") or "").strip() or None
-
-            plaintiff_max_bid = _to_optional_float(
-                judgment_map.get("plaintiff_max_bid") or judgment_map.get("plaintiff_maximum_bid") or judgment_map.get("max_bid")
+                .mappings()
+                .fetchone()
             )
+        parcel_dict = dict(parcel) if parcel else {}
 
-            market, market_row = _pg_market_snapshot(
-                conn,
+        judgment_data = auction.get("judgment_data")
+        if isinstance(judgment_data, str):
+            try:
+                judgment_data = json.loads(judgment_data)
+            except json.JSONDecodeError:
+                judgment_data = None
+        if not isinstance(judgment_data, dict):
+            judgment_data = None
+
+        judgment_map = judgment_data or {}
+        plaintiff = str(judgment_map.get("plaintiff") or "").strip() or None
+        foreclosure_type = str(judgment_map.get("foreclosure_type") or "").strip() or None
+        lis_pendens_block = judgment_map.get("lis_pendens")
+        lis_pendens_date = None
+        if isinstance(lis_pendens_block, dict):
+            lis_pendens_date = lis_pendens_block.get("recording_date") or lis_pendens_block.get("date")
+        if not lis_pendens_date:
+            lis_pendens_date = judgment_map.get("lis_pendens_date")
+
+        defendant = None
+        defendants = judgment_map.get("defendants")
+        if isinstance(defendants, list):
+            names = [str(v).strip() for v in defendants if str(v).strip()]
+            if names:
+                defendant = ", ".join(names[:3])
+        elif isinstance(defendants, str):
+            defendant = defendants.strip() or None
+        if not defendant:
+            defendant = str(judgment_map.get("defendant") or "").strip() or None
+
+        plaintiff_max_bid = _to_optional_float(
+            judgment_map.get("plaintiff_max_bid") or judgment_map.get("plaintiff_maximum_bid") or judgment_map.get("max_bid")
+        )
+
+        market, market_row = _pg_market_snapshot(
+            conn,
+            identifier=strap_or_folio,
+            auction=auction,
+            parcel=parcel_dict,
+        )
+        market_value = (
+            market.get("blended_estimate")
+            or auction.get("market_value")
+            or parcel_dict.get("market_value")
+            or auction.get("assessed_value")
+            or 0
+        )
+
+        raw_foreclosure_id = auction.get("foreclosure_id")
+        try:
+            foreclosure_id = int(raw_foreclosure_id) if raw_foreclosure_id is not None else 0
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Invalid foreclosure_id for property detail identifier={identifier!r} raw_value={raw_foreclosure_id!r}"
+            )
+            foreclosure_id = 0
+        documents = _pg_documents_for_property(strap_or_folio)
+        document_tokens = _build_document_token_index(documents)
+        permits = _pg_permits_for_property(foreclosure_id)
+        nocs = _pg_nocs_for_property(
+            conn,
+            strap=auction.get("strap"),
+            folio=auction.get("folio"),
+        )
+        for noc in nocs:
+            for token in _extract_instrument_tokens(noc.get("instrument_number")):
+                doc_id = document_tokens.get(token)
+                if doc_id is not None:
+                    noc["id"] = doc_id
+                    break
+
+        encumbrances = _pg_encumbrances_for_property(
+            conn,
+            strap=auction.get("strap"),
+            folio=auction.get("folio"),
+        )
+        enc_summary = _summarize_encumbrances(encumbrances)
+        est_surviving_debt = _as_float(enc_summary["liens_total_amount"])
+        net_equity = _as_float(market_value) - _as_float(auction.get("final_judgment_amount")) - est_surviving_debt
+        enrichments = {
+            "permits_total": len(permits),
+            "permits_open": sum(1 for p in permits if str(p.get("status") or "").lower() in {"open", "active", "issued"}),
+            "liens_survived": int(enc_summary["liens_survived"]),
+            "liens_uncertain": int(enc_summary["liens_uncertain"]),
+            "liens_surviving": int(enc_summary["liens_surviving"]),
+            "liens_total_amount": est_surviving_debt,
+            "liens_total": int(enc_summary["liens_total"]),
+            "flood_zone": None,
+            "flood_risk": None,
+            "insurance_required": False,
+            "has_enrichments": bool(len(permits) > 0 or enc_summary["liens_total"] > 0),
+        }
+
+        auction_payload = {
+            "case_number": case_number,
+            "auction_type": str(auction.get("auction_type") or "foreclosure").upper(),
+            "auction_date": auction.get("auction_date"),
+            "property_address": auction.get("property_address") or parcel_dict.get("property_address"),
+            "assessed_value": auction.get("assessed_value"),
+            "final_judgment_amount": auction.get("final_judgment_amount"),
+            "opening_bid": auction.get("winning_bid"),
+            "status": auction.get("auction_status"),
+            "owner_name": auction.get("owner_name") or parcel_dict.get("owner_name"),
+            "plaintiff_max_bid": plaintiff_max_bid,
+            "plaintiff": plaintiff,
+            "foreclosure_type": foreclosure_type,
+            "lis_pendens_date": lis_pendens_date,
+            "defendant": defendant,
+            "extracted_judgment_data": judgment_data,
+            "judgment_extracted_at": auction.get("step_judgment_extracted"),
+            "has_valid_parcel_id": bool(auction.get("strap") or auction.get("folio")),
+            "folio": strap_or_folio,
+            "est_surviving_debt": est_surviving_debt,
+        }
+
+        return {
+            "folio": strap_or_folio,
+            "auction": auction_payload,
+            "parcel": parcel_dict,
+            "parcels_data": parcel_dict,
+            "encumbrances": encumbrances,
+            "chain": _pg_chain_for_property(strap_or_folio, case_number),
+            "nocs": nocs,
+            "sales": get_pg_queries().get_sales_history(strap_or_folio),
+            "net_equity": net_equity,
+            "market_value": market_value,
+            "est_surviving_debt": est_surviving_debt,
+            "is_toxic_title": bool(
+                (auction.get("unsatisfied_encumbrance_count") or 0) > 2 or enc_summary["liens_surviving"] > 0
+            ),
+            "market": market,
+            "enrichments": enrichments,
+            "sources": _build_property_sources(
                 identifier=strap_or_folio,
                 auction=auction,
-                parcel=parcel_dict,
-            )
-            market_value = (
-                market.get("blended_estimate")
-                or auction.get("market_value")
-                or parcel_dict.get("market_value")
-                or auction.get("assessed_value")
-                or 0
-            )
-
-            raw_foreclosure_id = auction.get("foreclosure_id")
-            try:
-                foreclosure_id = int(raw_foreclosure_id) if raw_foreclosure_id is not None else 0
-            except (TypeError, ValueError):
-                logger.warning(
-                    f"Invalid foreclosure_id for property detail identifier={identifier!r} raw_value={raw_foreclosure_id!r}"
-                )
-                foreclosure_id = 0
-            documents = _pg_documents_for_property(strap_or_folio)
-            document_tokens = _build_document_token_index(documents)
-            permits = _pg_permits_for_property(foreclosure_id)
-            nocs = _pg_nocs_for_property(
-                conn,
-                strap=auction.get("strap"),
-                folio=auction.get("folio"),
-            )
-            for noc in nocs:
-                for token in _extract_instrument_tokens(noc.get("instrument_number")):
-                    doc_id = document_tokens.get(token)
-                    if doc_id is not None:
-                        noc["id"] = doc_id
-                        break
-
-            encumbrances = _pg_encumbrances_for_property(
-                conn,
-                strap=auction.get("strap"),
-                folio=auction.get("folio"),
-            )
-            enc_summary = _summarize_encumbrances(encumbrances)
-            est_surviving_debt = _as_float(enc_summary["liens_total_amount"])
-            net_equity = _as_float(market_value) - _as_float(auction.get("final_judgment_amount")) - est_surviving_debt
-            enrichments = {
-                "permits_total": len(permits),
-                "permits_open": sum(1 for p in permits if str(p.get("status") or "").lower() in {"open", "active", "issued"}),
-                "liens_survived": int(enc_summary["liens_survived"]),
-                "liens_uncertain": int(enc_summary["liens_uncertain"]),
-                "liens_surviving": int(enc_summary["liens_surviving"]),
-                "liens_total_amount": est_surviving_debt,
-                "liens_total": int(enc_summary["liens_total"]),
-                "flood_zone": None,
-                "flood_risk": None,
-                "insurance_required": False,
-                "has_enrichments": bool(len(permits) > 0 or enc_summary["liens_total"] > 0),
-            }
-
-            auction_payload = {
-                "case_number": case_number,
-                "auction_type": str(auction.get("auction_type") or "foreclosure").upper(),
-                "auction_date": auction.get("auction_date"),
-                "property_address": auction.get("property_address") or parcel_dict.get("property_address"),
-                "assessed_value": auction.get("assessed_value"),
-                "final_judgment_amount": auction.get("final_judgment_amount"),
-                "opening_bid": auction.get("winning_bid"),
-                "status": auction.get("auction_status"),
-                "owner_name": auction.get("owner_name") or parcel_dict.get("owner_name"),
-                "plaintiff_max_bid": plaintiff_max_bid,
-                "plaintiff": plaintiff,
-                "foreclosure_type": foreclosure_type,
-                "lis_pendens_date": lis_pendens_date,
-                "defendant": defendant,
-                "extracted_judgment_data": judgment_data,
-                "judgment_extracted_at": auction.get("step_judgment_extracted"),
-                "has_valid_parcel_id": bool(auction.get("strap") or auction.get("folio")),
-                "folio": strap_or_folio,
-                "est_surviving_debt": est_surviving_debt,
-            }
-
-            return {
-                "folio": strap_or_folio,
-                "auction": auction_payload,
-                "parcel": parcel_dict,
-                "parcels_data": parcel_dict,
-                "encumbrances": encumbrances,
-                "chain": _pg_chain_for_property(strap_or_folio, case_number),
-                "nocs": nocs,
-                "sales": get_pg_queries().get_sales_history(strap_or_folio),
-                "net_equity": net_equity,
-                "market_value": market_value,
-                "est_surviving_debt": est_surviving_debt,
-                "is_toxic_title": bool(
-                    (auction.get("unsatisfied_encumbrance_count") or 0) > 2 or enc_summary["liens_surviving"] > 0
-                ),
-                "market": market,
-                "enrichments": enrichments,
-                "sources": _build_property_sources(
-                    identifier=strap_or_folio,
-                    auction=auction,
-                    market_row=market_row,
-                    docs=documents,
-                ),
-                "_foreclosure_id": foreclosure_id,
-                "_strap": auction.get("strap"),
-                "_folio_raw": auction.get("folio"),
-                "_case_number_raw": case_number,
-            }
-    except Exception as exc:
-        logger.exception(f"Property detail lookup failed for identifier={identifier!r}: {exc}")
-        return None
+                market_row=market_row,
+                docs=documents,
+            ),
+            "_foreclosure_id": foreclosure_id,
+            "_strap": auction.get("strap"),
+            "_folio_raw": auction.get("folio"),
+            "_case_number_raw": case_number,
+        }
 
 
 @router.get("/{folio}", response_class=HTMLResponse)
@@ -1181,7 +1202,7 @@ async def property_liens(request: Request, folio: str):
 
     return templates.TemplateResponse(
         "partials/lien_table.html",
-        {"request": request, "liens": [], "encumbrances": encumbrances, "auction": prop.get("auction", {}), "folio": real_folio},
+        {"request": request, "encumbrances": encumbrances, "auction": prop.get("auction", {}), "folio": real_folio},
     )
 
 
@@ -1266,6 +1287,7 @@ async def property_tax(request: Request, folio: str):
         strap=prop.get("_strap"),
         folio=prop.get("_folio_raw"),
         identifier=prop.get("folio") or folio,
+        owner_name=(prop.get("auction") or {}).get("owner_name"),
     )
     return templates.TemplateResponse(
         "partials/tax.html",

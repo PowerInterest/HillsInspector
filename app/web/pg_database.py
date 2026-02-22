@@ -55,7 +55,7 @@ class PgDashboardQueries:
             self._available = True
             logger.info("PG dashboard queries connected")
         except Exception as e:
-            logger.warning(f"PG dashboard queries unavailable: {e}")
+            logger.exception("PG dashboard queries unavailable")
 
     @property
     def available(self) -> bool:
@@ -146,7 +146,7 @@ class PgDashboardQueries:
                 ).fetchall()
                 return self._rows_to_dicts(rows)
         except Exception as e:
-            logger.warning(f"search_properties_fuzzy failed: {e}")
+            logger.exception("search_properties_fuzzy failed")
             return []
 
     def resolve_by_name(
@@ -174,7 +174,7 @@ class PgDashboardQueries:
                 ).fetchall()
                 return self._rows_to_dicts(rows)
         except Exception as e:
-            logger.warning(f"resolve_by_name failed: {e}")
+            logger.exception("resolve_by_name failed")
             return []
 
     # =================================================================
@@ -211,7 +211,7 @@ class PgDashboardQueries:
                 ).fetchall()
                 return self._rows_to_dicts(rows)
         except Exception as e:
-            logger.warning(f"get_property_stats_by_zip failed: {e}")
+            logger.exception("get_property_stats_by_zip failed")
             return []
 
     def get_sales_volume_by_month(
@@ -277,7 +277,7 @@ class PgDashboardQueries:
                 ).fetchall()
                 return self._rows_to_dicts(rows)
         except Exception as e:
-            logger.warning(f"get_sales_volume_by_month failed: {e}")
+            logger.exception("get_sales_volume_by_month failed")
             return []
 
     def get_property_value_distribution(
@@ -331,7 +331,7 @@ class PgDashboardQueries:
                 ).fetchall()
                 return self._rows_to_dicts(rows)
         except Exception as e:
-            logger.warning(f"get_property_value_distribution failed: {e}")
+            logger.exception("get_property_value_distribution failed")
             return []
 
     # =================================================================
@@ -458,7 +458,7 @@ class PgDashboardQueries:
 
                 return comps[:limit]
         except Exception as e:
-            logger.warning(f"get_comparable_sales({folio}) failed: {e}")
+            logger.exception(f"get_comparable_sales({folio}) failed")
             return []
 
     def get_sales_history(self, folio: str) -> list[dict[str, Any]]:
@@ -499,7 +499,7 @@ class PgDashboardQueries:
                     )
                 return results
         except Exception as e:
-            logger.warning(f"get_sales_history({folio}) failed: {e}")
+            logger.exception(f"get_sales_history({folio}) failed")
             return []
 
     # =================================================================
@@ -563,7 +563,7 @@ class PgDashboardQueries:
                             return dict(match._mapping)  # noqa: SLF001
                 return None
         except Exception as e:
-            logger.warning(f"get_subdivision_info({folio}) failed: {e}")
+            logger.exception(f"get_subdivision_info({folio}) failed")
             return None
 
     def get_subdivision_properties(
@@ -595,7 +595,7 @@ class PgDashboardQueries:
                 ).fetchall()
                 return self._rows_to_dicts(rows)
         except Exception as e:
-            logger.warning(f"get_subdivision_properties failed: {e}")
+            logger.exception("get_subdivision_properties failed")
             return []
 
     # =================================================================
@@ -625,7 +625,7 @@ class PgDashboardQueries:
                 ).fetchone()
                 return dict(row._mapping) if row else None  # noqa: SLF001
         except Exception as e:
-            logger.warning(f"is_multi_unit({strap}) failed: {e}")
+            logger.exception(f"is_multi_unit({strap}) failed")
             return None
 
     def get_units_for_property(self, folio: str) -> list[dict[str, Any]]:
@@ -679,7 +679,7 @@ class PgDashboardQueries:
                 ).fetchall()
                 return self._rows_to_dicts(rows)
         except Exception as e:
-            logger.warning(f"get_units_for_property({folio}) failed: {e}")
+            logger.exception(f"get_units_for_property({folio}) failed")
             return []
 
     # =================================================================
@@ -697,7 +697,7 @@ class PgDashboardQueries:
                     return None
                 return self._get_parcel_info(conn, pg_folio)
         except Exception as e:
-            logger.warning(f"get_parcel_by_strap({strap}) failed: {e}")
+            logger.exception(f"get_parcel_by_strap({strap}) failed")
             return None
 
     # =================================================================
@@ -738,7 +738,7 @@ class PgDashboardQueries:
                         d[key] = []
                 return d
         except Exception as e:
-            logger.warning(f"get_pg_market_snapshot({strap}) failed: {e}")
+            logger.exception(f"get_pg_market_snapshot({strap}) failed")
             return None
 
     def get_pg_bulk_thumbnails(self, straps: list[str]) -> dict[str, str]:
@@ -762,7 +762,7 @@ class PgDashboardQueries:
                 ).fetchall()
                 return {r[0]: r[1] for r in rows if r[1]}
         except Exception as e:
-            logger.warning(f"get_pg_bulk_thumbnails failed: {e}")
+            logger.exception("get_pg_bulk_thumbnails failed")
             return {}
 
     def get_foreclosure_deed_stats(
@@ -801,7 +801,7 @@ class PgDashboardQueries:
                 ).fetchall()
                 return self._rows_to_dicts(rows)
         except Exception as e:
-            logger.warning(f"get_foreclosure_deed_stats failed: {e}")
+            logger.exception("get_foreclosure_deed_stats failed")
             return []
 
 

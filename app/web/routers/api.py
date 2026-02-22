@@ -45,7 +45,7 @@ async def map_auctions():
             })
         except Exception as e:
             # Skip malformed records but log them
-            logger.warning(f"Skipping malformed map record: {e}")
+            logger.exception("Skipping malformed map record")
             continue
 
     return JSONResponse({"features": features})

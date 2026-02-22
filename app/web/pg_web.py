@@ -277,7 +277,7 @@ def get_upcoming_auctions(
                 rows = conn.execute(fallback_sql, fallback_params).fetchall()
             return _rows_to_dicts(rows)
     except Exception as e:
-        logger.warning(f"get_upcoming_auctions failed: {e}")
+        logger.exception("get_upcoming_auctions failed")
         return []
 
 
@@ -370,7 +370,7 @@ def get_upcoming_auctions_with_enrichments(
                     )
                     enrich_by_id[foreclosure_id] = base
         except Exception as e:
-            logger.debug(f"get_upcoming_auctions_with_enrichments aggregation failed: {e}")
+            logger.exception("get_upcoming_auctions_with_enrichments aggregation failed")
 
     for auction in auctions:
         auction["enrichments"] = enrich_by_id.get(
@@ -436,7 +436,7 @@ def get_auction_count(days_ahead: int = 60, auction_type: str | None = None) -> 
             ).fetchone()
             return int(row[0]) if row and row[0] is not None else 0
     except Exception as e:
-        logger.warning(f"get_auction_count failed: {e}")
+        logger.exception("get_auction_count failed")
         return 0
 
 
@@ -502,7 +502,7 @@ def get_dashboard_stats() -> dict[str, Any]:
                 stats = dict(fallback)
             return stats
     except Exception as e:
-        logger.warning(f"get_dashboard_stats failed: {e}")
+        logger.exception("get_dashboard_stats failed")
         return {
             "foreclosures": 0,
             "tax_deeds": 0,
@@ -572,7 +572,7 @@ def get_auctions_by_date(auction_date: date) -> list[dict[str, Any]]:
             ).fetchall()
             return _rows_to_dicts(rows)
     except Exception as e:
-        logger.warning(f"get_auctions_by_date({auction_date}) failed: {e}")
+        logger.exception(f"get_auctions_by_date({auction_date}) failed")
         return []
 
 
@@ -612,7 +612,7 @@ def search_properties(query: str, limit: int = 20) -> list[dict[str, Any]]:
             ).fetchall()
             return _rows_to_dicts(rows)
     except Exception as e:
-        logger.warning(f"search_properties({query!r}) failed: {e}")
+        logger.exception(f"search_properties({query!r}) failed")
         return []
 
 
@@ -660,7 +660,7 @@ def get_auction_map_points(days_ahead: int = 60) -> list[dict[str, Any]]:
                 rows = conn.execute(text(history_sql)).fetchall()
             return _rows_to_dicts(rows)
     except Exception as e:
-        logger.warning(f"get_auction_map_points failed: {e}")
+        logger.exception("get_auction_map_points failed")
         return []
 
 

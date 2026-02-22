@@ -1,4 +1,4 @@
-{% if liens or encumbrances %}
+{% if encumbrances %}
 
 {% set foreclosing_encs = encumbrances|selectattr('survival_status', 'equalto', 'FORECLOSING')|list %}
 {% if foreclosing_encs %}
@@ -27,26 +27,6 @@
         </tr>
     </thead>
     <tbody>
-        {% if not encumbrances %}
-        {% for lien in liens %}
-        <tr class="{% if lien.is_surviving %}surviving{% else %}wiped{% endif %}">
-            <td>{{ lien.recording_date|format_date if lien.recording_date else '-' }}</td>
-            <td>{{ lien.document_type or '-' }}</td>
-            <td class="money-cell">{{ "${:,.0f}".format(lien.amount) if lien.amount else '-' }}</td>
-            <td>{{ lien.grantee or lien.grantor or '-' }}</td>
-            <td>
-                {% if lien.is_surviving == True %}
-                <span class="survival-badge survives">SURVIVES</span>
-                {% elif lien.is_surviving == False %}
-                <span class="survival-badge wiped">WIPED</span>
-                {% else %}
-                <span class="survival-badge unknown">UNKNOWN</span>
-                {% endif %}
-            </td>
-        </tr>
-        {% endfor %}
-        {% endif %}
-
         {% for enc in encumbrances %}
         {% set st = (enc.survival_status or '')|upper %}
         <tr class="{% if st == 'FORECLOSING' %}foreclosing{% elif st == 'SURVIVED' %}surviving{% elif st in ['EXTINGUISHED','HISTORICAL','EXPIRED'] %}wiped{% endif %}">
@@ -87,16 +67,6 @@
         {% endfor %}
     </tbody>
 </table>
-
-{% if liens and not encumbrances %}
-<div class="lien-summary">
-    <strong>Total Liens Found:</strong> {{ liens|length }}
-    {% set surviving_count = liens|selectattr('is_surviving', 'equalto', True)|list|length %}
-    {% if surviving_count > 0 %}
-    | <span class="warning">{{ surviving_count }} surviving</span>
-    {% endif %}
-</div>
-{% endif %}
 
 {% else %}
 <p class="no-data">No liens found for this property.</p>

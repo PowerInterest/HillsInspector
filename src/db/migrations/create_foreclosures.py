@@ -894,9 +894,9 @@ DDL: list[str] = [
             SELECT p.doc_number, p.name AS debtor_name,
                    similarity(p.name, UPPER(p_owner_name)) AS sim_score
             FROM sunbiz_flr_parties p
-            WHERE p.party_role = 'D'
+            WHERE p.party_role = 'debtor'
               AND p.name % UPPER(p_owner_name)
-              AND similarity(p.name, UPPER(p_owner_name)) > 0.4
+              AND similarity(p.name, UPPER(p_owner_name)) > 0.8
         ),
         filings AS (
             SELECT m.doc_number, m.debtor_name, m.sim_score,
@@ -904,7 +904,7 @@ DDL: list[str] = [
                    sp.name AS secured_party
             FROM matches m
             JOIN sunbiz_flr_filings fl ON m.doc_number = fl.doc_number
-            LEFT JOIN sunbiz_flr_parties sp ON m.doc_number = sp.doc_number AND sp.party_role = 'S'
+            LEFT JOIN sunbiz_flr_parties sp ON m.doc_number = sp.doc_number AND sp.party_role = 'secured'
             WHERE fl.filing_status = 'A'
               AND (fl.expiration_date IS NULL OR fl.expiration_date >= CURRENT_DATE)
         )
