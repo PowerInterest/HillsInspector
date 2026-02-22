@@ -16,8 +16,9 @@ import csv
 import hashlib
 import json
 import re
-import sqlite3
 from collections import deque
+from sqlalchemy import text
+from sunbiz.db import get_engine, resolve_pg_dsn
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -66,11 +67,7 @@ SEED_URLS = [
 ]
 NAVIGATION_TIMEOUT_MS = 90000
 REQUEST_TIMEOUT_SEC = 30
-USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/122.0.0.0 Safari/537.36"
-)
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 CHALLENGE_MARKERS = [
     "just a moment",
     "enable javascript and cookies to continue",
@@ -138,6 +135,7 @@ class ListingRecord:
     matched_folio: Optional[str] = None
     matched_address: Optional[str] = None
     home_harvest_photo_count: Optional[int] = None
+
 
 @dataclass
 class CrawlCheckpoint:
@@ -338,7 +336,7 @@ def normalize_photo_url(raw: str, base_url: str) -> Optional[str]:
             value = urljoin(base_url, value)
     parts = urlsplit(value)
     normalized = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
-    return normalized if normalized else None
+    return normalized or None
 
 
 def looks_like_property_photo(url: str) -> bool:
@@ -407,9 +405,7 @@ def extract_photo_urls_from_html(soup: BeautifulSoup, base_url: str) -> list[str
         style = el.get("style")
         if not isinstance(style, str):
             continue
-        for match in re.finditer(
-            r"background-image\s*:\s*url\(([^)]+)\)", style, flags=re.IGNORECASE
-        ):
+        for match in re.finditer(r"background-image\s*:\s*url\(([^)]+)\)", style, flags=re.IGNORECASE):
             raw = match.group(1).strip().strip("\"'").strip()
             if raw:
                 candidates.append(raw)
@@ -420,9 +416,7 @@ def extract_photo_urls_from_html(soup: BeautifulSoup, base_url: str) -> list[str
             style = el.get("style")
             if not isinstance(style, str) or "background-image" not in style:
                 continue
-            for match in re.finditer(
-                r"background-image\s*:\s*url\(([^)]+)\)", style, flags=re.IGNORECASE
-            ):
+            for match in re.finditer(r"background-image\s*:\s*url\(([^)]+)\)", style, flags=re.IGNORECASE):
                 raw = match.group(1).strip().strip("\"'").strip()
                 if raw and "/pictures/" in raw:
                     candidates.append(raw)
@@ -574,7 +568,11 @@ def extract_record_from_page(
     auction = section_data.get("Auction Details", {})
 
     beds = parse_float(prop_info.get("Bed / Bath", "").split("/")[0]) if "Bed / Bath" in prop_info else None
-    baths = parse_float(prop_info.get("Bed / Bath", "").split("/")[1]) if "Bed / Bath" in prop_info and "/" in prop_info.get("Bed / Bath", "") else None
+    baths = (
+        parse_float(prop_info.get("Bed / Bath", "").split("/")[1])
+        if "Bed / Bath" in prop_info and "/" in prop_info.get("Bed / Bath", "")
+        else None
+    )
 
     photo_urls = extract_photo_urls_from_html(soup, url)
 
@@ -748,11 +746,7 @@ def load_crawl_checkpoint(path: Path) -> Optional[CrawlCheckpoint]:
         return CrawlCheckpoint(
             queue=[str(x) for x in payload.get("queue", []) if isinstance(x, str)],
             visited=[str(x) for x in payload.get("visited", []) if isinstance(x, str)],
-            discovered_property_urls=[
-                str(x)
-                for x in payload.get("discovered_property_urls", [])
-                if isinstance(x, str)
-            ],
+            discovered_property_urls=[str(x) for x in payload.get("discovered_property_urls", []) if isinstance(x, str)],
             pages_visited=int(payload.get("pages_visited", 0) or 0),
             list_pages_visited=int(payload.get("list_pages_visited", 0) or 0),
             property_pages_visited=int(payload.get("property_pages_visited", 0) or 0),
@@ -797,57 +791,55 @@ def slugify(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
 
 
-def load_auctions(db_path: Path) -> list[tuple[str, Optional[str], Optional[str], Optional[str]]]:
-    if not db_path.exists():
+def load_auctions() -> list[tuple[str, Optional[str], Optional[str], Optional[str]]]:
+    engine = get_engine(resolve_pg_dsn())
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("""
+                SELECT
+                    case_number_raw,
+                    COALESCE(strap, folio) AS folio,
+                    property_address,
+                    auction_date
+                FROM foreclosures
+                WHERE property_address IS NOT NULL AND TRIM(property_address) <> ''
+                """)
+            ).fetchall()
+            return [(str(r[0]), r[1], r[2], str(r[3])) for r in rows]
+    except Exception as e:
+        logger.error(f"Error loading auctions from PG: {e}")
         return []
-    conn = sqlite3.connect(db_path)
+
+
+def load_home_harvest_photo_counts() -> dict[str, int]:
+    engine = get_engine(resolve_pg_dsn())
     try:
-        rows = conn.execute(
-            """
-            SELECT
-                case_number,
-                COALESCE(parcel_id, folio) AS folio,
-                property_address,
-                auction_date
-            FROM auctions
-            WHERE property_address IS NOT NULL AND TRIM(property_address) <> ''
-            """
-        ).fetchall()
-        return [(str(r[0]), r[1], r[2], r[3]) for r in rows]
-    finally:
-        conn.close()
-
-
-def load_home_harvest_photo_counts(db_path: Path) -> dict[str, int]:
-    if not db_path.exists():
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("""
+                SELECT COALESCE(strap, folio) as folio, photo_cdn_urls, photo_local_paths
+                FROM property_market
+                WHERE COALESCE(strap, folio) IS NOT NULL
+                """)
+            ).fetchall()
+            counts: dict[str, int] = {}
+            for folio, cdn_urls, local_paths in rows:
+                count = 0
+                if local_paths and isinstance(local_paths, list):
+                    count = len(local_paths)
+                elif cdn_urls and isinstance(cdn_urls, list):
+                    count = len(cdn_urls)
+                counts[str(folio)] = max(counts.get(str(folio), 0), count)
+            return counts
+    except Exception as e:
+        logger.error(f"Error loading property_market from PG: {e}")
         return {}
-    conn = sqlite3.connect(db_path)
-    try:
-        try:
-            rows = conn.execute("SELECT folio, photos, primary_photo FROM home_harvest").fetchall()
-        except sqlite3.DatabaseError:
-            return {}
-        counts: dict[str, int] = {}
-        for folio, photos, primary_photo in rows:
-            count = 0
-            if photos:
-                try:
-                    parsed = json.loads(photos)
-                    if isinstance(parsed, list):
-                        count = len(parsed)
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    count = 0
-            if count == 0 and primary_photo:
-                count = 1
-            counts[str(folio)] = max(counts.get(str(folio), 0), count)
-        return counts
-    finally:
-        conn.close()
 
 
-def compare_with_local_db(records: list[ListingRecord], db_path: Path) -> dict[str, Any]:
-    auctions = load_auctions(db_path)
-    home_harvest_counts = load_home_harvest_photo_counts(db_path)
+def compare_with_local_db(records: list[ListingRecord]) -> dict[str, Any]:
+    auctions = load_auctions()
+    home_harvest_counts = load_home_harvest_photo_counts()
 
     by_address: dict[str, tuple[str, Optional[str], Optional[str], Optional[str]]] = {}
     for case_number, folio, address, auction_date in auctions:
@@ -940,23 +932,15 @@ def crawl_all(
     raw_pages_dir = out_dir / "pages"
     ensure_dir(raw_pages_dir)
 
-    queue = deque(
-        initial_checkpoint.queue
-        if initial_checkpoint
-        else [normalize_url(url) for url in SEED_URLS]
-    )
+    queue = deque(initial_checkpoint.queue if initial_checkpoint else [normalize_url(url) for url in SEED_URLS])
     visited: set[str] = set(initial_checkpoint.visited if initial_checkpoint else [])
-    discovered_property_urls: set[str] = set(
-        initial_checkpoint.discovered_property_urls if initial_checkpoint else []
-    )
+    discovered_property_urls: set[str] = set(initial_checkpoint.discovered_property_urls if initial_checkpoint else [])
     records: list[ListingRecord] = list(initial_records)
     seen_record_urls: set[str] = {r.url for r in records if r.url}
 
     pages_visited = initial_checkpoint.pages_visited if initial_checkpoint else 0
     list_pages_visited = initial_checkpoint.list_pages_visited if initial_checkpoint else 0
-    property_pages_visited = (
-        initial_checkpoint.property_pages_visited if initial_checkpoint else 0
-    )
+    property_pages_visited = initial_checkpoint.property_pages_visited if initial_checkpoint else 0
 
     if not queue:
         for seed in [normalize_url(url) for url in SEED_URLS]:
@@ -1119,9 +1103,7 @@ def crawl_all(
                     if checkpoint_every > 0 and len(records) % checkpoint_every == 0:
                         checkpoint_write(force=True)
             else:
-                logger.info(
-                    f"Skipping non-{county_filter} record at {current} (county={record.county})"
-                )
+                logger.info(f"Skipping non-{county_filter} record at {current} (county={record.county})")
         elif is_list_url(current):
             list_pages_visited += 1
 
@@ -1141,9 +1123,6 @@ def crawl_all(
 
 def main() -> None:
     args = parse_args()
-    if args.db_path is None:
-        from src.db.sqlite_paths import resolve_sqlite_db_path_str
-        args.db_path = Path(resolve_sqlite_db_path_str())
     if args.resume and args.run_dir is None and not args.resume_latest:
         raise SystemExit("--resume requires --run-dir or --resume-latest")
 
@@ -1181,9 +1160,7 @@ def main() -> None:
     if should_resume:
         queue_count = len(initial_checkpoint.queue) if initial_checkpoint else 0
         visited_count = len(initial_checkpoint.visited) if initial_checkpoint else 0
-        logger.info(
-            f"Resume mode: queue={queue_count} visited={visited_count} records={len(initial_records)}\n"
-        )
+        logger.info(f"Resume mode: queue={queue_count} visited={visited_count} records={len(initial_records)}\n")
 
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
@@ -1198,9 +1175,7 @@ def main() -> None:
         )
         if args.block_resources:
             install_resource_blocking(context)
-        context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        )
+        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
         records, stats = crawl_all(
             context=context,
             out_dir=run_dir,
@@ -1226,7 +1201,7 @@ def main() -> None:
                 record.photo_count = len(record.photo_urls)
         photo_stats = download_photos(records, run_dir / "photos")
 
-    compare_stats = compare_with_local_db(records, args.db_path)
+    compare_stats = compare_with_local_db(records)
 
     # Save outputs
     save_record_jsonl(run_dir / "hills_listings.jsonl", records)
