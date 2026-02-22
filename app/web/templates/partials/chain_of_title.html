@@ -79,6 +79,10 @@
                                 <a href="/property/{{ folio }}/doc/{{ transfer.document_id }}" target="_blank" class="btn-view-doc">
                                     View Document
                                 </a>
+                            {% elif transfer.instrument_url %}
+                                <a href="{{ transfer.instrument_url }}" target="_blank" rel="noopener noreferrer" class="btn-view-doc">
+                                    View Instrument
+                                </a>
                             {% endif %}
                         </div>
                     </div>

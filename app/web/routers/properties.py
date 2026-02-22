@@ -2,6 +2,9 @@
 Property detail routes.
 """
 import json
+import re
+from datetime import date, datetime, timedelta, timezone
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
@@ -19,6 +22,7 @@ from sunbiz.db import get_engine, resolve_pg_dsn
 router = APIRouter()
 
 templates = get_templates()
+UTC_TZ = getattr(datetime, "UTC", timezone(timedelta(0)))
 
 
 def _pg_engine():
@@ -287,20 +291,342 @@ def _pg_documents_for_property(identifier: str) -> list[dict[str, Any]]:
     return docs
 
 
-def _pg_tax_status_for_property(folio: str) -> dict[str, Any]:
+def _coerce_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _coerce_json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(parsed, list):
+            return parsed
+    return []
+
+
+def _to_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_source_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat(timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value).strip()
+    return text or None
+
+
+def _extract_instrument_tokens(value: Any) -> list[str]:
+    text = str(value or "")
+    if not text:
+        return []
+    return re.findall(r"\d{8,}", text)
+
+
+def _instrument_search_url(instrument_value: Any) -> str | None:
+    tokens = _extract_instrument_tokens(instrument_value)
+    instrument = tokens[0] if tokens else str(instrument_value or "").strip()
+    if not instrument:
+        return None
+    return (
+        "https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html"
+        f"?CQID=320&OBKey__1006_1={quote(instrument)}"
+    )
+
+
+def _build_document_token_index(docs: list[dict[str, Any]]) -> dict[str, int]:
+    index: dict[str, int] = {}
+    for doc in docs:
+        doc_id = doc.get("id")
+        if not isinstance(doc_id, int):
+            continue
+        for token in _extract_instrument_tokens(doc.get("instrument_number")):
+            index.setdefault(token, doc_id)
+        file_path = str(doc.get("file_path") or "")
+        if file_path:
+            stem = Path(file_path).stem
+            for token in re.findall(r"\d{8,}", stem):
+                index.setdefault(token, doc_id)
+    return index
+
+
+def _doc_mtime_iso(file_path: str | None) -> str | None:
+    if not file_path:
+        return None
+    project_root = Path(__file__).resolve().parents[3]
+    abs_path = (project_root / file_path).resolve()
+    try:
+        if abs_path.is_file():
+            return datetime.fromtimestamp(abs_path.stat().st_mtime, tz=UTC_TZ).isoformat(
+                timespec="seconds"
+            )
+    except Exception as exc:
+        logger.warning(f"Failed to read document mtime for {file_path!r}: {exc}")
+    return None
+
+
+def _build_property_sources(
+    *,
+    identifier: str,
+    auction: dict[str, Any],
+    market_row: dict[str, Any] | None,
+    docs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(
+        source_name: str,
+        url: str | None,
+        description: str,
+        created_at: Any = None,
+    ) -> None:
+        if not url:
+            return
+        key = (source_name, url)
+        if key in seen:
+            return
+        seen.add(key)
+        rows.append(
+            {
+                "source_name": source_name,
+                "url": url,
+                "description": description,
+                "created_at": _format_source_timestamp(created_at) or "-",
+            }
+        )
+
+    if market_row:
+        updated_at = market_row.get("updated_at")
+        detail_url = str(market_row.get("detail_url") or "").strip()
+        redfin_json = _coerce_json_dict(market_row.get("redfin_json"))
+        zillow_json = _coerce_json_dict(market_row.get("zillow_json"))
+        hh_json = _coerce_json_dict(market_row.get("homeharvest_json"))
+
+        redfin_url = str(redfin_json.get("detail_url") or "").strip()
+        if not redfin_url and "redfin.com" in detail_url:
+            redfin_url = detail_url
+        _add(
+            "Redfin",
+            redfin_url,
+            "Market snapshot from Redfin scraper",
+            updated_at,
+        )
+
+        zillow_url = str(zillow_json.get("detail_url") or "").strip()
+        _add(
+            "Zillow",
+            zillow_url,
+            "Market snapshot from Zillow scraper",
+            updated_at,
+        )
+
+        hh_url = str(hh_json.get("property_url") or hh_json.get("detail_url") or "").strip()
+        if not hh_url and "realtor.com" in detail_url:
+            hh_url = detail_url
+        _add(
+            "HomeHarvest",
+            hh_url,
+            "Market snapshot from HomeHarvest feed",
+            updated_at,
+        )
+
+    for doc in docs:
+        if doc.get("document_type") != "FINAL_JUDGMENT":
+            continue
+        doc_id = doc.get("id")
+        if not isinstance(doc_id, int):
+            continue
+        _add(
+            "Final Judgment PDF",
+            f"/property/{quote(identifier)}/doc/{doc_id}",
+            f"Downloaded judgment document for case {doc.get('case_number') or ''}".strip(),
+            _doc_mtime_iso(doc.get("file_path")),
+        )
+
+    _add(
+        "ORI Search",
+        "https://publicaccess.hillsclerk.com/OfficialRecords",
+        "Official Records search was executed for this property",
+        auction.get("step_ori_searched"),
+    )
+    _add(
+        "Judgment Extraction",
+        "https://publicrecords.hillsclerk.com/",
+        "Judgment extraction stage completed",
+        auction.get("step_judgment_extracted"),
+    )
+    return rows
+
+
+def _market_photo_urls(
+    identifier: str,
+    local_paths: list[Any],
+    cdn_urls: list[Any],
+) -> tuple[list[str], list[dict[str, str | None]]]:
+    local_files: list[str] = []
+    for raw in local_paths:
+        path_str = str(raw or "").strip()
+        if not path_str:
+            continue
+        filename = Path(path_str).name
+        if not filename:
+            continue
+        local_files.append(f"/property/{quote(identifier)}/photos/{quote(filename)}")
+
+    cdn_list = [str(url).strip() for url in cdn_urls if str(url or "").strip()]
+    photos_with_fallback: list[dict[str, str | None]] = []
+    max_len = max(len(local_files), len(cdn_list))
+    for i in range(max_len):
+        local_url = local_files[i] if i < len(local_files) else None
+        cdn_url = cdn_list[i] if i < len(cdn_list) else None
+        if local_url:
+            photos_with_fallback.append({"url": local_url, "cdn_fallback": cdn_url})
+        elif cdn_url:
+            photos_with_fallback.append({"url": cdn_url, "cdn_fallback": None})
+
+    photos = [str(p["url"]) for p in photos_with_fallback if p.get("url")]
+    return photos, photos_with_fallback
+
+
+def _pg_tax_liens_for_property(
+    conn: Any,
+    *,
+    strap: str | None,
+    folio: str | None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    where_clauses: list[str] = []
+    params: dict[str, Any] = {"lim": max(1, min(limit, 1000))}
+    if strap:
+        where_clauses.append("oe.strap = :strap")
+        params["strap"] = strap
+    if folio:
+        where_clauses.append("oe.folio = :folio")
+        params["folio"] = folio
+    if not where_clauses:
+        return []
+
+    rows = conn.execute(
+        sa_text(f"""
+            SELECT
+                oe.id,
+                oe.recording_date,
+                oe.encumbrance_type::text AS encumbrance_type,
+                oe.raw_document_type,
+                oe.amount,
+                oe.survival_status,
+                oe.party1,
+                oe.party2,
+                oe.instrument_number,
+                CASE
+                    WHEN oe.encumbrance_type::text = 'mortgage'
+                        THEN COALESCE(NULLIF(oe.party2, ''), NULLIF(oe.party1, ''), '')
+                    ELSE COALESCE(NULLIF(oe.party1, ''), NULLIF(oe.party2, ''), '')
+                END AS creditor
+            FROM ori_encumbrances oe
+            WHERE {" OR ".join(where_clauses)}
+              AND (
+                    UPPER(COALESCE(oe.raw_document_type, '')) LIKE '%LNCORPTX%'
+                    OR UPPER(COALESCE(oe.raw_document_type, '')) LIKE '%TAX LIEN%'
+                    OR UPPER(COALESCE(oe.raw_document_type, '')) LIKE '%(TL)%'
+                    OR UPPER(COALESCE(oe.party1, '')) LIKE '%INTERNAL REVENUE%'
+                    OR UPPER(COALESCE(oe.party1, '')) LIKE '% IRS %'
+                    OR UPPER(COALESCE(oe.party2, '')) LIKE '%INTERNAL REVENUE%'
+                    OR UPPER(COALESCE(oe.party2, '')) LIKE '% IRS %'
+                    OR UPPER(COALESCE(oe.party1, '')) LIKE '%TAX COLLECTOR%'
+                    OR UPPER(COALESCE(oe.party2, '')) LIKE '%TAX COLLECTOR%'
+              )
+              AND UPPER(COALESCE(oe.raw_document_type, '')) NOT LIKE '%MORTGAGE%'
+              AND UPPER(COALESCE(oe.raw_document_type, '')) NOT LIKE '%ASSIGNMENT/TAXES%'
+            ORDER BY oe.recording_date DESC NULLS LAST, oe.id DESC
+            LIMIT :lim
+        """),
+        params,
+    ).mappings().fetchall()
+    return [dict(r) for r in rows]
+
+
+def _pg_nocs_for_property(
+    conn: Any,
+    *,
+    strap: str | None,
+    folio: str | None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    where_clauses: list[str] = []
+    params: dict[str, Any] = {"lim": max(1, min(limit, 1000))}
+    if strap:
+        where_clauses.append("oe.strap = :strap")
+        params["strap"] = strap
+    if folio:
+        where_clauses.append("oe.folio = :folio")
+        params["folio"] = folio
+    if not where_clauses:
+        return []
+
+    rows = conn.execute(
+        sa_text(f"""
+            SELECT
+                oe.id AS encumbrance_id,
+                oe.recording_date,
+                oe.instrument_number,
+                oe.party1,
+                oe.party2,
+                oe.legal_description,
+                oe.raw_document_type
+            FROM ori_encumbrances oe
+            WHERE {" OR ".join(where_clauses)}
+              AND (
+                    UPPER(COALESCE(oe.raw_document_type, '')) LIKE '%(NOC)%'
+                    OR UPPER(COALESCE(oe.raw_document_type, '')) LIKE '%NOTICE OF COMMENCEMENT%'
+                    OR UPPER(COALESCE(oe.raw_document_type, '')) LIKE 'NOC%'
+              )
+            ORDER BY oe.recording_date DESC NULLS LAST, oe.id DESC
+            LIMIT :lim
+        """),
+        params,
+    ).mappings().fetchall()
+    nocs = []
+    for row in rows:
+        item = dict(row)
+        item["id"] = None
+        item["instrument_url"] = _instrument_search_url(item.get("instrument_number"))
+        nocs.append(item)
+    return nocs
+
+
+def _pg_tax_status_for_property(
+    *,
+    strap: str | None,
+    folio: str | None,
+    identifier: str,
+) -> dict[str, Any]:
     try:
         with _pg_engine().connect() as conn:
-            row = conn.execute(
-                sa_text("""
-                    SELECT tax_year, homestead_exempt, estimated_annual_tax
-                    FROM dor_nal_parcels
-                    WHERE folio = :id OR strap = :id OR parcel_id = :id
-                    ORDER BY tax_year DESC
-                    LIMIT 1
-                """),
-                {"id": folio},
-            ).mappings().fetchone()
-            if not row:
+            id_values = [v for v in (folio, strap, identifier) if v]
+            if not id_values:
                 return {
                     "has_tax_liens": False,
                     "tax_status": None,
@@ -308,16 +634,38 @@ def _pg_tax_status_for_property(folio: str) -> dict[str, Any]:
                     "total_amount_due": None,
                     "liens": [],
                 }
-            amount = row.get("estimated_annual_tax")
+
+            row = conn.execute(
+                sa_text("""
+                    SELECT tax_year, homestead_exempt, estimated_annual_tax
+                    FROM dor_nal_parcels
+                    WHERE folio = ANY(:ids)
+                       OR strap = ANY(:ids)
+                       OR parcel_id = ANY(:ids)
+                    ORDER BY tax_year DESC
+                    LIMIT 1
+                """),
+                {"ids": id_values},
+            ).mappings().fetchone()
+            liens = _pg_tax_liens_for_property(conn, strap=strap, folio=folio)
+            liens_total = sum(_as_float(item.get("amount")) for item in liens)
+            amount = row.get("estimated_annual_tax") if row else None
+            tax_warrant = any(
+                "WARRANT" in str(item.get("raw_document_type") or "").upper()
+                for item in liens
+            )
             return {
-                "has_tax_liens": bool((amount or 0) > 0),
-                "tax_status": f"Tax Year {row.get('tax_year')}",
-                "tax_warrant": False,
-                "total_amount_due": float(amount) if amount is not None else None,
-                "liens": [],
+                "has_tax_liens": bool(liens) or bool((amount or 0) > 0),
+                "tax_status": f"Tax Year {row.get('tax_year')}" if row else None,
+                "tax_warrant": tax_warrant,
+                "total_amount_due": liens_total if liens_total > 0 else _to_optional_float(amount),
+                "liens": liens,
             }
     except Exception as exc:
-        logger.exception(f"Tax status lookup failed for folio={folio!r}: {exc}")
+        logger.exception(
+            "Tax status lookup failed "
+            f"for strap={strap!r} folio={folio!r} identifier={identifier!r}: {exc}"
+        )
         return {
             "has_tax_liens": False,
             "tax_status": None,
@@ -426,8 +774,9 @@ def _pg_encumbrances_for_property(
     encumbrances: list[dict[str, Any]] = []
     for row in rows:
         encumbrance = dict(row)
-        encumbrance["is_joined"] = False
-        encumbrance["is_inferred"] = False
+        reason_upper = str(encumbrance.get("survival_reason") or "").upper()
+        encumbrance["is_joined"] = "JOINED AS DEFENDANT" in reason_upper
+        encumbrance["is_inferred"] = "INFER" in reason_upper
         encumbrances.append(encumbrance)
     return encumbrances
 
@@ -469,33 +818,102 @@ def _summarize_encumbrances(encumbrances: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
-def _pg_market_snapshot(auction: dict[str, Any], parcel: dict[str, Any] | None) -> dict[str, Any]:
-    zestimate = auction.get("zestimate")
-    list_price = auction.get("list_price")
-    market_value = (
-        zestimate
-        or list_price
-        or auction.get("market_value")
-        or (parcel or {}).get("market_value")
-    )
+def _pg_market_snapshot(
+    conn: Any,
+    *,
+    identifier: str,
+    auction: dict[str, Any],
+    parcel: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    market_row = None
+    strap = auction.get("strap")
+    folio = auction.get("folio")
+    try:
+        if strap:
+            market_row = conn.execute(
+                sa_text("""
+                    SELECT *
+                    FROM property_market
+                    WHERE strap = :strap
+                    LIMIT 1
+                """),
+                {"strap": strap},
+            ).mappings().fetchone()
+        if not market_row and folio:
+            market_row = conn.execute(
+                sa_text("""
+                    SELECT *
+                    FROM property_market
+                    WHERE folio = :folio
+                    ORDER BY updated_at DESC NULLS LAST
+                    LIMIT 1
+                """),
+                {"folio": folio},
+            ).mappings().fetchone()
+    except Exception as exc:
+        logger.warning(
+            "Market snapshot lookup failed "
+            f"for strap={strap!r} folio={folio!r}: {exc}"
+        )
+        market_row = None
+
+    row = dict(market_row) if market_row else None
+    redfin_json = _coerce_json_dict(row.get("redfin_json")) if row else {}
+    zillow_json = _coerce_json_dict(row.get("zillow_json")) if row else {}
+    hh_json = _coerce_json_dict(row.get("homeharvest_json")) if row else {}
+
     estimates = {
-        "zillow_zestimate": float(zestimate) if zestimate is not None else None,
-        "homeharvest_estimated_value": None,
-        "redfin_estimate": None,
+        "zillow_zestimate": _to_optional_float(zillow_json.get("zestimate")),
+        "homeharvest_estimated_value": _to_optional_float(hh_json.get("estimated_value")),
+        "redfin_estimate": _to_optional_float(
+            redfin_json.get("zestimate") or redfin_json.get("redfin_estimate")
+        ),
         "realtor_estimate": None,
     }
+    estimate_values = [v for v in estimates.values() if v is not None]
+
     list_prices = {
-        "redfin_list_price": float(list_price) if list_price is not None else None,
+        "redfin_list_price": _to_optional_float(
+            redfin_json.get("list_price") or (row or {}).get("list_price")
+        ),
         "realtor_list_price": None,
-        "homeharvest_list_price": None,
+        "homeharvest_list_price": _to_optional_float(hh_json.get("list_price")),
     }
-    return {
-        "blended_estimate": float(market_value) if market_value is not None else 0,
-        "estimates": estimates,
-        "list_prices": list_prices,
-        "photos": [],
-        "photos_with_fallback": [],
-    }
+
+    fallback_market_value = (
+        _to_optional_float((row or {}).get("zestimate"))
+        or _to_optional_float((row or {}).get("list_price"))
+        or _to_optional_float(auction.get("market_value"))
+        or _to_optional_float((parcel or {}).get("market_value"))
+        or _to_optional_float(auction.get("assessed_value"))
+        or 0.0
+    )
+    blended_estimate = (
+        round(sum(estimate_values) / len(estimate_values), 2)
+        if estimate_values
+        else fallback_market_value
+    )
+
+    local_paths = _coerce_json_list((row or {}).get("photo_local_paths"))
+    cdn_urls = _coerce_json_list((row or {}).get("photo_cdn_urls"))
+    photos, photos_with_fallback = _market_photo_urls(
+        identifier,
+        local_paths=local_paths,
+        cdn_urls=cdn_urls,
+    )
+
+    return (
+        {
+            "blended_estimate": blended_estimate,
+            "estimates": estimates,
+            "list_prices": list_prices,
+            "photos": photos,
+            "photos_with_fallback": photos_with_fallback,
+            "primary_source": (row or {}).get("primary_source"),
+            "updated_at": (row or {}).get("updated_at"),
+        },
+        row,
+    )
 
 
 def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
@@ -561,8 +979,47 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
                     judgment_data = json.loads(judgment_data)
                 except json.JSONDecodeError:
                     judgment_data = None
+            if not isinstance(judgment_data, dict):
+                judgment_data = None
 
-            market = _pg_market_snapshot(auction, parcel_dict)
+            judgment_map = judgment_data or {}
+            plaintiff = str(judgment_map.get("plaintiff") or "").strip() or None
+            foreclosure_type = (
+                str(judgment_map.get("foreclosure_type") or "").strip() or None
+            )
+            lis_pendens_block = judgment_map.get("lis_pendens")
+            lis_pendens_date = None
+            if isinstance(lis_pendens_block, dict):
+                lis_pendens_date = (
+                    lis_pendens_block.get("recording_date")
+                    or lis_pendens_block.get("date")
+                )
+            if not lis_pendens_date:
+                lis_pendens_date = judgment_map.get("lis_pendens_date")
+
+            defendant = None
+            defendants = judgment_map.get("defendants")
+            if isinstance(defendants, list):
+                names = [str(v).strip() for v in defendants if str(v).strip()]
+                if names:
+                    defendant = ", ".join(names[:3])
+            elif isinstance(defendants, str):
+                defendant = defendants.strip() or None
+            if not defendant:
+                defendant = str(judgment_map.get("defendant") or "").strip() or None
+
+            plaintiff_max_bid = _to_optional_float(
+                judgment_map.get("plaintiff_max_bid")
+                or judgment_map.get("plaintiff_maximum_bid")
+                or judgment_map.get("max_bid")
+            )
+
+            market, market_row = _pg_market_snapshot(
+                conn,
+                identifier=strap_or_folio,
+                auction=auction,
+                parcel=parcel_dict,
+            )
             market_value = (
                 market.get("blended_estimate")
                 or auction.get("market_value")
@@ -571,8 +1028,30 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
                 or 0
             )
 
-            foreclosure_id = int(auction.get("foreclosure_id"))
+            raw_foreclosure_id = auction.get("foreclosure_id")
+            try:
+                foreclosure_id = int(raw_foreclosure_id) if raw_foreclosure_id is not None else 0
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid foreclosure_id for property detail "
+                    f"identifier={identifier!r} raw_value={raw_foreclosure_id!r}"
+                )
+                foreclosure_id = 0
+            documents = _pg_documents_for_property(strap_or_folio)
+            document_tokens = _build_document_token_index(documents)
             permits = _pg_permits_for_property(foreclosure_id)
+            nocs = _pg_nocs_for_property(
+                conn,
+                strap=auction.get("strap"),
+                folio=auction.get("folio"),
+            )
+            for noc in nocs:
+                for token in _extract_instrument_tokens(noc.get("instrument_number")):
+                    doc_id = document_tokens.get(token)
+                    if doc_id is not None:
+                        noc["id"] = doc_id
+                        break
+
             encumbrances = _pg_encumbrances_for_property(
                 conn,
                 strap=auction.get("strap"),
@@ -613,10 +1092,11 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
                 "opening_bid": auction.get("winning_bid"),
                 "status": auction.get("auction_status"),
                 "owner_name": auction.get("owner_name") or parcel_dict.get("owner_name"),
-                "plaintiff_max_bid": None,
-                "plaintiff": None,
-                "foreclosure_type": None,
-                "lis_pendens_date": None,
+                "plaintiff_max_bid": plaintiff_max_bid,
+                "plaintiff": plaintiff,
+                "foreclosure_type": foreclosure_type,
+                "lis_pendens_date": lis_pendens_date,
+                "defendant": defendant,
                 "extracted_judgment_data": judgment_data,
                 "judgment_extracted_at": auction.get("step_judgment_extracted"),
                 "has_valid_parcel_id": bool(auction.get("strap") or auction.get("folio")),
@@ -631,7 +1111,7 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
                 "parcels_data": parcel_dict,
                 "encumbrances": encumbrances,
                 "chain": _pg_chain_for_property(strap_or_folio, case_number),
-                "nocs": [],
+                "nocs": nocs,
                 "sales": get_pg_queries().get_sales_history(strap_or_folio),
                 "net_equity": net_equity,
                 "market_value": market_value,
@@ -642,8 +1122,16 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
                 ),
                 "market": market,
                 "enrichments": enrichments,
-                "sources": [],
+                "sources": _build_property_sources(
+                    identifier=strap_or_folio,
+                    auction=auction,
+                    market_row=market_row,
+                    docs=documents,
+                ),
                 "_foreclosure_id": foreclosure_id,
+                "_strap": auction.get("strap"),
+                "_folio_raw": auction.get("folio"),
+                "_case_number_raw": case_number,
             }
     except Exception as exc:
         logger.exception(
@@ -801,7 +1289,11 @@ async def property_tax(request: Request, folio: str):
     prop = _pg_property_detail(folio)
     if not prop:
         return HTMLResponse("<p>Property not found</p>")
-    status = _pg_tax_status_for_property(prop.get("folio") or folio)
+    status = _pg_tax_status_for_property(
+        strap=prop.get("_strap"),
+        folio=prop.get("_folio_raw"),
+        identifier=prop.get("folio") or folio,
+    )
     return templates.TemplateResponse(
         "partials/tax.html",
         {
@@ -823,7 +1315,8 @@ async def property_permits(request: Request, folio: str):
         return HTMLResponse("<p>Property not found</p>")
 
     permits = _pg_permits_for_property(prop.get("_foreclosure_id") or 0)
-    nocs = []
+    nocs_value = prop.get("nocs")
+    nocs = nocs_value if isinstance(nocs_value, list) else []
 
     return templates.TemplateResponse(
         "partials/permits.html",
@@ -858,9 +1351,23 @@ async def property_chain_of_title(request: Request, folio: str):
         chain_of_title = prop.get("chain", [])
     real_folio = prop.get("folio") or folio
 
-    # Enhance chain with document links — only link when a file exists on disk
+    docs = _pg_documents_for_property(real_folio)
+    doc_index = _build_document_token_index(docs)
+
+    # Enhance chain with local document links and clerk search fallback URLs.
     for item in chain_of_title:
         item["document_id"] = None
+        instrument_value = (
+            item.get("acquisition_instrument")
+            or item.get("instrument_number")
+            or item.get("instrument")
+        )
+        for token in _extract_instrument_tokens(instrument_value):
+            doc_id = doc_index.get(token)
+            if doc_id is not None:
+                item["document_id"] = doc_id
+                break
+        item["instrument_url"] = _instrument_search_url(instrument_value)
 
     return templates.TemplateResponse(
         "partials/chain_of_title.html",

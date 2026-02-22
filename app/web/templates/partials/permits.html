@@ -69,6 +69,8 @@
                     <td>
                         {% if noc.id %}
                         <a href="/property/{{ folio }}/doc/{{ noc.id }}" target="_blank" class="btn btn-sm btn-outline">View PDF</a>
+                        {% elif noc.instrument_url %}
+                        <a href="{{ noc.instrument_url }}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">View Instrument</a>
                         {% else %}
                         -
                         {% endif %}
