@@ -383,6 +383,7 @@ SET
 # Step 6 — Load judgment extractions from disk JSON files
 # ---------------------------------------------------------------------------
 
+
 def _load_judgment_data(conn: object) -> int:
     """Scan data/Foreclosure/*/documents/*_extracted.json and push into PG.
 
@@ -491,8 +492,17 @@ def _log_unresolved_coord_sample(conn: object, *, limit: int = 10) -> None:
     ).fetchall()
     if not rows:
         return
-    sample = [dict(r._mapping) for r in rows]  # noqa: SLF001
-    logger.warning(f"Unresolved coordinate sample (up to {limit}): {sample}")
+    logger.warning(f"Unresolved coordinate sample (up to {limit}):")
+    for r in rows:
+        d = dict(r._mapping)  # noqa: SLF001
+        logger.warning(
+            "  - ID: {id} | Strap: {strap} | Folio: {folio} | Date: {date} | Address: {addr}",
+            id=d.get("foreclosure_id", "N/A"),
+            strap=d.get("strap") or "None",
+            folio=d.get("folio") or "None",
+            date=d.get("auction_date", "N/A"),
+            addr=d.get("property_address") or "None",
+        )
 
 
 def refresh(dsn: str | None = None) -> dict[str, int]:
@@ -596,12 +606,11 @@ def refresh(dsn: str | None = None) -> dict[str, int]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Refresh foreclosures table from PG reference data"
-    )
+    parser = argparse.ArgumentParser(description="Refresh foreclosures table from PG reference data")
     parser.add_argument("--dsn", help="PostgreSQL DSN (default from env / sunbiz.db)")
     parser.add_argument(
-        "--migrate", action="store_true",
+        "--migrate",
+        action="store_true",
         help="Run DDL migration before refreshing",
     )
     args = parser.parse_args()
