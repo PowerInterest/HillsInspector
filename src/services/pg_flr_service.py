@@ -297,6 +297,7 @@ class PgFlrService:
                 remote_dirs=None,
                 include="FLR/flr",
                 exclude=None,
+                dataset_profile=None,
                 modified_since=None,
                 max_files=None,
                 dry_run=False,

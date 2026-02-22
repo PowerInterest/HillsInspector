@@ -13,9 +13,9 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from sqlalchemy import text
-from sunbiz.db import get_engine, resolve_pg_dsn
-from src.utils.time import today_local
+from sqlalchemy import text  # noqa: E402
+from sunbiz.db import get_engine, resolve_pg_dsn  # noqa: E402
+from src.utils.time import today_local  # noqa: E402
 
 
 def _fetchone_value(conn, query: str, params: dict | None = None, default: int = 0) -> int:

@@ -33,7 +33,7 @@ def test_joinder():
     creditor = "WELLS FARGO BANK NA"
     defendants = ["WELLS FARGO BANK", "JOHN DOE", "JANE SMITH"]
     
-    joined, name, score = joinder_validator.is_joined(creditor, defendants)
+    joined, name, _score = joinder_validator.is_joined(creditor, defendants)
     assert joined is True
     assert name == "WELLS FARGO BANK"
     print("Joinder validator passed.")

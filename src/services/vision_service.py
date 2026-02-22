@@ -1060,12 +1060,12 @@ class VisionService:
     # 10.10.1.5 has 262k context, 10.10.2.27 only has 11k - prioritize the larger one
     # 192.168.86.26:1234 is LM Studio on Windows (uses different model ID)
     _LOCAL_ENDPOINTS = [
-        {"url": "http://10.10.1.5:8002/v1/chat/completions", "model": "zai-org/GLM-4.6V-Flash"},
+        {"url": "http://10.10.1.5:1234/v1/chat/completions", "model": "glm-4.6v"},
         {"url": "http://10.10.0.76:6969/v1/chat/completions", "model": "zai-org/glm-4.6v-flash"},
         {"url": "http://192.168.86.26:6969/v1/chat/completions", "model": "zai-org/glm-4.6v-flash"},
         {"url": "http://10.10.0.76:6969/v1/chat/completions", "model": "qwen/qwen3-vl-30b"},
         {"url": "http://10.10.0.33:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
-        {"url": "http://10.10.1.5:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
+        # 10.10.1.5:6969 is down — only 1234 (glm-4.6v) is active
         {"url": "http://10.10.2.27:6969/v1/chat/completions", "model": "Qwen/Qwen3-VL-8B-Instruct"},
         {"url": "http://192.168.86.26:1234/v1/chat/completions", "model": "qwen/qwen3-vl-8b"},
     ]

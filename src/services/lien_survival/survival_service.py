@@ -126,7 +126,7 @@ class SurvivalService:
             self.uncertainty_flags.append("LOW_CONFIDENCE_JUDGMENT")
 
         # 2. Extract context
-        plaintiff = judgment_data.get('plaintiff')
+        plaintiff = str(judgment_data.get("plaintiff") or "").strip()
         # lis_pendens is stored as nested dict: {"recording_date": ..., "instrument_number": ...}
         lp_data = judgment_data.get('lis_pendens') or {}
         lp_date = lp_data.get('recording_date') if isinstance(lp_data, dict) else judgment_data.get('lis_pendens_date')

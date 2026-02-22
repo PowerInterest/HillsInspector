@@ -9,6 +9,7 @@ import asyncio
 import json
 import random
 import re
+from contextlib import suppress
 from typing import Optional, Dict
 from loguru import logger
 
@@ -111,7 +112,6 @@ class MarketScraper:
         prop_id = property_id or self.storage._sanitize_filename(f"{address}_{city}")  # noqa: SLF001
 
         zillow_error = None
-        realtor_error = None
         zillow_shot: Optional[str] = None
 
         async with async_playwright() as p:
@@ -261,10 +261,8 @@ class MarketScraper:
 
         dom = data.get('days_on_market')
         if dom is not None:
-            try:
+            with suppress(ValueError, TypeError):
                 details.days_on_market = int(str(dom).replace(',', '').strip())
-            except (ValueError, TypeError):
-                pass
 
         price_history = data.get("price_history")
         if isinstance(price_history, list) and len(price_history) > len(details.price_history):

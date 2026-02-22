@@ -9,7 +9,8 @@ from pathlib import Path
 try:
     from dotenv import load_dotenv
 except Exception:  # pragma: no cover - optional dependency in some contexts
-    load_dotenv = None
+    def load_dotenv(*_args: object, **_kwargs: object) -> bool:
+        return False
 
 
 DEFAULT_SQLITE_PATH = Path("data/property_master_sqlite.db")
@@ -18,8 +19,7 @@ DEFAULT_SQLITE_PATH = Path("data/property_master_sqlite.db")
 @lru_cache(maxsize=1)
 def resolve_sqlite_db_path(env_var: str = "HILLS_SQLITE_DB") -> Path:
     """Return the configured SQLite DB path (env override) as an absolute Path."""
-    if load_dotenv is not None:
-        load_dotenv()
+    load_dotenv()
     env_path = os.getenv(env_var)
     if env_path:
         return Path(env_path).expanduser().resolve()

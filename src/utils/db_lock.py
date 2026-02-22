@@ -6,6 +6,7 @@ from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 try:
@@ -19,7 +20,7 @@ class DatabaseLockError(RuntimeError):
 
 
 @contextmanager
-def exclusive_db_lock(lock_path: Path, wait_seconds: float = 0) -> None:
+def exclusive_db_lock(lock_path: Path, wait_seconds: float = 0) -> Iterator[None]:
     """
     Acquire an exclusive, cross-process lock for the main database.
 

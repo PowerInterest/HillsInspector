@@ -10,6 +10,7 @@ Criteria for deletion:
 - party1 IS NULL or empty
 - These are rebuild artifacts, not proper ORI-sourced documents
 """
+import sys
 import duckdb
 from pathlib import Path
 from loguru import logger
@@ -151,4 +152,4 @@ def main():
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())
