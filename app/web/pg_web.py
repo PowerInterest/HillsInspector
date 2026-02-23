@@ -14,6 +14,7 @@ from typing import Any
 
 from loguru import logger
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from src.utils.time import today_local
 from sunbiz.db import get_engine, resolve_pg_dsn
@@ -76,8 +77,9 @@ def _encumbrance_lateral_join(table_alias: str) -> str:
                       AND UPPER(COALESCE(oe.survival_status, '')) IN ('SURVIVED', 'UNCERTAIN')
                 ), 0)::numeric AS est_surviving_debt
             FROM ori_encumbrances oe
-            WHERE ({table_alias}.strap IS NOT NULL AND oe.strap = {table_alias}.strap)
-               OR ({table_alias}.folio IS NOT NULL AND oe.folio = {table_alias}.folio)
+            WHERE (({table_alias}.strap IS NOT NULL AND oe.strap = {table_alias}.strap)
+               OR ({table_alias}.folio IS NOT NULL AND oe.folio = {table_alias}.folio))
+              AND oe.encumbrance_type != 'noc'
         ) enc ON TRUE
     """
 
@@ -276,7 +278,7 @@ def get_upcoming_auctions(
                     fallback_params["auction_type"] = normalized_type
                 rows = conn.execute(fallback_sql, fallback_params).fetchall()
             return _rows_to_dicts(rows)
-    except Exception as e:
+    except OperationalError as e:
         logger.exception("get_upcoming_auctions failed")
         return []
 
@@ -369,7 +371,7 @@ def get_upcoming_auctions_with_enrichments(
                         base.get("has_enrichments") or permits_total > 0
                     )
                     enrich_by_id[foreclosure_id] = base
-        except Exception as e:
+        except OperationalError as e:
             logger.exception("get_upcoming_auctions_with_enrichments aggregation failed")
 
     for auction in auctions:
@@ -435,7 +437,7 @@ def get_auction_count(days_ahead: int = 60, auction_type: str | None = None) -> 
                 fallback_params,
             ).fetchone()
             return int(row[0]) if row and row[0] is not None else 0
-    except Exception as e:
+    except OperationalError as e:
         logger.exception("get_auction_count failed")
         return 0
 
@@ -501,7 +503,7 @@ def get_dashboard_stats() -> dict[str, Any]:
                 ).mappings().one()
                 stats = dict(fallback)
             return stats
-    except Exception as e:
+    except OperationalError as e:
         logger.exception("get_dashboard_stats failed")
         return {
             "foreclosures": 0,
@@ -571,7 +573,7 @@ def get_auctions_by_date(auction_date: date) -> list[dict[str, Any]]:
                 {"auction_date": auction_date},
             ).fetchall()
             return _rows_to_dicts(rows)
-    except Exception as e:
+    except OperationalError as e:
         logger.exception(f"get_auctions_by_date({auction_date}) failed")
         return []
 
@@ -611,7 +613,7 @@ def search_properties(query: str, limit: int = 20) -> list[dict[str, Any]]:
                 {"q": q, "lim": limit},
             ).fetchall()
             return _rows_to_dicts(rows)
-    except Exception as e:
+    except OperationalError as e:
         logger.exception(f"search_properties({query!r}) failed")
         return []
 
@@ -659,7 +661,7 @@ def get_auction_map_points(days_ahead: int = 60) -> list[dict[str, Any]]:
                 )
                 rows = conn.execute(text(history_sql)).fetchall()
             return _rows_to_dicts(rows)
-    except Exception as e:
+    except OperationalError as e:
         logger.exception("get_auction_map_points failed")
         return []
 

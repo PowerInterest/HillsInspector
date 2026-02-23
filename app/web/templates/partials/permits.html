@@ -56,6 +56,7 @@
                     <th>Instrument</th>
                     <th>Owner</th>
                     <th>Contractor/Party 2</th>
+                    <th>Linked Permit</th>
                     <th>Document</th>
                 </tr>
             </thead>
@@ -66,6 +67,13 @@
                     <td>{{ noc.instrument_number }}</td>
                     <td>{{ noc.party1 or '-' }}</td>
                     <td>{{ noc.party2 or '-' }}</td>
+                    <td>
+                        {% if noc.matched_permit %}
+                        {{ noc.matched_permit }}{% if noc.matched_permit_date %} <span class="text-muted">({{ noc.matched_permit_date|format_date }})</span>{% endif %}
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
                     <td>
                         {% if noc.id %}
                         <a href="/property/{{ folio }}/doc/{{ noc.id }}" target="_blank" class="btn btn-sm btn-outline">View PDF</a>

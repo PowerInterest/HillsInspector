@@ -33,32 +33,28 @@ def _pg_engine():
 def _pg_case_numbers_for_property(identifier: str) -> list[str]:
     if not identifier:
         return []
-    try:
-        with _pg_engine().connect() as conn:
-            rows = conn.execute(
-                sa_text("""
-                    SELECT DISTINCT case_number FROM (
-                        SELECT f.case_number_raw AS case_number
-                        FROM foreclosures f
-                        WHERE f.case_number_raw = :identifier
-                           OR f.strap = :identifier
-                           OR f.folio = :identifier
-                        UNION ALL
-                        SELECT fh.case_number_raw AS case_number
-                        FROM foreclosures_history fh
-                        WHERE fh.case_number_raw = :identifier
-                           OR fh.strap = :identifier
-                           OR fh.folio = :identifier
-                    ) t
-                    WHERE case_number IS NOT NULL AND btrim(case_number) != ''
-                    ORDER BY case_number
-                """),
-                {"identifier": identifier},
-            ).fetchall()
-            return [str(r[0]) for r in rows if r and r[0]]
-    except Exception as exc:
-        logger.exception(f"Case number lookup failed for identifier={identifier!r}: {exc}")
-        return []
+    with _pg_engine().connect() as conn:
+        rows = conn.execute(
+            sa_text("""
+                SELECT DISTINCT case_number FROM (
+                    SELECT f.case_number_raw AS case_number
+                    FROM foreclosures f
+                    WHERE f.case_number_raw = :identifier
+                       OR f.strap = :identifier
+                       OR f.folio = :identifier
+                    UNION ALL
+                    SELECT fh.case_number_raw AS case_number
+                    FROM foreclosures_history fh
+                    WHERE fh.case_number_raw = :identifier
+                       OR fh.strap = :identifier
+                       OR fh.folio = :identifier
+                ) t
+                WHERE case_number IS NOT NULL AND btrim(case_number) != ''
+                ORDER BY case_number
+            """),
+            {"identifier": identifier},
+        ).fetchall()
+        return [str(r[0]) for r in rows if r and r[0]]
 
 
 def _resolve_chain_folio(
@@ -146,109 +142,101 @@ def _resolve_chain_folio(
 
 
 def _pg_chain_for_property(identifier: str, case_number: str | None = None) -> list[dict[str, Any]]:
-    try:
-        with _pg_engine().connect() as conn:
-            folio = _resolve_chain_folio(conn, identifier, case_number)
-            if not folio:
-                return []
+    with _pg_engine().connect() as conn:
+        folio = _resolve_chain_folio(conn, identifier, case_number)
+        if not folio:
+            return []
 
-            rows = (
-                conn.execute(
-                    sa_text("""
-                    SELECT
-                        seq_no,
-                        sale_date,
-                        sale_type,
-                        sale_amount,
-                        grantor,
-                        grantee,
-                        or_book,
-                        or_page,
-                        doc_num,
-                        days_since_prev,
-                        link_score,
-                        link_ok,
-                        link_reason
-                    FROM fn_title_chain(:folio)
-                    ORDER BY seq_no
-                """),
-                    {"folio": folio},
-                )
-                .mappings()
-                .fetchall()
+        rows = (
+            conn.execute(
+                sa_text("""
+                SELECT
+                    seq_no,
+                    sale_date,
+                    sale_type,
+                    sale_amount,
+                    grantor,
+                    grantee,
+                    or_book,
+                    or_page,
+                    doc_num,
+                    days_since_prev,
+                    link_score,
+                    link_ok,
+                    link_reason
+                FROM fn_title_chain(:folio)
+                ORDER BY seq_no
+            """),
+                {"folio": folio},
             )
+            .mappings()
+            .fetchall()
+        )
 
-            chain_rows: list[dict[str, Any]] = []
-            for row in rows:
-                reason = str(row.get("link_reason") or "")
-                if reason == "NAME_MISMATCH":
-                    link_status = "BROKEN"
-                elif reason == "MISSING_PARTY":
-                    link_status = "INCOMPLETE"
-                elif reason == "FUZZY_MATCH":
-                    link_status = "FUZZY"
-                elif reason == "ROOT_BOUNDARY":
-                    link_status = "IMPLIED"
-                else:
-                    link_status = "LINKED"
+        chain_rows: list[dict[str, Any]] = []
+        for row in rows:
+            reason = str(row.get("link_reason") or "")
+            if reason == "NAME_MISMATCH":
+                link_status = "BROKEN"
+            elif reason == "MISSING_PARTY":
+                link_status = "INCOMPLETE"
+            elif reason == "FUZZY_MATCH":
+                link_status = "FUZZY"
+            elif reason == "ROOT_BOUNDARY":
+                link_status = "IMPLIED"
+            else:
+                link_status = "LINKED"
 
-                instrument = row.get("doc_num")
-                if not instrument and row.get("or_book") and row.get("or_page"):
-                    instrument = f"{row['or_book']}/{row['or_page']}"
+            instrument = row.get("doc_num")
+            if not instrument and row.get("or_book") and row.get("or_page"):
+                instrument = f"{row['or_book']}/{row['or_page']}"
 
-                chain_rows.append({
-                    "sequence_no": row.get("seq_no"),
-                    "acquisition_date": row.get("sale_date"),
-                    "acquisition_doc_type": row.get("sale_type"),
-                    "acquisition_price": row.get("sale_amount"),
-                    "acquired_from": row.get("grantor"),
-                    "owner_name": row.get("grantee"),
-                    "acquisition_instrument": instrument,
-                    "link_status": link_status,
-                    "link_score": row.get("link_score"),
-                    "link_reason": reason,
-                    "days_since_prev": row.get("days_since_prev"),
-                })
+            chain_rows.append({
+                "sequence_no": row.get("seq_no"),
+                "acquisition_date": row.get("sale_date"),
+                "acquisition_doc_type": row.get("sale_type"),
+                "acquisition_price": row.get("sale_amount"),
+                "acquired_from": row.get("grantor"),
+                "owner_name": row.get("grantee"),
+                "acquisition_instrument": instrument,
+                "link_status": link_status,
+                "link_score": row.get("link_score"),
+                "link_reason": reason,
+                "days_since_prev": row.get("days_since_prev"),
+            })
 
-            return chain_rows
-    except Exception as exc:
-        logger.exception(f"Title chain lookup failed for identifier={identifier!r} case_number={case_number!r}: {exc}")
-        return []
+        return chain_rows
 
 
 def _pg_chain_gaps_for_property(
     identifier: str,
     case_number: str | None = None,
 ) -> list[dict[str, Any]]:
-    try:
-        with _pg_engine().connect() as conn:
-            folio = _resolve_chain_folio(conn, identifier, case_number)
-            if not folio:
-                return []
-            rows = (
-                conn.execute(
-                    sa_text("""
-                    SELECT
-                        gap_type,
-                        seq_prev,
-                        seq_next,
-                        expected_from_party,
-                        observed_to_party,
-                        missing_from_date,
-                        missing_to_date,
-                        recommended_source,
-                        detail
-                    FROM fn_title_chain_gaps(:folio)
-                """),
-                    {"folio": folio},
-                )
-                .mappings()
-                .fetchall()
+    with _pg_engine().connect() as conn:
+        folio = _resolve_chain_folio(conn, identifier, case_number)
+        if not folio:
+            return []
+        rows = (
+            conn.execute(
+                sa_text("""
+                SELECT
+                    gap_type,
+                    seq_prev,
+                    seq_next,
+                    expected_from_party,
+                    observed_to_party,
+                    missing_from_date,
+                    missing_to_date,
+                    recommended_source,
+                    detail
+                FROM fn_title_chain_gaps(:folio)
+            """),
+                {"folio": folio},
             )
-            return [dict(r) for r in rows]
-    except Exception as exc:
-        logger.exception(f"Title chain gaps lookup failed for identifier={identifier!r} case_number={case_number!r}: {exc}")
-        return []
+            .mappings()
+            .fetchall()
+        )
+        return [dict(r) for r in rows]
 
 
 def _pg_documents_for_property(identifier: str) -> list[dict[str, Any]]:
@@ -264,7 +252,7 @@ def _pg_documents_for_property(identifier: str) -> list[dict[str, Any]]:
         for pdf in sorted(doc_dir.glob("*.pdf")):
             try:
                 rel_path = str(pdf.resolve().relative_to(project_root.resolve()))
-            except Exception as exc:
+            except Exception:
                 logger.exception(f"Failed to resolve relative PDF path for case={case_num} file={pdf}")
                 rel_path = str(pdf.resolve())
             docs.append({
@@ -367,7 +355,7 @@ def _doc_mtime_iso(file_path: str | None) -> str | None:
     try:
         if abs_path.is_file():
             return datetime.fromtimestamp(abs_path.stat().st_mtime, tz=UTC_TZ).isoformat(timespec="seconds")
-    except Exception as exc:
+    except Exception:
         logger.exception(f"Failed to read document mtime for {file_path!r}")
     return None
 
@@ -506,7 +494,7 @@ def _pg_tax_liens_for_property(
     if strap:
         where_clauses.append("oe.strap = :strap")
         params["strap"] = strap
-    if folio:
+    elif folio:
         where_clauses.append("oe.folio = :folio")
         params["folio"] = folio
     if not where_clauses:
@@ -568,7 +556,7 @@ def _pg_nocs_for_property(
     if strap:
         where_clauses.append("oe.strap = :strap")
         params["strap"] = strap
-    if folio:
+    elif folio:
         where_clauses.append("oe.folio = :folio")
         params["folio"] = folio
     if not where_clauses:
@@ -609,6 +597,57 @@ def _pg_nocs_for_property(
     return nocs
 
 
+def _match_nocs_to_permits(
+    nocs: list[dict[str, Any]],
+    permits: list[dict[str, Any]],
+) -> None:
+    """Link each NOC to its closest permit by date proximity.
+
+    Real-world flow: NOC filed -> permit pulled -> work done.
+    A permit is considered a match if its issue_date falls between
+    30 days before and 730 days after the NOC recording_date.
+    Mutates NOC dicts in-place.
+    """
+    if not nocs or not permits:
+        return
+
+    for noc in nocs:
+        rec_raw = noc.get("recording_date")
+        if not rec_raw:
+            continue
+        try:
+            rec_date = (
+                rec_raw if isinstance(rec_raw, date) else datetime.strptime(str(rec_raw)[:10], "%Y-%m-%d").date()
+            )
+        except (ValueError, TypeError):
+            continue
+
+        best_permit = None
+        best_gap = None
+        for permit in permits:
+            issue_raw = permit.get("issue_date")
+            if not issue_raw:
+                continue
+            try:
+                issue_date = (
+                    issue_raw if isinstance(issue_raw, date) else datetime.strptime(str(issue_raw)[:10], "%Y-%m-%d").date()
+                )
+            except (ValueError, TypeError):
+                continue
+
+            delta_days = (issue_date - rec_date).days
+            # Permit issued between 30 days before and 730 days after the NOC
+            if -30 <= delta_days <= 730:
+                gap = abs(delta_days)
+                if best_gap is None or gap < best_gap:
+                    best_gap = gap
+                    best_permit = permit
+
+        if best_permit:
+            noc["matched_permit"] = best_permit.get("permit_number")
+            noc["matched_permit_date"] = best_permit.get("issue_date")
+
+
 def _pg_flr_liens_for_property(conn: Any, *, owner_name: str | None) -> list[dict[str, Any]]:
     """Query Sunbiz Federal Lien Registry (FLR) for UCC/federal tax liens by owner name."""
     if not owner_name or len(owner_name.strip()) < 3:
@@ -636,91 +675,115 @@ def _pg_tax_status_for_property(
     identifier: str,
     owner_name: str | None = None,
 ) -> dict[str, Any]:
-    try:
-        with _pg_engine().connect() as conn:
-            id_values = [v for v in (folio, strap, identifier) if v]
-            if not id_values:
-                return {
-                    "has_tax_liens": False,
-                    "tax_status": None,
-                    "tax_warrant": False,
-                    "total_amount_due": None,
-                    "liens": [],
-                    "flr_liens": [],
-                }
-
-            row = (
-                conn.execute(
-                    sa_text("""
-                    SELECT tax_year, homestead_exempt, estimated_annual_tax
-                    FROM dor_nal_parcels
-                    WHERE folio = ANY(:ids)
-                       OR strap = ANY(:ids)
-                       OR parcel_id = ANY(:ids)
-                    ORDER BY tax_year DESC
-                    LIMIT 1
-                """),
-                    {"ids": id_values},
-                )
-                .mappings()
-                .fetchone()
-            )
-            liens = _pg_tax_liens_for_property(conn, strap=strap, folio=folio)
-            flr_liens = _pg_flr_liens_for_property(conn, owner_name=owner_name)
-            liens_total = sum(_as_float(item.get("amount")) for item in liens)
-            amount = row.get("estimated_annual_tax") if row else None
-            tax_warrant = any("WARRANT" in str(item.get("raw_document_type") or "").upper() for item in liens)
+    with _pg_engine().connect() as conn:
+        id_values = [v for v in (folio, strap, identifier) if v]
+        if not id_values:
             return {
-                "has_tax_liens": bool(liens) or bool((amount or 0) > 0),
-                "tax_status": f"Tax Year {row.get('tax_year')}" if row else None,
-                "tax_warrant": tax_warrant,
-                "total_amount_due": liens_total if liens_total > 0 else _to_optional_float(amount),
-                "liens": liens,
-                "flr_liens": flr_liens,
+                "has_tax_liens": False,
+                "tax_status": None,
+                "tax_warrant": False,
+                "total_amount_due": None,
+                "liens": [],
+                "flr_liens": [],
             }
-    except Exception as exc:
-        logger.exception(f"Tax status lookup failed for strap={strap!r} folio={folio!r} identifier={identifier!r}: {exc}")
+
+        # Query A: current year full detail
+        row = (
+            conn.execute(
+                sa_text("""
+                SELECT tax_year, homestead_exempt, estimated_annual_tax,
+                       just_value, just_value_homestead,
+                       assessed_value_school, assessed_value_nonschool,
+                       assessed_value_homestead,
+                       taxable_value_school, taxable_value_nonschool,
+                       homestead_exempt_value, widow_exempt, widow_exempt_value,
+                       disability_exempt, disability_exempt_value,
+                       veteran_exempt, veteran_exempt_value,
+                       ag_exempt, ag_exempt_value,
+                       soh_differential, total_millage, county_millage,
+                       school_millage, city_millage, property_use_code
+                FROM dor_nal_parcels
+                WHERE folio = ANY(:ids)
+                   OR strap = ANY(:ids)
+                   OR parcel_id = ANY(:ids)
+                ORDER BY tax_year DESC
+                LIMIT 1
+            """),
+                {"ids": id_values},
+            )
+            .mappings()
+            .fetchone()
+        )
+        current_year = dict(row) if row else None
+
+        # Query B: all years for history table
+        history_rows = (
+            conn.execute(
+                sa_text("""
+                SELECT DISTINCT ON (tax_year)
+                       tax_year, just_value,
+                       GREATEST(assessed_value_school, assessed_value_nonschool)
+                           AS assessed_value,
+                       GREATEST(taxable_value_school, taxable_value_nonschool)
+                           AS taxable_value,
+                       estimated_annual_tax, homestead_exempt, total_millage
+                FROM dor_nal_parcels
+                WHERE folio = ANY(:ids)
+                   OR strap = ANY(:ids)
+                   OR parcel_id = ANY(:ids)
+                ORDER BY tax_year DESC, id DESC
+            """),
+                {"ids": id_values},
+            )
+            .mappings()
+            .fetchall()
+        )
+        history = _compute_yoy([dict(r) for r in history_rows])
+
+        liens = _pg_tax_liens_for_property(conn, strap=strap, folio=folio)
+        flr_liens = _pg_flr_liens_for_property(conn, owner_name=owner_name)
+        liens_total = sum(_as_float(item.get("amount")) for item in liens)
+        amount = row.get("estimated_annual_tax") if row else None
+        tax_warrant = any("WARRANT" in str(item.get("raw_document_type") or "").upper() for item in liens)
         return {
-            "has_tax_liens": False,
-            "tax_status": None,
-            "tax_warrant": False,
-            "total_amount_due": None,
-            "liens": [],
-            "flr_liens": [],
+            "has_tax_liens": bool(liens) or bool((amount or 0) > 0),
+            "tax_status": f"Tax Year {row.get('tax_year')}" if row else None,
+            "tax_warrant": tax_warrant,
+            "total_amount_due": liens_total if liens_total > 0 else _to_optional_float(amount),
+            "current_year": current_year,
+            "history": history,
+            "liens": liens,
+            "flr_liens": flr_liens,
         }
 
 
 def _pg_permits_for_property(foreclosure_id: int) -> list[dict[str, Any]]:
-    try:
-        with _pg_engine().connect() as conn:
-            rows = (
-                conn.execute(
-                    sa_text("""
-                    SELECT
-                        event_date AS issue_date,
-                        instrument_number AS permit_number,
-                        event_subtype AS permit_type,
-                        description,
-                        amount AS estimated_cost,
-                        CASE
-                            WHEN description ~* '(closed|complete|final|expired)'
-                                THEN 'Closed'
-                            ELSE 'Open'
-                        END AS status
-                    FROM foreclosure_title_events
-                    WHERE foreclosure_id = :fid
-                      AND event_source IN ('COUNTY_PERMIT', 'TAMPA_PERMIT')
-                    ORDER BY event_date DESC
-                """),
-                    {"fid": foreclosure_id},
-                )
-                .mappings()
-                .fetchall()
+    with _pg_engine().connect() as conn:
+        rows = (
+            conn.execute(
+                sa_text("""
+                SELECT
+                    event_date AS issue_date,
+                    instrument_number AS permit_number,
+                    event_subtype AS permit_type,
+                    description,
+                    amount AS estimated_cost,
+                    CASE
+                        WHEN description ~* '(closed|complete|final|expired)'
+                            THEN 'Closed'
+                        ELSE 'Open'
+                    END AS status
+                FROM foreclosure_title_events
+                WHERE foreclosure_id = :fid
+                  AND event_source IN ('COUNTY_PERMIT', 'TAMPA_PERMIT')
+                ORDER BY event_date DESC
+            """),
+                {"fid": foreclosure_id},
             )
-            return [dict(r) for r in rows]
-    except Exception as exc:
-        logger.exception(f"Permit lookup failed for foreclosure_id={foreclosure_id}: {exc}")
-        return []
+            .mappings()
+            .fetchall()
+        )
+        return [dict(r) for r in rows]
 
 
 def _as_float(value: Any) -> float:
@@ -730,6 +793,32 @@ def _as_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _pct_change(old: Any, new: Any) -> float | None:
+    """Return percentage change from old to new, or None if either is null/zero."""
+    try:
+        o, n = float(old), float(new)
+    except (TypeError, ValueError):
+        return None
+    if o == 0:
+        return None
+    return ((n - o) / o) * 100
+
+
+def _compute_yoy(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Annotate history rows (sorted tax_year DESC) with YoY % change fields."""
+    for i, row in enumerate(rows):
+        prev = rows[i + 1] if i + 1 < len(rows) else None
+        if prev:
+            row["yoy_just_value_pct"] = _pct_change(prev.get("just_value"), row.get("just_value"))
+            row["yoy_taxable_value_pct"] = _pct_change(prev.get("taxable_value"), row.get("taxable_value"))
+            row["yoy_tax_pct"] = _pct_change(prev.get("estimated_annual_tax"), row.get("estimated_annual_tax"))
+        else:
+            row["yoy_just_value_pct"] = None
+            row["yoy_taxable_value_pct"] = None
+            row["yoy_tax_pct"] = None
+    return rows
 
 
 def _normalized_survival_status(value: Any) -> str:
@@ -750,7 +839,7 @@ def _pg_encumbrances_for_property(
     if strap:
         where_clauses.append("oe.strap = :strap")
         params["strap"] = strap
-    if folio:
+    elif folio:
         where_clauses.append("oe.folio = :folio")
         params["folio"] = folio
     if not where_clauses:
@@ -782,7 +871,8 @@ def _pg_encumbrances_for_property(
                     ELSE COALESCE(NULLIF(oe.party1, ''), NULLIF(oe.party2, ''), '')
                 END AS creditor
             FROM ori_encumbrances oe
-            WHERE {" OR ".join(where_clauses)}
+            WHERE ({" OR ".join(where_clauses)})
+              AND oe.encumbrance_type::text != 'noc'
             ORDER BY oe.recording_date DESC NULLS LAST, oe.id DESC
             LIMIT :lim
         """),
@@ -849,39 +939,35 @@ def _pg_market_snapshot(
     market_row = None
     strap = auction.get("strap")
     folio = auction.get("folio")
-    try:
-        if strap:
-            market_row = (
-                conn.execute(
-                    sa_text("""
-                    SELECT *
-                    FROM property_market
-                    WHERE strap = :strap
-                    LIMIT 1
-                """),
-                    {"strap": strap},
-                )
-                .mappings()
-                .fetchone()
+    if strap:
+        market_row = (
+            conn.execute(
+                sa_text("""
+                SELECT *
+                FROM property_market
+                WHERE strap = :strap
+                LIMIT 1
+            """),
+                {"strap": strap},
             )
-        if not market_row and folio:
-            market_row = (
-                conn.execute(
-                    sa_text("""
-                    SELECT *
-                    FROM property_market
-                    WHERE folio = :folio
-                    ORDER BY updated_at DESC NULLS LAST
-                    LIMIT 1
-                """),
-                    {"folio": folio},
-                )
-                .mappings()
-                .fetchone()
+            .mappings()
+            .fetchone()
+        )
+    if not market_row and folio:
+        market_row = (
+            conn.execute(
+                sa_text("""
+                SELECT *
+                FROM property_market
+                WHERE folio = :folio
+                ORDER BY updated_at DESC NULLS LAST
+                LIMIT 1
+            """),
+                {"folio": folio},
             )
-    except Exception as exc:
-        logger.exception(f"Market snapshot lookup failed for strap={strap!r} folio={folio!r}")
-        market_row = None
+            .mappings()
+            .fetchone()
+        )
 
     row = dict(market_row) if market_row else None
     redfin_json = _coerce_json_dict(row.get("redfin_json")) if row else {}
@@ -1021,6 +1107,32 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
         if not lis_pendens_date:
             lis_pendens_date = judgment_map.get("lis_pendens_date")
 
+        # Fallback: pull LP recording_date from ori_encumbrances when
+        # the judgment PDF didn't contain an explicit date.
+        if not lis_pendens_date and auction.get("strap") and plaintiff:
+            lp_row = (
+                conn.execute(
+                    sa_text("""
+                    SELECT recording_date
+                    FROM ori_encumbrances
+                    WHERE strap = :strap
+                      AND encumbrance_type = 'lis_pendens'
+                      AND recording_date IS NOT NULL
+                      AND UPPER(party1) LIKE '%' || :plaintiff_prefix || '%'
+                    ORDER BY recording_date ASC
+                    LIMIT 1
+                """),
+                    {
+                        "strap": auction["strap"],
+                        "plaintiff_prefix": plaintiff.split(",")[0].strip().upper(),
+                    },
+                )
+                .mappings()
+                .fetchone()
+            )
+            if lp_row:
+                lis_pendens_date = str(lp_row["recording_date"])
+
         defendant = None
         defendants = judgment_map.get("defendants")
         if isinstance(defendants, list):
@@ -1072,6 +1184,7 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
                 if doc_id is not None:
                     noc["id"] = doc_id
                     break
+        _match_nocs_to_permits(nocs, permits)
 
         encumbrances = _pg_encumbrances_for_property(
             conn,
@@ -1129,9 +1242,7 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
             "net_equity": net_equity,
             "market_value": market_value,
             "est_surviving_debt": est_surviving_debt,
-            "is_toxic_title": bool(
-                (auction.get("unsatisfied_encumbrance_count") or 0) > 2 or enc_summary["liens_surviving"] > 0
-            ),
+            "is_toxic_title": bool((auction.get("unsatisfied_encumbrance_count") or 0) > 2 or enc_summary["liens_surviving"] > 0),
             "market": market,
             "enrichments": enrichments,
             "sources": _build_property_sources(
@@ -1195,7 +1306,7 @@ async def property_liens(request: Request, folio: str):
     prop = _pg_property_detail(folio)
 
     if not prop:
-        return HTMLResponse("<p>Property not found</p>")
+        raise HTTPException(status_code=404, detail="Property not found")
 
     encumbrances = prop.get("encumbrances", [])
     real_folio = prop.get("folio") or folio
@@ -1224,7 +1335,7 @@ async def property_analysis(request: Request, folio: str):
     prop = _pg_property_detail(folio)
 
     if not prop:
-        return HTMLResponse("<p>Property not found</p>")
+        raise HTTPException(status_code=404, detail="Property not found")
 
     return templates.TemplateResponse(
         "partials/analysis_card.html",
@@ -1262,7 +1373,7 @@ async def property_market(request: Request, folio: str):
     """
     prop = _pg_property_detail(folio)
     if not prop:
-        return HTMLResponse("<p>Property not found</p>")
+        raise HTTPException(status_code=404, detail="Property not found")
     market = prop.get("market") or {}
     return templates.TemplateResponse(
         "partials/market.html",
@@ -1282,7 +1393,7 @@ async def property_tax(request: Request, folio: str):
     """
     prop = _pg_property_detail(folio)
     if not prop:
-        return HTMLResponse("<p>Property not found</p>")
+        raise HTTPException(status_code=404, detail="Property not found")
     status = _pg_tax_status_for_property(
         strap=prop.get("_strap"),
         folio=prop.get("_folio_raw"),
@@ -1307,7 +1418,7 @@ async def property_permits(request: Request, folio: str):
     """
     prop = _pg_property_detail(folio)
     if not prop:
-        return HTMLResponse("<p>Property not found</p>")
+        raise HTTPException(status_code=404, detail="Property not found")
 
     permits = _pg_permits_for_property(prop.get("_foreclosure_id") or 0)
     nocs_value = prop.get("nocs")
@@ -1326,7 +1437,7 @@ async def property_chain_of_title(request: Request, folio: str):
     prop = _pg_property_detail(folio)
 
     if not prop:
-        return HTMLResponse('<p class="text-muted">No chain of title data available.</p>')
+        raise HTTPException(status_code=404, detail="Property not found")
 
     chain_of_title = _pg_chain_for_property(
         identifier=folio,
@@ -1354,9 +1465,40 @@ async def property_chain_of_title(request: Request, folio: str):
                 break
         item["instrument_url"] = _instrument_search_url(instrument_value)
 
+    # Compute chain duration for the 30-year coverage indicator.
+    chain_years = None
+    chain_start_year = None
+    chain_end_year = None
+    if chain_of_title:
+        dates = []
+        for item in chain_of_title:
+            raw = item.get("acquisition_date")
+            if raw is None:
+                continue
+            if isinstance(raw, (date, datetime)):
+                dates.append(raw)
+            else:
+                text = str(raw).strip()[:10]
+                try:
+                    dates.append(datetime.strptime(text, "%Y-%m-%d").date())
+                except (ValueError, TypeError):
+                    pass
+        if dates:
+            chain_start_year = min(dates).year
+            chain_end_year = max(dates).year
+            chain_years = chain_end_year - chain_start_year
+
     return templates.TemplateResponse(
         "partials/chain_of_title.html",
-        {"request": request, "chain_of_title": chain_of_title, "chain_gaps": chain_gaps, "folio": real_folio},
+        {
+            "request": request,
+            "chain_of_title": chain_of_title,
+            "chain_gaps": chain_gaps,
+            "folio": real_folio,
+            "chain_years": chain_years,
+            "chain_start_year": chain_start_year,
+            "chain_end_year": chain_end_year,
+        },
     )
 
 
@@ -1367,7 +1509,7 @@ async def property_judgment(request: Request, folio: str):
     """
     prop = _pg_property_detail(folio)
     if not prop:
-        return HTMLResponse("<p>Property not found</p>")
+        raise HTTPException(status_code=404, detail="Property not found")
 
     auction = prop.get("auction", {})
     judgment = {

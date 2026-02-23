@@ -111,6 +111,7 @@ class PgSurvivalService:
                           SELECT 1 FROM ori_encumbrances oe
                           WHERE oe.strap = f.strap
                             AND oe.survival_status IS NULL
+                            AND oe.encumbrance_type != 'noc'
                       )
                     ORDER BY f.auction_date
                     LIMIT :limit
@@ -153,6 +154,7 @@ class PgSurvivalService:
                            survival_status, case_number
                     FROM ori_encumbrances
                     WHERE strap = :strap
+                      AND encumbrance_type != 'noc'
                     ORDER BY recording_date NULLS LAST
                 """),
                 {"strap": strap},

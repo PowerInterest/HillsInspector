@@ -300,6 +300,7 @@ FROM (
                                                  AS unsatisfied
     FROM ori_encumbrances oe
     WHERE oe.strap IS NOT NULL
+      AND oe.encumbrance_type != 'noc'
     GROUP BY oe.strap
 ) sub
 WHERE sub.strap = f.strap;

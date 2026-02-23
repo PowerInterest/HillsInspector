@@ -26,6 +26,15 @@ from sqlalchemy import text
 from sunbiz.db import get_engine, resolve_pg_dsn
 
 # ---------------------------------------------------------------------------
+# ENUM extensions — must run in autocommit (ALTER TYPE ... ADD VALUE
+# cannot execute inside a transaction block).
+# ---------------------------------------------------------------------------
+
+ENUM_EXTENSIONS: list[str] = [
+    "ALTER TYPE encumbrance_type_enum ADD VALUE IF NOT EXISTS 'noc'",
+]
+
+# ---------------------------------------------------------------------------
 # DDL statements (executed in order)
 # ---------------------------------------------------------------------------
 
@@ -373,18 +382,18 @@ DDL: list[str] = [
         link_ok BOOLEAN,
         link_reason TEXT
     ) AS $$
-        WITH raw_sales AS (
+        WITH hcpa_with_backfill AS (
             SELECT
                 s.sale_date,
                 s.sale_type::TEXT AS sale_type,
                 s.sale_amount,
-                COALESCE(s.grantor, ori_g.grantor_agg)::TEXT AS grantor,
-                COALESCE(s.grantee, ori_g.grantee_agg)::TEXT AS grantee,
+                COALESCE(s.grantor, backfill.grantor, ori_g.grantor_agg)::TEXT AS grantor,
+                COALESCE(s.grantee, backfill.grantee, ori_g.grantee_agg)::TEXT AS grantee,
                 s.or_book::TEXT AS or_book,
                 s.or_page::TEXT AS or_page,
                 s.doc_num::TEXT AS doc_num
             FROM hcpa_allsales s
-            LEFT JOIN LATERAL (
+            LEFT JOIN LATERAL ( -- existing legacy fallback
                 SELECT
                     p.parties_from_text AS grantor_agg,
                     p.parties_to_text AS grantee_agg
@@ -395,9 +404,39 @@ DDL: list[str] = [
                 ORDER BY p.recording_date DESC NULLS LAST
                 LIMIT 1
             ) ori_g ON TRUE
+            LEFT JOIN LATERAL ( -- our new unified backfill
+                SELECT e.grantor, e.grantee
+                FROM foreclosure_title_events e
+                WHERE e.instrument_number = s.doc_num
+                  AND e.event_source IN ('ORI_DEED_SEARCH', 'ORI_DEED_BACKFILL')
+                ORDER BY e.created_at DESC
+                LIMIT 1
+            ) backfill ON TRUE
             WHERE s.folio = p_folio
               AND s.sale_date IS NOT NULL
               AND s.sale_date <= p_as_of_date
+        ),
+        raw_sales AS (
+            SELECT * FROM hcpa_with_backfill
+            UNION ALL
+            SELECT
+                e.event_date AS sale_date,
+                e.event_subtype AS sale_type,
+                e.amount AS sale_amount,
+                e.grantor,
+                e.grantee,
+                e.or_book,
+                e.or_page,
+                e.instrument_number AS doc_num
+            FROM foreclosure_title_events e
+            WHERE (e.folio = p_folio OR e.strap = p_folio)
+              AND e.event_source = 'ORI_DEED_SEARCH'
+              AND e.event_date <= p_as_of_date
+              AND NOT EXISTS (
+                  -- Do not inject if HCPA sales already has this instrument for this folio
+                  SELECT 1 FROM hcpa_allsales s
+                  WHERE s.doc_num = e.instrument_number AND s.folio = p_folio
+              )
         ),
         deduped_sales AS (
             SELECT DISTINCT
@@ -785,6 +824,7 @@ DDL: list[str] = [
                oe.case_number::TEXT
         FROM ori_encumbrances oe
         WHERE oe.strap = p_strap
+          AND oe.encumbrance_type != 'noc'
         ORDER BY oe.recording_date DESC NULLS LAST, oe.id;
     END;
     $$ LANGUAGE plpgsql STABLE;
@@ -980,6 +1020,17 @@ DDL: list[str] = [
 def migrate(dsn: str | None = None) -> None:
     """Run all DDL statements inside a single transaction."""
     engine = get_engine(resolve_pg_dsn(dsn))
+
+    # ALTER TYPE ... ADD VALUE cannot run inside a transaction block,
+    # so execute ENUM extensions with autocommit first.
+    with engine.connect() as conn:
+        conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+        for stmt in ENUM_EXTENSIONS:
+            try:
+                conn.execute(text(stmt))
+            except Exception:
+                pass  # IF NOT EXISTS handles idempotency; some drivers still raise
+
     with engine.begin() as conn:
         for i, stmt in enumerate(DDL, 1):
             conn.execute(text(stmt))

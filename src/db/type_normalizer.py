@@ -9,13 +9,14 @@ import re
 # --- Allowed encumbrance types (enforced by SQLite trigger) ---
 ALLOWED_ENCUMBRANCE_TYPES = frozenset({
     "mortgage", "judgment", "lis_pendens", "lien", "easement",
-    "satisfaction", "release", "assignment", "other",
+    "satisfaction", "release", "assignment", "noc", "other",
 })
 
 # --- Classification sets (canonical, post-normalization) ---
 CANONICAL_ENCUMBRANCE_TYPES = frozenset({"mortgage", "judgment", "lis_pendens", "lien", "easement"})
 CANONICAL_DEED_TYPES = frozenset({"deed"})
 CANONICAL_SATISFACTION_TYPES = frozenset({"satisfaction", "release", "partial_release"})
+CANONICAL_NOC_TYPES = frozenset({"noc"})
 
 
 def normalize_encumbrance_type(raw: str) -> str:
@@ -43,6 +44,8 @@ def normalize_encumbrance_type(raw: str) -> str:
         return "release"
     if "ASSIGNMENT" in t or "ASG" in t:
         return "assignment"
+    if "NOC" in t or "NOTICE OF COMMENCEMENT" in t:
+        return "noc"
     return "other"
 
 

@@ -26,6 +26,7 @@ from sqlalchemy import text
 
 from src.db.type_normalizer import (
     CANONICAL_ENCUMBRANCE_TYPES,
+    CANONICAL_NOC_TYPES,
     CANONICAL_SATISFACTION_TYPES,
     normalize_encumbrance_type,
     normalize_document_type,
@@ -34,8 +35,16 @@ from sunbiz.db import get_engine, resolve_pg_dsn
 
 # Valid PG encumbrance_type_enum values
 _PG_ENCUMBRANCE_TYPES = frozenset({
-    "mortgage", "judgment", "lis_pendens", "lien", "easement",
-    "satisfaction", "release", "assignment", "other",
+    "mortgage",
+    "judgment",
+    "lis_pendens",
+    "lien",
+    "easement",
+    "satisfaction",
+    "release",
+    "assignment",
+    "noc",
+    "other",
 })
 
 _PAREN_RE = re.compile(r"\(([^)]+)\)\s*(.*)")
@@ -57,10 +66,7 @@ _BKPG_REF_PATTERN = re.compile(
 _CASE_VARIANT_RE = re.compile(r"^\d{2}(\d{4})([A-Z]{2})(\d{6}).*$")
 
 # PAV CustomQuery endpoint
-_PAV_KEYWORD_URL = (
-    "https://publicaccess.hillsclerk.com"
-    "/PAVDirectSearch/api/CustomQuery/KeywordSearch"
-)
+_PAV_KEYWORD_URL = "https://publicaccess.hillsclerk.com/PAVDirectSearch/api/CustomQuery/KeywordSearch"
 _PAV_HEADERS = {
     "Content-Type": "application/json",
     "Origin": "https://publicaccess.hillsclerk.com",
@@ -118,12 +124,7 @@ def _is_generic_name(name: str) -> bool:
 
 def _get_instrument(doc: dict) -> str:
     """Extract instrument number from an ORI doc dict."""
-    return str(
-        doc.get("Instrument")
-        or doc.get("instrument_number")
-        or doc.get("instrument")
-        or ""
-    ).strip()
+    return str(doc.get("Instrument") or doc.get("instrument_number") or doc.get("instrument") or "").strip()
 
 
 def _get_parties(doc: dict) -> tuple[list[str], list[str]]:
@@ -205,23 +206,13 @@ def _extract_instrument_references(doc: dict) -> list[str]:
 
 
 def _is_encumbrance_type(doc: dict[str, Any]) -> bool:
-    raw = (
-        doc.get("DocType")
-        or doc.get("document_type")
-        or doc.get("doc_type")
-        or ""
-    )
+    raw = doc.get("DocType") or doc.get("document_type") or doc.get("doc_type") or ""
     canonical = normalize_document_type(raw)
     return canonical in CANONICAL_ENCUMBRANCE_TYPES
 
 
 def _is_assignment_type(doc: dict[str, Any]) -> bool:
-    raw = (
-        doc.get("DocType")
-        or doc.get("document_type")
-        or doc.get("doc_type")
-        or ""
-    )
+    raw = doc.get("DocType") or doc.get("document_type") or doc.get("doc_type") or ""
     canonical = normalize_document_type(raw)
     enc_type = normalize_encumbrance_type(canonical or raw)
     return enc_type == "assignment"
@@ -240,6 +231,7 @@ def _format_mm_dd_yyyy(iso_date: str | None) -> str | None:
 # ------------------------------------------------------------------
 # Search queue item
 # ------------------------------------------------------------------
+
 
 @dataclass
 class _SearchItem:
@@ -386,10 +378,7 @@ class PgOriService:
             strap = target["strap"]
             folio = target["folio"]
 
-            logger.info(
-                f"[{i+1}/{len(targets)}] ORI search for {case} "
-                f"(strap={strap})"
-            )
+            logger.info(f"[{i + 1}/{len(targets)}] ORI search for {case} (strap={strap})")
 
             try:
                 docs, metrics = self._discover_property(target)
@@ -419,9 +408,7 @@ class PgOriService:
 
                 # If no encumbrances found, try judgment-inferred
                 if saved == 0:
-                    inferred = self._infer_from_judgment(
-                        strap, folio, target
-                    )
+                    inferred = self._infer_from_judgment(strap, folio, target)
                     total_saved += inferred
                     if inferred == 0:
                         logger.warning(
@@ -492,7 +479,7 @@ class PgOriService:
 
         earliest_date = self._earliest_relevant_date(ownership_chain, target)
         latest_date = datetime.now(tz=UTC).date()
-        property_tokens = self._build_property_tokens(target)
+        property_tokens = self._build_property_tokens(target, ownership_chain)
 
         # Phase 0: Seed from local Official Records daily index snapshots.
         # This provides low-latency linkage for recently recorded docs without
@@ -522,10 +509,7 @@ class PgOriService:
                 continue
 
             deed_docs = self._search_instrument_pav(deed_inst, stats)
-            filtered = [
-                d for d in deed_docs
-                if self._matches_property(d, property_tokens)
-            ]
+            filtered = [d for d in deed_docs if self._matches_property(d, property_tokens)]
             self._merge_docs(docs_by_inst, filtered)
 
             if deed.get("sale_type") in {"CT", "CD"}:
@@ -545,19 +529,13 @@ class PgOriService:
                 adjacent_searches += 1
                 candidate = str(base + offset)
                 candidate_docs = self._search_instrument_pav(candidate, stats)
-                filtered = [
-                    d for d in candidate_docs
-                    if self._matches_property(d, property_tokens)
-                ]
+                filtered = [d for d in candidate_docs if self._matches_property(d, property_tokens)]
                 self._merge_docs(docs_by_inst, filtered)
 
         # Phase 1C: Related foreclosure cases from CT/CD transfer docs.
         for ct_case in sorted(ct_cd_cases):
             docs = self._search_case_pav(ct_case, stats)
-            filtered = [
-                d for d in docs
-                if self._matches_property(d, property_tokens)
-            ]
+            filtered = [d for d in docs if self._matches_property(d, property_tokens)]
             self._merge_docs(docs_by_inst, filtered)
 
         # Phase 2: reference chase.
@@ -602,10 +580,7 @@ class PgOriService:
                     split_on_truncated=True,
                 )
 
-            filtered = [
-                d for d in ref_docs
-                if self._matches_property(d, property_tokens)
-            ]
+            filtered = [d for d in ref_docs if self._matches_property(d, property_tokens)]
             self._merge_docs(docs_by_inst, filtered)
 
             for doc in filtered:
@@ -622,10 +597,7 @@ class PgOriService:
         # Optional book/page chase using PAV API (not browser).
         for book, page in queued_book_pages[:30]:
             docs = self._search_book_page_pav(book, page, stats)
-            filtered = [
-                d for d in docs
-                if self._matches_property(d, property_tokens)
-            ]
+            filtered = [d for d in docs if self._matches_property(d, property_tokens)]
             self._merge_docs(docs_by_inst, filtered)
 
         # Phase 3: guarded fallback (clerk cases + legal/address + party).
@@ -641,10 +613,7 @@ class PgOriService:
             stats["clerk_case_count"] = len(clerk_cases)
             for cnum in clerk_cases[:_MAX_CLERK_CASE_SEEDS]:
                 docs = self._search_case_pav(cnum, stats)
-                filtered = [
-                    d for d in docs
-                    if self._matches_property(d, property_tokens)
-                ]
+                filtered = [d for d in docs if self._matches_property(d, property_tokens)]
                 self._merge_docs(docs_by_inst, filtered)
 
             fallback_terms: list[str] = []
@@ -666,10 +635,7 @@ class PgOriService:
                     to_date=latest_date,
                     split_on_truncated=True,
                 )
-                filtered = [
-                    d for d in docs
-                    if self._matches_property(d, property_tokens)
-                ]
+                filtered = [d for d in docs if self._matches_property(d, property_tokens)]
                 self._merge_docs(docs_by_inst, filtered)
 
             party_fallbacks: list[str] = []
@@ -685,15 +651,13 @@ class PgOriService:
                     to_date=latest_date,
                     split_on_truncated=True,
                 )
-                filtered = [
-                    d for d in docs
-                    if self._matches_property(d, property_tokens)
-                ]
+                filtered = [d for d in docs if self._matches_property(d, property_tokens)]
                 self._merge_docs(docs_by_inst, filtered)
 
         # Final keep: only relevant document classes for saving.
         discovered = [
-            d for d in docs_by_inst.values()
+            d
+            for d in docs_by_inst.values()
             if _is_encumbrance_type(d)
             or _is_assignment_type(d)
             or normalize_document_type(d.get("DocType") or "") in CANONICAL_SATISFACTION_TYPES
@@ -847,7 +811,7 @@ class PgOriService:
     def _extract_street_only(address: str) -> str:
         if not address:
             return ""
-        return address.split(",")[0].strip()
+        return address.split(",", maxsplit=1)[0].strip()
 
     def _seed_from_official_records(
         self,
@@ -933,7 +897,7 @@ class PgOriService:
                 ori.recording_date IS NULL
                 OR (ori.recording_date BETWEEN :from_date AND :to_date)
             )
-              AND ({' OR '.join(predicates)})
+              AND ({" OR ".join(predicates)})
             ORDER BY ori.recording_date DESC NULLS LAST, ori.instrument_number
             LIMIT :max_rows
         """
@@ -947,24 +911,14 @@ class PgOriService:
             if not instrument:
                 continue
 
-            raw_doc_type = str(
-                row.get("doc_type")
-                or row.get("facc_doc_type")
-                or ""
-            ).strip().upper()
+            raw_doc_type = str(row.get("doc_type") or row.get("facc_doc_type") or "").strip().upper()
             if not raw_doc_type:
                 continue
 
             parties_one = self._coerce_party_list(row.get("parties_from_json"))
             parties_two = self._coerce_party_list(row.get("parties_to_json"))
-            party1_text = (
-                str(row.get("parties_from_text") or "").strip()
-                or ", ".join(parties_one)
-            )
-            party2_text = (
-                str(row.get("parties_to_text") or "").strip()
-                or ", ".join(parties_two)
-            )
+            party1_text = str(row.get("parties_from_text") or "").strip() or ", ".join(parties_one)
+            party2_text = str(row.get("parties_to_text") or "").strip() or ", ".join(parties_two)
 
             legal = str(row.get("legal_description") or "").strip()
             doc_desc = str(row.get("doc_description") or "").strip()
@@ -973,11 +927,10 @@ class PgOriService:
             doc = {
                 "Instrument": instrument,
                 "DocType": raw_doc_type,
-                "RecordDate": (
-                    row.get("recording_date").isoformat()
-                    if row.get("recording_date") else ""
-                ),
-                "BookType": "OR" if str(row.get("book_type") or "OR").strip() in ("O", "OR", "") else str(row.get("book_type")).strip(),
+                "RecordDate": (row.get("recording_date").isoformat() if row.get("recording_date") else ""),
+                "BookType": "OR"
+                if str(row.get("book_type") or "OR").strip() in ("O", "OR", "")
+                else str(row.get("book_type")).strip(),
                 "Book": str(row.get("book_number") or "").strip(),
                 "Page": str(row.get("page_number") or "").strip(),
                 "Legal": legal_blob,
@@ -1030,9 +983,23 @@ class PgOriService:
     @staticmethod
     def _seed_party_tokens(target: dict[str, Any]) -> list[str]:
         stop_words = {
-            "THE", "AND", "BANK", "NATIONAL", "ASSOCIATION", "TRUST",
-            "COMPANY", "CORP", "CORPORATION", "LLC", "INC", "NA",
-            "FKA", "DBA", "MORTGAGE", "LOAN", "SERVICING",
+            "THE",
+            "AND",
+            "BANK",
+            "NATIONAL",
+            "ASSOCIATION",
+            "TRUST",
+            "COMPANY",
+            "CORP",
+            "CORPORATION",
+            "LLC",
+            "INC",
+            "NA",
+            "FKA",
+            "DBA",
+            "MORTGAGE",
+            "LOAN",
+            "SERVICING",
         }
         tokens: list[str] = []
         jdata = target.get("judgment_data") or {}
@@ -1097,24 +1064,38 @@ class PgOriService:
 
         return score
 
-    def _build_property_tokens(self, target: dict[str, Any]) -> dict[str, Any]:
+    def _build_property_tokens(
+        self,
+        target: dict[str, Any],
+        ownership_chain: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         legal_tokens: set[str] = set()
         for legal_field in ("legal1", "legal2", "legal3", "legal4"):
             value = (target.get(legal_field) or "").upper()
             words = [w for w in re.split(r"[^A-Z0-9]+", value) if len(w) >= 3]
             legal_tokens.update(words[:8])
 
-        owner_tokens = {
-            t for t in re.split(r"[^A-Z0-9]+", (target.get("owner_name") or "").upper())
-            if len(t) >= 3
-        }
+        owner_names: set[str] = set()
+        if target.get("owner_name"):
+            owner_names.add(target["owner_name"].strip().upper())
+
+        if ownership_chain:
+            for deed in ownership_chain:
+                grantee = str(deed.get("grantee") or "").strip().upper()
+                grantor = str(deed.get("grantor") or "").strip().upper()
+                if grantee and grantee != "NONE":
+                    owner_names.add(grantee)
+                if grantor and grantor != "NONE":
+                    owner_names.add(grantor)
+
         street_tokens = {
-            t for t in re.split(r"[^A-Z0-9]+", self._extract_street_only(target.get("property_address") or "").upper())
+            t
+            for t in re.split(r"[^A-Z0-9]+", self._extract_street_only(target.get("property_address") or "").upper())
             if len(t) >= 3
         }
         return {
             "legal_tokens": legal_tokens,
-            "owner_tokens": owner_tokens,
+            "owner_names": list(owner_names),
             "street_tokens": street_tokens,
             "case_number": (target.get("case_number") or "").strip().upper(),
         }
@@ -1130,7 +1111,7 @@ class PgOriService:
         ]).upper()
 
         legal_tokens = tokens.get("legal_tokens") or set()
-        owner_tokens = tokens.get("owner_tokens") or set()
+        owner_names = tokens.get("owner_names") or []
         street_tokens = tokens.get("street_tokens") or set()
 
         if legal_tokens and legal_text:
@@ -1141,10 +1122,12 @@ class PgOriService:
             hits = sum(1 for t in street_tokens if t in legal_text)
             if hits >= min(2, len(street_tokens)):
                 return True
-        if owner_tokens and parties_text:
-            hits = sum(1 for t in owner_tokens if t in parties_text)
-            if hits >= 1:
-                return True
+        if owner_names and parties_text:
+            from rapidfuzz import fuzz
+
+            for owner_name in owner_names:
+                if fuzz.token_set_ratio(owner_name, parties_text) > 80:
+                    return True
         # LP/JUD docs: keep only if they belong to this foreclosure case.
         doc_type = normalize_document_type(doc.get("DocType") or "")
         if doc_type in {"lis_pendens", "judgment"}:
@@ -1189,10 +1172,8 @@ class PgOriService:
         ]
         joined = " ".join(values).upper()
         found: set[str] = set()
-        for m in re.finditer(r"\b\d{2}-[A-Z]{2}-\d{6}\b", joined):
-            found.add(m.group(0))
-        for m in re.finditer(r"\b\d{2}\d{4}[A-Z]{2}\d{6}[A-Z0-9]*\b", joined):
-            found.add(m.group(0))
+        found.update(m.group(0) for m in re.finditer(r"\b\d{2}-[A-Z]{2}-\d{6}\b", joined))
+        found.update(m.group(0) for m in re.finditer(r"\b\d{2}\d{4}[A-Z]{2}\d{6}[A-Z0-9]*\b", joined))
         return found
 
     def _search_case_pav(self, case_number: str, stats: dict[str, int]) -> list[dict[str, Any]]:
@@ -1484,36 +1465,44 @@ class PgOriService:
             logger.warning(f"No legal search terms for {case}")
         else:
             for term in search_terms:
-                state.enqueue(_SearchItem(
-                    search_type="legal",
-                    term=term,
-                    priority=10,
-                ))
+                state.enqueue(
+                    _SearchItem(
+                        search_type="legal",
+                        term=term,
+                        priority=10,
+                    )
+                )
 
         # --- Seed: case number search (priority 15) ---
         if case:
-            state.enqueue(_SearchItem(
-                search_type="case",
-                term=case,
-                priority=15,
-            ))
+            state.enqueue(
+                _SearchItem(
+                    search_type="case",
+                    term=case,
+                    priority=15,
+                )
+            )
 
         # --- Seed: judgment party names (priority 20) ---
         jdata = target.get("judgment_data") or {}
         plaintiff = (jdata.get("plaintiff") or "").strip()
         defendant = (jdata.get("defendant") or "").strip()
         if plaintiff and not _is_generic_name(plaintiff):
-            state.enqueue(_SearchItem(
-                search_type="party",
-                term=plaintiff,
-                priority=20,
-            ))
+            state.enqueue(
+                _SearchItem(
+                    search_type="party",
+                    term=plaintiff,
+                    priority=20,
+                )
+            )
         if defendant and not _is_generic_name(defendant):
-            state.enqueue(_SearchItem(
-                search_type="party",
-                term=defendant,
-                priority=20,
-            ))
+            state.enqueue(
+                _SearchItem(
+                    search_type="party",
+                    term=defendant,
+                    priority=20,
+                )
+            )
 
         if not state.queue:
             logger.warning(f"No iterative ORI seeds for {case}")
@@ -1529,9 +1518,7 @@ class PgOriService:
             state.iteration += 1
 
             if len(state.all_docs) >= _MAX_DOCUMENTS:
-                logger.warning(
-                    f"  Max documents ({_MAX_DOCUMENTS}) reached for {case}"
-                )
+                logger.warning(f"  Max documents ({_MAX_DOCUMENTS}) reached for {case}")
                 break
 
             new_count = self._execute_search_item(scraper, state, item)
@@ -1597,9 +1584,7 @@ class PgOriService:
             return []
 
         except Exception as exc:
-            logger.warning(
-                f"Search failed ({item.search_type} '{item.term}'): {exc}"
-            )
+            logger.warning(f"Search failed ({item.search_type} '{item.term}'): {exc}")
             return []
 
     def _extract_vectors(
@@ -1616,18 +1601,18 @@ class PgOriService:
         3. Book/page references
         """
         own_instrument = _get_instrument(doc)
-        recording_date = self._parse_date(
-            doc.get("RecordDate") or doc.get("record_date")
-        )
+        recording_date = self._parse_date(doc.get("RecordDate") or doc.get("record_date"))
 
         # --- 1. Referenced instruments (priority 25) ---
         for ref_inst in _extract_instrument_references(doc):
-            state.enqueue(_SearchItem(
-                search_type="instrument",
-                term=ref_inst,
-                priority=25,
-                source_instrument=own_instrument,
-            ))
+            state.enqueue(
+                _SearchItem(
+                    search_type="instrument",
+                    term=ref_inst,
+                    priority=25,
+                    source_instrument=own_instrument,
+                )
+            )
 
         # --- 2. Party name searches (priority 30) ---
         grantors, grantees = _get_parties(doc)
@@ -1637,41 +1622,43 @@ class PgOriService:
                 continue
             # Grantor owned *before* this recording date
             date_to = _format_mm_dd_yyyy(recording_date)
-            state.enqueue(_SearchItem(
-                search_type="party",
-                term=name,
-                date_to=date_to,
-                priority=30,
-                source_instrument=own_instrument,
-            ))
+            state.enqueue(
+                _SearchItem(
+                    search_type="party",
+                    term=name,
+                    date_to=date_to,
+                    priority=30,
+                    source_instrument=own_instrument,
+                )
+            )
 
         for name in grantees:
             if _is_generic_name(name):
                 continue
             # Grantee owned *after* this recording date
             date_from = _format_mm_dd_yyyy(recording_date)
-            state.enqueue(_SearchItem(
-                search_type="party",
-                term=name,
-                date_from=date_from,
-                priority=30,
-                source_instrument=own_instrument,
-            ))
+            state.enqueue(
+                _SearchItem(
+                    search_type="party",
+                    term=name,
+                    date_from=date_from,
+                    priority=30,
+                    source_instrument=own_instrument,
+                )
+            )
 
         # --- 3. Book/page references (priority 35) ---
-        book = (
-            doc.get("Book") or doc.get("book") or doc.get("book_num") or ""
-        ).strip()
-        page = (
-            doc.get("Page") or doc.get("page") or doc.get("page_num") or ""
-        ).strip()
+        book = (doc.get("Book") or doc.get("book") or doc.get("book_num") or "").strip()
+        page = (doc.get("Page") or doc.get("page") or doc.get("page_num") or "").strip()
         if book and page:
-            state.enqueue(_SearchItem(
-                search_type="book_page",
-                term=f"{book}/{page}",
-                priority=35,
-                source_instrument=own_instrument,
-            ))
+            state.enqueue(
+                _SearchItem(
+                    search_type="book_page",
+                    term=f"{book}/{page}",
+                    priority=35,
+                    source_instrument=own_instrument,
+                )
+            )
 
     # ------------------------------------------------------------------
     # Search term generation
@@ -1691,7 +1678,7 @@ class PgOriService:
                 # -> search for "TOWN N COUNTRY PARK UNIT 7"
                 parts = val.split()
                 # Use first 5-8 words as search term
-                search = " ".join(parts[:min(8, len(parts))])
+                search = " ".join(parts[: min(8, len(parts))])
                 if search.upper() not in seen:
                     seen.add(search.upper())
                     terms.append(search)
@@ -1724,32 +1711,23 @@ class PgOriService:
         saved = 0
         with self.engine.begin() as conn:
             for doc in documents:
-                raw_type = (
-                    doc.get("DocType")
-                    or doc.get("document_type")
-                    or doc.get("doc_type")
-                    or ""
-                )
+                raw_type = doc.get("DocType") or doc.get("document_type") or doc.get("doc_type") or ""
                 canonical = normalize_document_type(raw_type)
                 enc_type = normalize_encumbrance_type(canonical or raw_type)
 
-                # Only save encumbrance-type, satisfaction-type, and
-                # assignment-type documents (skip deeds, NOCs, affidavits, etc.)
+                # Only save encumbrance-type, satisfaction-type, assignment-type,
+                # and NOC documents (skip deeds, affidavits, etc.)
                 is_encumbrance = canonical in CANONICAL_ENCUMBRANCE_TYPES
                 is_satisfaction = canonical in CANONICAL_SATISFACTION_TYPES
                 is_assignment = enc_type == "assignment"
-                if not (is_encumbrance or is_satisfaction or is_assignment):
+                is_noc = canonical in CANONICAL_NOC_TYPES or enc_type == "noc"
+                if not (is_encumbrance or is_satisfaction or is_assignment or is_noc):
                     continue
 
                 if enc_type not in _PG_ENCUMBRANCE_TYPES:
                     enc_type = "other"
 
-                instrument = str(
-                    doc.get("Instrument")
-                    or doc.get("instrument_number")
-                    or doc.get("instrument")
-                    or ""
-                ).strip()
+                instrument = str(doc.get("Instrument") or doc.get("instrument_number") or doc.get("instrument") or "").strip()
                 if not instrument:
                     continue
 
@@ -1759,41 +1737,21 @@ class PgOriService:
                 parties_one = doc.get("PartiesOne") or []
                 parties_two = doc.get("PartiesTwo") or []
                 if not party1 and parties_one:
-                    party1 = ", ".join(
-                        (p.get("Name", "") if isinstance(p, dict) else str(p))
-                        for p in parties_one
-                        if p
-                    )
+                    party1 = ", ".join((p.get("Name", "") if isinstance(p, dict) else str(p)) for p in parties_one if p)
                 if not party2 and parties_two:
-                    party2 = ", ".join(
-                        (p.get("Name", "") if isinstance(p, dict) else str(p))
-                        for p in parties_two
-                        if p
-                    )
+                    party2 = ", ".join((p.get("Name", "") if isinstance(p, dict) else str(p)) for p in parties_two if p)
 
                 # Fields are pre-normalized by ORIApiScraper._normalize_result()
-                recording_date = self._parse_date(
-                    doc.get("RecordDate") or doc.get("record_date")
-                )
-                book = (
-                    doc.get("Book") or doc.get("book") or ""
-                ).strip() or None
-                page = (
-                    doc.get("Page") or doc.get("page") or ""
-                ).strip() or None
-                book_type = str(
-                    doc.get("BookType") or doc.get("book_type") or "OR"
-                ).strip()
+                recording_date = self._parse_date(doc.get("RecordDate") or doc.get("record_date"))
+                book = (doc.get("Book") or doc.get("book") or "").strip() or None
+                page = (doc.get("Page") or doc.get("page") or "").strip() or None
+                book_type = str(doc.get("BookType") or doc.get("book_type") or "OR").strip()
                 # PAV API returns 'O' for Official Records; normalize to 'OR'
                 if book_type == "O":
                     book_type = "OR"
                 amount = doc.get("SalesPrice") or doc.get("sales_price")
                 case_number = doc.get("CaseNum") or doc.get("case_number")
-                legal = (
-                    doc.get("Legal")
-                    or doc.get("legal_description")
-                    or doc.get("legal")
-                )
+                legal = doc.get("Legal") or doc.get("legal_description") or doc.get("legal")
                 ori_uuid = doc.get("UUID") or doc.get("ori_uuid")
                 # Pre-truncated to 64 chars by _normalize_result()
                 ori_id = doc.get("ID") or doc.get("ori_id")
@@ -1883,14 +1841,8 @@ class PgOriService:
                             "enc_type": enc_type,
                             "party1": party1 or None,
                             "party2": party2 or None,
-                            "p1_json": (
-                                json.dumps(parties_one)
-                                if parties_one else None
-                            ),
-                            "p2_json": (
-                                json.dumps(parties_two)
-                                if parties_two else None
-                            ),
+                            "p1_json": (json.dumps(parties_one) if parties_one else None),
+                            "p2_json": (json.dumps(parties_two) if parties_two else None),
                             "amount": float(amount) if amount else None,
                             "rec_date": recording_date or "",
                             "case_number": case_number,
@@ -1902,9 +1854,7 @@ class PgOriService:
                     saved += 1
                 except Exception as exc:
                     conn.execute(text("ROLLBACK TO SAVEPOINT ori_doc"))
-                    logger.warning(
-                        f"Skip document {instrument}: {exc}"
-                    )
+                    logger.warning(f"Skip document {instrument}: {exc}")
 
         return saved
 
@@ -1931,10 +1881,7 @@ class PgOriService:
         case_number = target.get("case_number", "")
         is_cc = len(case_number) >= 8 and "CC" in case_number[6:8]
         plaintiff_upper = plaintiff.upper()
-        is_hoa = any(
-            kw in plaintiff_upper
-            for kw in ("ASSOCIATION", "HOA", "CONDO", "HOMEOWNER")
-        )
+        is_hoa = any(kw in plaintiff_upper for kw in ("ASSOCIATION", "HOA", "CONDO", "HOMEOWNER"))
         enc_type = "lien" if is_cc or is_hoa else "mortgage"
 
         # Extract amount from judgment
@@ -1952,10 +1899,7 @@ class PgOriService:
         with self.engine.begin() as conn:
             # Check idempotency
             existing = conn.execute(
-                text(
-                    "SELECT id FROM ori_encumbrances "
-                    "WHERE strap = :strap AND instrument_number = :inst"
-                ),
+                text("SELECT id FROM ori_encumbrances WHERE strap = :strap AND instrument_number = :inst"),
                 {"strap": strap, "inst": instrument},
             ).fetchone()
 
@@ -1992,10 +1936,7 @@ class PgOriService:
                 },
             )
 
-        logger.info(
-            f"Inferred {enc_type} encumbrance for {case_number}: "
-            f"plaintiff={plaintiff}"
-        )
+        logger.info(f"Inferred {enc_type} encumbrance for {case_number}: plaintiff={plaintiff}")
         return 1
 
     # ------------------------------------------------------------------
@@ -2006,10 +1947,7 @@ class PgOriService:
         """Mark foreclosure as ORI-searched."""
         with self.engine.begin() as conn:
             conn.execute(
-                text(
-                    "UPDATE foreclosures SET step_ori_searched = now() "
-                    "WHERE foreclosure_id = :fid"
-                ),
+                text("UPDATE foreclosures SET step_ori_searched = now() WHERE foreclosure_id = :fid"),
                 {"fid": foreclosure_id},
             )
 
@@ -2021,6 +1959,7 @@ class PgOriService:
         # Handle Unix timestamp (integer or numeric string)
         if isinstance(val, (int, float)):
             from datetime import datetime
+
             try:
                 dt = datetime.fromtimestamp(val, tz=UTC)
                 return dt.strftime("%Y-%m-%d")
@@ -2033,6 +1972,7 @@ class PgOriService:
         # Handle numeric string (Unix timestamp)
         if s.isdigit() and len(s) >= 9:
             from datetime import datetime
+
             try:
                 dt = datetime.fromtimestamp(int(s), tz=UTC)
                 return dt.strftime("%Y-%m-%d")
