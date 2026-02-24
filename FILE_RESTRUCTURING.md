@@ -76,6 +76,17 @@ Before executing the full restructure, the following files have been identified 
 - `src/tools/run_ori_remaining.py` (One-time batch execution script)
 - `src/analysis/db_audit.py` (Old SQLite-era analysis script)
 
+### Project Root / Throwaway Scripts
+- `Controller.py` (Old SQLite pipeline controller, replaced by `pg_pipeline_controller.py`)
+- `debug_ori_search.py` (One-time PAV search debugging script)
+- `debug_pav.py` (One-time PAV PDF download debugging script)
+- `debug_requests.py` (One-time manual HTTP test script)
+- `run_db_cleanup.py` (One-time manual script to prune test records)
+- `test_api.py` (One-time API testing script for Vision)
+- `test_fetch_id.py` (One-time ID testing script)
+- `test_pav_direct.py` (One-time testing script for PAV download links)
+- `track_network.py` (One-time Playwright network interceptor script)
+
 ## Benefits of this Structure
 1. **Testing**: You can test the `domain` logic by mocking the `db` layer, without needing to run a Playwright browser.
 2. **Readability**: A massive file like `pg_mortgage_extraction_service.py` gets split into `clerk_scraper.py` (downloads PDF), `vision_service.py` (extracts text), and a pipeline script that glues them together.
