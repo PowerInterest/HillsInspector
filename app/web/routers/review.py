@@ -41,7 +41,9 @@ async def hcpa_failures(
             rows = conn.execute(
                 text("""
                     SELECT case_number_raw, case_number_norm, auction_date,
-                           property_address, auction_status, folio, strap
+                           property_address, auction_status, folio, strap,
+                           pdf_path,
+                           (judgment_data IS NOT NULL) AS has_judgment
                     FROM foreclosures
                     WHERE strap IS NULL
                     ORDER BY auction_date DESC

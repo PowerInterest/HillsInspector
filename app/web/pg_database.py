@@ -18,6 +18,7 @@ from src.utils.time import today_local
 
 from loguru import logger
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from sunbiz.db import get_engine, resolve_pg_dsn
 
@@ -54,7 +55,7 @@ class PgDashboardQueries:
                 conn.execute(text("SELECT 1"))
             self._available = True
             logger.info("PG dashboard queries connected")
-        except Exception as e:
+        except Exception:
             logger.exception("PG dashboard queries unavailable")
 
     @property
@@ -100,9 +101,7 @@ class PgDashboardQueries:
     # Fuzzy Search
     # =================================================================
 
-    def search_properties_fuzzy(
-        self, query: str, limit: int = 25
-    ) -> list[dict[str, Any]]:
+    def search_properties_fuzzy(self, query: str, limit: int = 25) -> list[dict[str, Any]]:
         """Fuzzy search across owner name, address, and folio using pg_trgm.
 
         Returns list of dicts with:
@@ -145,13 +144,11 @@ class PgDashboardQueries:
                     {"q": query.upper(), "lim": limit},
                 ).fetchall()
                 return self._rows_to_dicts(rows)
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception("search_properties_fuzzy failed")
             return []
 
-    def resolve_by_name(
-        self, name: str, threshold: float = 0.3
-    ) -> list[dict[str, Any]]:
+    def resolve_by_name(self, name: str, threshold: float = 0.3) -> list[dict[str, Any]]:
         """Use resolve_property_by_name() PG function for defendant/owner lookup."""
         if not self._available or not name:
             return []
@@ -173,7 +170,7 @@ class PgDashboardQueries:
                     {"name": name, "threshold": threshold},
                 ).fetchall()
                 return self._rows_to_dicts(rows)
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception("resolve_by_name failed")
             return []
 
@@ -210,7 +207,7 @@ class PgDashboardQueries:
                     """)
                 ).fetchall()
                 return self._rows_to_dicts(rows)
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception("get_property_stats_by_zip failed")
             return []
 
@@ -276,13 +273,11 @@ class PgDashboardQueries:
                     params,
                 ).fetchall()
                 return self._rows_to_dicts(rows)
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception("get_sales_volume_by_month failed")
             return []
 
-    def get_property_value_distribution(
-        self, zip_code: str | None = None
-    ) -> list[dict[str, Any]]:
+    def get_property_value_distribution(self, zip_code: str | None = None) -> list[dict[str, Any]]:
         """Distribution of just_value in buckets for histogram display.
 
         Returns: bucket_label, bucket_min, bucket_max, property_count
@@ -330,7 +325,7 @@ class PgDashboardQueries:
                     params,
                 ).fetchall()
                 return self._rows_to_dicts(rows)
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception("get_property_value_distribution failed")
             return []
 
@@ -338,9 +333,7 @@ class PgDashboardQueries:
     # Comparable Sales
     # =================================================================
 
-    def get_comparable_sales(
-        self, folio: str, years: int = 3, limit: int = 10
-    ) -> list[dict[str, Any]]:
+    def get_comparable_sales(self, folio: str, years: int = 3, limit: int = 10) -> list[dict[str, Any]]:
         """Find recent qualified sales of similar properties near the target.
 
         Strategy: same subdivision first, then same zip code, matching by
@@ -368,9 +361,7 @@ class PgDashboardQueries:
                 if not info:
                     return []
 
-                cutoff = (
-                    today_local() - timedelta(days=years * 365)
-                ).isoformat()
+                cutoff = (today_local() - timedelta(days=years * 365)).isoformat()
 
                 # First try: same subdivision (via raw_legal1 prefix)
                 comps: list[dict[str, Any]] = []
@@ -452,12 +443,10 @@ class PgDashboardQueries:
 
                 # Add human-readable sale type
                 for c in comps:
-                    c["sale_type_desc"] = SALE_TYPE_MAP.get(
-                        c.get("sale_type", ""), c.get("sale_type", "")
-                    )
+                    c["sale_type_desc"] = SALE_TYPE_MAP.get(c.get("sale_type", ""), c.get("sale_type", ""))
 
                 return comps[:limit]
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception(f"get_comparable_sales({folio}) failed")
             return []
 
@@ -494,11 +483,9 @@ class PgDashboardQueries:
 
                 results = self._rows_to_dicts(rows)
                 for r in results:
-                    r["sale_type_desc"] = SALE_TYPE_MAP.get(
-                        r.get("sale_type", ""), r.get("sale_type", "")
-                    )
+                    r["sale_type_desc"] = SALE_TYPE_MAP.get(r.get("sale_type", ""), r.get("sale_type", ""))
                 return results
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception(f"get_sales_history({folio}) failed")
             return []
 
@@ -562,13 +549,11 @@ class PgDashboardQueries:
                         if match:
                             return dict(match._mapping)  # noqa: SLF001
                 return None
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception(f"get_subdivision_info({folio}) failed")
             return None
 
-    def get_subdivision_properties(
-        self, subdivision_code: str, limit: int = 50
-    ) -> list[dict[str, Any]]:
+    def get_subdivision_properties(self, subdivision_code: str, limit: int = 50) -> list[dict[str, Any]]:
         """All properties in a subdivision with valuations.
 
         Returns list of dicts with folio, strap, property_address, owner_name,
@@ -594,7 +579,7 @@ class PgDashboardQueries:
                     {"sub_code": subdivision_code, "lim": limit},
                 ).fetchall()
                 return self._rows_to_dicts(rows)
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception("get_subdivision_properties failed")
             return []
 
@@ -624,7 +609,7 @@ class PgDashboardQueries:
                     {"strap": strap},
                 ).fetchone()
                 return dict(row._mapping) if row else None  # noqa: SLF001
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception(f"is_multi_unit({strap}) failed")
             return None
 
@@ -658,9 +643,7 @@ class PgDashboardQueries:
                 address = base[0].strip()
                 # Strip unit/apt suffixes to find siblings
                 # e.g. "123 MAIN ST APT 101" -> "123 MAIN ST"
-                base_address = re.split(
-                    r'\s+(APT|UNIT|STE|#)\s*', address, flags=re.IGNORECASE
-                )[0].strip()
+                base_address = re.split(r"\s+(APT|UNIT|STE|#)\s*", address, flags=re.IGNORECASE)[0].strip()
 
                 if len(base_address) < 5:
                     return []
@@ -678,7 +661,7 @@ class PgDashboardQueries:
                     {"base": base_address, "city": base[1]},
                 ).fetchall()
                 return self._rows_to_dicts(rows)
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception(f"get_units_for_property({folio}) failed")
             return []
 
@@ -696,7 +679,7 @@ class PgDashboardQueries:
                 if not pg_folio:
                     return None
                 return self._get_parcel_info(conn, pg_folio)
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception(f"get_parcel_by_strap({strap}) failed")
             return None
 
@@ -737,7 +720,7 @@ class PgDashboardQueries:
                     if d.get(key) is None:
                         d[key] = []
                 return d
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception(f"get_pg_market_snapshot({strap}) failed")
             return None
 
@@ -761,13 +744,11 @@ class PgDashboardQueries:
                     {"straps": straps},
                 ).fetchall()
                 return {r[0]: r[1] for r in rows if r[1]}
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception("get_pg_bulk_thumbnails failed")
             return {}
 
-    def get_foreclosure_deed_stats(
-        self, months: int = 12
-    ) -> list[dict[str, Any]]:
+    def get_foreclosure_deed_stats(self, months: int = 12) -> list[dict[str, Any]]:
         """Foreclosure deed volume by month.
 
         Returns: month, fd_count, td_count, avg_fd_amount
@@ -776,9 +757,7 @@ class PgDashboardQueries:
             return []
         try:
             with self._engine.connect() as conn:
-                cutoff = (
-                    today_local() - timedelta(days=months * 30)
-                ).isoformat()
+                cutoff = (today_local() - timedelta(days=months * 30)).isoformat()
                 rows = conn.execute(
                     text("""
                         SELECT
@@ -800,7 +779,7 @@ class PgDashboardQueries:
                     {"cutoff": cutoff},
                 ).fetchall()
                 return self._rows_to_dicts(rows)
-        except Exception as e:
+        except SQLAlchemyError:
             logger.exception("get_foreclosure_deed_stats failed")
             return []
 

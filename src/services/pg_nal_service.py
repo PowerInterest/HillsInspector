@@ -8,9 +8,29 @@ The NAL file is the official property tax assessment roll.  It provides:
 - Homestead exemption status (critical for lien survival analysis)
 - 44 exemption type breakdowns
 - Assessed/taxable values (school & non-school)
-- Millage rates by taxing authority
-- Estimated annual property tax
 - Full legal descriptions
+
+**Millage & Tax Computation:**
+The NAL CSV does NOT include millage rates.  After each load, this service
+calls ``backfill_nal_millage()`` (a PG function) which joins
+``dor_nal_parcels.tax_auth_cd`` to the ``hillsborough_millage`` lookup
+table and fills in ``total_millage``, ``county_millage``, ``school_millage``,
+``city_millage``, and computes ``estimated_annual_tax`` as
+``taxable_value_nonschool * total_millage / 1000``.
+
+**Annual refresh workflow** (Oct each year when HCPA publishes new rates)::
+
+    -- 1. Insert new rates from HCPA Final Millage PDF
+    INSERT INTO hillsborough_millage VALUES
+        ('TA', 2026, <total>, <county>, <school>, <city>),
+        ('TT', 2026, ...),
+        ('PC', 2026, ...),
+        ('U',  2026, ...);
+
+    -- 2. Backfill (only touches NULL-millage rows)
+    SELECT * FROM backfill_nal_millage();
+
+Or call ``PgNalService().backfill_nal_millage()`` from Python.
 
 Orchestrator usage (fire-and-forget)::
 
@@ -377,4 +397,49 @@ class PgNalService:
                 f"  Traceback: {traceback.format_exc()}"
             )
 
+        # Step 5: Backfill millage rates for any rows missing them
+        if result["success"]:
+            try:
+                mill_stats = self.backfill_nal_millage()
+                result["millage_backfill"] = mill_stats
+            except Exception as exc:
+                logger.warning(f"PgNalService: millage backfill failed (non-fatal): {exc}")
+
         return result
+
+    # ------------------------------------------------------------------
+    # Millage backfill
+    # ------------------------------------------------------------------
+
+    def backfill_nal_millage(self) -> dict[str, int]:
+        """Backfill millage rates and estimated_annual_tax for NAL rows.
+
+        Uses the ``hillsborough_millage`` lookup table (seeded by the
+        create_foreclosures migration) joined on ``tax_auth_cd + tax_year``.
+        Only touches rows where ``total_millage IS NULL``.
+
+        Can be called standalone for annual refreshes after inserting new
+        millage rates into the lookup table::
+
+            INSERT INTO hillsborough_millage VALUES ('TA', 2026, ...);
+            SELECT * FROM backfill_nal_millage();
+
+        Returns:
+            Dict mapping tax_auth_cd → number of rows updated.
+        """
+        if not self._available:
+            return {}
+
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT * FROM backfill_nal_millage()")
+            ).fetchall()
+            conn.commit()
+
+        stats = {r[0]: r[1] for r in rows}
+        total = sum(stats.values())
+        if total:
+            logger.info(f"PgNalService: millage backfill updated {total:,} rows: {stats}")
+        else:
+            logger.debug("PgNalService: millage backfill — no rows needed updating")
+        return stats

@@ -1,6 +1,9 @@
 {% set liens = tax.liens or [] %}
 {% set flr_liens = tax.flr_liens or [] %}
+{% set cy = tax.current_year %}
+{% set history = tax.history or [] %}
 
+{# ── Section 1: Tax Status Summary ── #}
 <section class="card">
     <h2>Tax Status</h2>
     <div class="info-grid">
@@ -29,6 +32,217 @@
     </div>
 </section>
 
+{# ── Section 2: Current Year Valuation & Assessment ── #}
+{% if cy %}
+<section class="card">
+    <h2>Valuation &amp; Assessment ({{ cy.tax_year }})</h2>
+    <div class="valuation-grid">
+        <div class="valuation-item">
+            <span class="valuation-label">Just (Market) Value</span>
+            <span class="valuation-amount">{{ "${:,.0f}".format(cy.just_value) if cy.just_value is not none else "-" }}</span>
+        </div>
+        {% if cy.homestead_exempt and cy.just_value_homestead %}
+        <div class="valuation-item">
+            <span class="valuation-label">Just Value (Homestead)</span>
+            <span class="valuation-amount">${{ "{:,.0f}".format(cy.just_value_homestead) }}</span>
+        </div>
+        {% endif %}
+        <div class="valuation-item">
+            <span class="valuation-label">Assessed Value (School)</span>
+            <span class="valuation-amount">{{ "${:,.0f}".format(cy.assessed_value_school) if cy.assessed_value_school is not none else "-" }}</span>
+        </div>
+        <div class="valuation-item">
+            <span class="valuation-label">Assessed Value (Non-School)</span>
+            <span class="valuation-amount">{{ "${:,.0f}".format(cy.assessed_value_nonschool) if cy.assessed_value_nonschool is not none else "-" }}</span>
+        </div>
+        {% if cy.homestead_exempt and cy.assessed_value_homestead %}
+        <div class="valuation-item">
+            <span class="valuation-label">Assessed Value (Homestead)</span>
+            <span class="valuation-amount">${{ "{:,.0f}".format(cy.assessed_value_homestead) }}</span>
+        </div>
+        {% endif %}
+        <div class="valuation-item">
+            <span class="valuation-label">Taxable Value (School)</span>
+            <span class="valuation-amount">{{ "${:,.0f}".format(cy.taxable_value_school) if cy.taxable_value_school is not none else "-" }}</span>
+        </div>
+        <div class="valuation-item">
+            <span class="valuation-label">Taxable Value (Non-School)</span>
+            <span class="valuation-amount">{{ "${:,.0f}".format(cy.taxable_value_nonschool) if cy.taxable_value_nonschool is not none else "-" }}</span>
+        </div>
+        {% if cy.soh_differential %}
+        <div class="valuation-item">
+            <span class="valuation-label">Save Our Homes Differential</span>
+            <span class="valuation-amount">${{ "{:,.0f}".format(cy.soh_differential) }}</span>
+        </div>
+        {% endif %}
+        <div class="valuation-item">
+            <span class="valuation-label">Estimated Annual Tax</span>
+            <span class="valuation-amount">{{ "${:,.2f}".format(cy.estimated_annual_tax) if cy.estimated_annual_tax is not none else "-" }}</span>
+        </div>
+        {% if cy.property_use_code %}
+        <div class="valuation-item">
+            <span class="valuation-label">DOR Use Code</span>
+            <span class="valuation-amount">{{ cy.property_use_code }}</span>
+        </div>
+        {% endif %}
+    </div>
+</section>
+
+{# ── Section 3: Exemptions ── #}
+<section class="card">
+    <h2>Exemptions ({{ cy.tax_year }})</h2>
+    {% set has_any_exempt = cy.homestead_exempt or cy.widow_exempt or cy.disability_exempt or cy.veteran_exempt or cy.ag_exempt %}
+    {% if has_any_exempt %}
+    <div class="info-grid">
+        {% if cy.homestead_exempt %}
+        <div class="info-item">
+            <span class="info-label">Homestead</span>
+            <span class="info-value">
+                {{ "${:,.0f}".format(cy.homestead_exempt_value) if cy.homestead_exempt_value else "Yes" }}
+            </span>
+        </div>
+        {% endif %}
+        {% if cy.widow_exempt %}
+        <div class="info-item">
+            <span class="info-label">Widow/Widower</span>
+            <span class="info-value">
+                {{ "${:,.0f}".format(cy.widow_exempt_value) if cy.widow_exempt_value else "Yes" }}
+            </span>
+        </div>
+        {% endif %}
+        {% if cy.disability_exempt %}
+        <div class="info-item">
+            <span class="info-label">Disability</span>
+            <span class="info-value">
+                {{ "${:,.0f}".format(cy.disability_exempt_value) if cy.disability_exempt_value else "Yes" }}
+            </span>
+        </div>
+        {% endif %}
+        {% if cy.veteran_exempt %}
+        <div class="info-item">
+            <span class="info-label">Veteran</span>
+            <span class="info-value">
+                {{ "${:,.0f}".format(cy.veteran_exempt_value) if cy.veteran_exempt_value else "Yes" }}
+            </span>
+        </div>
+        {% endif %}
+        {% if cy.ag_exempt %}
+        <div class="info-item">
+            <span class="info-label">Agricultural</span>
+            <span class="info-value">
+                {{ "${:,.0f}".format(cy.ag_exempt_value) if cy.ag_exempt_value else "Yes" }}
+            </span>
+        </div>
+        {% endif %}
+    </div>
+    {% else %}
+    <p class="muted">No exemptions apply to this parcel.</p>
+    {% endif %}
+</section>
+
+{# ── Section 4: Millage Rates ── #}
+{% if cy.total_millage is not none %}
+<section class="card">
+    <h2>Millage Rates ({{ cy.tax_year }})</h2>
+    <div class="info-grid">
+        <div class="info-item">
+            <span class="info-label">Total Millage</span>
+            <span class="info-value">{{ "{:.4f}".format(cy.total_millage) }}</span>
+        </div>
+        {% if cy.county_millage is not none %}
+        <div class="info-item">
+            <span class="info-label">County</span>
+            <span class="info-value">{{ "{:.4f}".format(cy.county_millage) }}</span>
+        </div>
+        {% endif %}
+        {% if cy.school_millage is not none %}
+        <div class="info-item">
+            <span class="info-label">School</span>
+            <span class="info-value">{{ "{:.4f}".format(cy.school_millage) }}</span>
+        </div>
+        {% endif %}
+        {% if cy.city_millage is not none and cy.city_millage > 0 %}
+        <div class="info-item">
+            <span class="info-label">City/Municipal</span>
+            <span class="info-value">{{ "{:.4f}".format(cy.city_millage) }}</span>
+        </div>
+        {% endif %}
+    </div>
+</section>
+{% endif %}
+{% endif %}
+
+{# ── Section 5: Tax History ── #}
+{% if history|length > 1 %}
+<section class="card">
+    <h2>Tax History</h2>
+    <div class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Year</th>
+                    <th>Just Value</th>
+                    <th>Change</th>
+                    <th>Taxable Value</th>
+                    <th>Change</th>
+                    <th>Est. Tax</th>
+                    <th>Change</th>
+                    <th>Homestead</th>
+                    <th>Millage</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for h in history %}
+                <tr>
+                    <td>{{ h.tax_year }}</td>
+                    <td class="money">{{ "${:,.0f}".format(h.just_value) if h.just_value is not none else "-" }}</td>
+                    <td>
+                        {% if h.yoy_just_value_pct is not none %}
+                            {% if h.yoy_just_value_pct >= 0 %}
+                            <span class="badge badge-info">+{{ "{:.1f}".format(h.yoy_just_value_pct) }}%</span>
+                            {% else %}
+                            <span class="badge badge-danger">{{ "{:.1f}".format(h.yoy_just_value_pct) }}%</span>
+                            {% endif %}
+                        {% else %}-{% endif %}
+                    </td>
+                    <td class="money">{{ "${:,.0f}".format(h.taxable_value) if h.taxable_value is not none else "-" }}</td>
+                    <td>
+                        {% if h.yoy_taxable_value_pct is not none %}
+                            {% if h.yoy_taxable_value_pct >= 0 %}
+                            <span class="badge badge-info">+{{ "{:.1f}".format(h.yoy_taxable_value_pct) }}%</span>
+                            {% else %}
+                            <span class="badge badge-danger">{{ "{:.1f}".format(h.yoy_taxable_value_pct) }}%</span>
+                            {% endif %}
+                        {% else %}-{% endif %}
+                    </td>
+                    <td class="money">{{ "${:,.2f}".format(h.estimated_annual_tax) if h.estimated_annual_tax is not none else "-" }}</td>
+                    <td>
+                        {% if h.yoy_tax_pct is not none %}
+                            {% if h.yoy_tax_pct > 0 %}
+                            <span class="badge badge-warning">+{{ "{:.1f}".format(h.yoy_tax_pct) }}%</span>
+                            {% elif h.yoy_tax_pct < 0 %}
+                            <span class="badge badge-info">{{ "{:.1f}".format(h.yoy_tax_pct) }}%</span>
+                            {% else %}
+                            <span class="badge badge-muted">0.0%</span>
+                            {% endif %}
+                        {% else %}-{% endif %}
+                    </td>
+                    <td>{% if h.homestead_exempt %}Yes{% else %}No{% endif %}</td>
+                    <td>{{ "{:.4f}".format(h.total_millage) if h.total_millage is not none else "-" }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% elif history|length == 1 %}
+<section class="card">
+    <h2>Tax History</h2>
+    <p class="muted">Only one tax year on record &mdash; year-over-year comparison requires additional data.</p>
+</section>
+{% endif %}
+
+{# ── Section 6: Tax-Related Encumbrances ── #}
 <section class="card">
     <h2>Tax-Related Encumbrances</h2>
     {% if liens %}
@@ -61,6 +275,7 @@
     {% endif %}
 </section>
 
+{# ── Section 7: Federal Lien Registry ── #}
 <section class="card">
     <h2>Federal Lien Registry (Sunbiz)</h2>
     {% if flr_liens %}

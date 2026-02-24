@@ -666,6 +666,7 @@ class DorNalParcel(Base):
 
     # Classification
     property_use_code: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    tax_auth_cd: Mapped[str | None] = mapped_column(String(8), nullable=True)
 
     # Valuation
     just_value: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)

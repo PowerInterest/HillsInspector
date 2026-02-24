@@ -683,6 +683,8 @@ def _pg_tax_status_for_property(
                 "tax_status": None,
                 "tax_warrant": False,
                 "total_amount_due": None,
+                "current_year": None,
+                "history": [],
                 "liens": [],
                 "flr_liens": [],
             }

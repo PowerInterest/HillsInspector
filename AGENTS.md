@@ -54,6 +54,12 @@ The chain of title and encumbrance data are the core deliverable. Without them, 
     - **Dataframes**: Use Polars for data manipulation.
 - Ruff formatter target width ~88 chars; keep comments minimal and purposeful.
 
+## Multi-LLM Workflow Rule
+- Do NOT rely on internal, hidden markdown artifacts (such as `walkthrough.md`, `task.md`, or scratchpads) for architectural documentation.
+- If you design a new system, fix a complex bug, or discover important project context, you MUST write that documentation directly into the repository `docs/` folder and link it in `README.md`.
+- Other LLMs are reading this codebase, so all critical knowledge must be surfaced in the repository itself.
+- Python source files that implement architecture or complex behavior MUST include a clear, detailed module-level docstring at the top of the file explaining architectural purpose and how the file fits into the broader system.
+
 ## Testing Guidelines
 - Use pytest; name files `test_*.py` mirroring module paths.
 - Prefer schema/column presence checks and aggregate assertions for pipelines; include fixture HTML/PDF snippets for scrapers in `tests/fixtures/`.

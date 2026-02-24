@@ -1,7 +1,7 @@
 # Tax Data Research: Replacing Web Scraping with Bulk Data
 
-**Date:** 2026-02-18
-**Status:** Research complete -- implementation not yet started
+**Date:** 2026-02-18 (research) / 2026-02-23 (implementation)
+**Status:** Phases 1, 2, and 4 implemented. Phase 3 (targeted scraping) not yet started.
 
 ---
 
@@ -323,21 +323,20 @@ During May each year, the Tax Collector publishes the delinquent property list. 
 
 ## 5. Implementation Roadmap
 
-### Step 1: Compute Tax Estimates (Immediate, No New Data Needed)
+### Step 1: Compute Tax Estimates (DONE -- 2026-02-23)
 
-- Add `estimated_annual_tax` to the pipeline's equity calculation
-- Use: `taxable_value * 0.019` (approximate combined Hillsborough millage ~19 mills)
-- Source: existing `hcpa_bulk_parcels.taxable_value` in PostgreSQL
-- Effort: 1-2 hours
+- `estimated_annual_tax` computed from `taxable_value_nonschool * total_millage / 1000`
+- Source: `dor_nal_parcels` joined to `hillsborough_millage` via `tax_auth_cd`
+- 524K rows backfilled, avg $5,993/yr
 
-### Step 2: Download and Load NAL File
+### Step 2: Download and Load NAL File (DONE -- 2026-02-18)
 
-- Download `Hillsborough 39 Final NAL 2025.zip` from DOR data portal
-- Parse CSV and load into `dor_nal_parcels` table
-- Add to `pg_loader.py` as a new dataset type
-- Effort: 4-8 hours
+- `PgNalService.update()` downloads and loads NAL CSV into `dor_nal_parcels`
+- Integrated into Controller.py Phase A step `dor_nal` (background worker)
+- Ingestion code: `sunbiz/pg_loader.py` (`load_dor_nal`, `_parse_nal_csv_row`)
+- 524K Hillsborough parcels loaded (2025 Final roll)
 
-### Step 3: Refactor Step 12 (Tax Scraper)
+### Step 3: Refactor Step 12 (Tax Scraper) -- NOT YET STARTED
 
 - For all properties: look up tax data from bulk tables first
 - Only scrape county-taxes.net for properties where payment status is critical
@@ -345,11 +344,21 @@ During May each year, the Tax Collector publishes the delinquent property list. 
 - Skip scraping if: tax_status already known AND data is <30 days old
 - Effort: 4-6 hours
 
-### Step 4: Millage Rate Table (Optional Enhancement)
+### Step 4: Millage Rate Lookup Table (DONE -- 2026-02-23)
 
-- Scrape or manually enter current millage rates by tax district
-- Compute exact tax bill: `taxable_value * millage_rate / 1000`
-- Effort: 2-4 hours
+- `hillsborough_millage` PG table: `(tax_auth_cd, tax_year)` → millage rates
+- Seeded with 2025 Final Millage from HCPA (hcpafl.org)
+- 4 tax districts: TA (Tampa, 19.8428), TT (Temple Terrace, 19.5319), PC (Plant City, 18.2926), U (Unincorporated, 18.2515)
+- `backfill_nal_millage()` PG function: fills NULL-millage rows from lookup
+- Called automatically after `PgNalService.update()`
+- `tax_auth_cd` column added to `dor_nal_parcels` (mapped from NAL CSV)
+- **Annual refresh**: Insert new year's rates into `hillsborough_millage`, then call `SELECT * FROM backfill_nal_millage()`
+
+### Web Tax Tab (DONE -- 2026-02-23)
+
+- `app/web/routers/properties.py`: `_pg_tax_status_for_property()` returns `current_year` (full detail) + `history` (multi-year with YoY%)
+- `app/web/templates/partials/tax.html`: 7 sections — status, valuation, exemptions, millage, history, encumbrances, federal liens
+- All null/zero edge cases use `is not none` checks (no falsy-zero silent data loss)
 
 ---
 

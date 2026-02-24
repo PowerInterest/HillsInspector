@@ -22,6 +22,24 @@
         </div>
     {% else %}
         <ul class="timeline">
+            <li class="timeline-item timeline-start">
+                <div class="timeline-dot"></div>
+                <div class="timeline-content">
+                    <div class="timeline-title" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                        Chain Start
+                        {% if chain_years and chain_start_year and chain_end_year %}
+                            <span style="font-weight: 400; font-size: 0.9em; color: #6b7280;">
+                                &mdash; {{ chain_years }} year{{ 's' if chain_years != 1 else '' }} ({{ chain_start_year }} to {{ chain_end_year }})
+                            </span>
+                            {% if chain_years|int >= 30 %}
+                                <span class="badge badge-info" style="font-size: 0.75em;">Meets 30-year minimum</span>
+                            {% else %}
+                                <span class="badge badge-warning" style="font-size: 0.75em;">Below 30-year minimum ({{ 30 - chain_years|int }} yr{{ 's' if (30 - chain_years|int) != 1 else '' }} short)</span>
+                            {% endif %}
+                        {% endif %}
+                    </div>
+                </div>
+            </li>
             {% for transfer in chain_of_title %}
                 {% set st = (transfer.link_status or '')|upper %}
                 <li class="timeline-item">
@@ -54,17 +72,17 @@
                                 {% endif %}
                             </div>
                         </div>
-                        
+
                         <div class="transfer-flow">
                             <div class="transfer-party grantor">
                                 <span class="party-label">Grantor (From)</span>
                                 <span class="party-name">{{ transfer.acquired_from or 'Unknown' }}</span>
                             </div>
-                            
+
                             <div class="transfer-arrow">
                                 <span class="arrow-icon">➜</span>
                             </div>
-                            
+
                             <div class="transfer-party grantee">
                                 <span class="party-label">Grantee (To)</span>
                                 <span class="party-name">{{ transfer.owner_name or 'Unknown' }}</span>
@@ -88,12 +106,6 @@
                     </div>
                 </li>
             {% endfor %}
-             <li class="timeline-item timeline-start">
-                <div class="timeline-dot"></div>
-                <div class="timeline-content">
-                    <div class="timeline-title">Chain Start</div>
-                </div>
-            </li>
         </ul>
     {% endif %}
 </div>

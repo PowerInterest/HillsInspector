@@ -2,15 +2,20 @@
 """
 Tampa Accela bulk capture service (PostgreSQL-first).
 
-What this service captures:
-- Record exports from Tampa Accela Building module date windows.
-- Core record data (record number/type/module/status/address/date).
-- Operational flags:
-  - violation indicator
-  - open vs closed
-  - needs closeout
-  - fix/remedial-type record indicator
-- Estimated work cost (best-effort from export fields; optionally enriched from detail pages).
+Architectural purpose:
+- Pull City of Tampa permit records from Accela Citizen Access (Building module).
+- Normalize/export those records into `tampa_accela_records` in PostgreSQL.
+- Provide permit-side enrichment used by foreclosure analysis and title-chain steps.
+
+How it fits into the broader system:
+- `src/services/pg_pipeline_controller.py` runs this as the `tampa_permits` step.
+- Web/property views and downstream title logic query permit signals from this table.
+- This is the city permit complement to the county ArcGIS permit ingest
+  (`CountyPermitService`) so permit coverage is not county-only.
+
+Operational note:
+- Accela UI markup changes over time. Date-input and export-button interactions here
+  intentionally use resilient selectors/entry methods to avoid silent zero-row runs.
 
 Primary UI source:
 https://aca-prod.accela.com/Tampa/Cap/CapHome.aspx?module=Building&TabName=Building
@@ -212,43 +217,69 @@ class TampaPermitService:
                 "zip_code": None,
             }
 
-        normalized = re.sub(
-            r",\s*T,\s*(\d{5}(?:-\d{4})?)$",
-            r", TAMPA, FL \1",
-            address_raw,
-            flags=re.IGNORECASE,
-        )
+        compact = re.sub(r"\s+", " ", address_raw).strip()
+        normalized = compact
 
         city = None
         state = None
         zip_code = None
 
-        full_pattern = re.compile(
-            r"^(?P<street>.*?),\s*(?P<city>[^,]+),\s*(?P<state>[A-Z]{2})\s*(?P<zip>\d{5}(?:-\d{4})?)$",
-            re.IGNORECASE,
-        )
-        match = full_pattern.match(normalized)
-        if match:
-            city = _clean_text(match.group("city"))
-            state = _clean_text(match.group("state"))
+        patterns: list[tuple[re.Pattern[str], str | None, str | None]] = [
+            (
+                re.compile(
+                    r"^(?P<street>.*?),\s*(?P<city>[^,]+),\s*(?P<state>[A-Z]{2})\s*(?P<zip>\d{5}(?:-\d{4})?)$",
+                    re.IGNORECASE,
+                ),
+                None,
+                None,
+            ),
+            (
+                re.compile(
+                    r"^(?P<street>.*?),\s*T,\s*(?P<zip>\d{5}(?:-\d{4})?)$",
+                    re.IGNORECASE,
+                ),
+                "TAMPA",
+                "FL",
+            ),
+            (
+                re.compile(
+                    r"^(?P<street>.*?)\s+TAMPA\s*,?\s*FL\s+(?P<zip>\d{5}(?:-\d{4})?)$",
+                    re.IGNORECASE,
+                ),
+                "TAMPA",
+                "FL",
+            ),
+            (
+                re.compile(
+                    r"^(?P<street>.*?)\s+T\s+(?P<zip>\d{5}(?:-\d{4})?)$",
+                    re.IGNORECASE,
+                ),
+                "TAMPA",
+                "FL",
+            ),
+        ]
+
+        for pattern, forced_city, forced_state in patterns:
+            match = pattern.match(compact)
+            if not match:
+                continue
+
+            street = _clean_text(match.group("street"))
+            if not street:
+                continue
+
+            city = forced_city or _clean_text(match.groupdict().get("city"))
+            state = forced_state or _clean_text(match.groupdict().get("state"))
             zip_code = _clean_text(match.group("zip"))
-        else:
-            # Common export variant: "..., T, 33602" -> Tampa/FL.
-            short_pattern = re.compile(
-                r"^(?P<street>.*?),\s*T,\s*(?P<zip>\d{5}(?:-\d{4})?)$",
-                re.IGNORECASE,
-            )
-            short_match = short_pattern.match(address_raw)
-            if short_match:
-                city = "TAMPA"
-                state = "FL"
-                zip_code = _clean_text(short_match.group("zip"))
-                normalized = re.sub(
-                    r",\s*T,\s*(\d{5}(?:-\d{4})?)$",
-                    r", TAMPA, FL \1",
-                    address_raw,
-                    flags=re.IGNORECASE,
-                )
+
+            city = city.upper() if city else None
+            state = state.upper() if state else None
+
+            if city and state and zip_code:
+                normalized = f"{street}, {city}, {state} {zip_code}"
+            else:
+                normalized = street
+            break
 
         if city:
             city = city.upper()
@@ -546,6 +577,73 @@ class TampaPermitService:
             next(reader, None)
             return sum(1 for _ in reader)
 
+    @staticmethod
+    def _set_accela_date_input(page: Any, selector: str, value: str) -> None:
+        """
+        Set Accela date inputs reliably.
+
+        `page.fill()` can append to prefilled date values on this form, producing
+        malformed payload values like `02/22/202501/24/2026` and triggering
+        Error.aspx on submit. Use select-all + type first, then JS fallback.
+        """
+        field = page.locator(selector)
+        if field.count() == 0:
+            raise RuntimeError(f"Tampa Accela date input not found: {selector}")
+
+        field.click()
+        field.press("Control+A")
+        field.type(value, delay=20)
+        page.wait_for_timeout(100)
+
+        observed = (field.input_value() or "").strip()
+        if observed == value:
+            return
+
+        page.evaluate(
+            """
+            ({selector, value}) => {
+                const el = document.querySelector(selector);
+                if (!el) {
+                    return;
+                }
+                el.value = "";
+                el.dispatchEvent(new Event("input", { bubbles: true }));
+                el.value = value;
+                el.dispatchEvent(new Event("input", { bubbles: true }));
+                el.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+            """,
+            {"selector": selector, "value": value},
+        )
+        page.wait_for_timeout(100)
+        observed = (field.input_value() or "").strip()
+        if observed != value:
+            raise RuntimeError(
+                f"Tampa Accela date input failed to set for {selector}: "
+                f"expected {value!r}, got {observed!r}"
+            )
+
+    @staticmethod
+    def _resolve_export_button(page: Any) -> Any | None:
+        """
+        Resolve the Accela export button across UI variants.
+
+        The container path has changed over time (`CapView` -> `dgvPermitList`),
+        so rely on a small selector set instead of a single brittle id.
+        """
+        selectors = [
+            "#ctl00_PlaceHolderMain_dgvPermitList_gdvPermitList_gdvPermitListtop4btnExport",
+            "#ctl00_PlaceHolderMain_CapView_gdvPermitList_gdvPermitListtop4btnExport",
+            "a[id$='gdvPermitListtop4btnExport']",
+            "a[id$='lb4btnExport']",
+            "a[id*='btnExport']",
+        ]
+        for selector in selectors:
+            locator = page.locator(selector)
+            if locator.count() > 0:
+                return locator.first
+        return None
+
     def capture_window_export(
         self,
         start_date: date,
@@ -591,11 +689,25 @@ class TampaPermitService:
                 page.select_option("#ctl00_PlaceHolderMain_ddlSearchType", "0")
                 page.wait_for_timeout(500)
 
-                page.fill("#ctl00_PlaceHolderMain_generalSearchForm_txtGSStartDate", start_str)
-                page.fill("#ctl00_PlaceHolderMain_generalSearchForm_txtGSEndDate", end_str)
+                self._set_accela_date_input(
+                    page,
+                    "#ctl00_PlaceHolderMain_generalSearchForm_txtGSStartDate",
+                    start_str,
+                )
+                self._set_accela_date_input(
+                    page,
+                    "#ctl00_PlaceHolderMain_generalSearchForm_txtGSEndDate",
+                    end_str,
+                )
 
                 page.click("#ctl00_PlaceHolderMain_btnNewSearch")
                 page.wait_for_timeout(2500)
+
+                if "Error.aspx" in page.url:
+                    raise RuntimeError(
+                        "Tampa Accela returned Error page after search submit for "
+                        f"date window {start_str} - {end_str}: {page.url}"
+                    )
 
                 body_text = page.text_content("body") or ""
                 if "No records found" in body_text:
@@ -613,23 +725,16 @@ class TampaPermitService:
                         showing_text="No records found",
                     )
 
-                export_button = page.locator(
-                    "#ctl00_PlaceHolderMain_CapView_gdvPermitList_gdvPermitListtop4btnExport"
-                )
-                if export_button.count() == 0:
-                    logger.warning(
-                        "Tampa window capture missing export button: start_date={}, end_date={}, page_url={}",
-                        start_date,
-                        end_date,
-                        page.url,
+                export_button = self._resolve_export_button(page)
+                if export_button is None:
+                    button_ids = page.eval_on_selector_all(
+                        "a[id*='Export'], a[id*='export'], iframe[id*='Export'], iframe[id*='export']",
+                        "els => els.map(e => e.id || '').filter(Boolean).slice(0, 8)",
                     )
-                    return WindowCaptureResult(
-                        start_date=start_date,
-                        end_date=end_date,
-                        csv_path=None,
-                        row_count=0,
-                        export_url=None,
-                        showing_text=None,
+                    raise RuntimeError(
+                        "Tampa window capture missing export button for "
+                        f"{start_str} - {end_str} (page_url={page.url}, "
+                        f"export_candidates={button_ids})"
                     )
 
                 # Best-effort showing text for diagnostics.
@@ -649,7 +754,7 @@ class TampaPermitService:
                     out_path,
                 )
 
-                iframe = page.locator("iframe#iframeexport")
+                iframe = page.locator("iframe#iframeExport, iframe#iframeexport")
                 if iframe.count() > 0:
                     src = iframe.first.get_attribute("src")
                     if src:
@@ -715,10 +820,8 @@ class TampaPermitService:
                         f"Tampa Accela returned Error page for query '{query}': {page.url}"
                     )
 
-                export_button = page.locator(
-                    "#ctl00_PlaceHolderMain_CapView_gdvPermitList_gdvPermitListtop4btnExport"
-                )
-                if export_button.count() == 0:
+                export_button = self._resolve_export_button(page)
+                if export_button is None:
                     logger.warning(
                         "Tampa query capture missing export button: query={!r}, page_url={}",
                         query,
@@ -743,7 +846,7 @@ class TampaPermitService:
                 download.save_as(str(out_path))
                 logger.info("Tampa query capture download saved: query={!r}, file={}", query, out_path)
 
-                iframe = page.locator("iframe#iframeexport")
+                iframe = page.locator("iframe#iframeExport, iframe#iframeexport")
                 if iframe.count() > 0:
                     src = iframe.first.get_attribute("src")
                     if src:
@@ -792,7 +895,32 @@ class TampaPermitService:
             win_start, win_end = queue.pop(0)
             total_windows += 1
             logger.info(f"Capturing Tampa export window {win_start} -> {win_end}")
-            result = self.capture_window_export(win_start, win_end)
+            try:
+                result = self.capture_window_export(win_start, win_end)
+            except RuntimeError as exc:
+                message = str(exc)
+                timeout_like = (
+                    "timed out" in message.lower()
+                    or 'waiting for event "download"' in message.lower()
+                )
+                if timeout_like and win_start < win_end:
+                    logger.warning(
+                        "Tampa window {} -> {} timed out during export; splitting window "
+                        "and retrying. error={}",
+                        win_start,
+                        win_end,
+                        message,
+                    )
+                    midpoint = win_start + timedelta(days=(win_end - win_start).days // 2)
+                    if midpoint >= win_end:
+                        midpoint = win_start
+                    left = (win_start, midpoint)
+                    right = (midpoint + timedelta(days=1), win_end)
+                    queue.insert(0, right)
+                    queue.insert(0, left)
+                    split_windows += 1
+                    continue
+                raise
 
             if result.row_count == 0 or result.csv_path is None:
                 logger.info(

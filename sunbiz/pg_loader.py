@@ -122,6 +122,7 @@ NAL_COLUMN_MAP: dict[str, str] = {
     "phy_zipcd": "zip_code",
     # Classification
     "dor_uc": "property_use_code",
+    "tax_auth_cd": "tax_auth_cd",
     # Valuation
     "jv": "just_value",
     "jv_hmstd": "just_value_homestead",
@@ -146,6 +147,16 @@ NAL_COLUMN_MAP: dict[str, str] = {
 #   09    = Deployed service member
 #   10    = Surviving spouse of first responder
 #   41    = Agricultural (classified use)
+# Hillsborough County 2025 Final Millage Rates by tax authority code.
+# Source: HCPA Final 2025 Millage PDF (hcpafl.org)
+# Keys: tax_auth_cd from NAL CSV — TA=Tampa, TT=Temple Terrace, PC=Plant City, U=Unincorporated
+HILLSBOROUGH_MILLAGE_2025: dict[str, dict[str, float]] = {
+    "TA": {"total_millage": 19.8428, "county_millage": 6.0795, "school_millage": 6.3400, "city_millage": 6.2076},
+    "TT": {"total_millage": 19.5319, "county_millage": 5.5212, "school_millage": 6.3400, "city_millage": 6.4550},
+    "PC": {"total_millage": 18.2926, "county_millage": 5.5212, "school_millage": 6.3400, "city_millage": 5.7157},
+    "U":  {"total_millage": 18.2515, "county_millage": 10.6958, "school_millage": 6.3400, "city_millage": 0.0},
+}
+
 DOR_EXEMPTION_FIELDS: dict[str, tuple[str, str]] = {
     "01": ("homestead_exempt", "homestead_exempt_value"),
     "03": ("widow_exempt", "widow_exempt_value"),
@@ -2437,12 +2448,21 @@ def _parse_nal_csv_row(
     else:
         mapped["soh_differential"] = None
 
-    # Parse millage rates from SDF-style columns if present in NAL
-    # The NAL may include aggregated millage; if not, leave as None (SDF has detail)
+    # Parse millage rates: prefer CSV columns if present, otherwise
+    # derive from HCPA millage lookup table using tax_auth_cd.
     mapped["total_millage"] = _parse_float_value(row.get("tot_mill"))
     mapped["county_millage"] = _parse_float_value(row.get("co_mill"))
     mapped["school_millage"] = _parse_float_value(row.get("schl_mill"))
     mapped["city_millage"] = _parse_float_value(row.get("muni_mill"))
+
+    if mapped["total_millage"] is None:
+        tax_auth = (mapped.get("tax_auth_cd") or "").strip().upper()
+        mill = HILLSBOROUGH_MILLAGE_2025.get(tax_auth)
+        if mill:
+            mapped["total_millage"] = mill["total_millage"]
+            mapped["county_millage"] = mill["county_millage"]
+            mapped["school_millage"] = mill["school_millage"]
+            mapped["city_millage"] = mill["city_millage"]
 
     # Compute estimated annual tax
     tv_nsd = mapped.get("taxable_value_nonschool")

@@ -57,6 +57,7 @@ class ControllerSettings:
     skip_judgment_extract: bool = False
     skip_identifier_recovery: bool = False
     skip_ori_search: bool = False
+    skip_mortgage_extract: bool = False
     skip_survival: bool = False
     # Staleness windows
     hcpa_stale_days: int = 7
@@ -92,6 +93,7 @@ class ControllerSettings:
     judgment_limit: int | None = None
     identifier_recovery_limit: int | None = None
     ori_limit: int | None = None
+    mortgage_limit: int | None = None
     survival_limit: int | None = None
     title_breaks_limit: int | None = None
 
@@ -103,8 +105,6 @@ class PgPipelineController:
         "dor_nal",
         "sunbiz_flr",
         "sunbiz_entity",
-        "county_permits",
-        "tampa_permits",
     }
 
     def __init__(self, settings: ControllerSettings) -> None:
@@ -167,6 +167,11 @@ class PgPipelineController:
                 self._run_ori_search,
             ),
             (
+                "mortgage_extract",
+                self.settings.skip_mortgage_extract,
+                self._run_mortgage_extract,
+            ),
+            (
                 "survival_analysis",
                 self.settings.skip_survival,
                 self._run_survival_analysis,
@@ -218,10 +223,7 @@ class PgPipelineController:
                 payload = fn()
             payload_dict = payload if isinstance(payload, dict) else {"result": payload}
             failed, failure_reason = self._is_failed_payload(payload_dict)
-            if failed:
-                status = "failed"
-            else:
-                status = "skipped" if payload_dict.get("skipped") else "ok"
+            status = "failed" if failed else "skipped" if payload_dict.get("skipped") else "ok"
             result = {
                 "name": name,
                 "status": status,
@@ -257,14 +259,14 @@ class PgPipelineController:
     def _is_failed_payload(payload: dict[str, Any]) -> tuple[bool, str | None]:
         if payload.get("success") is False:
             return True, "success_false"
-        if payload.get("error") not in (None, ""):
+        if payload.get("error") not in {None, ""}:
             return True, "error_present"
 
         update = payload.get("update")
         if isinstance(update, dict):
             if update.get("success") is False:
                 return True, "update_success_false"
-            if update.get("error") not in (None, ""):
+            if update.get("error") not in {None, ""}:
                 return True, "update_error_present"
 
         return False, None
@@ -447,6 +449,17 @@ class PgPipelineController:
             keep_csv=self.settings.tampa_keep_csv,
         )
 
+        # Guardrail: a multi-day window should not silently "succeed" with zero
+        # ingested rows unless it truly had no records (handled by service logs).
+        if (
+            (end_date - start_date).days >= 7
+            and int(sync_stats.get("csv_rows_total") or 0) == 0
+            and int(sync_stats.get("written_total") or 0) == 0
+        ):
+            raise RuntimeError(
+                "Tampa permit sync produced zero rows for a 7+ day window; treating as failure to avoid silent stale permit data."
+            )
+
         enrich_stats: dict[str, int] | None = None
         if self.settings.tampa_enrich_limit != 0:
             limit = self.settings.tampa_enrich_limit
@@ -536,6 +549,12 @@ class PgPipelineController:
 
         svc = PgOriService(dsn=self.dsn)
         return svc.run(limit=self.settings.ori_limit)
+
+    def _run_mortgage_extract(self) -> dict[str, Any]:
+        from src.services.pg_mortgage_extraction_service import PgMortgageExtractionService
+
+        svc = PgMortgageExtractionService(dsn=self.dsn)
+        return svc.run(limit=self.settings.mortgage_limit)
 
     def _run_survival_analysis(self) -> dict[str, Any]:
         from src.services.pg_survival_service import PgSurvivalService
@@ -755,6 +774,7 @@ def parse_args() -> ControllerSettings:
     parser.add_argument("--skip-judgment-extract", action="store_true")
     parser.add_argument("--skip-identifier-recovery", action="store_true")
     parser.add_argument("--skip-ori-search", action="store_true")
+    parser.add_argument("--skip-mortgage-extract", action="store_true")
     parser.add_argument("--skip-survival", action="store_true")
 
     parser.add_argument("--hcpa-download-dir", default=str(DEFAULT_HCPA_DOWNLOAD_DIR))
@@ -797,6 +817,7 @@ def parse_args() -> ControllerSettings:
         help="Max unresolved foreclosures for identifier recovery (<=0 means all)",
     )
     parser.add_argument("--ori-limit", type=int, help="Max foreclosures for ORI search")
+    parser.add_argument("--mortgage-limit", type=int, help="Max mortgage PDFs to extract")
     parser.add_argument("--survival-limit", type=int, help="Max foreclosures for survival analysis")
     parser.add_argument("--title-breaks-limit", type=int, help="Max foreclosures for title break resolution")
 
@@ -823,6 +844,7 @@ def parse_args() -> ControllerSettings:
         skip_judgment_extract=bool(args.skip_judgment_extract),
         skip_identifier_recovery=bool(args.skip_identifier_recovery),
         skip_ori_search=bool(args.skip_ori_search),
+        skip_mortgage_extract=bool(args.skip_mortgage_extract),
         skip_survival=bool(args.skip_survival),
         hcpa_download_dir=Path(args.hcpa_download_dir),
         include_hcpa_latlon=args.include_hcpa_latlon,

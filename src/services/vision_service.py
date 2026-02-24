@@ -1060,6 +1060,7 @@ class VisionService:
     # 10.10.1.5 has 262k context, 10.10.2.27 only has 11k - prioritize the larger one
     # 192.168.86.26:1234 is LM Studio on Windows (uses different model ID)
     _LOCAL_ENDPOINTS = [
+        {"url": "http://crackerX:6970/v1/chat/completions", "model": "zai-org/GLM-4.6V-FP8"},
         {"url": "http://10.10.1.5:8002/v1/chat/completions", "model": "zai-org/GLM-4.6V-Flash"},
         {"url": "http://10.10.0.76:6969/v1/chat/completions", "model": "zai-org/glm-4.6v-flash"},
         {"url": "http://192.168.86.26:6969/v1/chat/completions", "model": "zai-org/glm-4.6v-flash"},
@@ -1522,6 +1523,19 @@ class VisionService:
                 return base64.b64encode(buffer.getvalue()).decode()
         except Exception as e:
             logger.warning(f"Failed to process image {image_path} with PIL: {e}. Falling back to raw read.")
+            # Try rasterizing PDFs via pymupdf before sending raw bytes
+            if str(image_path).lower().endswith(".pdf"):
+                try:
+                    import fitz
+
+                    with fitz.open(str(image_path)) as doc:
+                        page = doc[0]
+                        mat = fitz.Matrix(200 / 72, 200 / 72)  # 200 DPI
+                        pix = page.get_pixmap(matrix=mat)
+                        buffer = io.BytesIO(pix.tobytes("jpeg"))
+                        return base64.b64encode(buffer.getvalue()).decode()
+                except Exception as pdf_err:
+                    logger.warning(f"pymupdf rasterization failed for {image_path}: {pdf_err}")
             with open(image_path, "rb") as f:
                 return base64.b64encode(f.read()).decode()
 

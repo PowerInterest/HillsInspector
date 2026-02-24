@@ -9,6 +9,17 @@
     <link rel="stylesheet" href="/static/leaflet/leaflet.css">
     <script src="/static/leaflet/leaflet.js"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script>
+        // Allow HTMX to swap content on error responses (4xx/5xx)
+        // so server-rendered error fragments display instead of silent failures.
+        document.addEventListener('htmx:beforeSwap', function(evt) {
+            var status = evt.detail.xhr.status;
+            if (status >= 400) {
+                evt.detail.shouldSwap = true;
+                evt.detail.isError = false;
+            }
+        });
+    </script>
     <style>
         .search-item { display:block; padding:8px 12px; text-decoration:none; color:#333; border-bottom:1px solid #eee; }
         .search-item:hover { background:#f0f4ff; }

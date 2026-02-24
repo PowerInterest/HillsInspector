@@ -1,0 +1,9 @@
+# MULTI-LLM WORKFLOW RULE
+This project is edited by multiple LLMs. 
+
+## Documentation Standard
+- Do NOT rely on internal, hidden markdown artifacts (like `walkthrough.md` or `task.md` stored in an agent's private directory) for architectural documentation. 
+- If you design a new system, fix a complex bug, or discover important project context, you MUST write that documentation directly into the repository's `docs/` folder.
+- You MUST update `README.md` to link to any new documentation you create so that it is easily discoverable.
+- The Python source code file MUST also include a very clear, detailed docstring at the top of the file explaining its architectural purpose and how it fits into the broader system. 
+- Never silo information in your own private sandbox or memory. Other LLMs are reading this codebase, so all critical knowledge must be surfaced in the repository itself.

@@ -5,10 +5,10 @@
 {% block content %}
 <div class="review-queue">
     <div class="page-header">
-        <h1>HCPA Scrape Failures</h1>
+        <h1>HCPA Failures — Missing Strap</h1>
         <p class="subtitle">
-            These auctions failed to get legal description from HCPA and need manual review.
-            Without a legal description, ORI chain of title search cannot be performed.
+            These foreclosures have no strap/parcel ID, so ORI chain-of-title search cannot run.
+            Use the judgment PDF to understand the property and manually resolve.
         </p>
         <div class="stats-badge">
             <span class="count">{{ total }}</span> auctions need review
@@ -36,9 +36,8 @@
                 <th>Auction Date</th>
                 <th>Case #</th>
                 <th>Address</th>
-                <th>Parcel ID</th>
-                <th>Error</th>
-                <th>Legal (if any)</th>
+                <th>Status</th>
+                <th>Judgment</th>
                 <th>Actions</th>
             </tr>
         </thead>
@@ -47,46 +46,62 @@
             <tr>
                 <td>{{ auction.auction_date }}</td>
                 <td>
-                    <a href="/property/{{ auction.folio or auction.parcel_id }}" target="_blank">
-                        {{ auction.case_number }}
+                    <a href="/property/{{ auction.case_number_raw }}" target="_blank">
+                        {{ auction.case_number_raw }}
                     </a>
                 </td>
                 <td>{{ auction.property_address or 'N/A' }}</td>
                 <td>
-                    <code>{{ auction.parcel_id or auction.folio or 'N/A' }}</code>
+                    <span class="status-badge status-{{ (auction.auction_status or 'unknown')|lower|replace(' ', '-') }}">
+                        {{ auction.auction_status or 'Unknown' }}
+                    </span>
                 </td>
-                <td class="error-cell">
-                    <span class="error-text">{{ auction.hcpa_scrape_error or 'Unknown error' }}</span>
-                </td>
-                <td class="legal-cell">
-                    {% if auction.legal_description %}
-                        <span class="has-legal">{{ auction.legal_description[:50] }}...</span>
-                    {% elif auction.raw_legal1 %}
-                        <span class="raw-legal">Raw: {{ auction.raw_legal1[:30] }}...</span>
+                <td class="judgment-cell">
+                    {% if auction.pdf_path %}
+                        <span class="judgment-has-pdf" title="Judgment PDF available">PDF</span>
+                    {% elif auction.has_judgment %}
+                        <span class="judgment-has-data" title="Judgment data extracted (no PDF on disk)">Data</span>
                     {% else %}
-                        <span class="no-legal">None</span>
+                        <span class="judgment-none" title="No judgment found">None</span>
                     {% endif %}
                 </td>
                 <td class="actions-cell">
                     <div class="action-buttons">
-                        <!-- Manual HCPA lookup link -->
-                        {% if auction.parcel_id %}
-                        <a href="https://gis.hcpafl.org/propertysearch/#/parcel/basic/{{ auction.parcel_id }}"
+                        <!-- Property detail page -->
+                        <a href="/property/{{ auction.case_number_raw }}"
                            target="_blank"
                            class="btn btn-small btn-primary"
+                           title="View property detail">
+                            Detail
+                        </a>
+
+                        {% if auction.pdf_path %}
+                        <!-- Direct judgment PDF link -->
+                        <a href="/property/{{ auction.case_number_raw }}#judgment"
+                           target="_blank"
+                           class="btn btn-small btn-warning"
+                           title="View judgment PDF">
+                            Judgment
+                        </a>
+                        {% endif %}
+
+                        <!-- Manual HCPA lookup link -->
+                        {% if auction.folio %}
+                        <a href="https://gis.hcpafl.org/propertysearch/#/parcel/basic/{{ auction.folio }}"
+                           target="_blank"
+                           class="btn btn-small btn-secondary"
                            title="Open HCPA GIS">
                             HCPA
                         </a>
                         {% endif %}
 
-                        <!-- Mark as reviewed form -->
-                        <form action="/review/hcpa-failures/{{ auction.case_number }}/mark-reviewed"
-                              method="POST"
-                              style="display: inline;">
-                            <button type="submit" class="btn btn-small btn-success" title="Mark as reviewed">
-                                Done
-                            </button>
-                        </form>
+                        <!-- Clerk ORI search -->
+                        <a href="https://publicaccess.hillsclerk.com/oripublicaccess/"
+                           target="_blank"
+                           class="btn btn-small btn-secondary"
+                           title="Search ORI for this case">
+                            ORI
+                        </a>
                     </div>
                 </td>
             </tr>
@@ -114,7 +129,7 @@
     {% else %}
     <div class="empty-state">
         <h3>No HCPA failures to review</h3>
-        <p>All auctions have successfully retrieved legal descriptions from HCPA.</p>
+        <p>All foreclosures have a strap/parcel ID assigned.</p>
     </div>
     {% endif %}
 </div>
@@ -178,32 +193,48 @@
     background: #f8f9fa;
 }
 
-.error-cell {
-    max-width: 200px;
+.status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.8em;
+    font-weight: 600;
+    background: #e9ecef;
+    color: #495057;
 }
 
-.error-text {
-    color: #dc3545;
-    font-size: 0.85em;
+.judgment-cell {
+    text-align: center;
 }
 
-.legal-cell {
-    max-width: 200px;
+.judgment-has-pdf {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.8em;
+    font-weight: 600;
+    background: #d4edda;
+    color: #155724;
 }
 
-.has-legal {
-    color: #28a745;
-    font-size: 0.85em;
+.judgment-has-data {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.8em;
+    font-weight: 600;
+    background: #fff3cd;
+    color: #856404;
 }
 
-.raw-legal {
-    color: #ffc107;
-    font-size: 0.85em;
-}
-
-.no-legal {
-    color: #dc3545;
-    font-style: italic;
+.judgment-none {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.8em;
+    font-weight: 600;
+    background: #f8d7da;
+    color: #721c24;
 }
 
 .actions-cell {
@@ -212,7 +243,8 @@
 
 .action-buttons {
     display: flex;
-    gap: 8px;
+    gap: 6px;
+    flex-wrap: wrap;
 }
 
 .btn {
@@ -237,6 +269,24 @@
 
 .btn-primary:hover {
     background: #0056b3;
+}
+
+.btn-warning {
+    background: #fd7e14;
+    color: white;
+}
+
+.btn-warning:hover {
+    background: #e8590c;
+}
+
+.btn-secondary {
+    background: #6c757d;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: #545b62;
 }
 
 .btn-success {
@@ -270,13 +320,6 @@
 .empty-state h3 {
     color: #28a745;
     margin-bottom: 8px;
-}
-
-code {
-    background: #e9ecef;
-    padding: 2px 6px;
-    border-radius: 3px;
-    font-size: 0.85em;
 }
 
 .alert {

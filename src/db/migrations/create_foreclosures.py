@@ -1009,6 +1009,73 @@ DDL: list[str] = [
            oe.amount
     FROM ori_encumbrances oe;
     """,
+
+    # ------------------------------------------------------------------
+    # dor_nal_parcels: add tax_auth_cd column (idempotent)
+    # ------------------------------------------------------------------
+    """
+    ALTER TABLE dor_nal_parcels
+        ADD COLUMN IF NOT EXISTS tax_auth_cd VARCHAR(8);
+    """,
+
+    # ------------------------------------------------------------------
+    # Hillsborough millage lookup table + backfill function.
+    # HCPA publishes Final Millage rates annually (Oct).
+    # Source: hcpafl.org/Portals/HCPAFL/pdfs/{year}FinalMillage.pdf
+    # ------------------------------------------------------------------
+    """
+    CREATE TABLE IF NOT EXISTS hillsborough_millage (
+        tax_auth_cd     VARCHAR(8)  NOT NULL,
+        tax_year        INTEGER     NOT NULL,
+        total_millage   NUMERIC(12,6) NOT NULL,
+        county_millage  NUMERIC(12,6),
+        school_millage  NUMERIC(12,6),
+        city_millage    NUMERIC(12,6),
+        PRIMARY KEY (tax_auth_cd, tax_year)
+    );
+    """,
+
+    # Seed 2025 rates (idempotent via ON CONFLICT)
+    """
+    INSERT INTO hillsborough_millage
+        (tax_auth_cd, tax_year, total_millage, county_millage, school_millage, city_millage)
+    VALUES
+        ('TA', 2025, 19.8428, 6.0795, 6.3400, 6.2076),
+        ('TT', 2025, 19.5319, 5.5212, 6.3400, 6.4550),
+        ('PC', 2025, 18.2926, 5.5212, 6.3400, 5.7157),
+        ('U',  2025, 18.2515, 10.6958, 6.3400, 0.0)
+    ON CONFLICT (tax_auth_cd, tax_year) DO NOTHING;
+    """,
+
+    # Backfill function: fills millage + estimated_annual_tax for any
+    # dor_nal_parcels rows that have tax_auth_cd but NULL total_millage.
+    # Safe to call repeatedly (only touches NULL-millage rows).
+    r"""
+    CREATE OR REPLACE FUNCTION backfill_nal_millage()
+    RETURNS TABLE(tax_auth_cd TEXT, rows_updated BIGINT) AS $$
+    BEGIN
+        RETURN QUERY
+        WITH updated AS (
+            UPDATE dor_nal_parcels d
+            SET total_millage       = m.total_millage,
+                county_millage      = m.county_millage,
+                school_millage      = m.school_millage,
+                city_millage        = m.city_millage,
+                estimated_annual_tax = ROUND(
+                    (d.taxable_value_nonschool * m.total_millage / 1000.0)::numeric, 2
+                )
+            FROM hillsborough_millage m
+            WHERE d.tax_auth_cd = m.tax_auth_cd
+              AND d.tax_year    = m.tax_year
+              AND d.total_millage IS NULL
+            RETURNING d.tax_auth_cd
+        )
+        SELECT u.tax_auth_cd::TEXT, COUNT(*)::BIGINT
+        FROM updated u
+        GROUP BY u.tax_auth_cd;
+    END;
+    $$ LANGUAGE plpgsql;
+    """,
 ]
 
 

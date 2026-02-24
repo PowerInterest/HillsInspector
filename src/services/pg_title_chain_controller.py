@@ -166,20 +166,12 @@ class TitleChainController:
 
             inserted_sales = conn.execute(text(self._insert_sales_events_sql())).rowcount
             inserted_case = conn.execute(text(self._insert_case_events_sql())).rowcount
-            inserted_judgment = conn.execute(
-                text(self._insert_judgment_events_sql())
-            ).rowcount
+            inserted_judgment = conn.execute(text(self._insert_judgment_events_sql())).rowcount
             inserted_auction = conn.execute(text(self._insert_auction_events_sql())).rowcount
-            inserted_history_auction = conn.execute(
-                text(self._insert_history_auction_events_sql())
-            ).rowcount
+            inserted_history_auction = conn.execute(text(self._insert_history_auction_events_sql())).rowcount
             inserted_tax = conn.execute(text(self._insert_tax_events_sql())).rowcount
-            inserted_county_permits = conn.execute(
-                text(self._insert_county_permit_events_sql())
-            ).rowcount
-            inserted_tampa_permits = conn.execute(
-                text(self._insert_tampa_permit_events_sql())
-            ).rowcount
+            inserted_county_permits = conn.execute(text(self._insert_county_permit_events_sql())).rowcount
+            inserted_tampa_permits = conn.execute(text(self._insert_tampa_permit_events_sql())).rowcount
             inserted_market = conn.execute(text(self._insert_market_events_sql())).rowcount
 
             conn.execute(text(self._rank_events_sql()))
@@ -289,25 +281,28 @@ class TitleChainController:
 
     def _reset_outputs(self, conn: Any) -> None:
         if self._is_partial_run():
-            conn.execute(text("""
+            conn.execute(
+                text("""
                 DELETE FROM foreclosure_title_summary
                 WHERE foreclosure_id IN (SELECT foreclosure_id FROM controller_scope)
-            """))
-            conn.execute(text("""
+            """)
+            )
+            conn.execute(
+                text("""
                 DELETE FROM foreclosure_title_chain
                 WHERE foreclosure_id IN (SELECT foreclosure_id FROM controller_scope)
-            """))
-            conn.execute(text("""
+            """)
+            )
+            conn.execute(
+                text("""
                 DELETE FROM foreclosure_title_events
                 WHERE foreclosure_id IN (SELECT foreclosure_id FROM controller_scope)
-            """))
+            """)
+            )
             return
 
         conn.execute(
-            text(
-                "TRUNCATE TABLE foreclosure_title_chain, foreclosure_title_summary, "
-                "foreclosure_title_events RESTART IDENTITY"
-            )
+            text("TRUNCATE TABLE foreclosure_title_chain, foreclosure_title_summary, foreclosure_title_events RESTART IDENTITY")
         )
 
     @staticmethod
@@ -535,11 +530,50 @@ class TitleChainController:
                 )
                 OR (
                     sc.property_address IS NOT NULL
+                    AND btrim(sc.property_address) <> ''
                     AND cp.address IS NOT NULL
-                    AND upper(trim(split_part(replace(cp.address, E'\\t', ' '), ',', 1)))
-                        = upper(trim(
-                            split_part(replace(sc.property_address, E'\\t', ' '), ',', 1)
-                        ))
+                    AND btrim(cp.address) <> ''
+                    AND (
+                        -- Exact street match.
+                        upper(trim(split_part(replace(cp.address, E'\\t', ' '), ',', 1)))
+                            = upper(trim(
+                                split_part(replace(sc.property_address, E'\\t', ' '), ',', 1)
+                            ))
+                        -- Foreclosure property_address can include a trailing unit token
+                        -- (e.g. "449 S 12TH ST 2703") while county export street is
+                        -- normalized as "449 S 12TH ST". Strip one trailing token after
+                        -- a street suffix on the foreclosure side and compare again.
+                        OR upper(trim(split_part(replace(cp.address, E'\\t', ' '), ',', 1)))
+                            = regexp_replace(
+                                upper(trim(
+                                    split_part(replace(sc.property_address, E'\\t', ' '), ',', 1)
+                                )),
+                                '( (AVE|AVENUE|ST|STREET|RD|ROAD|DR|DRIVE|LN|LANE|BLVD|BOULEVARD|PL|PLACE|CT|COURT|CIR|CIRCLE|TRL|TRAIL|TER|TERRACE|WAY|PKWY|PARKWAY|IS|ISLE)) [A-Z0-9/-]+$',
+                                '\\1',
+                                'g'
+                            )
+                        -- Address directional may be missing on one side (e.g. "4605 JOHN
+                        -- BELL JR DR" vs "4605 N JOHN BELL JR DR"). Compare normalized
+                        -- keys that drop a single leading directional token after house #.
+                        OR regexp_replace(
+                            upper(trim(split_part(replace(cp.address, E'\\t', ' '), ',', 1))),
+                            '^([0-9]+)[[:space:]]+(N|S|E|W)[[:space:]]+',
+                            '\\1 ',
+                            'g'
+                        ) = regexp_replace(
+                            regexp_replace(
+                                upper(trim(
+                                    split_part(replace(sc.property_address, E'\\t', ' '), ',', 1)
+                                )),
+                                '( (AVE|AVENUE|ST|STREET|RD|ROAD|DR|DRIVE|LN|LANE|BLVD|BOULEVARD|PL|PLACE|CT|COURT|CIR|CIRCLE|TRL|TRAIL|TER|TERRACE|WAY|PKWY|PARKWAY|IS|ISLE)) [A-Z0-9/-]+$',
+                                '\\1',
+                                'g'
+                            ),
+                            '^([0-9]+)[[:space:]]+(N|S|E|W)[[:space:]]+',
+                            '\\1 ',
+                            'g'
+                        )
+                    )
                 )
             WHERE coalesce(cp.combined_date, cp.issue_date, cp.complete_date, sc.auction_date)
                   IS NOT NULL
@@ -574,15 +608,65 @@ class TitleChainController:
             FROM controller_scope sc
             JOIN tampa_accela_records tr ON
                 sc.property_address IS NOT NULL
-                AND upper(trim(
-                    split_part(
-                        replace(coalesce(tr.address_normalized, tr.address_raw, ''), E'\\t', ' '),
-                        ',',
-                        1
+                AND btrim(sc.property_address) <> ''
+                AND btrim(coalesce(tr.address_normalized, tr.address_raw, '')) <> ''
+                AND (
+                    -- Exact street match.
+                    upper(trim(
+                        split_part(
+                            replace(coalesce(tr.address_normalized, tr.address_raw, ''), E'\\t', ' '),
+                            ',',
+                            1
+                        )
+                    )) = upper(trim(
+                        split_part(replace(sc.property_address, E'\\t', ' '), ',', 1)
+                    ))
+                    -- Foreclosure property_address can include a trailing unit token
+                    -- (e.g. "449 S 12TH ST 2703") while Tampa export street is
+                    -- normalized as "449 S 12TH ST". Strip one trailing token after
+                    -- a street suffix on the foreclosure side and compare again.
+                    OR upper(trim(
+                        split_part(
+                            replace(coalesce(tr.address_normalized, tr.address_raw, ''), E'\\t', ' '),
+                            ',',
+                            1
+                        )
+                    )) = regexp_replace(
+                        upper(trim(
+                            split_part(replace(sc.property_address, E'\\t', ' '), ',', 1)
+                        )),
+                        '( (AVE|AVENUE|ST|STREET|RD|ROAD|DR|DRIVE|LN|LANE|BLVD|BOULEVARD|PL|PLACE|CT|COURT|CIR|CIRCLE|TRL|TRAIL|TER|TERRACE|WAY|PKWY|PARKWAY|IS|ISLE)) [A-Z0-9/-]+$',
+                        '\\1',
+                        'g'
                     )
-                )) = upper(trim(
-                    split_part(replace(sc.property_address, E'\\t', ' '), ',', 1)
-                ))
+                    -- Address directional may be missing on one side (e.g. "4605 JOHN
+                    -- BELL JR DR" vs "4605 N JOHN BELL JR DR"). Compare normalized
+                    -- keys that drop a single leading directional token after house #.
+                    OR regexp_replace(
+                        upper(trim(
+                            split_part(
+                                replace(coalesce(tr.address_normalized, tr.address_raw, ''), E'\\t', ' '),
+                                ',',
+                                1
+                            )
+                        )),
+                        '^([0-9]+)[[:space:]]+(N|S|E|W)[[:space:]]+',
+                        '\\1 ',
+                        'g'
+                    ) = regexp_replace(
+                        regexp_replace(
+                            upper(trim(
+                                split_part(replace(sc.property_address, E'\\t', ' '), ',', 1)
+                            )),
+                            '( (AVE|AVENUE|ST|STREET|RD|ROAD|DR|DRIVE|LN|LANE|BLVD|BOULEVARD|PL|PLACE|CT|COURT|CIR|CIRCLE|TRL|TRAIL|TER|TERRACE|WAY|PKWY|PARKWAY|IS|ISLE)) [A-Z0-9/-]+$',
+                            '\\1',
+                            'g'
+                        ),
+                        '^([0-9]+)[[:space:]]+(N|S|E|W)[[:space:]]+',
+                        '\\1 ',
+                        'g'
+                    )
+                )
             WHERE coalesce(tr.record_date, tr.updated_at::date, sc.auction_date) IS NOT NULL
         """
 
