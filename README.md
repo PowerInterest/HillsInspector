@@ -314,3 +314,10 @@ We enforce strict code quality using the [Astral](https://astral.sh) suite.
 
 
 claude --dangerously-skip-permissions
+
+## NOC Persistence & Permit Linking
+- See [docs/NOC_PERMIT_LINKING.md](docs/NOC_PERMIT_LINKING.md) for how NOCs are persisted from ORI, excluded from lien analysis, and linked to permits by date proximity.
+
+## Permit Data Troubleshooting
+- See [docs/PERMIT_PIPELINE_DIAGNOSTICS.md](docs/PERMIT_PIPELINE_DIAGNOSTICS.md) for permit architecture, known failure modes, and verification SQL.
+- See [docs/TAMPA_PERMIT_ACCELA_FAILURE_2026-02-23.md](docs/TAMPA_PERMIT_ACCELA_FAILURE_2026-02-23.md) for the 2026 Accela date-field + export-selector regression and fix.

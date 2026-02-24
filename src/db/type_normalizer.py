@@ -2,6 +2,13 @@
 
 Every type string that enters the database MUST pass through these functions.
 SQLite triggers enforce this at the DB layer as a safety net.
+
+Encumbrance types: mortgage, judgment, lis_pendens, lien, easement,
+satisfaction, release, assignment, noc, other.
+
+NOCs (Notices of Commencement) are persisted with encumbrance_type='noc' but
+excluded from survival analysis, lien counts, and encumbrance summaries.
+See docs/NOC_PERMIT_LINKING.md for the full exclusion map.
 """
 
 import re

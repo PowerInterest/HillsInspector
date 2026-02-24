@@ -4,6 +4,10 @@ Reads encumbrances from PG ``ori_encumbrances``, judgment data from
 ``foreclosures.judgment_data``, and chain-of-title from
 ``foreclosure_title_chain``.  Runs ``SurvivalService.analyze()`` and
 writes ``survival_status`` / ``survival_reason`` back to PG.
+
+NOCs (encumbrance_type='noc') are excluded from both target selection and
+encumbrance loading — they are administrative notices, not liens.
+See docs/NOC_PERMIT_LINKING.md for the full exclusion map.
 """
 
 from __future__ import annotations

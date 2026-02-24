@@ -7,6 +7,11 @@ PG-first, phased discovery for encumbrances:
 
 All ORI calls use PAV ``CustomQuery/KeywordSearch`` API paths with truncation
 splitting for bounded date-window searches.
+
+``_save_documents()`` persists encumbrances, satisfactions, assignments, and
+NOCs (Notices of Commencement).  NOCs are stored with encumbrance_type='noc'
+but excluded from survival analysis and lien counts downstream.
+See docs/NOC_PERMIT_LINKING.md.
 """
 
 from __future__ import annotations
@@ -778,6 +783,9 @@ class PgOriService:
                 existing["RecordDate"] = doc.get("RecordDate")
             if not existing.get("Legal") and doc.get("Legal"):
                 existing["Legal"] = doc.get("Legal")
+            # Preserve PAV document ID for downstream PDF download
+            if not existing.get("ID") and doc.get("ID"):
+                existing["ID"] = doc.get("ID")
 
             p1_existing = existing.get("PartiesOne") or []
             p2_existing = existing.get("PartiesTwo") or []
@@ -1394,6 +1402,7 @@ class PgOriService:
     def _parse_pav_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         grouped: dict[str, dict[str, Any]] = {}
         for row in rows:
+            doc_id = row.get("ID")
             cols = row.get("DisplayColumnValues") or []
             if len(cols) < 9:
                 continue
@@ -1404,7 +1413,7 @@ class PgOriService:
             name = values[1]
             record_date = values[2]
             doc_type = values[3]
-            book_type = "OR" if values[4] in ("O", "OR", "") else values[4]
+            book_type = "OR" if values[4] in {"O", "OR", ""} else values[4]
             book_num = values[5]
             page_num = values[6]
             legal = values[7]
@@ -1424,6 +1433,7 @@ class PgOriService:
                     "Legal": legal,
                     "PartiesOne": [],
                     "PartiesTwo": [],
+                    "ID": doc_id,
                 }
                 grouped[instrument] = doc
 
