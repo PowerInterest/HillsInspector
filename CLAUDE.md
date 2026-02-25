@@ -141,6 +141,7 @@ ls -1t logs/market_data_worker_*.log | head
 - Package manager: `uv` only.
 - DataFrames: `polars` only.
 - Runtime pipeline DB: PostgreSQL only.
+- Schema migrations: **Alembic** only. Never apply raw `ALTER TABLE` manually.
 - Do not reintroduce SQLite fallback logic into active pipeline/web paths.
 
 ## Pipeline Architecture (Current)

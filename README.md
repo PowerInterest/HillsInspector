@@ -137,93 +137,31 @@ We provide a `Makefile` to streamline the setup process.
     uv run Controller.py --help
     ```
 
-## Final Judgment Retrieval (current approach)
-- Auction pages provide a “Case #” link that redirects to OnBase Instrument Search (`CQID=320` with `OBKey__1006_1=<instrument>`).
-- The scraper captures the resulting Document ID from `PAVDirectSearch` and downloads the Final Judgment PDF directly—no HOVER scraping required.
-- See `docs/ONBASE_FINDINGS.md` and `docs/FINAL_JUDGMENT_EXTRACTION.md` for details.
+## Documentation Index
 
-## Map & Geocoding
-- The web dashboard map expects `parcels` to have `latitude` and `longitude` columns populated.
-- Add coords by running `uv run python scripts/geocode_missing_parcels.py` (uses Nominatim with local caching) or integrate your own geocoder.
-- The map API is exposed at `/api/map-auctions` and will skip properties without coordinates.
+The `docs/` folder contains comprehensive guides and technical design artifacts, systematically broken down into domains:
 
-## Deep Search Strategy
-We have implemented a comprehensive "Deep Search" strategy for the Official Records Index (ORI) to bypass rate limits and ensure complete chain of title analysis.
-See [DEEP_SEARCH_IMPLEMENTATION.md](DEEP_SEARCH_IMPLEMENTATION.md) for details on:
-*   Direct Search Endpoints (CQIDs)
-*   Chain of Title Analysis Flow
-*   Name Change Detection (Marriage/Divorce)
-*   NOC & Permit Matching
+### 📐 Architecture & Infrastructure
+- [Database Schema](docs/architecture/DATABASE_SCHEMA.md) - Contains the complete PostgreSQL schema, tables, triggers, extension dependencies and operational SQLite flow.
+- [Ingestion Guide](docs/guides/INGESTION_GUIDE.md) - End-to-end data pipeline logic and ingestion states.
 
-## Bot Detection
-Some sources (HOVER, Realtor.com) have aggressive bot detection. The scrapers use a stealth User-Agent, but if you encounter blocking:
-1.  Try running in **headed mode** (set `headless=False` in the scraper code).
-2.  Ensure your IP is not blacklisted.
+### ⚖️ Real Estate Domain Logic
+- [Lien Survival Analysis](docs/domain/LIEN_SURVIVAL.md) - Exact logic for modeling Florida statues covering extinguished/surviving liens and foreclosures.
+- [Auction Expiration Rules](docs/domain/AUCTION_EXPIRE.md) - Modeling property forfeiture and expiration mechanics.
+- [Chain of Title Recovery](docs/domain/TITLE_CHAIN_RECOVERY.md) - The mechanism of scraping and verifying a complete chain of title.
+- [NOC & Permit Linking](docs/domain/NOC_PERMIT_LINKING.md) - How we link notices of commencement to active building permits.
+- [Party Matching Strategy](docs/domain/PARTY_MATCHING_STRATEGY.md) - Entity resolution logic for fuzzy matching property owners across completely different data silos.
+- [Legal Issues Overview](docs/domain/LEGAL_ISSUES.md) - Real estate law nuances codified into algorithms.
+- [Auction Buyer Resolution](docs/domain/AUCTION_BUYER_RESOLUTION.md) - Utilizing post-auction Property Appraiser Deeds to backwards resolve unknown auction winners.
 
-## Lien Survival Analysis
+### 🌐 External Systems & Scraping
+- [Deep Search Implementation](docs/DEEP_SEARCH_IMPLEMENTATION.md) - Bypassing ORI rate limits and complex search logic.
+- [Sunbiz Data Dictionary](docs/external/SUNBIZ_DATA_DICTIONARY.md) - Layout definition and tables for the Florida Division of Corporations bulk open datasets.
+- [Tax Data Research](docs/external/TAX_DATA_RESEARCH.md) - Scraping instructions for the DOR (Department of Revenue) property millage layers.
+- [Case Fallback Scraping](docs/domain/CASE_FALLBACK.md) - Fail-safe mechanisms when primary URLs vanish.
 
-The `LienSurvivalAnalyzer` (`src/services/lien_survival_analyzer.py`) determines which liens will survive the **upcoming** foreclosure sale based on Florida law and the foreclosure type.
-
-### Survival Status Values
-
-| Status | Meaning |
-|--------|---------|
-| **SURVIVED** | Will survive the upcoming foreclosure sale (senior liens, superpriority, first mortgage in HOA foreclosure) |
-| **EXTINGUISHED** | Will be wiped out by the upcoming sale (junior liens) |
-| **EXPIRED** | Already expired by statute of limitations (e.g., mechanic's lien >1 year, judgment >10 years) |
-| **SATISFIED** | Already paid off/released (satisfaction recorded) |
-| **HISTORICAL** | From a prior ownership period - already wiped by a previous foreclosure |
-| **FORECLOSING** | This is the lien being foreclosed (the plaintiff's lien) |
-
-### Key Logic
-
-1. **Historical Detection**: Liens recorded before the current owner's acquisition date are marked `HISTORICAL`. These were already wiped by a prior foreclosure that transferred title.
-
-2. **Foreclosing Party Detection**: Liens where the creditor matches the plaintiff (foreclosing party) are marked `FORECLOSING`.
-
-3. **Superpriority Liens**: Tax liens, IRS liens, municipal liens, utility liens, and code enforcement liens **always survive** any foreclosure.
-
-4. **Foreclosure Type Rules**:
-   - **HOA/COA Foreclosure**: First mortgage **SURVIVES** per Florida Safe Harbor (Fla. Stat. 720.3085 / 718.116). Junior liens are `EXTINGUISHED`.
-   - **First Mortgage Foreclosure**: Everything junior (second mortgages, HOA liens, judgments) is `EXTINGUISHED`.
-   - **Tax Deed Sale**: Everything is `EXTINGUISHED` except federal tax liens.
-
-5. **Expiration Rules** (Florida Statutes):
-   - Mechanic's/Construction Liens: 1 year to file suit (Fla. Stat. 713.22)
-   - HOA Claim of Lien: 1 year to file suit (Fla. Stat. 720.3085)
-   - Judgment Liens: 10 years, renewable to 20 (Fla. Stat. 55.10)
-   - Code Enforcement: 20 years (Fla. Stat. 162.09)
-   - Mortgages: 5 years after maturity (~35 years total)
-
-### Example Analysis
-
-For an **HOA foreclosure** on a property acquired in 2023:
-- 1996-2002 mortgages from prior owner: **HISTORICAL** (wiped by 2003 foreclosure)
-- 2023 first mortgage ($211k): **SURVIVED** (Florida Safe Harbor)
-- 2023-2025 HOA liens: **FORECLOSING** (plaintiff's liens)
-
-## Auction Buyer Resolution (hcpa_allsales)
-
-The auction website only shows "3rd Party Bidder" — never the real buyer's name. We resolve the real buyer from `hcpa_allsales` (2.4M property transfer records in PostgreSQL) by looking at the **first deed recorded after the auction date** for the same folio.
-
-The key insight is that **different deed types put the auction winner on different sides of the transfer**:
-
-| Deed Type | Code | Winner is | Why |
-|-----------|------|-----------|-----|
-| Certificate of Title | **CT** | **grantee** | Clerk issues certificate directly **to** the auction winner; grantor is the old foreclosed homeowner |
-| Certificate of Deed | **CD** | **grantee** | Same as CT — Clerk-issued certificate **to** the winner |
-| Warranty Deed | **WD** | **grantor** | Auction winner already owns the property, now **selling** it |
-| Quit Claim Deed | **QC** | **grantor** | Same — winner is **selling/transferring** out |
-| Transfer | **TR** | **grantor** | Same — winner is **transferring** |
-| Fee / Final Deed | **FD** | **grantor** | Same — winner is **selling** |
-| Deed (generic) | **DD** | **grantor** | Same — winner is **selling** |
-
-**How it works in practice:**
-- After a foreclosure sale, the Clerk issues a CT or CD to the auction winner (avg 74 days after auction). The `grantee` on that deed IS the buyer.
-- If no CT/CD appears in `hcpa_allsales` (HCPA doesn't always record these), we fall back to the first WD/QC/etc., where the `grantor` is the person who bought at auction and is now reselling.
-- This logic runs automatically via a PostgreSQL trigger (`trg_resolve_buyer`) on every INSERT/UPDATE to `historical_auctions`. It's also available as `HistoryService.backfill_buyers_from_hcpa()` for manual runs.
-
-**Coverage:** ~80% of auctions get a real buyer name. The remaining ~20% have no post-auction deed in `hcpa_allsales` (property not yet resold, or folio data gap).
+### 📖 Guides
+- [Operations Runbook](docs/guides/RUNBOOK.md) - Standard operational procedures and recurring scripts.
 
 ## Roadmap / TODO
 *   **System Identification**: The backend is **Hyland OnBase**.
@@ -313,14 +251,4 @@ We enforce strict code quality using the [Astral](https://astral.sh) suite.
 
 
 
-claude --dangerously-skip-permissions
 
-## NOC Persistence & Permit Linking
-- See [docs/NOC_PERMIT_LINKING.md](docs/NOC_PERMIT_LINKING.md) for how NOCs are persisted from ORI, excluded from lien analysis, and linked to permits by date proximity.
-
-## Tax Data & Millage Rates
-- See [docs/TAX_DATA_RESEARCH.md](docs/TAX_DATA_RESEARCH.md) for the tax data strategy, DOR NAL ingestion, millage rate lookup, and annual refresh workflow.
-
-## Permit Data Troubleshooting
-- See [docs/PERMIT_PIPELINE_DIAGNOSTICS.md](docs/PERMIT_PIPELINE_DIAGNOSTICS.md) for permit architecture, known failure modes, and verification SQL.
-- See [docs/TAMPA_PERMIT_ACCELA_FAILURE_2026-02-23.md](docs/TAMPA_PERMIT_ACCELA_FAILURE_2026-02-23.md) for the 2026 Accela date-field + export-selector regression and fix.
