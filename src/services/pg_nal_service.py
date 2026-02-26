@@ -403,7 +403,13 @@ class PgNalService:
                 mill_stats = self.backfill_nal_millage()
                 result["millage_backfill"] = mill_stats
             except Exception as exc:
-                logger.warning(f"PgNalService: millage backfill failed (non-fatal): {exc}")
+                result["success"] = False
+                result["error"] = f"Millage backfill failed: {exc}"
+                logger.error(
+                    "PgNalService: millage backfill failed (fatal): {}\n{}",
+                    exc,
+                    traceback.format_exc(),
+                )
 
         return result
 
@@ -432,7 +438,38 @@ class PgNalService:
 
         with self._engine.connect() as conn:
             rows = conn.execute(
-                text("SELECT * FROM backfill_nal_millage()")
+                text(
+                    """
+                    WITH updated AS (
+                        UPDATE dor_nal_parcels d
+                        SET total_millage = m.total_millage,
+                            county_millage = m.county_millage,
+                            school_millage = m.school_millage,
+                            city_millage = m.city_millage,
+                            estimated_annual_tax = CASE
+                                WHEN d.taxable_value_nonschool IS NULL THEN NULL
+                                ELSE ROUND((d.taxable_value_nonschool * m.total_millage / 1000.0)::numeric, 2)
+                            END
+                        FROM hillsborough_millage m
+                        WHERE d.tax_auth_cd = m.tax_auth_cd
+                          AND d.tax_year = m.tax_year
+                          AND (
+                              d.total_millage IS DISTINCT FROM m.total_millage
+                              OR d.county_millage IS DISTINCT FROM m.county_millage
+                              OR d.school_millage IS DISTINCT FROM m.school_millage
+                              OR d.city_millage IS DISTINCT FROM m.city_millage
+                              OR d.estimated_annual_tax IS DISTINCT FROM CASE
+                                  WHEN d.taxable_value_nonschool IS NULL THEN NULL
+                                  ELSE ROUND((d.taxable_value_nonschool * m.total_millage / 1000.0)::numeric, 2)
+                              END
+                          )
+                        RETURNING d.tax_auth_cd
+                    )
+                    SELECT tax_auth_cd, COUNT(*) AS rows_updated
+                    FROM updated
+                    GROUP BY tax_auth_cd
+                    """
+                )
             ).fetchall()
             conn.commit()
 

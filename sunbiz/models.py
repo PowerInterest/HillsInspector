@@ -34,24 +34,18 @@ class IngestFile(Base):
     relative_path: Mapped[str] = mapped_column(Text, nullable=False)
     file_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    file_modified_at: Mapped[dt.datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    file_modified_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     discovered_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
     )
-    loaded_at: Mapped[dt.datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    loaded_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     loader_version: Mapped[str] = mapped_column(String(32), nullable=False, default="v1")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
-        UniqueConstraint(
-            "source_system", "relative_path", name="uq_ingest_files_source_path"
-        ),
+        UniqueConstraint("source_system", "relative_path", name="uq_ingest_files_source_path"),
         Index("idx_ingest_files_source_category", "source_system", "category"),
     )
 
@@ -60,9 +54,7 @@ class SunbizRawRecord(Base):
     __tablename__ = "sunbiz_raw_records"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_member: Mapped[str] = mapped_column(Text, nullable=False)
     line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     record_type: Mapped[str | None] = mapped_column(String(8), nullable=True)
@@ -102,9 +94,7 @@ class SunbizFlrFiling(Base):
     total_secured_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     current_debtor_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     current_secured_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_member: Mapped[str] = mapped_column(Text, nullable=False)
     source_line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
@@ -133,9 +123,7 @@ class SunbizFlrParty(Base):
     relation_to_filing: Mapped[str | None] = mapped_column(String(8), nullable=True)
     original_party: Mapped[str | None] = mapped_column(String(8), nullable=True)
     filing_status: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_member: Mapped[str] = mapped_column(Text, nullable=False)
     source_line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     loaded_at: Mapped[dt.datetime] = mapped_column(
@@ -180,9 +168,7 @@ class SunbizFlrEvent(Base):
     action_old_name_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
     action_new_name_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
     action_name_type: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_member: Mapped[str] = mapped_column(Text, nullable=False)
     source_line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     loaded_at: Mapped[dt.datetime] = mapped_column(
@@ -229,9 +215,7 @@ class SunbizEntityFiling(Base):
     mailing_state: Mapped[str | None] = mapped_column(String(8), nullable=True)
     mailing_zip: Mapped[str | None] = mapped_column(String(16), nullable=True)
     mailing_country: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_member: Mapped[str] = mapped_column(Text, nullable=False)
     source_line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
@@ -269,9 +253,7 @@ class SunbizEntityParty(Base):
     state: Mapped[str | None] = mapped_column(String(8), nullable=True)
     zip_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
     country: Mapped[str | None] = mapped_column(String(8), nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_member: Mapped[str] = mapped_column(Text, nullable=False)
     source_line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     loaded_at: Mapped[dt.datetime] = mapped_column(
@@ -307,9 +289,7 @@ class SunbizEntityEvent(Base):
     event_cancellation_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     event_expiration_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     event_name: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_member: Mapped[str] = mapped_column(Text, nullable=False)
     source_line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     loaded_at: Mapped[dt.datetime] = mapped_column(
@@ -335,9 +315,7 @@ class HcpaLatLon(Base):
     folio: Mapped[str] = mapped_column(String(32), primary_key=True)
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
     )
@@ -368,9 +346,7 @@ class HcpaBulkParcel(Base):
     just_value: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
     land_value: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
     building_value: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
-    extra_features_value: Mapped[float | None] = mapped_column(
-        Numeric(18, 2), nullable=True
-    )
+    extra_features_value: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
     taxable_value: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
     last_sale_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     last_sale_price: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
@@ -384,9 +360,7 @@ class HcpaBulkParcel(Base):
     raw_legal4: Mapped[str | None] = mapped_column(Text, nullable=True)
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
     )
@@ -403,9 +377,7 @@ class HcpaParcelDorName(Base):
 
     dor_code: Mapped[str] = mapped_column(String(16), primary_key=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
     )
@@ -418,9 +390,7 @@ class HcpaParcelSubName(Base):
     sub_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     plat_bk: Mapped[str | None] = mapped_column(String(32), nullable=True)
     page: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
     )
@@ -449,9 +419,7 @@ class HcpaAllSale(Base):
     grantor: Mapped[str | None] = mapped_column(Text, nullable=True)
     grantee: Mapped[str | None] = mapped_column(Text, nullable=True)
     doc_num: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     loaded_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
@@ -482,9 +450,7 @@ class HcpaSubdivision(Base):
     area: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
     shape_star: Mapped[float | None] = mapped_column(Numeric(20, 6), nullable=True)
     shape_stle: Mapped[float | None] = mapped_column(Numeric(20, 6), nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     loaded_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
@@ -509,9 +475,7 @@ class HcpaSpecialDistrictTif(Base):
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     area: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
     perimeter: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     loaded_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
@@ -535,9 +499,7 @@ class HcpaSpecialDistrictCdd(Base):
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     area: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
     perimeter: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     loaded_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
@@ -564,9 +526,7 @@ class HcpaSpecialDistrictSd(Base):
     dist_tp: Mapped[str | None] = mapped_column(String(16), nullable=True)
     area: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
     perimeter: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     loaded_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
@@ -590,9 +550,7 @@ class HcpaSpecialDistrictSd2(Base):
     sp_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     area: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
     perimeter: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     loaded_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
@@ -616,9 +574,7 @@ class HcpaSpecialDistrictLd(Base):
     name: Mapped[str | None] = mapped_column(Text, nullable=True)
     area: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
     perimeter: Mapped[float | None] = mapped_column(Numeric(20, 4), nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     source_line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     loaded_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
@@ -672,36 +628,20 @@ class DorNalParcel(Base):
     just_value: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
     just_value_homestead: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
     assessed_value_school: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
-    assessed_value_nonschool: Mapped[float | None] = mapped_column(
-        Numeric(18, 2), nullable=True
-    )
-    assessed_value_homestead: Mapped[float | None] = mapped_column(
-        Numeric(18, 2), nullable=True
-    )
-    taxable_value_school: Mapped[float | None] = mapped_column(
-        Numeric(18, 2), nullable=True
-    )
-    taxable_value_nonschool: Mapped[float | None] = mapped_column(
-        Numeric(18, 2), nullable=True
-    )
+    assessed_value_nonschool: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
+    assessed_value_homestead: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
+    taxable_value_school: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
+    taxable_value_nonschool: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
 
     # Exemptions
     homestead_exempt: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    homestead_exempt_value: Mapped[float | None] = mapped_column(
-        Numeric(18, 2), nullable=True
-    )
+    homestead_exempt_value: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
     widow_exempt: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    widow_exempt_value: Mapped[float | None] = mapped_column(
-        Numeric(18, 2), nullable=True
-    )
+    widow_exempt_value: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
     disability_exempt: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    disability_exempt_value: Mapped[float | None] = mapped_column(
-        Numeric(18, 2), nullable=True
-    )
+    disability_exempt_value: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
     veteran_exempt: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    veteran_exempt_value: Mapped[float | None] = mapped_column(
-        Numeric(18, 2), nullable=True
-    )
+    veteran_exempt_value: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
     ag_exempt: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     ag_exempt_value: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
     soh_differential: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
@@ -713,25 +653,23 @@ class DorNalParcel(Base):
     city_millage: Mapped[float | None] = mapped_column(Numeric(12, 6), nullable=True)
 
     # Computed
-    estimated_annual_tax: Mapped[float | None] = mapped_column(
-        Numeric(18, 2), nullable=True
-    )
+    estimated_annual_tax: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
 
     # Legal description
     legal_description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Source tracking
     source_file: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source_file_id: Mapped[int] = mapped_column(
-        ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False
-    )
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("ingest_files.id", ondelete="CASCADE"), nullable=False)
     loaded_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
     )
 
     __table_args__ = (
         UniqueConstraint(
-            "county_code", "parcel_id", "tax_year",
+            "county_code",
+            "parcel_id",
+            "tax_year",
             name="uq_dor_nal_parcels_county_parcel_year",
         ),
         Index("idx_dor_nal_parcels_folio", "folio"),
@@ -780,17 +718,14 @@ class PropertyMarket(Base):
     detail_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Photos
-    photo_local_paths: Mapped[dict | None] = mapped_column(
-        JSONB, nullable=True, server_default=text("'[]'::jsonb")
-    )
-    photo_cdn_urls: Mapped[dict | None] = mapped_column(
-        JSONB, nullable=True, server_default=text("'[]'::jsonb")
-    )
+    photo_local_paths: Mapped[dict | None] = mapped_column(JSONB, nullable=True, server_default=text("'[]'::jsonb"))
+    photo_cdn_urls: Mapped[dict | None] = mapped_column(JSONB, nullable=True, server_default=text("'[]'::jsonb"))
 
     # Per-source raw JSON
     zillow_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     redfin_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     homeharvest_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    realtor_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     primary_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     created_at: Mapped[dt.datetime] = mapped_column(

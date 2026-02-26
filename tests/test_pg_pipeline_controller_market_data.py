@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from src.services import market_data_dispatcher
+from src.services import market_data_worker
 from src.services import pg_pipeline_controller
 
 
@@ -27,8 +28,23 @@ def _build_controller(
     return pg_pipeline_controller.PgPipelineController(settings)
 
 
-def test_run_market_data_uses_background_dispatch_by_default(monkeypatch: Any) -> None:
+def test_run_market_data_runs_inline_by_default(monkeypatch: Any) -> None:
     controller = _build_controller(monkeypatch)
+    monkeypatch.setattr(
+        market_data_worker,
+        "run_market_data_update",
+        lambda dsn=None: {"mode": "inline", "dsn": dsn},
+    )
+
+    result = controller._run_market_data()  # noqa: SLF001
+
+    assert result["mode"] == "inline"
+    assert result["dsn"] == controller.dsn
+
+
+def test_run_market_data_uses_background_dispatch_when_enabled(monkeypatch: Any) -> None:
+    controller = _build_controller(monkeypatch)
+    controller.settings.background_market_data = True
     monkeypatch.setattr(
         market_data_dispatcher,
         "dispatch_market_data_worker",

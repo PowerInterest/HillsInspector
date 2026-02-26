@@ -38,6 +38,8 @@ class ControllerSettings:
     dsn: str | None = None
     force_all: bool = False
     fail_fast: bool = False
+    background_bulk_steps: bool = False
+    background_market_data: bool = False
     # Step toggles
     skip_hcpa: bool = False
     skip_clerk_bulk: bool = False
@@ -485,7 +487,8 @@ class PgPipelineController:
         svc = PgTrustAccountsService(dsn=self.dsn)
         if not svc.available:
             return {
-                "skipped": True,
+                "success": False,
+                "error": "service_unavailable",
                 "reason": "service_unavailable",
                 "details": svc.unavailable_reason,
             }
@@ -511,12 +514,15 @@ class PgPipelineController:
         return svc.run(limit=self.settings.title_breaks_limit)
 
     def _run_market_data(self) -> dict[str, Any]:
-        from src.services.market_data_dispatcher import dispatch_market_data_worker
+        if self.settings.background_market_data:
+            from src.services.market_data_dispatcher import dispatch_market_data_worker
+            return dispatch_market_data_worker(dsn=self.dsn)
 
-        return dispatch_market_data_worker(dsn=self.dsn)
+        from src.services.market_data_worker import run_market_data_update
+        return run_market_data_update(dsn=self.dsn)
 
     def _should_dispatch_bulk_step(self, name: str) -> bool:
-        return name in self.BACKGROUND_BULK_STEPS
+        return self.settings.background_bulk_steps and name in self.BACKGROUND_BULK_STEPS
 
     # ------------------------------------------------------------------
     # Phase B: per-auction enrichment
@@ -755,6 +761,18 @@ def parse_args() -> ControllerSettings:
     parser.add_argument("--dsn", help="PostgreSQL DSN override")
     parser.add_argument("--force-all", action="store_true", help="Force all loaders to run")
     parser.add_argument("--fail-fast", action="store_true", help="Stop after first failure")
+    parser.add_argument(
+        "--background-bulk-steps",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run selected bulk ingestion steps in background worker processes (default: inline).",
+    )
+    parser.add_argument(
+        "--background-market-data",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run market-data step in a detached worker process (default: inline).",
+    )
 
     parser.add_argument("--skip-hcpa", action="store_true")
     parser.add_argument("--skip-clerk-bulk", action="store_true")
@@ -827,6 +845,8 @@ def parse_args() -> ControllerSettings:
         dsn=args.dsn,
         force_all=bool(args.force_all),
         fail_fast=bool(args.fail_fast),
+        background_bulk_steps=bool(args.background_bulk_steps),
+        background_market_data=bool(args.background_market_data),
         skip_hcpa=bool(args.skip_hcpa),
         skip_clerk_bulk=bool(args.skip_clerk_bulk),
         skip_nal=bool(args.skip_nal),

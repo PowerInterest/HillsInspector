@@ -19,6 +19,7 @@ View:
 from __future__ import annotations
 
 import argparse
+import contextlib
 
 from loguru import logger
 from sqlalchemy import text
@@ -1047,9 +1048,9 @@ DDL: list[str] = [
     ON CONFLICT (tax_auth_cd, tax_year) DO NOTHING;
     """,
 
-    # Backfill function: fills millage + estimated_annual_tax for any
-    # dor_nal_parcels rows that have tax_auth_cd but NULL total_millage.
-    # Safe to call repeatedly (only touches NULL-millage rows).
+    # Backfill function: sync millage + estimated_annual_tax to lookup table
+    # values for any rows where values are missing or drifted.
+    # Safe to call repeatedly (idempotent: no-op when already in sync).
     r"""
     CREATE OR REPLACE FUNCTION backfill_nal_millage()
     RETURNS TABLE(tax_auth_cd TEXT, rows_updated BIGINT) AS $$
@@ -1067,7 +1068,15 @@ DDL: list[str] = [
             FROM hillsborough_millage m
             WHERE d.tax_auth_cd = m.tax_auth_cd
               AND d.tax_year    = m.tax_year
-              AND d.total_millage IS NULL
+              AND (
+                    d.total_millage IS DISTINCT FROM m.total_millage
+                 OR d.county_millage IS DISTINCT FROM m.county_millage
+                 OR d.school_millage IS DISTINCT FROM m.school_millage
+                 OR d.city_millage IS DISTINCT FROM m.city_millage
+                 OR d.estimated_annual_tax IS DISTINCT FROM ROUND(
+                        (d.taxable_value_nonschool * m.total_millage / 1000.0)::numeric, 2
+                    )
+              )
             RETURNING d.tax_auth_cd
         )
         SELECT u.tax_auth_cd::TEXT, COUNT(*)::BIGINT
@@ -1093,10 +1102,8 @@ def migrate(dsn: str | None = None) -> None:
     with engine.connect() as conn:
         conn = conn.execution_options(isolation_level="AUTOCOMMIT")
         for stmt in ENUM_EXTENSIONS:
-            try:
+            with contextlib.suppress(Exception):
                 conn.execute(text(stmt))
-            except Exception:
-                pass  # IF NOT EXISTS handles idempotency; some drivers still raise
 
     with engine.begin() as conn:
         for i, stmt in enumerate(DDL, 1):

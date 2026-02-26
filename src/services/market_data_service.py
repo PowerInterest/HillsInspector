@@ -100,9 +100,7 @@ class MarketDataService:
         """
         sources = list(sources or ["redfin", "zillow", "realtor", "homeharvest"])
         if not self._has_realtor_column and "realtor" in sources:
-            logger.warning(
-                "Ignoring Realtor source because property_market.realtor_json is not available."
-            )
+            logger.warning("Ignoring Realtor source because property_market.realtor_json is not available.")
             sources = [s for s in sources if s != "realtor"]
         summary = {"redfin": 0, "zillow": 0, "realtor": 0, "homeharvest": 0, "photos": 0}
         browser_phase_error: str | None = None
@@ -131,21 +129,13 @@ class MarketDataService:
             has_realtor = state["has_realtor"] if state else False
             complete_for_selected_sources = True
             if selected_redfin:
-                complete_for_selected_sources = complete_for_selected_sources and bool(
-                    state and state["has_redfin"]
-                )
+                complete_for_selected_sources = complete_for_selected_sources and bool(state and state["has_redfin"])
             if selected_zillow:
-                complete_for_selected_sources = complete_for_selected_sources and bool(
-                    state and state["has_zillow"]
-                )
+                complete_for_selected_sources = complete_for_selected_sources and bool(state and state["has_zillow"])
             if selected_realtor:
-                complete_for_selected_sources = complete_for_selected_sources and bool(
-                    state and has_realtor
-                )
+                complete_for_selected_sources = complete_for_selected_sources and bool(state and has_realtor)
             if selected_hh:
-                complete_for_selected_sources = complete_for_selected_sources and bool(
-                    state and state["has_hh"]
-                )
+                complete_for_selected_sources = complete_for_selected_sources and bool(state and state["has_hh"])
 
             if complete_for_selected_sources:
                 already_complete += 1
@@ -331,9 +321,7 @@ class MarketDataService:
         except Exception as exc:
             msg = str(exc).lower()
             if self._has_realtor_column and "realtor_json" in msg and "column" in msg:
-                logger.warning(
-                    "property_market.realtor_json is missing at runtime; disabling Realtor source."
-                )
+                logger.warning("property_market.realtor_json is missing at runtime; disabling Realtor source.")
                 self._has_realtor_column = False
                 return self._get_market_state(strap)
             logger.debug(f"Market state check failed for strap={strap}: {exc}")
@@ -385,7 +373,16 @@ class MarketDataService:
                 # Redfin wins for detail_url
                 "detail_url": text("COALESCE(EXCLUDED.detail_url, property_market.detail_url)"),
                 # Always update photo CDN URLs and raw JSON
-                "photo_cdn_urls": text("COALESCE(EXCLUDED.photo_cdn_urls, property_market.photo_cdn_urls)"),
+                "photo_cdn_urls": text("""
+                    CASE 
+                        WHEN property_market.photo_cdn_urls IS NULL THEN EXCLUDED.photo_cdn_urls
+                        WHEN EXCLUDED.photo_cdn_urls IS NULL THEN property_market.photo_cdn_urls
+                        WHEN jsonb_typeof(EXCLUDED.photo_cdn_urls) != 'array' THEN property_market.photo_cdn_urls
+                        WHEN jsonb_typeof(property_market.photo_cdn_urls) != 'array' THEN EXCLUDED.photo_cdn_urls
+                        WHEN jsonb_array_length(EXCLUDED.photo_cdn_urls) > jsonb_array_length(property_market.photo_cdn_urls) THEN EXCLUDED.photo_cdn_urls
+                        ELSE property_market.photo_cdn_urls
+                    END
+                """),
                 "redfin_json": stmt.excluded.redfin_json,
                 "primary_source": text("COALESCE(property_market.primary_source, EXCLUDED.primary_source)"),
                 "updated_at": text("NOW()"),
@@ -447,8 +444,17 @@ class MarketDataService:
                 "property_type": text("COALESCE(property_market.property_type, EXCLUDED.property_type)"),
                 # Keep existing detail_url (Redfin > Zillow)
                 "detail_url": text("COALESCE(property_market.detail_url, EXCLUDED.detail_url)"),
-                # Update photo CDN URLs if we don't have any yet
-                "photo_cdn_urls": text("COALESCE(property_market.photo_cdn_urls, EXCLUDED.photo_cdn_urls)"),
+                # Update photo CDN URLs: keep whichever array has more photos
+                "photo_cdn_urls": text("""
+                    CASE 
+                        WHEN property_market.photo_cdn_urls IS NULL THEN EXCLUDED.photo_cdn_urls
+                        WHEN EXCLUDED.photo_cdn_urls IS NULL THEN property_market.photo_cdn_urls
+                        WHEN jsonb_typeof(EXCLUDED.photo_cdn_urls) != 'array' THEN property_market.photo_cdn_urls
+                        WHEN jsonb_typeof(property_market.photo_cdn_urls) != 'array' THEN EXCLUDED.photo_cdn_urls
+                        WHEN jsonb_array_length(EXCLUDED.photo_cdn_urls) > jsonb_array_length(property_market.photo_cdn_urls) THEN EXCLUDED.photo_cdn_urls
+                        ELSE property_market.photo_cdn_urls
+                    END
+                """),
                 "zillow_json": stmt.excluded.zillow_json,
                 "primary_source": text(
                     "CASE WHEN property_market.primary_source IS NULL THEN 'zillow' ELSE property_market.primary_source END"
@@ -510,8 +516,17 @@ class MarketDataService:
                 "property_type": text("COALESCE(EXCLUDED.property_type, property_market.property_type)"),
                 # Keep existing detail_url (Redfin/Zillow > HomeHarvest)
                 "detail_url": text("COALESCE(property_market.detail_url, EXCLUDED.detail_url)"),
-                # Update photo CDN URLs if we don't have any yet
-                "photo_cdn_urls": text("COALESCE(property_market.photo_cdn_urls, EXCLUDED.photo_cdn_urls)"),
+                # Update photo CDN URLs: keep whichever array has more photos
+                "photo_cdn_urls": text("""
+                    CASE 
+                        WHEN property_market.photo_cdn_urls IS NULL THEN EXCLUDED.photo_cdn_urls
+                        WHEN EXCLUDED.photo_cdn_urls IS NULL THEN property_market.photo_cdn_urls
+                        WHEN jsonb_typeof(EXCLUDED.photo_cdn_urls) != 'array' THEN property_market.photo_cdn_urls
+                        WHEN jsonb_typeof(property_market.photo_cdn_urls) != 'array' THEN EXCLUDED.photo_cdn_urls
+                        WHEN jsonb_array_length(EXCLUDED.photo_cdn_urls) > jsonb_array_length(property_market.photo_cdn_urls) THEN EXCLUDED.photo_cdn_urls
+                        ELSE property_market.photo_cdn_urls
+                    END
+                """),
                 "homeharvest_json": stmt.excluded.homeharvest_json,
                 "primary_source": text(
                     "CASE WHEN property_market.primary_source IS NULL THEN 'homeharvest' ELSE property_market.primary_source END"
@@ -567,7 +582,16 @@ class MarketDataService:
                 "lot_size": text("COALESCE(EXCLUDED.lot_size, property_market.lot_size)"),
                 "property_type": text("COALESCE(EXCLUDED.property_type, property_market.property_type)"),
                 "detail_url": text("COALESCE(property_market.detail_url, EXCLUDED.detail_url)"),
-                "photo_cdn_urls": text("COALESCE(property_market.photo_cdn_urls, EXCLUDED.photo_cdn_urls)"),
+                "photo_cdn_urls": text("""
+                    CASE 
+                        WHEN property_market.photo_cdn_urls IS NULL THEN EXCLUDED.photo_cdn_urls
+                        WHEN EXCLUDED.photo_cdn_urls IS NULL THEN property_market.photo_cdn_urls
+                        WHEN jsonb_typeof(EXCLUDED.photo_cdn_urls) != 'array' THEN property_market.photo_cdn_urls
+                        WHEN jsonb_typeof(property_market.photo_cdn_urls) != 'array' THEN EXCLUDED.photo_cdn_urls
+                        WHEN jsonb_array_length(EXCLUDED.photo_cdn_urls) > jsonb_array_length(property_market.photo_cdn_urls) THEN EXCLUDED.photo_cdn_urls
+                        ELSE property_market.photo_cdn_urls
+                    END
+                """),
                 "realtor_json": stmt.excluded.realtor_json,
                 "primary_source": text(
                     "CASE WHEN property_market.primary_source IS NULL THEN 'realtor' ELSE property_market.primary_source END"
@@ -1235,7 +1259,12 @@ def _query_properties_needing_market(dsn: str | None = None, limit: int = 0) -> 
         LEFT JOIN property_market pm ON f.strap = pm.strap
         WHERE f.strap IS NOT NULL
           AND f.property_address IS NOT NULL
-          AND (pm.strap IS NULL OR pm.zestimate IS NULL)
+          AND (
+              pm.strap IS NULL 
+              OR pm.zestimate IS NULL
+              OR pm.zillow_json IS NULL
+              OR pm.redfin_json IS NULL
+          )
         ORDER BY f.auction_date DESC
     """
     if limit:

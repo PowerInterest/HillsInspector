@@ -258,7 +258,7 @@ class PgMortgageExtractionService:
                 f"Mortgage extraction for {instrument} is partial; skipping cache write so future runs can retry"
             )
 
-        # 4. Save to Database
+        # 6. Save to Database
         try:
             self._save_to_pg(enc_id, result)
             return True

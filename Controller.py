@@ -19,7 +19,7 @@ Phase B (per-auction enrichment — scraping + analysis):
   14. ORI document search (Playwright → ORI website → PG ori_encumbrances)
   15. Lien survival analysis (pure computation → PG ori_encumbrances)
   16. Final refresh (pick up Phase B data)
-  17. Market data (Redfin/Zillow/HomeHarvest; background by default)
+  17. Market data (Redfin/Zillow/HomeHarvest; optional background worker)
 
 Usage:
   uv run Controller.py                           # Full pipeline

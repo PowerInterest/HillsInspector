@@ -28,8 +28,27 @@ def _build_controller(
     return pg_pipeline_controller.PgPipelineController(settings)
 
 
-def test_execute_step_dispatches_bulk_steps_by_default(monkeypatch: Any) -> None:
+def test_execute_step_runs_bulk_steps_inline_by_default(monkeypatch: Any) -> None:
     controller = _build_controller(monkeypatch)
+    monkeypatch.setattr(
+        controller_step_dispatcher,
+        "dispatch_controller_step",
+        lambda *_args, **_kwargs: {"dispatched": True},
+    )
+
+    result = controller._execute_step(  # noqa: SLF001
+        name="hcpa_suite",
+        skip=False,
+        fn=lambda: {"update": {"ran_inline": True}},
+    )
+
+    assert result["status"] == "ok"
+    assert result["payload"]["update"]["ran_inline"] is True
+
+
+def test_execute_step_dispatches_bulk_steps_when_background_enabled(monkeypatch: Any) -> None:
+    controller = _build_controller(monkeypatch)
+    controller.settings.background_bulk_steps = True
     monkeypatch.setattr(
         controller_step_dispatcher,
         "dispatch_controller_step",
@@ -74,3 +93,23 @@ def test_execute_step_runs_inline_for_non_bulk_steps(monkeypatch: Any) -> None:
 
     assert result["status"] == "ok"
     assert result["payload"]["update"]["ran_inline"] is True
+
+
+def test_run_trust_accounts_marks_unavailable_service_as_failure(monkeypatch: Any) -> None:
+    controller = _build_controller(monkeypatch)
+
+    class _FakeSvc:
+        available = False
+        unavailable_reason = "db down"
+
+    monkeypatch.setattr(
+        "src.services.pg_trust_accounts.PgTrustAccountsService",
+        lambda **_kwargs: _FakeSvc(),
+    )
+
+    result = controller._run_trust_accounts()  # noqa: SLF001
+
+    assert result["success"] is False
+    assert result["error"] == "service_unavailable"
+    assert result["reason"] == "service_unavailable"
+    assert result["details"] == "db down"

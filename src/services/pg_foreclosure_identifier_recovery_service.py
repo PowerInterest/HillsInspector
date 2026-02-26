@@ -870,6 +870,49 @@ class PgForeclosureIdentifierRecoveryService:
             return None
         return _row_to_candidate(row)
 
+    def _parse_instrument_rows(
+        self,
+        data: dict[str, Any],
+        instrument: str,
+    ) -> list[dict[str, Any]]:
+        """Parse PAV keyword-search response into row dicts.
+
+        Shared by both cache-hit and live-fetch paths so parsing logic
+        and error-stat tracking stay in one place.
+        """
+        data_rows = data.get("Data")
+        if not isinstance(data_rows, list):
+            self._run_stats["ori_payload_errors"] = (
+                self._run_stats.get("ori_payload_errors", 0) + 1
+            )
+            logger.warning(
+                "ORI instrument payload missing Data list for {}",
+                instrument,
+            )
+            return []
+        results: list[dict[str, Any]] = []
+        for item in data_rows:
+            if not isinstance(item, dict):
+                self._run_stats["ori_payload_errors"] = (
+                    self._run_stats.get("ori_payload_errors", 0) + 1
+                )
+                continue
+            cols = item.get("DisplayColumnValues") or []
+            values = [str((col or {}).get("Value") or "").strip() for col in cols[:9]]
+            values.extend([""] * (9 - len(values)))
+            results.append({
+                "person_type": values[0],
+                "name": html.unescape(values[1]),
+                "record_date": values[2],
+                "doc_type": values[3],
+                "book_type": "OR" if values[4] in ("O", "OR", "") else values[4],
+                "book_num": values[5],
+                "page_num": values[6],
+                "legal": values[7],
+                "instrument": values[8],
+            })
+        return results
+
     def _ori_search_instrument(
         self,
         instrument: str,
@@ -888,26 +931,7 @@ class PgForeclosureIdentifierRecoveryService:
         # --- disk cache check ---
         cached = pav_cache_get(payload)
         if cached is not None:
-            data = cached
-            # jump to the parsing section below (past the HTTP call)
-            data_rows = data.get("Data")
-            if not isinstance(data_rows, list):
-                return []
-            results: list[dict[str, Any]] = []
-            for item in data_rows:
-                if not isinstance(item, dict):
-                    continue
-                cols = item.get("DisplayColumnValues") or []
-                values = [str((col or {}).get("Value") or "").strip() for col in cols[:9]]
-                values.extend([""] * (9 - len(values)))
-                results.append({
-                    "person_type": values[0], "name": html.unescape(values[1]),
-                    "record_date": values[2], "doc_type": values[3],
-                    "book_type": "OR" if values[4] in ("O", "OR", "") else values[4],
-                    "book_num": values[5], "page_num": values[6],
-                    "legal": values[7], "instrument": values[8],
-                })
-            return results
+            return self._parse_instrument_rows(cached, instrument)
 
         try:
             response = self._ori_session.post(
@@ -947,40 +971,7 @@ class PgForeclosureIdentifierRecoveryService:
             return []
 
         pav_cache_put(payload, data)
-        results: list[dict[str, Any]] = []
-        data_rows = data.get("Data")
-        if not isinstance(data_rows, list):
-            self._run_stats["ori_payload_errors"] = (
-                self._run_stats.get("ori_payload_errors", 0) + 1
-            )
-            logger.warning(
-                "ORI instrument payload missing Data list for {}",
-                instrument,
-            )
-            return []
-        for item in data_rows:
-            if not isinstance(item, dict):
-                self._run_stats["ori_payload_errors"] = (
-                    self._run_stats.get("ori_payload_errors", 0) + 1
-                )
-                continue
-            cols = item.get("DisplayColumnValues") or []
-            values = [str((col or {}).get("Value") or "").strip() for col in cols[:9]]
-            values.extend([""] * (9 - len(values)))
-            results.append(
-                {
-                    "person_type": values[0],
-                    "name": html.unescape(values[1]),
-                    "record_date": values[2],
-                    "doc_type": values[3],
-                    "book_type": "OR" if values[4] in ("O", "OR", "") else values[4],
-                    "book_num": values[5],
-                    "page_num": values[6],
-                    "legal": values[7],
-                    "instrument": values[8],
-                }
-            )
-        return results
+        return self._parse_instrument_rows(data, instrument)
 
     def _ori_search_case(
         self,

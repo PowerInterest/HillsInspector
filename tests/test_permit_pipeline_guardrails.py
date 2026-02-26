@@ -33,7 +33,7 @@ def test_permit_steps_run_inline_not_background(monkeypatch: Any) -> None:
 
     assert controller._should_dispatch_bulk_step("county_permits") is False  # noqa: SLF001
     assert controller._should_dispatch_bulk_step("tampa_permits") is False  # noqa: SLF001
-    assert controller._should_dispatch_bulk_step("hcpa_suite") is True  # noqa: SLF001
+    assert controller._should_dispatch_bulk_step("hcpa_suite") is False  # noqa: SLF001
 
 
 def test_run_tampa_permits_raises_on_zero_rows_for_large_window(

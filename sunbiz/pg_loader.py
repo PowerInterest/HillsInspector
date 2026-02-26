@@ -2455,7 +2455,7 @@ def _parse_nal_csv_row(
     mapped["school_millage"] = _parse_float_value(row.get("schl_mill"))
     mapped["city_millage"] = _parse_float_value(row.get("muni_mill"))
 
-    if mapped["total_millage"] is None:
+    if mapped["total_millage"] is None and int(mapped.get("tax_year") or 0) == 2025:
         tax_auth = (mapped.get("tax_auth_cd") or "").strip().upper()
         mill = HILLSBOROUGH_MILLAGE_2025.get(tax_auth)
         if mill:

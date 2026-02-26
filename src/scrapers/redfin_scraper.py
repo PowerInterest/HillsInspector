@@ -5,6 +5,7 @@ Requires: channel="chrome", devtools=True, user_chrome profile.
 Bare Playwright Chromium and the Stingray API are blocked by Redfin.
 Only real page navigation with a real Chrome profile works.
 """
+
 import asyncio
 import contextlib
 import random
@@ -53,10 +54,85 @@ class RedfinScraper:
     DETAIL_PAGE_DELAY = (5.0, 10.0)
     PAGE_SETTLE_SECS = 3000  # ms, after domcontentloaded
 
+    @staticmethod
+    async def _cdp_key(cdp, key: str, text: str = ""):
+        """Send a single keyDown + keyUp via CDP."""
+        await cdp.send(
+            "Input.dispatchKeyEvent",
+            {
+                "type": "keyDown",
+                "key": key,
+                "text": text,
+            },
+        )
+        await cdp.send(
+            "Input.dispatchKeyEvent",
+            {
+                "type": "keyUp",
+                "key": key,
+            },
+        )
+
+    @staticmethod
+    async def human_type(cdp, text: str):
+        """Type text via CDP with human-like timing, pauses, and occasional typos."""
+        TYPO_RATE = 0.04
+        PAUSE_RATE = 0.08
+        ADJACENT = {
+            "a": "sq",
+            "s": "ad",
+            "d": "sf",
+            "f": "dg",
+            "g": "fh",
+            "h": "gj",
+            "j": "hk",
+            "k": "jl",
+            "l": "k;",
+            "q": "wa",
+            "w": "qe",
+            "e": "wr",
+            "r": "et",
+            "t": "ry",
+            "y": "tu",
+            "u": "yi",
+            "i": "uo",
+            "o": "ip",
+            "p": "o",
+            "1": "2",
+            "2": "13",
+            "3": "24",
+            "4": "35",
+            "5": "46",
+            "6": "57",
+            "7": "68",
+            "8": "79",
+            "9": "80",
+            "0": "9",
+        }
+
+        for char in text:
+            if random.random() < PAUSE_RATE:  # noqa: S311
+                await asyncio.sleep(random.uniform(0.3, 0.9))  # noqa: S311
+
+            if random.random() < TYPO_RATE and char.lower() in ADJACENT:  # noqa: S311
+                wrong = random.choice(ADJACENT[char.lower()])  # noqa: S311
+                await RedfinScraper._cdp_key(cdp, wrong, wrong)
+                await asyncio.sleep(random.uniform(0.08, 0.2))  # noqa: S311
+                await RedfinScraper._cdp_key(cdp, "Backspace")
+                await asyncio.sleep(random.uniform(0.1, 0.3))  # noqa: S311
+
+            await RedfinScraper._cdp_key(cdp, char, char)
+
+            if char in (" ", ",", "."):
+                await asyncio.sleep(random.uniform(0.15, 0.4))  # noqa: S311
+            else:
+                await asyncio.sleep(random.uniform(0.04, 0.18))  # noqa: S311
+
     def __init__(self, context: BrowserContext | None = None, page: Page | None = None):
         self._external_context = context
         self._external_page = page
         self._context: BrowserContext | None = None
+        self._page = page
         self._pw = None
 
     async def __aenter__(self):
@@ -70,9 +146,7 @@ class RedfinScraper:
         if self._external_context:
             self._context = self._external_context
             self._page = self._external_page or (
-                self._context.pages[0]
-                if self._context.pages
-                else await self._context.new_page()
+                self._context.pages[0] if self._context.pages else await self._context.new_page()
             )
             self._pw = None  # don't own the playwright instance
             logger.info("Redfin scraper: using external browser context")
@@ -85,23 +159,15 @@ class RedfinScraper:
             headless=False,
             devtools=True,
             user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             ),
             viewport={"width": 1440, "height": 900},
             locale="en-US",
             timezone_id="America/New_York",
             args=["--disable-blink-features=AutomationControlled"],
         )
-        await self._context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        )
-        self._page = (
-            self._context.pages[0]
-            if self._context.pages
-            else await self._context.new_page()
-        )
+        await self._context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+        self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
         await Stealth().apply_stealth_async(self._page)
         logger.info("Redfin scraper: Chrome launched with user profile")
 
@@ -118,23 +184,33 @@ class RedfinScraper:
 
     @property
     def page(self) -> Page:
+        if self._page is None:
+            msg = "RedfinScraper page requested before browser context initialization"
+            raise RuntimeError(msg)
         return self._page
 
-    async def _navigate(self, url: str) -> bool:
-        """Navigate to URL, wait for settle. Returns True on HTTP 200."""
+    async def _navigate(self, url: str) -> str:
+        """Navigate to URL, wait for settle.
+
+        Returns:
+            "ok"        - HTTP 200
+            "not_found" - HTTP 404 (property doesn't exist in Redfin)
+            "blocked"   - HTTP 403/captcha or other error
+        """
         try:
-            response = await self.page.goto(
-                url, wait_until="domcontentloaded", timeout=60000
-            )
+            response = await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
             await self.page.wait_for_timeout(self.PAGE_SETTLE_SECS)
             status = response.status if response else None
-            if status != 200:
-                logger.warning(f"Redfin navigate {url}: HTTP {status}")
-                return False
-            return True
+            if status == 200:
+                return "ok"
+            if status == 404:
+                logger.debug(f"Redfin navigate {url}: HTTP 404 (not found)")
+                return "not_found"
+            logger.warning(f"Redfin navigate {url}: HTTP {status}")
+            return "blocked"
         except Exception as exc:
             logger.warning(f"Redfin navigate failed {url}: {exc}")
-            return False
+            return "blocked"
 
     async def delay(self, bounds: tuple[float, float] | None = None):
         lo, hi = bounds or self.DETAIL_PAGE_DELAY
@@ -150,9 +226,9 @@ class RedfinScraper:
         """
         all_listings: list[dict[str, Any]] = []
 
-        ok = await self._navigate(FORECLOSURES_URL)
-        if not ok:
-            logger.error("Redfin: foreclosures page blocked or failed")
+        nav = await self._navigate(FORECLOSURES_URL)
+        if nav != "ok":
+            logger.error(f"Redfin: foreclosures page {nav}")
             return all_listings
 
         page_num = 1
@@ -175,9 +251,7 @@ class RedfinScraper:
             all_listings.extend(listings)
 
             # Check for next page button
-            next_btn = await self.page.query_selector(
-                'button[data-rf-test-id="react-data-paginate-next"]'
-            )
+            next_btn = await self.page.query_selector('button[data-rf-test-id="react-data-paginate-next"]')
             if not next_btn:
                 break
             is_disabled = await next_btn.get_attribute("disabled")
@@ -192,21 +266,118 @@ class RedfinScraper:
         logger.info(f"Redfin: scraped {len(all_listings)} total foreclosure listings")
         return all_listings
 
-    # ---- Tier 2: Detail page extraction ----
+    # ---- Dialog dismissal ----
 
-    async def scrape_detail_page(self, url: str) -> RedfinListing | None:
-        """Navigate to a Redfin detail page and extract property data."""
-        ok = await self._navigate(url)
-        if not ok:
-            return None
+    async def _force_remove_dialogs(self):
+        """Force-remove Redfin's DialogWrapper overlays via JS.
+
+        These overlays (login/signup prompts) intercept all pointer events and
+        block search box interaction. Rather than trying to click close buttons
+        (which are also blocked by the overlay), we remove them from the DOM.
+        """
+        removed = 0
+        with contextlib.suppress(Exception):
+            removed = await self.page.evaluate("""
+                () => {
+                    const selectors = [
+                        '.DialogWrapper',
+                        '.DialogWrapper--animate-in',
+                        '[class*="DialogWrapper"]',
+                        '[class*="modal-backdrop"]',
+                        '[class*="overlay"][class*="dialog"]',
+                    ];
+                    let count = 0;
+                    for (const sel of selectors) {
+                        const els = document.querySelectorAll(sel);
+                        els.forEach(el => { el.remove(); count++; });
+                    }
+                    return count;
+                }
+            """)
+        if removed:
+            logger.debug(f"Redfin: removed {removed} dialog overlay(s) via JS")
+
+    # ---- Tier 2: Detail page extraction via Search ----
+
+    async def search_property(self, cdp, address: str) -> tuple[str, RedfinListing | None]:
+        """Search Redfin for a property using the homepage search box.
+
+        Bypasses navigation blocks by typing the address like a human and hitting Enter.
+        Returns ("ok", listing), ("not_found", None), or ("blocked", None).
+        """
+        # Ensure focus is somewhat clear
+        await self._force_remove_dialogs()
+
+        # Click the 'x' to clear any previous search if present
+        with contextlib.suppress(Exception):
+            clear_btn = await self.page.query_selector('button[aria-label="Clear context"]')
+            if clear_btn:
+                await clear_btn.click()
+                await self.delay((0.5, 1.0))
+
+        search_box = await self.page.query_selector('input#search-box-input, input[type="search"], input[placeholder*="Address"]')
+        if not search_box:
+            logger.warning(f"Redfin: no search box found for '{address}'")
+            return "blocked", None
+
+        # Give it a bit of human jitter before focusing
+        await self.delay((0.4, 1.2))
+
+        # Click to focus, clear existing text just in case
+        await search_box.click()
+        await self.page.keyboard.press("Control+A")
+        await self.page.keyboard.press("Backspace")
+
+        # Use our ported human timing typing tool over CDP
+        await RedfinScraper.human_type(cdp, address)
+        await self.delay((0.3, 0.8))
+
+        # Trigger search
+        await self.page.keyboard.press("Enter")
+
+        # Redfin often uses SPA transitions. Wait for the URL to change OR a results container.
+        try:
+            # Wait up to 10 seconds for results container overlay, the main page, or a detail page
+            await self.page.wait_for_selector(
+                '.SearchHomeFilterResults, [data-rf-test-id*="search-results"], .home-main-content, a[href*="/home/"]',
+                timeout=10000,
+            )
+        except Exception:
+            logger.debug("Redfin: wait_for_selector timed out, proceeding anyway to check URL.")
+
+        await self.page.wait_for_timeout(self.PAGE_SETTLE_SECS)
+        current_url = self.page.url
+
+        # Check if we landed directly on a details page
+        if "/home/" in current_url:
+            return await self.scrape_detail_page(current_url)
+
+        # Still on a search interface but maybe there are results?
+        first_result = await self.page.query_selector('a[href*="/home/"]')
+        if first_result:
+            href = await first_result.get_attribute("href")
+            if href:
+                full_url = href if href.startswith("http") else f"https://www.redfin.com{href}"
+                return await self.scrape_detail_page(full_url)
+
+        logger.info(f"Redfin: no results for '{address}' — URL: {current_url}")
+        return "not_found", None
+
+    async def scrape_detail_page(self, url: str) -> tuple[str, RedfinListing | None]:
+        """Extract property data from an already-loaded Redfin detail page.
+
+        Returns (nav_status, listing) where nav_status is "ok", "not_found", or "blocked".
+        """
+        if self.page.url != url:
+            nav = await self._navigate(url)
+            if nav != "ok":
+                return nav, None
 
         listing = RedfinListing(detail_url=url)
 
         try:
             # Address
-            addr_el = await self.page.query_selector(
-                '[data-rf-test-id="abp-homeinfo-homeAddress"], .street-address'
-            )
+            addr_el = await self.page.query_selector('[data-rf-test-id="abp-homeinfo-homeAddress"], .street-address')
             if addr_el:
                 listing.address = (await addr_el.inner_text()).strip()
 
@@ -222,9 +393,7 @@ class RedfinScraper:
 
             # Beds / Baths / SqFt
             stats = await self.page.query_selector_all(
-                '[data-rf-test-id="abp-beds"], '
-                '[data-rf-test-id="abp-baths"], '
-                '[data-rf-test-id="abp-sqFt"]'
+                '[data-rf-test-id="abp-beds"], [data-rf-test-id="abp-baths"], [data-rf-test-id="abp-sqFt"]'
             )
             for stat in stats:
                 text = await stat.inner_text()
@@ -243,9 +412,7 @@ class RedfinScraper:
                         listing.sqft = int(m.group(1).replace(",", ""))
 
             # Status
-            status_el = await self.page.query_selector(
-                '[data-rf-test-id="abp-status"]'
-            )
+            status_el = await self.page.query_selector('[data-rf-test-id="abp-status"]')
             if status_el:
                 listing.listing_status = (await status_el.inner_text()).strip()
 
@@ -294,17 +461,12 @@ class RedfinScraper:
         except Exception as exc:
             logger.warning(f"Redfin detail extraction error for {url}: {exc}")
 
-        return listing
+        return "ok", listing
 
-    # ---- URL construction for Tier 2 ----
+    # ---- URL construction for Tier 2 (Deprecated but kept for compat) ----
 
     @staticmethod
     def build_detail_url(address: str, city: str, state: str, zip_code: str) -> str:
-        """Construct a Redfin detail URL from address components.
-
-        Example: 1414 Maluhia Dr, Tampa, FL 33612
-        → https://www.redfin.com/FL/Tampa/1414-Maluhia-Dr-33612/home/
-        """
         street_slug = re.sub(r"[^\w\s]", "", address).strip()
         street_slug = re.sub(r"\s+", "-", street_slug)
         zip_clean = (zip_code or "").strip()[:5]
@@ -340,6 +502,7 @@ class RedfinScraper:
 
 
 # ---- Helpers ----
+
 
 def _parse_dollar(text: str) -> float | None:
     """Extract dollar amount from text like '$245,000' or 'Price: $1,200/mo'."""
