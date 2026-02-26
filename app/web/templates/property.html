@@ -12,11 +12,14 @@
 
     <!-- Limited Analysis Banner (Mobile Homes / No Parcel ID) -->
     {% if auction.has_valid_parcel_id == false %}
-    <div class="alert alert-warning" style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 15px 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+    <div class="alert alert-warning"
+        style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 15px 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
         <span style="font-size: 24px;">⚠️</span>
         <div>
             <strong>Limited Analysis Available</strong>
-            <p style="margin: 5px 0 0 0; color: #856404;">This property (likely a mobile home lot or unresolved parcel) does not have a standard county parcel ID. Only Final Judgment data is available. HCPA, title chain, liens, and market analysis cannot be performed.</p>
+            <p style="margin: 5px 0 0 0; color: #856404;">This property (likely a mobile home lot or unresolved parcel)
+                does not have a standard county parcel ID. Only Final Judgment data is available. HCPA, title chain,
+                liens, and market analysis cannot be performed.</p>
         </div>
     </div>
     {% endif %}
@@ -42,7 +45,9 @@
         </div>
         {% endif %}
         <div class="property-actions" style="margin-left: 20px;">
-            <a href="/property/{{ auction.case_number or property.folio }}/title-report" target="_blank" class="btn btn-primary" style="background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">
+            <a href="/property/{{ auction.case_number or property.folio }}/title-report" target="_blank"
+                class="btn btn-primary"
+                style="background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">
                 Generate Title Report
             </a>
         </div>
@@ -52,13 +57,16 @@
     {% if pg_data is defined and pg_data.pg_available %}
     <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
         {% if pg_data.subdivision %}
-        <span class="badge" style="background: #2ecc71; color: white; padding: 5px 12px; border-radius: 4px; font-size: 0.85rem;">
+        <span class="badge"
+            style="background: #2ecc71; color: white; padding: 5px 12px; border-radius: 4px; font-size: 0.85rem;">
             Subdivision: {{ pg_data.subdivision.sub_name }}
-            {% if pg_data.subdivision.plat_bk %}(Plat {{ pg_data.subdivision.plat_bk }}/{{ pg_data.subdivision.page }}){% endif %}
+            {% if pg_data.subdivision.plat_bk %}(Plat {{ pg_data.subdivision.plat_bk }}/{{ pg_data.subdivision.page
+            }}){% endif %}
         </span>
         {% endif %}
         {% if pg_data.multi_unit %}
-        <span class="badge" style="background: #e67e22; color: white; padding: 5px 12px; border-radius: 4px; font-size: 0.85rem;">
+        <span class="badge"
+            style="background: #e67e22; color: white; padding: 5px 12px; border-radius: 4px; font-size: 0.85rem;">
             Multi-Unit: {{ pg_data.multi_unit.units }} units | {{ pg_data.multi_unit.land_use_desc }}
         </span>
         {% endif %}
@@ -82,21 +90,22 @@
         <div id="basic" class="tab-content active">
             <div class="property-detail-grid">
                 <div class="property-column">
-                    {% set photos_fb = (market.photos_with_fallback if market and market.photos_with_fallback else []) %}
+                    {% set photos_fb = (market.photos_with_fallback if market and market.photos_with_fallback else [])
+                    %}
                     {% set photos = (market.photos if market and market.photos else []) %}
                     <section class="card property-media">
                         <h2>Photos</h2>
                         {% if photos_fb %}
                         <div class="media-hero">
-                            <img src="{{ photos_fb[0].url }}" loading="lazy" alt="Property photo"
-                                 {% if photos_fb[0].cdn_fallback %}data-fallback="{{ photos_fb[0].cdn_fallback }}"{% endif %}
-                                 onerror="if(this.dataset.fallback && !this.dataset.tried){this.dataset.tried='1';this.src=this.dataset.fallback}">
+                            <img src="{{ photos_fb[0].url }}" loading="lazy" alt="Property photo" {% if
+                                photos_fb[0].cdn_fallback %}data-fallback="{{ photos_fb[0].cdn_fallback }}" {% endif %}
+                                onerror="if(this.dataset.fallback && !this.dataset.tried){this.dataset.tried='1';this.src=this.dataset.fallback}">
                         </div>
                         <div class="media-thumbs">
-                            {% for p in photos_fb[1:12] %}
-                            <img src="{{ p.url }}" loading="lazy" alt="Property thumbnail"
-                                 {% if p.cdn_fallback %}data-fallback="{{ p.cdn_fallback }}"{% endif %}
-                                 onerror="if(this.dataset.fallback && !this.dataset.tried){this.dataset.tried='1';this.src=this.dataset.fallback}">
+                            {% for p in photos_fb[1:] %}
+                            <img src="{{ p.url }}" loading="lazy" alt="Property thumbnail" {% if p.cdn_fallback
+                                %}data-fallback="{{ p.cdn_fallback }}" {% endif %}
+                                onerror="if(this.dataset.fallback && !this.dataset.tried){this.dataset.tried='1';this.src=this.dataset.fallback}">
                             {% endfor %}
                         </div>
                         {% elif photos %}
@@ -104,7 +113,7 @@
                             <img src="{{ photos[0] }}" loading="lazy" alt="Property photo">
                         </div>
                         <div class="media-thumbs">
-                            {% for url in photos[1:12] %}
+                            {% for url in photos[1:] %}
                             <img src="{{ url }}" loading="lazy" alt="Property thumbnail">
                             {% endfor %}
                         </div>
@@ -122,7 +131,8 @@
                         <div class="info-grid">
                             <div class="info-item">
                                 <span class="info-label">Owner</span>
-                                <span class="info-value">{{ parcel.owner_name or auction.owner_name or 'Unknown' }}</span>
+                                <span class="info-value">{{ parcel.owner_name or auction.owner_name or 'Unknown'
+                                    }}</span>
                             </div>
                             <div class="info-item">
                                 <span class="info-label">Beds</span>
@@ -134,11 +144,13 @@
                             </div>
                             <div class="info-item">
                                 <span class="info-label">Sq Ft</span>
-                                <span class="info-value">{{ "{:,.0f}".format(parcel.heated_area) if parcel.heated_area else '-' }}</span>
+                                <span class="info-value">{{ "{:,.0f}".format(parcel.heated_area) if parcel.heated_area
+                                    else '-' }}</span>
                             </div>
                             <div class="info-item">
                                 <span class="info-label">Year Built</span>
-                                <span class="info-value">{{ parcel.year_built|int if parcel.year_built else '-' }}</span>
+                                <span class="info-value">{{ parcel.year_built|int if parcel.year_built else '-'
+                                    }}</span>
                             </div>
                             <div class="info-item">
                                 <span class="info-label">Land Use</span>
@@ -148,7 +160,8 @@
                             <div class="info-item">
                                 <span class="info-label">Flood</span>
                                 <span class="info-value">
-                                    {{ enrichments.flood_zone }}{% if enrichments.flood_risk %} ({{ enrichments.flood_risk }}){% endif %}
+                                    {{ enrichments.flood_zone }}{% if enrichments.flood_risk %} ({{
+                                    enrichments.flood_risk }}){% endif %}
                                 </span>
                             </div>
                             {% endif %}
@@ -166,15 +179,18 @@
                             </div>
                             <div class="equity-line subtract">
                                 <span>Final Judgment</span>
-                                <span class="money">- {{ "${:,.0f}".format(auction.final_judgment_amount) if auction.final_judgment_amount else '$0' }}</span>
+                                <span class="money">- {{ "${:,.0f}".format(auction.final_judgment_amount) if
+                                    auction.final_judgment_amount else '$0' }}</span>
                             </div>
                             <div class="equity-line subtract">
                                 <span>Est. Surviving Liens</span>
-                                <span class="money">- {{ "${:,.0f}".format(property.est_surviving_debt) if property.est_surviving_debt else '$0' }}</span>
+                                <span class="money">- {{ "${:,.0f}".format(property.est_surviving_debt) if
+                                    property.est_surviving_debt else '$0' }}</span>
                             </div>
                             <div class="equity-line total">
                                 <span>NET EQUITY</span>
-                                <span class="money {% if net_equity > 0 %}positive{% elif net_equity < 0 %}negative{% endif %}">
+                                <span
+                                    class="money {% if net_equity > 0 %}positive{% elif net_equity < 0 %}negative{% endif %}">
                                     {{ "${:,.0f}".format(net_equity) }}
                                 </span>
                             </div>
@@ -186,217 +202,202 @@
                         {% endif %}
                     </section>
 
-                    <section class="card">
-                        <h2>Valuation</h2>
-                        <div class="valuation-grid">
-                            <div class="valuation-item">
-                                <span class="valuation-label">HCPA Assessed</span>
-                                <span class="valuation-value">{{ "${:,.0f}".format(parcel.assessed_value) if parcel and parcel.assessed_value else '-' }}</span>
-                            </div>
-                            <div class="valuation-item">
-                                <span class="valuation-label">HCPA Market</span>
-                                <span class="valuation-value">{{ "${:,.0f}".format(parcel.market_value) if parcel and parcel.market_value else '-' }}</span>
-                            </div>
-                            <div class="valuation-item">
-                                <span class="valuation-label">Auction Assessed</span>
-                                <span class="valuation-value">{{ "${:,.0f}".format(auction.assessed_value) if auction.assessed_value else '-' }}</span>
-                            </div>
-                            {% if parcel and parcel.last_sale_price %}
-                            <div class="valuation-item">
-                                <span class="valuation-label">Last Sale</span>
-                                <span class="valuation-value">{{ "${:,.0f}".format(parcel.last_sale_price) }} ({{ parcel.last_sale_date }})</span>
-                            </div>
-                            {% endif %}
+                <section class="card">
+                    <h2>Valuation</h2>
+                    <div class="valuation-grid">
+                        <div class="valuation-item">
+                            <span class="valuation-label">HCPA Assessed</span>
+                            <span class="valuation-value">{{ "${:,.0f}".format(parcel.assessed_value) if parcel and
+                                parcel.assessed_value else '-' }}</span>
                         </div>
-                    </section>
+                        <div class="valuation-item">
+                            <span class="valuation-label">HCPA Market</span>
+                            <span class="valuation-value">{{ "${:,.0f}".format(parcel.market_value) if parcel and
+                                parcel.market_value else '-' }}</span>
+                        </div>
+                        <div class="valuation-item">
+                            <span class="valuation-label">Auction Assessed</span>
+                            <span class="valuation-value">{{ "${:,.0f}".format(auction.assessed_value) if
+                                auction.assessed_value else '-' }}</span>
+                        </div>
+                        {% if parcel and parcel.last_sale_price %}
+                        <div class="valuation-item">
+                            <span class="valuation-label">Last Sale</span>
+                            <span class="valuation-value">{{ "${:,.0f}".format(parcel.last_sale_price) }} ({{
+                                parcel.last_sale_date }})</span>
+                        </div>
+                        {% endif %}
+                    </div>
+                </section>
 
-                    <section class="card">
-                        <h2>Auction Information</h2>
-                        <div class="info-grid">
-                            <div class="info-item">
-                                <span class="info-label">Case Number</span>
-                                <span class="info-value">
-                                    <a href="https://hover.hillsclerk.com" target="_blank">{{ auction.case_number }}</a>
-                                </span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label">Auction Type</span>
-                                <span class="info-value">{{ auction.auction_type }}</span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label">Final Judgment</span>
-                                <span class="info-value money">{{ "${:,.2f}".format(auction.final_judgment_amount) if auction.final_judgment_amount else 'Not Available' }}</span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label">Opening Bid</span>
-                                <span class="info-value money">{{ "${:,.2f}".format(auction.opening_bid) if auction.opening_bid else 'Not Published Yet' }}</span>
-                            </div>
-                            {% if auction.plaintiff_max_bid %}
-                            <div class="info-item">
-                                <span class="info-label">Plaintiff Max Bid</span>
-                                <span class="info-value money">{{ auction.plaintiff_max_bid }}</span>
-                            </div>
-                            {% endif %}
-                            <div class="info-item">
-                                <span class="info-label">Status</span>
-                                <span class="info-value">{{ auction.status or 'PENDING' }}</span>
-                            </div>
-                            {% if auction.plaintiff %}
-                            <div class="info-item">
-                                <span class="info-label">Plaintiff (Foreclosing)</span>
-                                <span class="info-value">{{ auction.plaintiff }}</span>
-                            </div>
-                            {% endif %}
-                            {% if auction.foreclosure_type %}
-                            <div class="info-item">
-                                <span class="info-label">Foreclosure Type</span>
-                                <span class="info-value">{{ auction.foreclosure_type }}</span>
-                            </div>
-                            {% endif %}
-                            {% if auction.lis_pendens_date %}
-                            <div class="info-item">
-                                <span class="info-label">Lis Pendens Date</span>
-                                <span class="info-value">{{ auction.lis_pendens_date }}</span>
-                            </div>
-                            {% endif %}
-                            {% if auction.extracted_judgment_data and auction.extracted_judgment_data.get('foreclosed_mortgage') %}
-                                {% set fm = auction.extracted_judgment_data.get('foreclosed_mortgage') %}
-                                {% if fm and (fm.get('instrument_number') or fm.get('recording_book') or fm.get('recording_page')) %}
-                                <div class="info-item">
-                                    <span class="info-label">Foreclosed Mortgage Ref</span>
-                                    <span class="info-value">
-                                        {% if fm.get('instrument_number') %}Inst {{ fm.get('instrument_number') }}{% endif %}
-                                        {% if fm.get('recording_book') and fm.get('recording_page') %}
-                                            {% if fm.get('instrument_number') %} | {% endif %}
-                                            Bk/Pg {{ fm.get('recording_book') }}/{{ fm.get('recording_page') }}
-                                        {% endif %}
-                                    </span>
-                                </div>
+                <section class="card">
+                    <h2>Auction Information</h2>
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <span class="info-label">Case Number</span>
+                            <span class="info-value">
+                                <a href="https://hover.hillsclerk.com" target="_blank">{{ auction.case_number }}</a>
+                            </span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Auction Type</span>
+                            <span class="info-value">{{ auction.auction_type }}</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Final Judgment</span>
+                            <span class="info-value money">{{ "${:,.2f}".format(auction.final_judgment_amount) if
+                                auction.final_judgment_amount else 'Not Available' }}</span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Opening Bid</span>
+                            <span class="info-value money">{{ "${:,.2f}".format(auction.opening_bid) if
+                                auction.opening_bid else 'Not Published Yet' }}</span>
+                        </div>
+                        {% if auction.plaintiff_max_bid %}
+                        <div class="info-item">
+                            <span class="info-label">Plaintiff Max Bid</span>
+                            <span class="info-value money">{{ auction.plaintiff_max_bid }}</span>
+                        </div>
+                        {% endif %}
+                        <div class="info-item">
+                            <span class="info-label">Status</span>
+                            <span class="info-value">{{ auction.status or 'PENDING' }}</span>
+                        </div>
+                        {% if auction.plaintiff %}
+                        <div class="info-item">
+                            <span class="info-label">Plaintiff (Foreclosing)</span>
+                            <span class="info-value">{{ auction.plaintiff }}</span>
+                        </div>
+                        {% endif %}
+                        {% if auction.foreclosure_type %}
+                        <div class="info-item">
+                            <span class="info-label">Foreclosure Type</span>
+                            <span class="info-value">{{ auction.foreclosure_type }}</span>
+                        </div>
+                        {% endif %}
+                        {% if auction.lis_pendens_date %}
+                        <div class="info-item">
+                            <span class="info-label">Lis Pendens Date</span>
+                            <span class="info-value">{{ auction.lis_pendens_date }}</span>
+                        </div>
+                        {% endif %}
+                        {% if auction.extracted_judgment_data and
+                        auction.extracted_judgment_data.get('foreclosed_mortgage') %}
+                        {% set fm = auction.extracted_judgment_data.get('foreclosed_mortgage') %}
+                        {% if fm and (fm.get('instrument_number') or fm.get('recording_book') or
+                        fm.get('recording_page')) %}
+                        <div class="info-item">
+                            <span class="info-label">Foreclosed Mortgage Ref</span>
+                            <span class="info-value">
+                                {% if fm.get('instrument_number') %}Inst {{ fm.get('instrument_number') }}{% endif %}
+                                {% if fm.get('recording_book') and fm.get('recording_page') %}
+                                {% if fm.get('instrument_number') %} | {% endif %}
+                                Bk/Pg {{ fm.get('recording_book') }}/{{ fm.get('recording_page') }}
                                 {% endif %}
-                            {% endif %}
+                            </span>
                         </div>
-                    </section>
+                        {% endif %}
+                        {% endif %}
+                    </div>
+                </section>
 
-                </div>
             </div>
-            <!-- Sales History - Full Width -->
-            <section class="card" style="margin-top: 1.5rem;">
-                <h2>Sales History</h2>
-                <div id="sales-history-section"
-                     hx-get="/property/{{ property.folio }}/sales"
-                     hx-trigger="load"
-                     hx-swap="innerHTML">
-                    <div class="htmx-loading">Loading sales history...</div>
-                </div>
-            </section>
         </div>
-
-        <!-- Judgment Tab -->
-        <div id="judgment" class="tab-content"
-             hx-get="/property/{{ property.folio }}/judgment"
-             hx-trigger="tab-show once"
-             hx-swap="innerHTML"
-             style="display:none;">
-            <div class="htmx-loading">Loading judgment data...</div>
-        </div>
-
-        <!-- Chain Tab -->
-        <div id="chain" class="tab-content"
-             hx-get="/property/{{ property.folio }}/chain"
-             hx-trigger="tab-show once"
-             hx-swap="innerHTML"
-             style="display:none;">
-            <div class="htmx-loading">Loading chain of title...</div>
-        </div>
-
-        <!-- Liens Tab -->
-        <div id="liens" class="tab-content"
-             hx-get="/property/{{ property.folio }}/liens"
-             hx-trigger="tab-show once"
-             hx-swap="innerHTML"
-             style="display:none;">
-            <div class="htmx-loading">Loading liens...</div>
-        </div>
-
-        <!-- Comparables Tab -->
-        <div id="comparables" class="tab-content"
-             hx-get="/property/{{ property.folio }}/comparables"
-             hx-trigger="tab-show once"
-             hx-swap="innerHTML"
-             style="display:none;">
-            <div class="htmx-loading">Loading comparable sales...</div>
-        </div>
-
-        <!-- Permits Tab -->
-        <div id="permits" class="tab-content"
-             hx-get="/property/{{ property.folio }}/permits"
-             hx-trigger="tab-show once"
-             hx-swap="innerHTML"
-             style="display:none;">
-            <div class="htmx-loading">Loading permits...</div>
-        </div>
-
-        <!-- Tax Tab -->
-        <div id="tax" class="tab-content"
-             hx-get="/property/{{ property.folio }}/tax"
-             hx-trigger="tab-show once"
-             hx-swap="innerHTML"
-             style="display:none;">
-            <div class="htmx-loading">Loading tax...</div>
-        </div>
-
-        <!-- Documents Tab -->
-        <div id="documents" class="tab-content"
-             hx-get="/property/{{ property.folio }}/documents"
-             hx-trigger="tab-show once"
-             hx-swap="innerHTML"
-             style="display:none;">
-            <div class="htmx-loading">Loading documents...</div>
-        </div>
+        <!-- Sales History - Full Width -->
+        <section class="card" style="margin-top: 1.5rem;">
+            <h2>Sales History</h2>
+            <div id="sales-history-section" hx-get="/property/{{ property.folio }}/sales" hx-trigger="load"
+                hx-swap="innerHTML">
+                <div class="htmx-loading">Loading sales history...</div>
+            </div>
+        </section>
     </div>
 
-    <!-- OCR Content (if available) -->
-    {% if auction.final_judgment_content %}
-    <section class="card ocr-section">
-        <h2>Final Judgment OCR Text</h2>
-        <details>
-            <summary>Show extracted text</summary>
-            <pre class="ocr-text">{{ auction.final_judgment_content }}</pre>
-        </details>
-    </section>
-    {% endif %}
-    
-    <!-- Data Sources -->
-    {% if property.sources %}
-    <section class="card sources-section">
-        <h2>Data Sources</h2>
-        <div class="table-container">
-            <table class="auction-table">
-                <thead>
-                    <tr>
-                        <th>Source</th>
-                        <th>URL</th>
-                        <th>Description</th>
-                        <th>Captured At</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for source in property.sources %}
-                    <tr class="auction-row">
-                        <td>{{ source.source_name }}</td>
-                        <td>
-                            <a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">
-                                {{ source.url[:60] }}{% if source.url|length > 60 %}...{% endif %}
-                            </a>
-                        </td>
-                        <td>{{ source.description }}</td>
-                        <td>{{ source.created_at }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </section>
-    {% endif %}
+    <!-- Judgment Tab -->
+    <div id="judgment" class="tab-content" hx-get="/property/{{ property.folio }}/judgment" hx-trigger="tab-show once"
+        hx-swap="innerHTML" style="display:none;">
+        <div class="htmx-loading">Loading judgment data...</div>
+    </div>
+
+    <!-- Chain Tab -->
+    <div id="chain" class="tab-content" hx-get="/property/{{ property.folio }}/chain" hx-trigger="tab-show once"
+        hx-swap="innerHTML" style="display:none;">
+        <div class="htmx-loading">Loading chain of title...</div>
+    </div>
+
+    <!-- Liens Tab -->
+    <div id="liens" class="tab-content" hx-get="/property/{{ property.folio }}/liens" hx-trigger="tab-show once"
+        hx-swap="innerHTML" style="display:none;">
+        <div class="htmx-loading">Loading liens...</div>
+    </div>
+
+    <!-- Comparables Tab -->
+    <div id="comparables" class="tab-content" hx-get="/property/{{ property.folio }}/comparables"
+        hx-trigger="tab-show once" hx-swap="innerHTML" style="display:none;">
+        <div class="htmx-loading">Loading comparable sales...</div>
+    </div>
+
+    <!-- Permits Tab -->
+    <div id="permits" class="tab-content" hx-get="/property/{{ property.folio }}/permits" hx-trigger="tab-show once"
+        hx-swap="innerHTML" style="display:none;">
+        <div class="htmx-loading">Loading permits...</div>
+    </div>
+
+    <!-- Tax Tab -->
+    <div id="tax" class="tab-content" hx-get="/property/{{ property.folio }}/tax" hx-trigger="tab-show once"
+        hx-swap="innerHTML" style="display:none;">
+        <div class="htmx-loading">Loading tax...</div>
+    </div>
+
+    <!-- Documents Tab -->
+    <div id="documents" class="tab-content" hx-get="/property/{{ property.folio }}/documents" hx-trigger="tab-show once"
+        hx-swap="innerHTML" style="display:none;">
+        <div class="htmx-loading">Loading documents...</div>
+    </div>
+</div>
+
+<!-- OCR Content (if available) -->
+{% if auction.final_judgment_content %}
+<section class="card ocr-section">
+    <h2>Final Judgment OCR Text</h2>
+    <details>
+        <summary>Show extracted text</summary>
+        <pre class="ocr-text">{{ auction.final_judgment_content }}</pre>
+    </details>
+</section>
+{% endif %}
+
+<!-- Data Sources -->
+{% if property.sources %}
+<section class="card sources-section">
+    <h2>Data Sources</h2>
+    <div class="table-container">
+        <table class="auction-table">
+            <thead>
+                <tr>
+                    <th>Source</th>
+                    <th>URL</th>
+                    <th>Description</th>
+                    <th>Captured At</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for source in property.sources %}
+                <tr class="auction-row">
+                    <td>{{ source.source_name }}</td>
+                    <td>
+                        <a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">
+                            {{ source.url[:60] }}{% if source.url|length > 60 %}...{% endif %}
+                        </a>
+                    </td>
+                    <td>{{ source.description }}</td>
+                    <td>{{ source.created_at }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
 </div>
 {% endblock %}
