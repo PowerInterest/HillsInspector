@@ -8,6 +8,7 @@ Vision Service to extract loan amounts, interest rates, and loan seniority.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 import urllib.parse
@@ -43,6 +44,29 @@ class PgMortgageExtractionService:
         self.engine = get_engine(self.dsn)
         self.storage = ScraperStorage()
         self.vision = VisionService()
+
+    @staticmethod
+    def _has_value(value: Any) -> bool:
+        """Return True when a parsed field is meaningfully populated."""
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, (list, dict, tuple, set)):
+            return len(value) > 0
+        if isinstance(value, (int, float)):
+            return value != 0
+        return True
+
+    @classmethod
+    def _is_cache_complete(cls, data: Any) -> bool:
+        """Gate mortgage cache reads/writes to avoid persisting partial extracts."""
+        if not isinstance(data, dict):
+            return False
+        has_principal = cls._has_value(data.get("principal_amount"))
+        has_lender = cls._has_value(data.get("lender"))
+        has_borrower = cls._has_value(data.get("borrower"))
+        return has_principal and (has_lender or has_borrower)
 
     # ------------------------------------------------------------------
     # Public API
@@ -157,7 +181,29 @@ class PgMortgageExtractionService:
             logger.warning(f"Could not secure PDF for Mortgage {instrument}")
             return False
 
-        # 3. Render PDF pages to images and extract via Vision
+        # 3. Check JSON cache (same pattern as FinalJudgmentProcessor)
+        cache_path = Path(pdf_path).parent / f"{Path(pdf_path).stem}_extracted.json"
+        if cache_path.exists():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                if cached and self._is_cache_complete(cached):
+                    logger.info(f"Loaded cached mortgage extraction for {instrument}")
+                    result = cached
+                    # Jump straight to DB save
+                    try:
+                        self._save_to_pg(enc_id, result)
+                        return True
+                    except Exception as exc:
+                        logger.error(f"Failed to save cached mortgage to DB for {instrument}: {exc}")
+                        return False
+                elif cached:
+                    logger.warning(
+                        f"Incomplete mortgage cache for {instrument}; re-extracting from PDF"
+                    )
+            except Exception as e:
+                logger.warning(f"Bad mortgage cache file {cache_path}, re-extracting: {e}")
+
+        # 4. Render PDF pages to images and extract via Vision
         #    VisionService expects image paths, not PDF paths
         #    (same pattern as FinalJudgmentProcessor)
         logger.info(f"Extracting JSON via Vision for {instrument}...")
@@ -172,14 +218,15 @@ class PgMortgageExtractionService:
             for page_num in range(num_pages):
                 pg = doc[page_num]
                 pix = pg.get_pixmap(dpi=150)
-                tmp = _tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                pix.save(tmp.name)
-                page_images.append(tmp.name)
-                tmp.close()
+                with _tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    pix.save(tmp.name)
+                    page_images.append(tmp.name)
             doc.close()
 
             # Extract from each page, merge results
-            for img_path in page_images:
+            for idx, img_path in enumerate(page_images):
+                if idx > 0:
+                    await asyncio.sleep(1)  # Pace API calls without blocking the event loop
                 page_result = self.vision.extract_json(img_path, MORTGAGE_PROMPT)
                 if page_result:
                     if result is None:
@@ -192,14 +239,24 @@ class PgMortgageExtractionService:
         finally:
             # Clean up temp images
             for img_path in page_images:
-                try:
+                with contextlib.suppress(OSError):
                     Path(img_path).unlink(missing_ok=True)
-                except OSError:
-                    pass
 
         if not result:
             logger.warning(f"Vision extraction failed or returned NULL for {instrument}")
             return False
+
+        # 5. Write JSON cache to disk (survives DB rebuilds)
+        if self._is_cache_complete(result):
+            try:
+                cache_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+                logger.debug(f"Cached mortgage extraction to {cache_path}")
+            except OSError as exc:
+                logger.warning(f"Failed to write mortgage cache {cache_path}: {exc}")
+        else:
+            logger.warning(
+                f"Mortgage extraction for {instrument} is partial; skipping cache write so future runs can retry"
+            )
 
         # 4. Save to Database
         try:

@@ -1098,7 +1098,13 @@ class VisionService:
 
     @classmethod
     def _build_endpoints(cls) -> list[dict]:
-        """Build endpoint list: local first, then cloud fallbacks if API keys are set."""
+        """Build endpoint list: local first, then cloud fallbacks if API keys are set.
+
+        Set ``VISION_CLOUD_ONLY=1`` to exclude all local LAN endpoints and use
+        only cloud APIs (e.g. Gemini).  This avoids 70+ seconds of connect
+        timeouts when local GPU servers are down.
+        """
+        cloud_only = os.getenv("VISION_CLOUD_ONLY", "").strip() in ("1", "true", "yes")
         cloud_endpoints: list[dict] = []
         gemini_keys = cls._parse_api_keys("GEMINI_API_KEY")
         for key in gemini_keys:
@@ -1107,6 +1113,12 @@ class VisionService:
                 "model": "gemini-2.5-flash-lite",
                 "api_key": key,
             })
+        if cloud_only:
+            if not cloud_endpoints:
+                logger.warning("VISION_CLOUD_ONLY=1 but no cloud API keys configured; falling back to local endpoints")
+                return list(cls._LOCAL_ENDPOINTS)
+            logger.info("VISION_CLOUD_ONLY mode: using {} cloud endpoint(s), skipping local LAN", len(cloud_endpoints))
+            return cloud_endpoints
         # When cloud keys are configured, prefer cloud first to avoid long timeouts
         # on stale LAN hosts.
         if cloud_endpoints:
@@ -1320,8 +1332,10 @@ class VisionService:
 
         errors = []
         tried_endpoints: set[tuple[str, str]] = set()
+        _single_ep_retries = 0
 
         def _attempt(endpoints: list[dict], read_timeout: int) -> Optional[requests.Response]:
+            nonlocal _single_ep_retries
             now = time.monotonic()
             for endpoint in endpoints:
                 url = endpoint["url"]
@@ -1393,8 +1407,22 @@ class VisionService:
                         err_body,
                     )
                     errors.append(f"{url} ({model}): HTTP {response.status_code}")
-                    # Suspend endpoints returning 429 (quota) or 5xx (server error)
+                    # Rate limit or server error — handle based on endpoint count
                     if response.status_code == 429 or response.status_code >= 500:
+                        if len(endpoints) <= 1:
+                            # Single-endpoint mode (e.g. VISION_CLOUD_ONLY): backoff and
+                            # retry within this call instead of suspending, which would
+                            # doom all subsequent callers.
+                            _single_ep_retries += 1
+                            if _single_ep_retries <= 3:
+                                wait = 10 * _single_ep_retries  # 10s, 20s, 30s
+                                logger.info(
+                                    "Single-endpoint backoff: sleeping {}s before retry {}/3 (HTTP {})",
+                                    wait, _single_ep_retries, response.status_code,
+                                )
+                                time.sleep(wait)
+                                tried_endpoints.discard(endpoint_key)
+                                return _attempt(endpoints, read_timeout)
                         suspend_secs = VisionService._SUSPEND_HTTP_ERROR
                         VisionService._suspended_endpoints[url] = time.monotonic() + suspend_secs
                         logger.info(

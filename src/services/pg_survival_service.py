@@ -80,10 +80,7 @@ class PgSurvivalService:
 
                 survived = len(result["results"]["survived"])
                 extinguished = len(result["results"]["extinguished"])
-                logger.info(
-                    f"Survival for {case}: "
-                    f"{survived} survived, {extinguished} extinguished"
-                )
+                logger.info(f"Survival for {case}: {survived} survived, {extinguished} extinguished")
 
             except Exception as exc:
                 logger.error(f"Survival analysis error for {case}: {exc}")
@@ -224,8 +221,13 @@ class PgSurvivalService:
         """Write survival_status + survival_reason back to PG ori_encumbrances."""
         all_encs = []
         for category in (
-            "survived", "extinguished", "expired", "satisfied",
-            "historical", "foreclosing", "uncertain",
+            "survived",
+            "extinguished",
+            "expired",
+            "satisfied",
+            "historical",
+            "foreclosing",
+            "uncertain",
         ):
             all_encs.extend(result["results"].get(category, []))
 
@@ -262,9 +264,6 @@ class PgSurvivalService:
         """Mark foreclosure as survival-analyzed."""
         with self.engine.begin() as conn:
             conn.execute(
-                text(
-                    "UPDATE foreclosures SET step_survival_analyzed = now() "
-                    "WHERE foreclosure_id = :fid"
-                ),
+                text("UPDATE foreclosures SET step_survival_analyzed = now() WHERE foreclosure_id = :fid"),
                 {"fid": foreclosure_id},
             )

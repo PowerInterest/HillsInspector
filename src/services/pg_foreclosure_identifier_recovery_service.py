@@ -24,6 +24,8 @@ from loguru import logger
 import requests
 from sqlalchemy import text
 
+from src.services.pav_cache import pav_cache_get, pav_cache_put
+
 from src.utils.legal_description import legal_descriptions_match
 from src.utils.legal_description import parse_legal_description
 from sunbiz.db import get_engine, resolve_pg_dsn
@@ -883,6 +885,30 @@ class PgForeclosureIdentifierRecoveryService:
             "Keywords": [{"Id": 1006, "Value": instrument}],
             "QueryLimit": 500,
         }
+        # --- disk cache check ---
+        cached = pav_cache_get(payload)
+        if cached is not None:
+            data = cached
+            # jump to the parsing section below (past the HTTP call)
+            data_rows = data.get("Data")
+            if not isinstance(data_rows, list):
+                return []
+            results: list[dict[str, Any]] = []
+            for item in data_rows:
+                if not isinstance(item, dict):
+                    continue
+                cols = item.get("DisplayColumnValues") or []
+                values = [str((col or {}).get("Value") or "").strip() for col in cols[:9]]
+                values.extend([""] * (9 - len(values)))
+                results.append({
+                    "person_type": values[0], "name": html.unescape(values[1]),
+                    "record_date": values[2], "doc_type": values[3],
+                    "book_type": "OR" if values[4] in ("O", "OR", "") else values[4],
+                    "book_num": values[5], "page_num": values[6],
+                    "legal": values[7], "instrument": values[8],
+                })
+            return results
+
         try:
             response = self._ori_session.post(
                 _PAV_KEYWORD_URL,
@@ -920,6 +946,7 @@ class PgForeclosureIdentifierRecoveryService:
             )
             return []
 
+        pav_cache_put(payload, data)
         results: list[dict[str, Any]] = []
         data_rows = data.get("Data")
         if not isinstance(data_rows, list):
@@ -965,43 +992,17 @@ class PgForeclosureIdentifierRecoveryService:
             self._run_stats.get("ori_case_queries", 0) + 1
         )
         payload = {"CaseNum": case_number.strip()}
-        try:
-            response = self._ori_session.post(
-                _ORI_DOC_SEARCH_URL,
-                json=payload,
-                headers=_ORI_DOC_HEADERS,
-                timeout=45,
-            )
-        except requests.RequestException as exc:
-            self._run_stats["ori_http_errors"] = (
-                self._run_stats.get("ori_http_errors", 0) + 1
-            )
-            logger.warning("ORI case query failed {}: {}", case_number, exc)
-            return []
+        # --- disk cache check ---
+        cached = pav_cache_get(payload)
+        if cached is not None:
+            # fall through to the parsing section with cached data
+            data = cached
+        else:
+            data = self._ori_search_case_fetch(case_number, payload)
+            if data is None:
+                return []
+            pav_cache_put(payload, data)
 
-        if response.status_code != 200:
-            self._run_stats["ori_http_errors"] = (
-                self._run_stats.get("ori_http_errors", 0) + 1
-            )
-            logger.warning(
-                "ORI case query HTTP {} for {}",
-                response.status_code,
-                case_number,
-            )
-            return []
-
-        try:
-            data = response.json()
-        except ValueError as exc:
-            self._run_stats["ori_http_errors"] = (
-                self._run_stats.get("ori_http_errors", 0) + 1
-            )
-            logger.warning(
-                "ORI case JSON decode failed for {}: {}",
-                case_number,
-                exc,
-            )
-            return []
         results: list[dict[str, Any]] = []
         result_rows = data.get("ResultList")
         if not isinstance(result_rows, list):
@@ -1027,20 +1028,63 @@ class PgForeclosureIdentifierRecoveryService:
                 self._run_stats["ori_payload_errors"] = (
                     self._run_stats.get("ori_payload_errors", 0) + 1
                 )
-            results.append(
-                {
-                    "Instrument": str(row.get("Instrument") or "").strip(),
-                    "PartiesOne": [html.unescape(str(v)) for v in parties_one if v],
-                    "PartiesTwo": [html.unescape(str(v)) for v in parties_two if v],
-                    "RecordDate": row.get("RecordDate"),
-                    "DocType": str(row.get("DocType") or "").strip(),
-                    "BookType": str(row.get("BookType") or "").strip(),
-                    "BookNum": str(row.get("BookNum") or "").strip(),
-                    "PageNum": str(row.get("PageNum") or "").strip(),
-                    "Legal": str(row.get("Legal") or "").strip(),
-                }
-            )
+            results.append({
+                "Instrument": str(row.get("Instrument") or "").strip(),
+                "PartiesOne": [html.unescape(str(v)) for v in parties_one if v],
+                "PartiesTwo": [html.unescape(str(v)) for v in parties_two if v],
+                "RecordDate": row.get("RecordDate"),
+                "DocType": str(row.get("DocType") or "").strip(),
+                "BookType": str(row.get("BookType") or "").strip(),
+                "BookNum": str(row.get("BookNum") or "").strip(),
+                "PageNum": str(row.get("PageNum") or "").strip(),
+                "Legal": str(row.get("Legal") or "").strip(),
+            })
         return results
+
+    def _ori_search_case_fetch(
+        self,
+        case_number: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """HTTP fetch for ORI case search (separated for cache integration)."""
+        try:
+            response = self._ori_session.post(
+                _ORI_DOC_SEARCH_URL,
+                json=payload,
+                headers=_ORI_DOC_HEADERS,
+                timeout=45,
+            )
+        except requests.RequestException as exc:
+            self._run_stats["ori_http_errors"] = (
+                self._run_stats.get("ori_http_errors", 0) + 1
+            )
+            logger.warning("ORI case query failed {}: {}", case_number, exc)
+            return None
+
+        if response.status_code != 200:
+            self._run_stats["ori_http_errors"] = (
+                self._run_stats.get("ori_http_errors", 0) + 1
+            )
+            logger.warning(
+                "ORI case query HTTP {} for {}",
+                response.status_code,
+                case_number,
+            )
+            return None
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            self._run_stats["ori_http_errors"] = (
+                self._run_stats.get("ori_http_errors", 0) + 1
+            )
+            logger.warning(
+                "ORI case JSON decode failed for {}: {}",
+                case_number,
+                exc,
+            )
+            return None
+        return data
 
     def _lookup_by_parcel_tokens(
         self,

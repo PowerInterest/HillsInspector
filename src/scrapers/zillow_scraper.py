@@ -90,8 +90,11 @@ async def _is_blocked(page) -> bool:
     return await page.evaluate("""
         () => {
             const text = (document.body.innerText || '').toLowerCase();
+            const title = (document.title || '').toLowerCase();
             return text.includes('press and hold') || text.includes('captcha')
-                || text.includes('access denied') || text.includes('verify you are human');
+                || text.includes('access denied') || text.includes('verify you are human')
+                || title.includes('denied') || title.includes('captcha')
+                || title.includes('blocked') || title.includes('access denied');
         }
     """)
 
@@ -262,7 +265,42 @@ async def search_property(page, cdp, address: str) -> ZillowListing | None:
     if not search_box:
         search_box = await page.query_selector('input[placeholder*="address" i]')
     if not search_box:
-        logger.warning("Zillow: no search box found on page")
+        # Check if there's a captcha or consent blocking the page
+        captcha_iframe = await page.query_selector('iframe#px-captcha-modal, iframe[id*="px-captcha"]')
+        if captcha_iframe:
+            logger.warning("Zillow: captcha blocking page — waiting for user to solve it...")
+            for _wait in range(60):
+                captcha_iframe = await page.query_selector('iframe#px-captcha-modal, iframe[id*="px-captcha"]')
+                if not captcha_iframe:
+                    break
+                await page.wait_for_timeout(5000)
+            else:
+                logger.warning("Zillow: captcha still present after 5 min — aborting search")
+                return None
+            # Retry finding search box after captcha solved
+            search_box = await page.query_selector(
+                'input#search-box-input, '
+                'input[placeholder*="Enter an address"], '
+                'input[type="search"], '
+                'input[aria-label*="Search"], '
+                'input[placeholder*="address" i]'
+            )
+        if not search_box:
+            current_url = page.url
+            title = await page.title()
+            logger.warning(f"Zillow: no search box found — url={current_url}, title={title}")
+            return None
+
+    # Wait for captcha overlay to be solved before clicking
+    for _wait in range(60):  # up to 5 minutes (60 x 5s)
+        captcha_iframe = await page.query_selector('iframe#px-captcha-modal, iframe[id*="px-captcha"]')
+        if not captcha_iframe:
+            break
+        if _wait == 0:
+            logger.warning("Zillow: captcha overlay detected — waiting for user to solve it...")
+        await page.wait_for_timeout(5000)
+    else:
+        logger.warning("Zillow: captcha still present after 5 min — aborting search")
         return None
 
     await search_box.click()

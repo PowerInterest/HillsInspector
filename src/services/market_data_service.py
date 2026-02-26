@@ -7,6 +7,7 @@ Writes directly to PG ``property_market`` table — no SQLite intermediate.
 
 Can run independently: `uv run python -m src.services.market_data_service`
 """
+
 import asyncio
 import contextlib
 import json
@@ -37,20 +38,52 @@ class MarketDataService:
 
     REDFIN_DETAIL_DELAY = (5.0, 10.0)
     ZILLOW_SEARCH_DELAY = (8.0, 14.0)
-    ZILLOW_BLOCK_LIMIT = 3      # consecutive CAPTCHAs → stop Zillow
-    REDFIN_FAIL_LIMIT = 5       # consecutive Tier 2 failures → stop
+    ZILLOW_BLOCK_LIMIT = 3  # consecutive CAPTCHAs → stop Zillow
+    REDFIN_FAIL_LIMIT = 5  # consecutive Tier 2 failures → stop
 
     def __init__(self, dsn: str | None = None):
         self._dsn = resolve_pg_dsn(dsn)
         self._engine = get_engine(self._dsn)
         self._ensure_pg_table()
+        self._has_realtor_column = self._column_exists("property_market", "realtor_json")
+        if not self._has_realtor_column:
+            logger.warning(
+                "property_market.realtor_json column missing; Realtor source disabled. "
+                "Apply add_realtor_cols migration to enable Realtor persistence."
+            )
+
+    def _column_exists(self, table_name: str, column_name: str) -> bool:
+        """Return True when a column exists on the current schema table."""
+        try:
+            with self._engine.connect() as conn:
+                exists = conn.execute(
+                    text(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1
+                            FROM information_schema.columns
+                            WHERE table_schema = current_schema()
+                              AND table_name = :table_name
+                              AND column_name = :column_name
+                        )
+                        """
+                    ),
+                    {"table_name": table_name, "column_name": column_name},
+                ).scalar()
+                return bool(exists)
+        except Exception as exc:
+            logger.warning(f"Failed to check schema column {table_name}.{column_name}: {exc}")
+            return False
 
     def _ensure_pg_table(self) -> None:
         """Create the property_market table if it doesn't exist."""
         try:
-            Base.metadata.create_all(bind=self._engine, tables=[
-                Base.metadata.tables["property_market"],
-            ])
+            Base.metadata.create_all(
+                bind=self._engine,
+                tables=[
+                    Base.metadata.tables["property_market"],
+                ],
+            )
         except Exception as e:
             logger.warning(f"Failed to ensure property_market table: {e}")
 
@@ -65,16 +98,26 @@ class MarketDataService:
         Properties come from PG foreclosures table.
         Returns summary: {redfin: N, zillow: N, homeharvest: N, photos: N}
         """
-        sources = sources or ["redfin", "zillow", "homeharvest"]
-        summary = {"redfin": 0, "zillow": 0, "homeharvest": 0, "photos": 0}
+        sources = list(sources or ["redfin", "zillow", "realtor", "homeharvest"])
+        if not self._has_realtor_column and "realtor" in sources:
+            logger.warning(
+                "Ignoring Realtor source because property_market.realtor_json is not available."
+            )
+            sources = [s for s in sources if s != "realtor"]
+        summary = {"redfin": 0, "zillow": 0, "realtor": 0, "homeharvest": 0, "photos": 0}
         browser_phase_error: str | None = None
 
         # Check existing PG state per-property to decide which sources to run.
-        # A property is "done" only when ALL three sources have been attempted.
+        # A property is "done" only when all configured sources have been attempted.
         need_redfin: list[dict] = []
         need_zillow: list[dict] = []
+        need_realtor: list[dict] = []
         need_hh: list[dict] = []
         already_complete = 0
+        selected_redfin = "redfin" in sources
+        selected_zillow = "zillow" in sources
+        selected_realtor = "realtor" in sources and self._has_realtor_column
+        selected_hh = "homeharvest" in sources
 
         for prop in properties:
             strap = prop.get("strap", "")
@@ -85,64 +128,135 @@ class MarketDataService:
                 continue
 
             state = self._get_market_state(strap)
-            if state and state["has_redfin"] and state["has_zillow"] and state["has_hh"]:
+            has_realtor = state["has_realtor"] if state else False
+            complete_for_selected_sources = True
+            if selected_redfin:
+                complete_for_selected_sources = complete_for_selected_sources and bool(
+                    state and state["has_redfin"]
+                )
+            if selected_zillow:
+                complete_for_selected_sources = complete_for_selected_sources and bool(
+                    state and state["has_zillow"]
+                )
+            if selected_realtor:
+                complete_for_selected_sources = complete_for_selected_sources and bool(
+                    state and has_realtor
+                )
+            if selected_hh:
+                complete_for_selected_sources = complete_for_selected_sources and bool(
+                    state and state["has_hh"]
+                )
+
+            if complete_for_selected_sources:
                 already_complete += 1
                 continue
 
-            if not state or not state["has_redfin"]:
+            if selected_redfin and (not state or not state["has_redfin"]):
                 need_redfin.append(prop)
-            if not state or not state["has_zillow"]:
+            if selected_zillow and (not state or not state["has_zillow"]):
                 need_zillow.append(prop)
-            if not state or not state["has_hh"]:
+            if selected_realtor and (not state or not state["has_realtor"]):
+                need_realtor.append(prop)
+            if selected_hh and (not state or not state["has_hh"]):
                 need_hh.append(prop)
 
-        total_need = len({p["strap"] for p in need_redfin + need_zillow + need_hh})
+        total_need = len({p["strap"] for p in need_redfin + need_zillow + need_realtor + need_hh})
         logger.info(
             f"MarketDataService: {total_need} properties need data "
             f"({already_complete} already complete across all sources), "
-            f"redfin={len(need_redfin)}, zillow={len(need_zillow)}, hh={len(need_hh)}"
+            f"redfin={len(need_redfin)}, zillow={len(need_zillow)}, realtor={len(need_realtor)}, hh={len(need_hh)}"
         )
         if not total_need:
             return summary
 
         # Track straps that got new data this run (for photo download scope)
-        all_need = {p["strap"]: p for p in need_redfin + need_zillow + need_hh}
+        all_need = {p["strap"]: p for p in need_redfin + need_zillow + need_realtor + need_hh}
         need_market = list(all_need.values())
 
-        # --- Browser-based sources (Redfin + Zillow) ---
+        # --- Browser-based sources (Redfin + Zillow + Realtor) ---
         run_redfin = "redfin" in sources and need_redfin
         run_zillow = "zillow" in sources and need_zillow
+        run_realtor = "realtor" in sources and need_realtor
         redfin_matched: set[str] = set()
 
-        if run_redfin or run_zillow:
+        if run_redfin or run_zillow or run_realtor:
             pw = None
             context = None
             try:
                 pw, context, page, cdp = await self._launch_browser()
 
+                # IMPORTANT: Open tabs upfront and wait for the user to solve any Captchas manually.
+                logger.warning("\n=======================================================")
+                logger.warning("Opening target tabs! You have 60 seconds to solve Captchas.")
+                logger.warning("=======================================================\n")
+
+                zillow_page = await context.new_page() if run_zillow else None
+                redfin_page = await context.new_page() if run_redfin else None
+                realtor_page = await context.new_page() if run_realtor else None
+
+                if zillow_page:
+                    await zillow_page.goto("https://www.zillow.com")
+                if redfin_page:
+                    await redfin_page.goto("https://www.redfin.com")
+                if realtor_page:
+                    await realtor_page.goto("https://www.realtor.com")
+                # We must also get the CDP sessions for these specific new tabs
+                zillow_cdp = await context.new_cdp_session(zillow_page) if run_zillow else cdp
+                redfin_cdp = await context.new_cdp_session(redfin_page) if run_redfin else cdp
+                realtor_cdp = await context.new_cdp_session(realtor_page) if run_realtor else cdp
+
+                # Wait for captcha overlay if present on any of the loaded tabs
+                for _cw in range(12):  # 60 seconds max
+                    cf = False
+                    if zillow_page:
+                        cf = cf or await zillow_page.query_selector('iframe#px-captcha-modal, iframe[id*="px-captcha"]')
+                    # Optionally check redfin/realtor for their specific captchas here if known
+
+                    if not cf:
+                        break
+
+                    if _cw == 0:
+                        logger.warning("Captcha overlay detected! Waiting up to 60s for user to solve...")
+                    await asyncio.sleep(5)
+
+                # Keep the extra preview tabs open as requested by user
+
                 if run_redfin:
+                    redfin_page_ref = redfin_page or page
+                    logger.info(f"Redfin: using tab {redfin_page_ref.url}")
+
                     redfin_matched = await self._run_redfin(
-                        context, page, need_redfin, set(),
+                        context,
+                        redfin_page_ref,
+                        redfin_cdp,
+                        need_redfin,
+                        set(),
                     )
                     summary["redfin"] = len(redfin_matched)
                     logger.info(f"Redfin done: {summary['redfin']} properties matched")
 
                 if run_zillow:
-                    # Zillow runs for all properties that need it,
-                    # regardless of Redfin results (different data: zestimate vs list_price)
                     already_have_zillow = set()
-                    await page.goto(
-                        "https://www.zillow.com",
-                        wait_until="domcontentloaded",
-                        timeout=60000,
-                    )
-                    await page.wait_for_timeout(3000)
+                    z_page = zillow_page or page
+                    logger.info(f"Zillow: using tab {z_page.url}")
 
                     zillow_matched = await self._run_zillow(
-                        page, cdp, need_zillow, already_have_zillow,
+                        z_page,
+                        zillow_cdp,
+                        need_zillow,
+                        already_have_zillow,
                     )
                     summary["zillow"] = len(zillow_matched)
                     logger.info(f"Zillow done: {summary['zillow']} properties matched")
+
+                if run_realtor:
+                    already_have_realtor = set()
+                    r_page = realtor_page or page
+                    logger.info(f"Realtor: using tab {r_page.url}")
+
+                    realtor_matched = await self._run_realtor(r_page, realtor_cdp, need_realtor, already_have_realtor)
+                    summary["realtor"] = len(realtor_matched)
+                    logger.info(f"Realtor done: {summary['realtor']} properties matched")
 
             except Exception as exc:
                 browser_phase_error = str(exc)
@@ -185,23 +299,43 @@ class MarketDataService:
         """
         try:
             with self._engine.connect() as conn:
-                row = conn.execute(
-                    text(
-                        "SELECT redfin_json IS NOT NULL AS has_redfin, "
-                        "       zillow_json IS NOT NULL AS has_zillow, "
-                        "       homeharvest_json IS NOT NULL AS has_hh "
-                        "FROM property_market WHERE strap = :strap"
-                    ),
-                    {"strap": strap},
-                ).fetchone()
+                if self._has_realtor_column:
+                    row = conn.execute(
+                        text(
+                            "SELECT redfin_json IS NOT NULL AS has_redfin, "
+                            "       zillow_json IS NOT NULL AS has_zillow, "
+                            "       realtor_json IS NOT NULL AS has_realtor, "
+                            "       homeharvest_json IS NOT NULL AS has_hh "
+                            "FROM property_market WHERE strap = :strap"
+                        ),
+                        {"strap": strap},
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        text(
+                            "SELECT redfin_json IS NOT NULL AS has_redfin, "
+                            "       zillow_json IS NOT NULL AS has_zillow, "
+                            "       homeharvest_json IS NOT NULL AS has_hh "
+                            "FROM property_market WHERE strap = :strap"
+                        ),
+                        {"strap": strap},
+                    ).fetchone()
                 if not row:
                     return None
                 return {
                     "has_redfin": row.has_redfin,
                     "has_zillow": row.has_zillow,
                     "has_hh": row.has_hh,
+                    "has_realtor": row.has_realtor if self._has_realtor_column else False,
                 }
         except Exception as exc:
+            msg = str(exc).lower()
+            if self._has_realtor_column and "realtor_json" in msg and "column" in msg:
+                logger.warning(
+                    "property_market.realtor_json is missing at runtime; disabling Realtor source."
+                )
+                self._has_realtor_column = False
+                return self._get_market_state(strap)
             logger.debug(f"Market state check failed for strap={strap}: {exc}")
             return None
 
@@ -317,8 +451,7 @@ class MarketDataService:
                 "photo_cdn_urls": text("COALESCE(property_market.photo_cdn_urls, EXCLUDED.photo_cdn_urls)"),
                 "zillow_json": stmt.excluded.zillow_json,
                 "primary_source": text(
-                    "CASE WHEN property_market.primary_source IS NULL THEN 'zillow' "
-                    "ELSE property_market.primary_source END"
+                    "CASE WHEN property_market.primary_source IS NULL THEN 'zillow' ELSE property_market.primary_source END"
                 ),
                 "updated_at": text("NOW()"),
             },
@@ -381,8 +514,7 @@ class MarketDataService:
                 "photo_cdn_urls": text("COALESCE(property_market.photo_cdn_urls, EXCLUDED.photo_cdn_urls)"),
                 "homeharvest_json": stmt.excluded.homeharvest_json,
                 "primary_source": text(
-                    "CASE WHEN property_market.primary_source IS NULL THEN 'homeharvest' "
-                    "ELSE property_market.primary_source END"
+                    "CASE WHEN property_market.primary_source IS NULL THEN 'homeharvest' ELSE property_market.primary_source END"
                 ),
                 "updated_at": text("NOW()"),
             },
@@ -393,11 +525,78 @@ class MarketDataService:
         except Exception as e:
             logger.error(f"PG HomeHarvest upsert failed for {strap}: {e}")
 
+    def _upsert_realtor(self, strap: str, folio: str | None, case_number: str, payload: dict) -> None:
+        """Upsert Realtor.com data into PG property_market."""
+        if not self._has_realtor_column:
+            return
+        row = {
+            "strap": strap,
+            "folio": folio,
+            "case_number": case_number,
+            "zestimate": _f(payload.get("zestimate")),  # Realtor "estimate" maps to zestimate column
+            "rent_zestimate": _f(payload.get("rent_estimate")),
+            "list_price": _f(payload.get("list_price")),
+            "listing_status": payload.get("listing_status"),
+            "beds": _i(payload.get("beds")),
+            "baths": _f(payload.get("baths")),
+            "sqft": _i(payload.get("sqft")),
+            "year_built": _i(payload.get("year_built")),
+            "lot_size": str(payload.get("lot_size") or "") or None,
+            "property_type": payload.get("property_type"),
+            "detail_url": payload.get("detail_url"),
+            "photo_cdn_urls": payload.get("photos") or [],
+            "realtor_json": payload,
+            # We treat realtor as backup if zillow/redfin are present
+            "primary_source": "realtor",
+        }
+
+        stmt = pg_insert(PropertyMarket).values([row])
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["strap"],
+            set_={
+                "folio": text("COALESCE(EXCLUDED.folio, property_market.folio)"),
+                "case_number": text("COALESCE(EXCLUDED.case_number, property_market.case_number)"),
+                "zestimate": text("COALESCE(property_market.zestimate, EXCLUDED.zestimate)"),
+                "rent_zestimate": text("COALESCE(property_market.rent_zestimate, EXCLUDED.rent_zestimate)"),
+                "list_price": text("COALESCE(property_market.list_price, EXCLUDED.list_price)"),
+                "listing_status": text("COALESCE(property_market.listing_status, EXCLUDED.listing_status)"),
+                "beds": text("COALESCE(EXCLUDED.beds, property_market.beds)"),
+                "baths": text("COALESCE(EXCLUDED.baths, property_market.baths)"),
+                "sqft": text("COALESCE(EXCLUDED.sqft, property_market.sqft)"),
+                "year_built": text("COALESCE(EXCLUDED.year_built, property_market.year_built)"),
+                "lot_size": text("COALESCE(EXCLUDED.lot_size, property_market.lot_size)"),
+                "property_type": text("COALESCE(EXCLUDED.property_type, property_market.property_type)"),
+                "detail_url": text("COALESCE(property_market.detail_url, EXCLUDED.detail_url)"),
+                "photo_cdn_urls": text("COALESCE(property_market.photo_cdn_urls, EXCLUDED.photo_cdn_urls)"),
+                "realtor_json": stmt.excluded.realtor_json,
+                "primary_source": text(
+                    "CASE WHEN property_market.primary_source IS NULL THEN 'realtor' ELSE property_market.primary_source END"
+                ),
+                "updated_at": text("NOW()"),
+            },
+        )
+        try:
+            with self._engine.begin() as conn:
+                conn.execute(stmt)
+        except Exception as e:
+            logger.error(f"PG Realtor upsert failed for {strap}: {e}")
+
     def _mark_source_attempted(
-        self, strap: str, folio: str | None, case_number: str, source: str,
+        self,
+        strap: str,
+        folio: str | None,
+        case_number: str,
+        source: str,
     ) -> None:
         """Save a tombstone so we don't re-scrape a source that found nothing."""
-        col = {"redfin": "redfin_json", "zillow": "zillow_json", "homeharvest": "homeharvest_json"}.get(source)
+        col = {
+            "redfin": "redfin_json",
+            "zillow": "zillow_json",
+            "homeharvest": "homeharvest_json",
+            "realtor": "realtor_json",
+        }.get(source)
+        if source == "realtor" and not self._has_realtor_column:
+            return
         if not col:
             return
         row = {"strap": strap, "folio": folio, "case_number": case_number, col: {"_attempted": True, "_found": False}}
@@ -429,7 +628,10 @@ class MarketDataService:
         MAX_PHOTOS = 15
         DOWNLOAD_TIMEOUT = 15
         IMAGE_CONTENT_TYPES = frozenset({
-            "image/jpeg", "image/png", "image/webp", "image/gif",
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "image/gif",
         })
         EXT_MAP = {
             "image/jpeg": ".jpg",
@@ -440,9 +642,7 @@ class MarketDataService:
 
         session = requests.Session()
         session.headers["User-Agent"] = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/122.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
 
         straps = [p["strap"] for p in properties if p.get("strap")]
@@ -543,18 +743,14 @@ class MarketDataService:
             headless=False,
             devtools=True,
             user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
             ),
             viewport={"width": 1440, "height": 900},
             locale="en-US",
             timezone_id="America/New_York",
             args=["--disable-blink-features=AutomationControlled"],
         )
-        await context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        )
+        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
         page = context.pages[0] if context.pages else await context.new_page()
         await Stealth().apply_stealth_async(page)
         cdp = await context.new_cdp_session(page)
@@ -569,6 +765,7 @@ class MarketDataService:
         self,
         context,
         page,
+        cdp,
         properties: list[dict],
         already_matched: set[str],
     ) -> set[str]:
@@ -601,8 +798,12 @@ class MarketDataService:
                     continue
 
                 logger.info(f"Redfin Tier 1 match: {card.get('address')} → {detail_url}")
-                listing = await scraper.scrape_detail_page(detail_url)
-                if listing:
+                try:
+                    nav_status, listing = await scraper.scrape_detail_page(detail_url)
+                except Exception as detail_exc:
+                    logger.warning(f"Redfin Tier 1: scrape_detail_page raised {type(detail_exc).__name__}: {detail_exc}")
+                    nav_status, listing = "blocked", None
+                if nav_status == "ok" and listing:
                     payload = RedfinScraper.listing_to_market_payload(listing)
                     for prop in matching:
                         strap = prop.get("strap", "")
@@ -620,43 +821,48 @@ class MarketDataService:
                 row
                 for rows in addr_to_props.values()
                 for row in rows
-                if row.get("strap", "") not in matched
-                and row.get("strap", "") not in already_matched
+                if row.get("strap", "") not in matched and row.get("strap", "") not in already_matched
             ]
             logger.info(f"Redfin Tier 2: {len(unmatched)} unmatched for direct URL")
 
             consecutive_failures = 0
             for row in unmatched:
                 if consecutive_failures >= self.REDFIN_FAIL_LIMIT:
-                    logger.warning(
-                        f"Redfin Tier 2: {self.REDFIN_FAIL_LIMIT} consecutive "
-                        f"failures — stopping"
-                    )
+                    logger.warning(f"Redfin Tier 2: {self.REDFIN_FAIL_LIMIT} consecutive failures — stopping")
                     break
 
                 addr = (row.get("property_address") or "").strip()
                 strap = row.get("strap", "")
                 folio = row.get("folio")
                 case = row.get("case_number", "")
-                # Extract city/zip from address or use defaults
-                city = (row.get("city") or "Tampa").strip()
-                zip_code = (row.get("zip_code") or "").strip()
 
-                street = addr.split(",")[0].strip()
-                url = RedfinScraper.build_detail_url(street, city, "FL", zip_code)
-                logger.info(f"Redfin Tier 2: trying {url}")
+                logger.info(f"Redfin Tier 2: typing '{addr}' via CDP")
 
-                listing = await scraper.scrape_detail_page(url)
-                if listing and (listing.list_price or listing.redfin_estimate):
+                try:
+                    nav_status, listing = await scraper.search_property(cdp, addr)
+                except Exception as search_exc:
+                    logger.warning(f"Redfin Tier 2: search_property raised {type(search_exc).__name__}: {search_exc}")
+                    nav_status, listing = "blocked", None
+
+                if nav_status == "ok" and listing and (listing.list_price or listing.redfin_estimate):
                     payload = RedfinScraper.listing_to_market_payload(listing)
                     self._upsert_redfin(strap, folio, case, payload)
                     matched.add(strap)
                     consecutive_failures = 0
                     logger.success(f"Redfin Tier 2: saved for {strap}")
+                elif nav_status == "not_found":
+                    # Property doesn't exist in Redfin — not a block
+                    self._mark_source_attempted(strap, folio, case, "redfin")
+                    consecutive_failures = 0
+                    logger.info(f"Redfin Tier 2: not_found for '{addr}'")
                 else:
                     consecutive_failures += 1
                     self._mark_source_attempted(strap, folio, case, "redfin")
-                    logger.debug(f"Redfin Tier 2: no data for {addr}")
+                    has_price = bool(listing and (listing.list_price or listing.redfin_estimate)) if listing else False
+                    logger.warning(
+                        f"Redfin Tier 2: fail #{consecutive_failures} — "
+                        f"status={nav_status}, has_listing={listing is not None}, has_price={has_price} for '{addr}'"
+                    )
 
                 await scraper.delay(scraper.DETAIL_PAGE_DELAY)
 
@@ -690,9 +896,7 @@ class MarketDataService:
 
         for i, prop in enumerate(properties):
             if consecutive_blocks >= self.ZILLOW_BLOCK_LIMIT:
-                logger.warning(
-                    f"Zillow: {self.ZILLOW_BLOCK_LIMIT} consecutive blocks — stopping"
-                )
+                logger.warning(f"Zillow: {self.ZILLOW_BLOCK_LIMIT} consecutive blocks — stopping")
                 break
 
             strap = prop.get("strap", "")
@@ -703,16 +907,19 @@ class MarketDataService:
             if strap in already_matched or strap in matched:
                 continue
 
-            logger.info(f"Zillow [{i+1}/{len(properties)}]: searching '{addr}'")
+            logger.info(f"Zillow [{i + 1}/{len(properties)}]: searching '{addr}'")
 
-            listing = await search_property(page, cdp, addr)
+            try:
+                listing = await search_property(page, cdp, addr)
+            except Exception as search_exc:
+                # Captcha iframe or DOM detach — treat as a block, don't crash
+                logger.warning(f"Zillow: search_property raised {type(search_exc).__name__}: {search_exc}")
+                listing = None
 
             if listing is None:
                 # None = blocked
                 consecutive_blocks += 1
-                logger.warning(
-                    f"Zillow: block #{consecutive_blocks} on '{addr}'"
-                )
+                logger.warning(f"Zillow: block #{consecutive_blocks} on '{addr}'")
                 # Try to recover by going back to homepage
                 await page.wait_for_timeout(5000)
                 try:
@@ -733,10 +940,7 @@ class MarketDataService:
                 payload = listing_to_market_payload(listing)
                 self._upsert_zillow(strap, folio, case, payload)
                 matched.add(strap)
-                logger.success(
-                    f"Zillow: saved for {strap} "
-                    f"(zest={listing.zestimate}, photos={len(listing.photos)})"
-                )
+                logger.success(f"Zillow: saved for {strap} (zest={listing.zestimate}, photos={len(listing.photos)})")
             else:
                 self._mark_source_attempted(strap, folio, case, "zillow")
                 logger.debug(f"Zillow: no useful data for '{addr}'")
@@ -755,6 +959,93 @@ class MarketDataService:
                 await page.wait_for_timeout(2000)
             except Exception as nav_err:
                 logger.debug(f"Zillow: homepage navigation failed: {nav_err}")
+
+        return matched
+
+    # ------------------------------------------------------------------
+    # Realtor
+    # ------------------------------------------------------------------
+
+    async def _run_realtor(
+        self,
+        page,
+        cdp,
+        properties: list[dict],
+        already_matched: set[str],
+    ) -> set[str]:
+        """Run Realtor.com searches via CDP."""
+        from src.scrapers.realtor_scraper import (
+            search_property,
+            listing_to_market_payload,
+            _is_blocked,
+        )
+
+        matched: set[str] = set()
+        consecutive_blocks = 0
+
+        if await _is_blocked(page):
+            logger.warning("Realtor: blocked on homepage — skipping all searches")
+            return matched
+
+        for i, prop in enumerate(properties):
+            if consecutive_blocks >= self.ZILLOW_BLOCK_LIMIT:  # Reusing block limit parameter
+                logger.warning(f"Realtor: {self.ZILLOW_BLOCK_LIMIT} consecutive blocks — stopping")
+                break
+
+            strap = prop.get("strap", "")
+            folio = prop.get("folio")
+            case = prop.get("case_number", "")
+            addr = (prop.get("property_address") or "").strip()
+
+            if strap in already_matched or strap in matched:
+                continue
+
+            logger.info(f"Realtor [{i + 1}/{len(properties)}]: searching '{addr}'")
+
+            try:
+                listing = await search_property(page, cdp, addr)
+            except Exception as search_exc:
+                logger.warning(f"Realtor: search_property raised {type(search_exc).__name__}: {search_exc}")
+                listing = None
+
+            if listing is None:
+                consecutive_blocks += 1
+                logger.warning(f"Realtor: block #{consecutive_blocks} on '{addr}'")
+                await page.wait_for_timeout(5000)
+                try:
+                    await page.goto(
+                        "https://www.realtor.com",
+                        wait_until="domcontentloaded",
+                        timeout=30000,
+                    )
+                    await page.wait_for_timeout(3000)
+                except Exception as nav_err:
+                    logger.debug(f"Realtor: homepage recovery failed: {nav_err}")
+                continue
+
+            consecutive_blocks = 0
+
+            if listing.estimate or listing.price or listing.beds or listing.photos:
+                payload = listing_to_market_payload(listing)
+                self._upsert_realtor(strap, folio, case, payload)
+                matched.add(strap)
+                logger.success(f"Realtor: saved for {strap} (est={listing.estimate}, photos={len(listing.photos)})")
+            else:
+                self._mark_source_attempted(strap, folio, case, "realtor")
+                logger.debug(f"Realtor: no useful data for '{addr}'")
+
+            delay = random.uniform(*self.ZILLOW_SEARCH_DELAY)  # noqa: S311
+            await page.wait_for_timeout(int(delay * 1000))
+
+            try:
+                await page.goto(
+                    "https://www.realtor.com",
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
+                await page.wait_for_timeout(2000)
+            except Exception as nav_err:
+                logger.debug(f"Realtor: homepage navigation failed: {nav_err}")
 
         return matched
 
@@ -824,6 +1115,7 @@ class MarketDataService:
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
 
 def _f(val: Any) -> float | None:
     """Safely convert to float, returning None for non-positive/invalid."""
@@ -933,6 +1225,7 @@ def _build_homeharvest_payload(folio: str, row: dict) -> dict:
 # Standalone CLI
 # ---------------------------------------------------------------------------
 
+
 def _query_properties_needing_market(dsn: str | None = None, limit: int = 0) -> list[dict]:
     """Query properties needing market data from PG foreclosures."""
     engine = get_engine(resolve_pg_dsn(dsn))
@@ -962,7 +1255,7 @@ if __name__ == "__main__":
     parser.add_argument("--dsn", help="PostgreSQL DSN override")
     parser.add_argument(
         "--source",
-        choices=["all", "redfin", "zillow", "homeharvest"],
+        choices=["all", "redfin", "zillow", "realtor", "homeharvest"],
         default="all",
     )
     args = parser.parse_args()
