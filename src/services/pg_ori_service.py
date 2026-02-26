@@ -29,6 +29,8 @@ import requests
 from loguru import logger
 from sqlalchemy import text
 
+from src.services.pav_cache import pav_cache_get, pav_cache_put
+
 from src.db.type_normalizer import (
     CANONICAL_ENCUMBRANCE_TYPES,
     CANONICAL_NOC_TYPES,
@@ -1338,6 +1340,13 @@ class PgOriService:
         query_label: str,
         stats: dict[str, int],
     ) -> dict[str, Any] | None:
+        # --- disk cache check ---
+        cached = pav_cache_get(payload)
+        if cached is not None:
+            stats.setdefault("cache_hits", 0)
+            stats["cache_hits"] += 1
+            return cached
+
         for attempt in range(1, _PAV_MAX_RETRIES + 1):
             stats["api_calls"] += 1
             try:
@@ -1361,6 +1370,7 @@ class PgOriService:
                         )
                     else:
                         if isinstance(data, dict):
+                            pav_cache_put(payload, data)
                             return data
                         logger.warning(
                             "PAV returned non-object JSON label={} attempt={}/{} type={}",
