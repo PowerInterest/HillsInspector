@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide covers practical usage of the ingestion pipeline. For pipeline architecture and step details, see `docs/steps/`.
+This guide covers practical usage of the ingestion pipeline. For pipeline architecture and detailed step-by-step execution guides, see `docs/guides/PIPELINE_STEPS.md`.
 
 ## Bulk Parcel Data Setup
 
@@ -193,6 +193,5 @@ If properties aren't being enriched:
 
 ## Related Documentation
 
-- **Pipeline Architecture**: `docs/steps/00_pipeline_overview.md`
-- **Step Details**: `docs/steps/01-13*.md`
-- **Database Schema**: `docs/schema.md`
+- **Pipeline Architecture & Step Details**: `docs/guides/PIPELINE_STEPS.md`
+- **Database Schema**: `docs/architecture/DATABASE_SCHEMA.md`
