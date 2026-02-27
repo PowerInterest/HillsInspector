@@ -278,7 +278,7 @@ def get_upcoming_auctions(
                     fallback_params["auction_type"] = normalized_type
                 rows = conn.execute(fallback_sql, fallback_params).fetchall()
             return _rows_to_dicts(rows)
-    except OperationalError as e:
+    except OperationalError:
         logger.exception("get_upcoming_auctions failed")
         return []
 
@@ -371,7 +371,7 @@ def get_upcoming_auctions_with_enrichments(
                         base.get("has_enrichments") or permits_total > 0
                     )
                     enrich_by_id[foreclosure_id] = base
-        except OperationalError as e:
+        except OperationalError:
             logger.exception("get_upcoming_auctions_with_enrichments aggregation failed")
 
     for auction in auctions:
@@ -437,7 +437,7 @@ def get_auction_count(days_ahead: int = 60, auction_type: str | None = None) -> 
                 fallback_params,
             ).fetchone()
             return int(row[0]) if row and row[0] is not None else 0
-    except OperationalError as e:
+    except OperationalError:
         logger.exception("get_auction_count failed")
         return 0
 
@@ -503,7 +503,7 @@ def get_dashboard_stats() -> dict[str, Any]:
                 ).mappings().one()
                 stats = dict(fallback)
             return stats
-    except OperationalError as e:
+    except OperationalError:
         logger.exception("get_dashboard_stats failed")
         return {
             "foreclosures": 0,
@@ -573,7 +573,7 @@ def get_auctions_by_date(auction_date: date) -> list[dict[str, Any]]:
                 {"auction_date": auction_date},
             ).fetchall()
             return _rows_to_dicts(rows)
-    except OperationalError as e:
+    except OperationalError:
         logger.exception(f"get_auctions_by_date({auction_date}) failed")
         return []
 
@@ -613,7 +613,7 @@ def search_properties(query: str, limit: int = 20) -> list[dict[str, Any]]:
                 {"q": q, "lim": limit},
             ).fetchall()
             return _rows_to_dicts(rows)
-    except OperationalError as e:
+    except OperationalError:
         logger.exception(f"search_properties({query!r}) failed")
         return []
 
@@ -661,7 +661,7 @@ def get_auction_map_points(days_ahead: int = 60) -> list[dict[str, Any]]:
                 )
                 rows = conn.execute(text(history_sql)).fetchall()
             return _rows_to_dicts(rows)
-    except OperationalError as e:
+    except OperationalError:
         logger.exception("get_auction_map_points failed")
         return []
 

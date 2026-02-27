@@ -43,7 +43,7 @@ async def map_auctions():
                     else "#"
                 ),
             })
-        except Exception as e:
+        except Exception:
             # Skip malformed records but log them
             logger.exception("Skipping malformed map record")
             continue

@@ -24,6 +24,7 @@ https://aca-prod.accela.com/Tampa/Cap/CapHome.aspx?module=Building&TabName=Build
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import html
 import json
@@ -644,6 +645,151 @@ class TampaPermitService:
                 return locator.first
         return None
 
+    @staticmethod
+    def _extract_showing_text(body_text: str | None) -> str | None:
+        if not body_text:
+            return None
+        showing_match = SHOWING_TEXT_RE.search(body_text)
+        if not showing_match:
+            return None
+        return showing_match.group(0).strip()
+
+    @staticmethod
+    def _wait_for_accela_idle(page: Any, timeout_ms: int) -> None:
+        """
+        Wait for common Accela async postback/loading-mask states to settle.
+
+        We do this best-effort and still rely on terminal-state polling below.
+        """
+        wait_ms = max(1000, timeout_ms)
+        with contextlib.suppress(Exception):
+            page.wait_for_function(
+                """
+                () => {
+                    const prm = window.Sys
+                        && window.Sys.WebForms
+                        && window.Sys.WebForms.PageRequestManager
+                        ? window.Sys.WebForms.PageRequestManager.getInstance()
+                        : null;
+                    return !prm || !prm.get_isInAsyncPostBack();
+                }
+                """,
+                timeout=wait_ms,
+            )
+
+        with contextlib.suppress(Exception):
+            page.wait_for_function(
+                """
+                () => {
+                    const mask = document.querySelector("#divGlobalLoadingMask");
+                    if (!mask) {
+                        return true;
+                    }
+                    const style = window.getComputedStyle(mask);
+                    const isHidden =
+                        style.display === "none"
+                        || style.visibility === "hidden"
+                        || style.opacity === "0"
+                        || mask.classList.contains("ACA_Hide");
+                    return isHidden;
+                }
+                """,
+                timeout=wait_ms,
+            )
+
+    @staticmethod
+    def _collect_export_diagnostics(page: Any, body_text: str | None = None) -> dict[str, Any]:
+        body_text = body_text or (page.text_content("body") or "")
+        export_candidates = page.eval_on_selector_all(
+            "a[id*='Export'], a[id*='export'], iframe[id*='Export'], iframe[id*='export']",
+            "els => els.map(e => ({ tag: e.tagName, id: e.id || '' })).slice(0, 20)",
+        )
+        iframe_srcs = page.eval_on_selector_all(
+            "iframe#iframeExport, iframe#iframeexport",
+            "els => els.map(e => e.getAttribute('src') || '').filter(Boolean).slice(0, 3)",
+        )
+        async_postback_active = page.evaluate(
+            """
+            () => {
+                const prm = window.Sys
+                    && window.Sys.WebForms
+                    && window.Sys.WebForms.PageRequestManager
+                    ? window.Sys.WebForms.PageRequestManager.getInstance()
+                    : null;
+                return !!(prm && prm.get_isInAsyncPostBack());
+            }
+            """
+        )
+        mask_visible = page.evaluate(
+            """
+            () => {
+                const mask = document.querySelector("#divGlobalLoadingMask");
+                if (!mask) return false;
+                const style = window.getComputedStyle(mask);
+                return !(
+                    style.display === "none"
+                    || style.visibility === "hidden"
+                    || style.opacity === "0"
+                    || mask.classList.contains("ACA_Hide")
+                );
+            }
+            """
+        )
+        return {
+            "page_url": page.url,
+            "showing_text": TampaPermitService._extract_showing_text(body_text),
+            "no_records_found": "No records found" in body_text,
+            "export_candidates": export_candidates,
+            "iframe_export_src": (iframe_srcs[0] if iframe_srcs else None),
+            "async_postback_active": bool(async_postback_active),
+            "loading_mask_visible": bool(mask_visible),
+        }
+
+    def _wait_for_export_terminal_state(
+        self,
+        page: Any,
+        *,
+        start_str: str,
+        end_str: str,
+        timeout_ms: int,
+    ) -> tuple[str, Any | None, str | None]:
+        """
+        Wait for one of:
+        - export button ready
+        - no records found
+        - timeout/error
+        """
+        deadline = time.monotonic() + (max(1000, timeout_ms) / 1000.0)
+        showing_text: str | None = None
+
+        while time.monotonic() < deadline:
+            remaining_ms = int(max(500, (deadline - time.monotonic()) * 1000))
+            self._wait_for_accela_idle(page, timeout_ms=min(3000, remaining_ms))
+
+            if "Error.aspx" in page.url:
+                diagnostics = self._collect_export_diagnostics(page)
+                raise RuntimeError(
+                    "Tampa Accela returned Error page after search submit for "
+                    f"date window {start_str} - {end_str}: {diagnostics}"
+                )
+
+            body_text = page.text_content("body") or ""
+            showing_text = self._extract_showing_text(body_text) or showing_text
+            if "No records found" in body_text:
+                return "no_records", None, "No records found"
+
+            export_button = self._resolve_export_button(page)
+            if export_button is not None:
+                return "export_ready", export_button, showing_text
+
+            page.wait_for_timeout(350)
+
+        diagnostics = self._collect_export_diagnostics(page)
+        raise RuntimeError(
+            "Tampa window capture timed out waiting for terminal export state for "
+            f"{start_str} - {end_str}: {diagnostics}"
+        )
+
     def capture_window_export(
         self,
         start_date: date,
@@ -675,95 +821,119 @@ class TampaPermitService:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=self.headless)
             context = browser.new_context(accept_downloads=True)
-            page = context.new_page()
             try:
-                page.goto(CAP_HOME_URL, wait_until="domcontentloaded", timeout=self.timeout_seconds * 1000)
-                page.wait_for_timeout(1500)
+                max_attempts = 2
+                for attempt in range(1, max_attempts + 1):
+                    page = context.new_page()
+                    try:
+                        page.goto(
+                            CAP_HOME_URL,
+                            wait_until="domcontentloaded",
+                            timeout=self.timeout_seconds * 1000,
+                        )
+                        self._wait_for_accela_idle(
+                            page, timeout_ms=min(self.timeout_seconds * 1000, 10_000)
+                        )
 
-                if "Error.aspx" in page.url:
-                    raise RuntimeError(
-                        f"Tampa Accela returned Error page for date window {start_str} - {end_str}: {page.url}"
-                    )
+                        if "Error.aspx" in page.url:
+                            raise RuntimeError(
+                                f"Tampa Accela returned Error page for date window {start_str} - {end_str}: {page.url}"
+                            )
 
-                # General Search is default; force it for consistency.
-                page.select_option("#ctl00_PlaceHolderMain_ddlSearchType", "0")
-                page.wait_for_timeout(500)
+                        # General Search is default; force it for consistency.
+                        page.select_option("#ctl00_PlaceHolderMain_ddlSearchType", "0")
+                        page.wait_for_timeout(350)
 
-                self._set_accela_date_input(
-                    page,
-                    "#ctl00_PlaceHolderMain_generalSearchForm_txtGSStartDate",
-                    start_str,
-                )
-                self._set_accela_date_input(
-                    page,
-                    "#ctl00_PlaceHolderMain_generalSearchForm_txtGSEndDate",
-                    end_str,
-                )
+                        self._set_accela_date_input(
+                            page,
+                            "#ctl00_PlaceHolderMain_generalSearchForm_txtGSStartDate",
+                            start_str,
+                        )
+                        self._set_accela_date_input(
+                            page,
+                            "#ctl00_PlaceHolderMain_generalSearchForm_txtGSEndDate",
+                            end_str,
+                        )
 
-                page.click("#ctl00_PlaceHolderMain_btnNewSearch")
-                page.wait_for_timeout(2500)
+                        page.click("#ctl00_PlaceHolderMain_btnNewSearch")
+                        state, export_button, showing_text = self._wait_for_export_terminal_state(
+                            page,
+                            start_str=start_str,
+                            end_str=end_str,
+                            timeout_ms=max(self.timeout_seconds * 1000, 30_000),
+                        )
 
-                if "Error.aspx" in page.url:
-                    raise RuntimeError(
-                        "Tampa Accela returned Error page after search submit for "
-                        f"date window {start_str} - {end_str}: {page.url}"
-                    )
+                        if state == "no_records":
+                            logger.info(
+                                "Tampa window capture no records: start_date={}, end_date={}",
+                                start_date,
+                                end_date,
+                            )
+                            return WindowCaptureResult(
+                                start_date=start_date,
+                                end_date=end_date,
+                                csv_path=None,
+                                row_count=0,
+                                export_url=None,
+                                showing_text="No records found",
+                            )
 
-                body_text = page.text_content("body") or ""
-                if "No records found" in body_text:
-                    logger.info(
-                        "Tampa window capture no records: start_date={}, end_date={}",
-                        start_date,
-                        end_date,
-                    )
-                    return WindowCaptureResult(
-                        start_date=start_date,
-                        end_date=end_date,
-                        csv_path=None,
-                        row_count=0,
-                        export_url=None,
-                        showing_text="No records found",
-                    )
+                        if export_button is None:
+                            diagnostics = self._collect_export_diagnostics(page)
+                            raise RuntimeError(
+                                "Tampa window capture reached export-ready state without "
+                                "button handle for "
+                                f"{start_str} - {end_str}: {diagnostics}"
+                            )
 
-                export_button = self._resolve_export_button(page)
-                if export_button is None:
-                    button_ids = page.eval_on_selector_all(
-                        "a[id*='Export'], a[id*='export'], iframe[id*='Export'], iframe[id*='export']",
-                        "els => els.map(e => e.id || '').filter(Boolean).slice(0, 8)",
-                    )
-                    raise RuntimeError(
-                        "Tampa window capture missing export button for "
-                        f"{start_str} - {end_str} (page_url={page.url}, "
-                        f"export_candidates={button_ids})"
-                    )
+                        with page.expect_download(timeout=self.timeout_seconds * 1000) as dl_info:
+                            export_button.click()
+                        download = dl_info.value
+                        download.save_as(str(out_path))
+                        logger.info(
+                            "Tampa window capture download saved: start_date={}, end_date={}, file={}",
+                            start_date,
+                            end_date,
+                            out_path,
+                        )
 
-                # Best-effort showing text for diagnostics.
-                body_text = page.text_content("body") or ""
-                showing_match = SHOWING_TEXT_RE.search(body_text)
-                if showing_match:
-                    showing_text = showing_match.group(0).strip()
-
-                with page.expect_download(timeout=self.timeout_seconds * 1000) as dl_info:
-                    export_button.click()
-                download = dl_info.value
-                download.save_as(str(out_path))
-                logger.info(
-                    "Tampa window capture download saved: start_date={}, end_date={}, file={}",
-                    start_date,
-                    end_date,
-                    out_path,
-                )
-
-                iframe = page.locator("iframe#iframeExport, iframe#iframeexport")
-                if iframe.count() > 0:
-                    src = iframe.first.get_attribute("src")
-                    if src:
-                        export_url = src
-
-            except PlaywrightTimeoutError as exc:
-                raise RuntimeError(
-                    f"Tampa export timed out for {start_str} - {end_str}: {exc}"
-                ) from exc
+                        iframe = page.locator("iframe#iframeExport, iframe#iframeexport")
+                        if iframe.count() > 0:
+                            src = iframe.first.get_attribute("src")
+                            if src:
+                                export_url = src
+                        break
+                    except PlaywrightTimeoutError as exc:
+                        if attempt < max_attempts:
+                            logger.warning(
+                                "Tampa window capture timeout on attempt {}/{} for {} - {}; retrying once. error={}",
+                                attempt,
+                                max_attempts,
+                                start_str,
+                                end_str,
+                                exc,
+                            )
+                            page.close()
+                            continue
+                        raise RuntimeError(
+                            f"Tampa export timed out for {start_str} - {end_str}: {exc}"
+                        ) from exc
+                    except RuntimeError as exc:
+                        if attempt < max_attempts:
+                            logger.warning(
+                                "Tampa window capture attempt {}/{} failed for {} - {}; retrying once. error={}",
+                                attempt,
+                                max_attempts,
+                                start_str,
+                                end_str,
+                                exc,
+                            )
+                            page.close()
+                            continue
+                        raise
+                    finally:
+                        if not page.is_closed():
+                            page.close()
             finally:
                 context.close()
                 browser.close()

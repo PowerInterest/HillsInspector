@@ -24,6 +24,7 @@ def _query_properties_needing_market(
         LEFT JOIN property_market pm ON f.strap = pm.strap
         WHERE f.strap IS NOT NULL
           AND f.property_address IS NOT NULL
+          AND f.archived_at IS NULL
           AND (pm.strap IS NULL
                OR NOT (pm.redfin_json IS NOT NULL
                        AND pm.zillow_json IS NOT NULL
@@ -44,6 +45,7 @@ def _query_properties_needing_market(
 def run_market_data_update(
     dsn: str | None = None,
     limit: int | None = None,
+    use_windows_chrome: bool = False,
 ) -> dict[str, Any]:
     resolved_dsn = resolve_pg_dsn(dsn)
     properties = _query_properties_needing_market(dsn=resolved_dsn, limit=limit)
@@ -52,7 +54,7 @@ def run_market_data_update(
 
     logger.info(f"Market data worker: {len(properties)} foreclosures need market data")
 
-    service = MarketDataService(dsn=resolved_dsn)
+    service = MarketDataService(dsn=resolved_dsn, use_windows_chrome=use_windows_chrome)
     result = asyncio.run(service.run_batch(properties))
     if result.get("error"):
         return {
@@ -73,20 +75,26 @@ def run_market_data_update(
 def _payload_failed(payload: dict[str, Any]) -> bool:
     if payload.get("success") is False:
         return True
-    if payload.get("error") not in (None, ""):
+    if payload.get("error") not in {None, ""}:
         return True
 
     update = payload.get("update")
     if isinstance(update, dict):
         if update.get("success") is False:
             return True
-        if update.get("error") not in (None, ""):
+        if update.get("error") not in {None, ""}:
             return True
     return False
 
 
 def main() -> None:
-    result = run_market_data_update()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Standalone Market Data Worker")
+    parser.add_argument("--use-windows-chrome", action="store_true", help="Connect to Windows Chrome via CDP")
+    args = parser.parse_args()
+
+    result = run_market_data_update(use_windows_chrome=args.use_windows_chrome)
     logger.info(f"Market data worker complete: {result}")
     print(json.dumps(result, indent=2, default=str))
     if _payload_failed(result):

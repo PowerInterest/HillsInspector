@@ -33,9 +33,7 @@ class PgJudgmentService:
         if not needs_extract:
             return {"skipped": True, "reason": "all_judgments_extracted"}
 
-        logger.info(
-            f"Found {len(needs_extract)} PDFs needing judgment extraction"
-        )
+        logger.info(f"Found {len(needs_extract)} PDFs needing judgment extraction")
 
         # Step 2: Process each PDF with FinalJudgmentProcessor
         extracted = self._extract_judgments(needs_extract)
@@ -49,9 +47,7 @@ class PgJudgmentService:
             "judgments_loaded_to_pg": loaded,
         }
 
-    def _find_unextracted_pdfs(
-        self, limit: int | None
-    ) -> list[dict[str, Any]]:
+    def _find_unextracted_pdfs(self, limit: int | None) -> list[dict[str, Any]]:
         """Find PDFs on disk that don't have a corresponding _extracted.json."""
         if not FORECLOSURE_DATA_DIR.exists():
             return []
@@ -71,10 +67,7 @@ class PgJudgmentService:
                 continue
 
             # Check if JSON cache exists for any PDF
-            has_json = any(
-                (doc_dir / f"{pdf.stem}_extracted.json").exists()
-                for pdf in pdfs
-            )
+            has_json = any((doc_dir / f"{pdf.stem}_extracted.json").exists() for pdf in pdfs)
             if has_json:
                 continue
 
@@ -105,14 +98,9 @@ class PgJudgmentService:
                 )
                 if result:
                     extracted += 1
-                    logger.info(
-                        f"Extracted judgment for {case_number}: "
-                        f"plaintiff={result.get('plaintiff', '?')}"
-                    )
+                    logger.info(f"Extracted judgment for {case_number}: plaintiff={result.get('plaintiff', '?')}")
             except Exception as exc:
-                logger.error(
-                    f"Judgment extraction failed for {case_number}: {exc}"
-                )
+                logger.error(f"Judgment extraction failed for {case_number}: {exc}")
 
         return extracted
 
@@ -125,8 +113,9 @@ class PgJudgmentService:
             # Build lookup maps
             rows = conn.execute(
                 text(
-                    "SELECT foreclosure_id, case_number_raw, strap "
-                    "FROM foreclosures"
+                    "SELECT DISTINCT ON (case_number_raw) foreclosure_id, case_number_raw, strap "
+                    "FROM foreclosures WHERE archived_at IS NULL "
+                    "ORDER BY case_number_raw, auction_date DESC"
                 )
             ).fetchall()
             case_map: dict[str, int] = {r[1]: r[0] for r in rows}
@@ -139,9 +128,7 @@ class PgJudgmentService:
                 try:
                     jd = json.loads(json_path.read_text())
                 except (json.JSONDecodeError, OSError) as exc:
-                    logger.warning(
-                        f"Skipping invalid judgment JSON {json_path}: {exc}"
-                    )
+                    logger.warning(f"Skipping invalid judgment JSON {json_path}: {exc}")
                     continue
 
                 fid = case_map.get(case_number)

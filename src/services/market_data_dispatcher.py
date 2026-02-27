@@ -14,7 +14,7 @@ from typing import Any
 from loguru import logger
 
 
-def dispatch_market_data_worker(dsn: str, *, logs_dir: Path | None = None) -> dict[str, Any]:
+def dispatch_market_data_worker(dsn: str, *, logs_dir: Path | None = None, use_windows_chrome: bool = False) -> dict[str, Any]:
     target_logs_dir = logs_dir or Path("logs")
     target_logs_dir.mkdir(parents=True, exist_ok=True)
     pid_path = target_logs_dir / "market_data_worker.pid"
@@ -43,6 +43,9 @@ def dispatch_market_data_worker(dsn: str, *, logs_dir: Path | None = None) -> di
         timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d_%H%M%S")
         log_path = target_logs_dir / f"market_data_worker_{timestamp}.log"
         command = [sys.executable, "-m", "src.services.market_data_worker"]
+        if use_windows_chrome:
+            command.append("--use-windows-chrome")
+
         env = os.environ.copy()
         env["SUNBIZ_PG_DSN"] = dsn
 

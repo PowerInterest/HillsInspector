@@ -79,10 +79,10 @@
             <span class="valuation-label">Estimated Annual Tax</span>
             <span class="valuation-amount">{{ "${:,.2f}".format(cy.estimated_annual_tax) if cy.estimated_annual_tax is not none else "-" }}</span>
         </div>
-        {% if cy.property_use_code %}
+        {% if cy.property_use_code or parcel.land_use_desc %}
         <div class="valuation-item">
             <span class="valuation-label">DOR Use Code</span>
-            <span class="valuation-amount">{{ cy.property_use_code }}</span>
+            <span class="valuation-amount">{{ parcel.land_use_desc or cy.property_use_code }}</span>
         </div>
         {% endif %}
     </div>

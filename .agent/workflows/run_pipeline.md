@@ -16,24 +16,6 @@ This workflow describes how to run the end-to-end property analysis pipeline, wh
 
 1.  **Run the Pipeline Script**:
     ```bash
-    uv run python run_full_pipeline.py
+    uv run python controller.py
     ```
 
-2.  **View Extracted Judgment Data**:
-    To see the data extracted from Final Judgments:
-    ```bash
-    uv run python view_judgment_data.py
-    ```
-
-3.  **Batch Extract Judgments (Optional)**:
-    If you need to re-process PDFs or process new ones manually:
-    ```bash
-    uv run python scripts/batch_extract_judgments.py --force
-    ```
-
-## Output
-
--   **Console**: The script logs progress to the console.
--   **Database**:
-    -   `auctions` table: Updated with `extracted_judgment_data` and analysis status.
-    -   `liens` table: Populated with identified liens and their survival status.

@@ -2,11 +2,11 @@
 
 Guidance for coding agents working in this repository.
 
-## Core Rule
+## Ground Rules
 
-Treat `MASTERPLAN.md` as the startup source of truth.
-
-If this file and `MASTERPLAN.md` ever diverge, follow `MASTERPLAN.md` and fix this file.
+- **Source of Truth**: Treat `MASTERPLAN.md` as the startup source of truth. If this file diverges, follow `MASTERPLAN.md` and update this file.
+- **Tech Stack**: Use **uv** (package manager), **polars** (dataframes), **PostgreSQL** (runtime pipeline db), and **Alembic** (schema migrations).
+- **Hard Constraints**: Never apply raw `ALTER TABLE` manually. Do not reintroduce SQLite logic.
 
 ## Pipeline Success Criteria (Required)
 
@@ -22,65 +22,27 @@ Do not report success based only on step execution without validation.
 | Encumbrance coverage | >= 80% of active foreclosures with judgment data + strap |
 | Survival coverage | >= 80% of active foreclosures with judgment data + strap |
 
-Validation SQL:
+Validation SQL (Single Health Check):
 
 ```sql
--- Active denominator
-SELECT COUNT(*) AS active_foreclosures
-FROM foreclosures
-WHERE archived_at IS NULL;
-
--- Judgment extraction coverage
-SELECT
-  COUNT(*) FILTER (WHERE judgment_data IS NOT NULL) AS with_judgment_data,
-  COUNT(*) AS total_active,
-  ROUND(
-    100.0 * COUNT(*) FILTER (WHERE judgment_data IS NOT NULL) / NULLIF(COUNT(*), 0),
-    2
-  ) AS pct
-FROM foreclosures
-WHERE archived_at IS NULL;
-
--- Chain coverage
-WITH scope AS (
-  SELECT foreclosure_id
-  FROM foreclosures
-  WHERE archived_at IS NULL
-    AND judgment_data IS NOT NULL
+WITH active_scope AS (
+    SELECT foreclosure_id, strap, judgment_data FROM foreclosures WHERE archived_at IS NULL
+),
+metrics AS (
+    SELECT
+        (SELECT COUNT(*) FROM active_scope) as active_count,
+        (SELECT COUNT(*) FROM active_scope WHERE judgment_data IS NOT NULL) as judg_count,
+        (SELECT COUNT(DISTINCT c.foreclosure_id) FROM foreclosure_title_chain c JOIN active_scope s ON c.foreclosure_id = s.foreclosure_id WHERE s.judgment_data IS NOT NULL) as chain_count,
+        (SELECT COUNT(DISTINCT s.foreclosure_id) FROM active_scope s JOIN ori_encumbrances oe ON oe.strap = s.strap WHERE s.judgment_data IS NOT NULL AND oe.id IS NOT NULL) as enc_count,
+        (SELECT COUNT(DISTINCT s.foreclosure_id) FROM active_scope s JOIN ori_encumbrances oe ON oe.strap = s.strap WHERE s.judgment_data IS NOT NULL AND oe.survival_status IS NOT NULL) as surv_count
 )
 SELECT
-  COUNT(DISTINCT c.foreclosure_id) AS covered,
-  (SELECT COUNT(*) FROM scope) AS total
-FROM foreclosure_title_chain c
-JOIN scope s ON s.foreclosure_id = c.foreclosure_id;
-
--- Encumbrance coverage
-WITH scope AS (
-  SELECT DISTINCT foreclosure_id, strap
-  FROM foreclosures
-  WHERE archived_at IS NULL
-    AND judgment_data IS NOT NULL
-    AND strap IS NOT NULL
-)
-SELECT
-  COUNT(DISTINCT s.foreclosure_id) FILTER (WHERE oe.id IS NOT NULL) AS covered,
-  COUNT(DISTINCT s.foreclosure_id) AS total
-FROM scope s
-LEFT JOIN ori_encumbrances oe ON oe.strap = s.strap;
-
--- Survival coverage
-WITH scope AS (
-  SELECT DISTINCT foreclosure_id, strap
-  FROM foreclosures
-  WHERE archived_at IS NULL
-    AND judgment_data IS NOT NULL
-    AND strap IS NOT NULL
-)
-SELECT
-  COUNT(DISTINCT s.foreclosure_id) FILTER (WHERE oe.survival_status IS NOT NULL) AS covered,
-  COUNT(DISTINCT s.foreclosure_id) AS total
-FROM scope s
-LEFT JOIN ori_encumbrances oe ON oe.strap = s.strap;
+    active_count AS "Active Auctions",
+    ROUND(100.0 * judg_count / NULLIF(active_count, 0), 2) || '%' AS "Judgment Data (Target: >=90%)",
+    ROUND(100.0 * chain_count / NULLIF(judg_count, 0), 2) || '%' AS "Title Chain (Target: >=80%)",
+    ROUND(100.0 * enc_count / NULLIF(judg_count, 0), 2) || '%' AS "Encumbrances Scope (Target: >=80%)",
+    ROUND(100.0 * surv_count / NULLIF(judg_count, 0), 2) || '%' AS "Survival Analyzed (Target: >=80%)"
+FROM metrics;
 ```
 
 If any target is missed:
@@ -136,13 +98,7 @@ ls -1t logs/step_workers/*.log | head
 ls -1t logs/market_data_worker_*.log | head
 ```
 
-## Tech Constraints
 
-- Package manager: `uv` only.
-- DataFrames: `polars` only.
-- Runtime pipeline DB: PostgreSQL only.
-- Schema migrations: **Alembic** only. Never apply raw `ALTER TABLE` manually.
-- Do not reintroduce SQLite fallback logic into active pipeline/web paths.
 
 ## Pipeline Architecture (Current)
 
@@ -179,8 +135,4 @@ Before claiming web completion, verify these are true in code and UI:
 5. Tax tab lien rows are populated.
 6. Chain rows provide document links when files are available.
 
-## Invalid / Stale Workflow (Do Not Use)
 
-- Any legacy entrypoint besides `Controller.py`.
-- Any nonexistent controller flags.
-- Any instruction that assumes SQLite is the active pipeline backing store.

@@ -24,6 +24,18 @@
     </div>
     {% endif %}
 
+
+    <!-- CDD Warning Banner -->
+    {% if enrichments and enrichments.cdd_warning %}
+    <div class="alert alert-danger"
+        style="background: #f8ccce; border: 1px solid #f5c2c7; border-radius: 8px; padding: 15px 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+        <span style="font-size: 24px;">⛔</span>
+        <div>
+            <strong style="color: #842029;">CDD Assessment Warning</strong>
+            <p style="margin: 5px 0 0 0; color: #842029;">This property appears to be located in the <strong>{{ enrichments.cdd_warning.cdd_name }}</strong> Community Development District. CDDs carry annual assessment fees that act as super-priority liens and generally survive foreclosure.</p>
+        </div>
+    </div>
+    {% endif %}
     <!-- Header -->
     <div class="property-header">
         <div class="property-title">
@@ -90,36 +102,66 @@
         <div id="basic" class="tab-content active">
             <div class="property-detail-grid">
                 <div class="property-column">
-                    {% set photos_fb = (market.photos_with_fallback if market and market.photos_with_fallback else [])
-                    %}
+                    {% set photos_fb = (market.photos_with_fallback if market and market.photos_with_fallback else []) %}
                     {% set photos = (market.photos if market and market.photos else []) %}
+                    {% set photo_count = photos_fb|length if photos_fb else photos|length %}
                     <section class="card property-media">
-                        <h2>Photos</h2>
-                        {% if photos_fb %}
-                        <div class="media-hero">
-                            <img src="{{ photos_fb[0].url }}" loading="lazy" alt="Property photo" {% if
-                                photos_fb[0].cdn_fallback %}data-fallback="{{ photos_fb[0].cdn_fallback }}" {% endif %}
-                                onerror="if(this.dataset.fallback && !this.dataset.tried){this.dataset.tried='1';this.src=this.dataset.fallback}">
+                        <h2>Photos{% if photo_count %} <span style="font-weight:400;font-size:0.85em;color:#6b7280">({{ photo_count }} photo{{ 's' if photo_count != 1 }})</span>{% endif %}</h2>
+
+                        {% if photos_fb or photos %}
+                        {# -- Gallery Hero -- #}
+                        {% set first_photo = photos_fb[0] if photos_fb else (photos[0] if photos else none) %}
+                        <div class="gallery-hero{% if photo_count == 1 %} single-photo{% endif %}" id="galleryHero">
+                            <div class="gallery-hero-viewport">
+                                <img class="gallery-img gallery-img--active" id="heroSlotA"
+                                    src="{{ first_photo.url if first_photo is mapping else first_photo }}"
+                                    {% if first_photo is mapping and first_photo.cdn_fallback %}data-fallback="{{ first_photo.cdn_fallback }}"{% endif %}
+                                    alt="Property photo" onerror="galleryFallback(this)">
+                                <img class="gallery-img" id="heroSlotB" src="" alt="Property photo"
+                                    onerror="galleryFallback(this)">
+                            </div>
+                            <button class="gallery-arrow gallery-arrow--prev" onclick="gallery.prev()" aria-label="Previous photo">
+                                <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+                            </button>
+                            <button class="gallery-arrow gallery-arrow--next" onclick="gallery.next()" aria-label="Next photo">
+                                <svg viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"/></svg>
+                            </button>
+                            <span class="gallery-counter" id="galleryCounter"></span>
+                            <button class="gallery-hero-click" onclick="gallery.openLightbox()" aria-label="Open lightbox"></button>
                         </div>
-                        <div class="media-thumbs">
-                            {% for p in photos_fb[1:] %}
-                            <img src="{{ p.url }}" loading="lazy" alt="Property thumbnail" {% if p.cdn_fallback
-                                %}data-fallback="{{ p.cdn_fallback }}" {% endif %}
-                                onerror="if(this.dataset.fallback && !this.dataset.tried){this.dataset.tried='1';this.src=this.dataset.fallback}">
-                            {% endfor %}
+
+                        {# -- Thumbnail Strip -- #}
+                        {% if photo_count > 1 %}
+                        <div class="gallery-thumbs-wrap">
+                            <button class="gallery-thumb-scroll gallery-thumb-scroll--left" id="thumbScrollL"
+                                onclick="gallery.scrollThumbs(-1)" aria-label="Scroll thumbnails left">
+                                <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+                            </button>
+                            <div class="gallery-thumbs" id="galleryThumbs">
+                                {% for p in (photos_fb if photos_fb else photos) %}
+                                <button class="gallery-thumb{% if loop.index0 == 0 %} gallery-thumb--active{% endif %}"
+                                    data-index="{{ loop.index0 }}" onclick="gallery.goTo({{ loop.index0 }})">
+                                    <img src="{{ p.url if p is mapping else p }}" loading="lazy" alt="Thumbnail {{ loop.index }}"
+                                        onerror="galleryFallback(this)">
+                                </button>
+                                {% endfor %}
+                            </div>
+                            <button class="gallery-thumb-scroll gallery-thumb-scroll--right" id="thumbScrollR"
+                                onclick="gallery.scrollThumbs(1)" aria-label="Scroll thumbnails right">
+                                <svg viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"/></svg>
+                            </button>
                         </div>
-                        {% elif photos %}
-                        <div class="media-hero">
-                            <img src="{{ photos[0] }}" loading="lazy" alt="Property photo">
-                        </div>
-                        <div class="media-thumbs">
-                            {% for url in photos[1:] %}
-                            <img src="{{ url }}" loading="lazy" alt="Property thumbnail">
-                            {% endfor %}
-                        </div>
+                        {% endif %}
+
                         {% else %}
-                        <div class="card-image-placeholder">
-                            <span class="placeholder-text">No Photo</span>
+                        {# -- Empty State -- #}
+                        <div class="gallery-empty">
+                            <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="2" y="3" width="20" height="18" rx="2"/>
+                                <circle cx="8.5" cy="9.5" r="1.5"/>
+                                <path d="M21 15l-5-5L5 21"/>
+                            </svg>
+                            <span>No Photos Available</span>
                         </div>
                         {% endif %}
                     </section>
@@ -400,4 +442,226 @@
 </section>
 {% endif %}
 </div>
+
+{# ===== Lightbox ===== #}
+<div class="lightbox" id="lightbox">
+    <div class="lightbox-backdrop" onclick="gallery.closeLightbox()"></div>
+    <button class="lightbox-close" onclick="gallery.closeLightbox()" aria-label="Close lightbox">&times;</button>
+    <span class="lightbox-counter" id="lightboxCounter"></span>
+    <div class="lightbox-stage">
+        <button class="lightbox-arrow" onclick="gallery.prev()" aria-label="Previous photo">
+            <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <div class="lightbox-img-wrap">
+            <img class="lightbox-img lightbox-img--active" id="lbSlotA" src="" alt="Property photo">
+            <img class="lightbox-img" id="lbSlotB" src="" alt="Property photo">
+        </div>
+        <button class="lightbox-arrow" onclick="gallery.next()" aria-label="Next photo">
+            <svg viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"/></svg>
+        </button>
+    </div>
+    <div class="lightbox-thumbs" id="lightboxThumbs"></div>
+</div>
+
+<script>
+function galleryFallback(img) {
+    if (img.dataset.fallback && !img.dataset.tried) {
+        img.dataset.tried = '1';
+        img.src = img.dataset.fallback;
+    }
+}
+
+class PropertyGallery {
+    constructor(photos) {
+        this.photos = photos;
+        this.idx = 0;
+        this.useSlotA = true;
+        this.lbUseSlotA = true;
+        this.lbOpen = false;
+
+        // Hero refs
+        this.heroSlotA = document.getElementById('heroSlotA');
+        this.heroSlotB = document.getElementById('heroSlotB');
+        this.heroCounter = document.getElementById('galleryCounter');
+        this.thumbsEl = document.getElementById('galleryThumbs');
+        this.thumbScrollL = document.getElementById('thumbScrollL');
+        this.thumbScrollR = document.getElementById('thumbScrollR');
+
+        // Lightbox refs
+        this.lightbox = document.getElementById('lightbox');
+        this.lbSlotA = document.getElementById('lbSlotA');
+        this.lbSlotB = document.getElementById('lbSlotB');
+        this.lbCounter = document.getElementById('lightboxCounter');
+        this.lbThumbs = document.getElementById('lightboxThumbs');
+
+        if (!this.heroSlotA || photos.length === 0) return;
+
+        // Init first photo
+        this.heroSlotA.src = photos[0].url;
+        if (photos[0].fallback) this.heroSlotA.dataset.fallback = photos[0].fallback;
+        this.lbSlotA.src = photos[0].url;
+        if (photos[0].fallback) this.lbSlotA.dataset.fallback = photos[0].fallback;
+        this._updateCounters();
+
+        // Build lightbox thumbs
+        if (this.lbThumbs) {
+            this.lbThumbs.innerHTML = photos.map((p, i) =>
+                `<button class="lightbox-thumb${i === 0 ? ' lightbox-thumb--active' : ''}" data-index="${i}" onclick="gallery.goTo(${i})">` +
+                `<img src="${p.url}" alt="Thumb ${i+1}"${p.fallback ? ' data-fallback="'+p.fallback+'"' : ''} onerror="galleryFallback(this)">` +
+                `</button>`
+            ).join('');
+        }
+
+        // Thumb overflow detection
+        this._checkThumbOverflow();
+        if (this.thumbsEl) {
+            const ro = new ResizeObserver(() => this._checkThumbOverflow());
+            ro.observe(this.thumbsEl);
+            this.thumbsEl.addEventListener('scroll', () => this._checkThumbOverflow());
+        }
+
+        // Keyboard
+        document.addEventListener('keydown', (e) => this._onKey(e));
+
+        // Touch (hero)
+        const hero = document.getElementById('galleryHero');
+        if (hero) this._addTouch(hero);
+
+        // Touch (lightbox stage)
+        const stage = this.lightbox?.querySelector('.lightbox-stage');
+        if (stage) this._addTouch(stage);
+
+        // Preload adjacent
+        this._preloadAdjacent();
+    }
+
+    goTo(idx) {
+        if (idx < 0 || idx >= this.photos.length || idx === this.idx) return;
+        this.idx = idx;
+        const photo = this.photos[idx];
+
+        // Crossfade hero
+        this._crossfade(this.heroSlotA, this.heroSlotB, this.useSlotA, photo);
+        this.useSlotA = !this.useSlotA;
+
+        // Crossfade lightbox if open
+        if (this.lbOpen) {
+            this._crossfade(this.lbSlotA, this.lbSlotB, this.lbUseSlotA, photo);
+            this.lbUseSlotA = !this.lbUseSlotA;
+        }
+
+        this._updateCounters();
+        this._highlightThumb(this.thumbsEl, 'gallery-thumb--active', idx);
+        this._highlightThumb(this.lbThumbs, 'lightbox-thumb--active', idx);
+        this._scrollThumbIntoView(idx);
+        this._preloadAdjacent();
+    }
+
+    next() { this.goTo((this.idx + 1) % this.photos.length); }
+    prev() { this.goTo((this.idx - 1 + this.photos.length) % this.photos.length); }
+
+    openLightbox() {
+        if (!this.lightbox || this.photos.length === 0) return;
+        this.lbOpen = true;
+        // Sync lightbox to current image
+        const photo = this.photos[this.idx];
+        this.lbSlotA.src = photo.url;
+        if (photo.fallback) this.lbSlotA.dataset.fallback = photo.fallback;
+        this.lbSlotA.classList.add('lightbox-img--active');
+        this.lbSlotB.classList.remove('lightbox-img--active');
+        this.lbUseSlotA = true;
+        this._highlightThumb(this.lbThumbs, 'lightbox-thumb--active', this.idx);
+        this.lightbox.classList.add('open');
+        document.body.classList.add('lightbox-open');
+    }
+
+    closeLightbox() {
+        if (!this.lightbox) return;
+        this.lbOpen = false;
+        this.lightbox.classList.remove('open');
+        document.body.classList.remove('lightbox-open');
+    }
+
+    scrollThumbs(dir) {
+        if (!this.thumbsEl) return;
+        const w = this.thumbsEl.clientWidth * 0.7;
+        this.thumbsEl.scrollBy({ left: dir * w, behavior: 'smooth' });
+    }
+
+    _crossfade(slotA, slotB, useSlotANow, photo) {
+        const incoming = useSlotANow ? slotB : slotA;
+        const outgoing = useSlotANow ? slotA : slotB;
+        incoming.src = photo.url;
+        if (photo.fallback) {
+            incoming.dataset.fallback = photo.fallback;
+        } else {
+            delete incoming.dataset.fallback;
+        }
+        delete incoming.dataset.tried;
+        requestAnimationFrame(() => {
+            incoming.classList.add(incoming.classList.contains('gallery-img') ? 'gallery-img--active' : 'lightbox-img--active');
+            outgoing.classList.remove('gallery-img--active', 'lightbox-img--active');
+        });
+    }
+
+    _updateCounters() {
+        const label = `${this.idx + 1} / ${this.photos.length}`;
+        if (this.heroCounter) this.heroCounter.textContent = label;
+        if (this.lbCounter) this.lbCounter.textContent = label;
+    }
+
+    _highlightThumb(container, cls, idx) {
+        if (!container) return;
+        container.querySelectorAll('.' + cls).forEach(el => el.classList.remove(cls));
+        const thumb = container.querySelector(`[data-index="${idx}"]`);
+        if (thumb) thumb.classList.add(cls);
+    }
+
+    _scrollThumbIntoView(idx) {
+        [this.thumbsEl, this.lbThumbs].forEach(container => {
+            if (!container) return;
+            const thumb = container.querySelector(`[data-index="${idx}"]`);
+            if (thumb) thumb.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        });
+    }
+
+    _checkThumbOverflow() {
+        if (!this.thumbsEl || !this.thumbScrollL || !this.thumbScrollR) return;
+        const { scrollLeft, scrollWidth, clientWidth } = this.thumbsEl;
+        this.thumbScrollL.classList.toggle('visible', scrollLeft > 4);
+        this.thumbScrollR.classList.toggle('visible', scrollLeft + clientWidth < scrollWidth - 4);
+    }
+
+    _preloadAdjacent() {
+        [-1, 1].forEach(offset => {
+            const i = (this.idx + offset + this.photos.length) % this.photos.length;
+            if (i !== this.idx) new Image().src = this.photos[i].url;
+        });
+    }
+
+    _onKey(e) {
+        if (!this.lbOpen) return;
+        if (e.key === 'Escape') this.closeLightbox();
+        else if (e.key === 'ArrowLeft') this.prev();
+        else if (e.key === 'ArrowRight') this.next();
+    }
+
+    _addTouch(el) {
+        let startX = 0;
+        el.addEventListener('touchstart', (e) => { startX = e.changedTouches[0].clientX; }, { passive: true });
+        el.addEventListener('touchend', (e) => {
+            const dx = e.changedTouches[0].clientX - startX;
+            if (Math.abs(dx) > 40) dx > 0 ? this.prev() : this.next();
+        }, { passive: true });
+    }
+}
+
+// Build photo array from Jinja data and init gallery
+const _photos = [
+    {% for p in (photos_fb if photos_fb else photos) %}
+    { url: {{ (p.url if p is mapping else p)|tojson }}, fallback: {{ (p.cdn_fallback if p is mapping and p.cdn_fallback else none)|tojson }} },
+    {% endfor %}
+];
+const gallery = new PropertyGallery(_photos);
+</script>
 {% endblock %}

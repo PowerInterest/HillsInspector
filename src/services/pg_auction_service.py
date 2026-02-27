@@ -59,6 +59,7 @@ class PgAuctionService:
                     SELECT DISTINCT auction_date::date
                     FROM foreclosures
                     WHERE auction_date BETWEEN :start AND :end
+                      AND archived_at IS NULL
                 """),
                 {"start": start, "end": end},
             ).fetchall()

@@ -5,15 +5,15 @@ Idempotent — safe to re-run.  All DDL uses IF NOT EXISTS / OR REPLACE.
 
 Tables:
   - foreclosures          (one row per case+auction_date)
-  - foreclosures_history  (aged past-auction rows for history endpoints)
   - foreclosure_events    (docket timeline, child of foreclosures)
+
+Views:
+  - foreclosures_history  (archived rows from foreclosures, replaces former table)
+  - property_timeline     (UNION ALL across sales, case events, auctions, encumbrances)
 
 Functions:
   - normalize_case_number_fn(text) → text   (IMMUTABLE, for JOINs)
   - normalize_foreclosure()                 (trigger fn)
-
-View:
-  - property_timeline     (UNION ALL across sales, case events, auctions, encumbrances)
 """
 
 from __future__ import annotations
@@ -154,16 +154,94 @@ DDL: list[str] = [
     );
     """,
     # ------------------------------------------------------------------
-    # 3. History table (aged rows copied from foreclosures)
+    # 3. History view (archived rows from foreclosures — replaces former table)
     # ------------------------------------------------------------------
     """
-    CREATE TABLE IF NOT EXISTS foreclosures_history (
-        LIKE foreclosures INCLUDING DEFAULTS INCLUDING CONSTRAINTS
-    );
+    DO $$
+    BEGIN
+        -- If foreclosures_history still exists as a physical TABLE (pre-Alembic),
+        -- merge orphan rows back into foreclosures before dropping it.
+        -- This mirrors the logic in alembic/versions/001_viewify_foreclosures_history.py.
+        IF EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = 'foreclosures_history'
+              AND table_type = 'BASE TABLE'
+        ) THEN
+            -- Sync orphan history rows into foreclosures (COALESCE-merge on conflict)
+            INSERT INTO foreclosures (
+                case_number_raw, auction_date, auction_type,
+                listing_id, case_number_norm, auction_status,
+                folio, strap, property_address, latitude, longitude,
+                winning_bid, final_judgment_amount, appraised_value,
+                sold_to, buyer_type,
+                owner_name, land_use, year_built, beds, baths,
+                heated_area, market_value, assessed_value,
+                clerk_case_type, clerk_case_status, filing_date, judgment_date,
+                is_foreclosure,
+                judgment_data, pdf_path,
+                first_valid_resale_date, first_valid_resale_price,
+                hold_days, resale_profit, roi,
+                homestead_exempt, estimated_annual_tax,
+                zestimate, list_price, listing_status,
+                has_ucc_liens, ucc_active_count,
+                encumbrance_count, unsatisfied_encumbrance_count,
+                step_pdf_downloaded, step_judgment_extracted,
+                step_ori_searched, step_survival_analyzed,
+                created_at, updated_at, archived_at
+            )
+            SELECT
+                fh.case_number_raw, fh.auction_date, fh.auction_type,
+                fh.listing_id, fh.case_number_norm, fh.auction_status,
+                fh.folio, fh.strap, fh.property_address, fh.latitude, fh.longitude,
+                fh.winning_bid, fh.final_judgment_amount, fh.appraised_value,
+                fh.sold_to, fh.buyer_type,
+                fh.owner_name, fh.land_use, fh.year_built, fh.beds, fh.baths,
+                fh.heated_area, fh.market_value, fh.assessed_value,
+                fh.clerk_case_type, fh.clerk_case_status, fh.filing_date, fh.judgment_date,
+                fh.is_foreclosure,
+                fh.judgment_data, fh.pdf_path,
+                fh.first_valid_resale_date, fh.first_valid_resale_price,
+                fh.hold_days, fh.resale_profit, fh.roi,
+                fh.homestead_exempt, fh.estimated_annual_tax,
+                fh.zestimate, fh.list_price, fh.listing_status,
+                fh.has_ucc_liens, fh.ucc_active_count,
+                fh.encumbrance_count, fh.unsatisfied_encumbrance_count,
+                fh.step_pdf_downloaded, fh.step_judgment_extracted,
+                fh.step_ori_searched, fh.step_survival_analyzed,
+                fh.created_at, fh.updated_at,
+                COALESCE(fh.archived_at, fh.moved_to_history_at)
+            FROM foreclosures_history fh
+            ON CONFLICT (case_number_raw, auction_date) DO UPDATE SET
+                judgment_data       = COALESCE(foreclosures.judgment_data,       EXCLUDED.judgment_data),
+                strap               = COALESCE(foreclosures.strap,               EXCLUDED.strap),
+                folio               = COALESCE(foreclosures.folio,               EXCLUDED.folio),
+                property_address    = COALESCE(foreclosures.property_address,    EXCLUDED.property_address),
+                latitude            = COALESCE(foreclosures.latitude,            EXCLUDED.latitude),
+                longitude           = COALESCE(foreclosures.longitude,           EXCLUDED.longitude),
+                winning_bid         = COALESCE(foreclosures.winning_bid,         EXCLUDED.winning_bid),
+                final_judgment_amount = COALESCE(foreclosures.final_judgment_amount, EXCLUDED.final_judgment_amount),
+                appraised_value     = COALESCE(foreclosures.appraised_value,     EXCLUDED.appraised_value),
+                sold_to             = COALESCE(foreclosures.sold_to,             EXCLUDED.sold_to),
+                buyer_type          = COALESCE(foreclosures.buyer_type,          EXCLUDED.buyer_type),
+                owner_name          = COALESCE(foreclosures.owner_name,          EXCLUDED.owner_name),
+                pdf_path            = COALESCE(foreclosures.pdf_path,            EXCLUDED.pdf_path),
+                step_pdf_downloaded     = COALESCE(foreclosures.step_pdf_downloaded,     EXCLUDED.step_pdf_downloaded),
+                step_judgment_extracted  = COALESCE(foreclosures.step_judgment_extracted,  EXCLUDED.step_judgment_extracted),
+                step_ori_searched       = COALESCE(foreclosures.step_ori_searched,       EXCLUDED.step_ori_searched),
+                step_survival_analyzed  = COALESCE(foreclosures.step_survival_analyzed,  EXCLUDED.step_survival_analyzed),
+                archived_at         = COALESCE(foreclosures.archived_at,         EXCLUDED.archived_at);
+
+            DROP TABLE foreclosures_history CASCADE;
+        END IF;
+    END
+    $$;
     """,
     """
-    ALTER TABLE foreclosures_history
-    ADD COLUMN IF NOT EXISTS moved_to_history_at TIMESTAMPTZ NOT NULL DEFAULT now();
+    CREATE OR REPLACE VIEW foreclosures_history AS
+    SELECT *, archived_at AS moved_to_history_at
+    FROM foreclosures
+    WHERE archived_at IS NOT NULL;
     """,
     # ------------------------------------------------------------------
     # 4. Child table (docket timeline)
@@ -236,11 +314,6 @@ DDL: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_fc_folio         ON foreclosures(folio);",
     "CREATE INDEX IF NOT EXISTS idx_fc_case_norm     ON foreclosures(case_number_norm);",
     "CREATE INDEX IF NOT EXISTS idx_fc_case_raw      ON foreclosures(case_number_raw);",
-    "CREATE INDEX IF NOT EXISTS idx_fch_auction_date ON foreclosures_history(auction_date);",
-    "CREATE INDEX IF NOT EXISTS idx_fch_case_raw     ON foreclosures_history(case_number_raw);",
-    "CREATE INDEX IF NOT EXISTS idx_fch_strap        ON foreclosures_history(strap);",
-    "CREATE INDEX IF NOT EXISTS idx_fch_folio        ON foreclosures_history(folio);",
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_fch_case_date_unique ON foreclosures_history(case_number_raw, auction_date);",
     "CREATE INDEX IF NOT EXISTS idx_fe_foreclosure   ON foreclosure_events(foreclosure_id);",
     "CREATE INDEX IF NOT EXISTS idx_fe_date          ON foreclosure_events(event_date);",
     # ------------------------------------------------------------------

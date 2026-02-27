@@ -1,12 +1,11 @@
 """
-Idempotent refresh: INSERT ... ON CONFLICT DO UPDATE into foreclosures.
+Idempotent refresh: enrich foreclosures rows from bulk reference data.
 
 Sources:
-  - foreclosures_history   (seed rows)
   - hcpa_bulk_parcels      (property enrichment)
   - hcpa_latlon            (coordinates)
   - clerk_civil_cases      (case metadata)
-  - clerk_civil_events     (docket timeline → foreclosure_events)
+  - clerk_civil_events     (docket timeline -> foreclosure_events)
   - dor_nal_parcels        (tax / homestead)
   - property_market        (Zillow / listing)
   - hcpa_allsales          (resale analytics)
@@ -35,60 +34,35 @@ from sunbiz.db import get_engine, resolve_pg_dsn
 FORECLOSURE_DATA_DIR = Path("data/Foreclosure")
 
 # ---------------------------------------------------------------------------
-# Step 1 — Seed / update from foreclosures_history + enrichment joins
+# Step 1 — Enrich foreclosure rows in place from bulk reference data
 # ---------------------------------------------------------------------------
 
-UPSERT_SQL = """
-INSERT INTO foreclosures (
-    listing_id, case_number_raw, auction_date, auction_status,
-    folio, strap, property_address, latitude, longitude,
-    winning_bid, final_judgment_amount, appraised_value, sold_to, buyer_type,
-    owner_name, land_use, year_built, beds, baths, heated_area,
-    market_value, assessed_value,
-    clerk_case_type, clerk_case_status, filing_date, judgment_date, is_foreclosure,
-    homestead_exempt, estimated_annual_tax,
-    zestimate, list_price, listing_status
-)
-SELECT
-    hs.listing_id::TEXT,
-    hs.case_number_raw,
-    hs.auction_date,
-    hs.auction_status,
-    COALESCE(hs.folio, bp.folio),
-    COALESCE(hs.strap, bp.strap),
-    COALESCE(bp.property_address, hs.property_address),
-    COALESCE(hs.latitude, bp.latitude, ll.latitude),
-    COALESCE(hs.longitude, bp.longitude, ll.longitude),
-    hs.winning_bid,
-    hs.final_judgment_amount,
-    hs.appraised_value,
-    hs.sold_to,
-    hs.buyer_type,
-    bp.owner_name,
-    bp.land_use_desc,
-    COALESCE(bp.year_built, hs.year_built),
-    COALESCE(bp.beds, hs.beds),
-    COALESCE(bp.baths, hs.baths),
-    bp.heated_area,
-    bp.market_value,
-    bp.assessed_value,
-    cc.case_type,
-    cc.case_status,
-    cc.filing_date,
-    cc.judgment_date,
-    cc.is_foreclosure,
-    dn.homestead_exempt,
-    dn.estimated_annual_tax,
-    pm.zestimate,
-    pm.list_price,
-    pm.listing_status
-FROM (
-    SELECT DISTINCT ON (case_number_raw, auction_date) *
-    FROM foreclosures_history
-    WHERE case_number_raw IS NOT NULL
-      AND auction_date IS NOT NULL
-    ORDER BY case_number_raw, auction_date, updated_at DESC NULLS LAST, foreclosure_id DESC
-) hs
+ENRICH_BASE_SQL = """
+UPDATE foreclosures f SET
+    folio                 = COALESCE(f.folio, bp.folio),
+    strap                 = COALESCE(f.strap, bp.strap),
+    property_address      = COALESCE(bp.property_address, f.property_address),
+    latitude              = COALESCE(f.latitude, bp.latitude, ll.latitude),
+    longitude             = COALESCE(f.longitude, bp.longitude, ll.longitude),
+    owner_name            = COALESCE(bp.owner_name, f.owner_name),
+    land_use              = COALESCE(bp.land_use_desc, f.land_use),
+    year_built            = COALESCE(bp.year_built, f.year_built),
+    beds                  = COALESCE(bp.beds, f.beds),
+    baths                 = COALESCE(bp.baths, f.baths),
+    heated_area           = COALESCE(bp.heated_area, f.heated_area),
+    market_value          = COALESCE(bp.market_value, f.market_value),
+    assessed_value        = COALESCE(bp.assessed_value, f.assessed_value),
+    clerk_case_type       = COALESCE(cc.case_type, f.clerk_case_type),
+    clerk_case_status     = COALESCE(cc.case_status, f.clerk_case_status),
+    filing_date           = COALESCE(cc.filing_date, f.filing_date),
+    judgment_date         = COALESCE(cc.judgment_date, f.judgment_date),
+    is_foreclosure        = COALESCE(cc.is_foreclosure, f.is_foreclosure),
+    homestead_exempt      = COALESCE(dn.homestead_exempt, f.homestead_exempt),
+    estimated_annual_tax  = COALESCE(dn.estimated_annual_tax, f.estimated_annual_tax),
+    zestimate             = COALESCE(pm.zestimate, f.zestimate),
+    list_price            = COALESCE(pm.list_price, f.list_price),
+    listing_status        = COALESCE(pm.listing_status, f.listing_status)
+FROM foreclosures f2
 -- Property enrichment (latest bulk parcel row per strap)
 LEFT JOIN LATERAL (
     SELECT bp2.folio, bp2.strap, bp2.property_address, bp2.owner_name,
@@ -96,59 +70,28 @@ LEFT JOIN LATERAL (
            bp2.heated_area, bp2.market_value, bp2.assessed_value,
            bp2.latitude, bp2.longitude
     FROM hcpa_bulk_parcels bp2
-    WHERE (hs.strap IS NOT NULL AND bp2.strap = hs.strap)
-       OR (hs.strap IS NULL AND hs.folio IS NOT NULL AND bp2.folio = hs.folio)
+    WHERE (f2.strap IS NOT NULL AND bp2.strap = f2.strap)
+       OR (f2.strap IS NULL AND f2.folio IS NOT NULL AND bp2.folio = f2.folio)
     ORDER BY bp2.source_file_id DESC
     LIMIT 1
 ) bp ON TRUE
 -- Coordinates fallback
-LEFT JOIN hcpa_latlon ll ON COALESCE(hs.folio, bp.folio) = ll.folio
+LEFT JOIN hcpa_latlon ll ON COALESCE(f2.folio, bp.folio) = ll.folio
 -- Clerk case metadata (join on normalized case number)
 LEFT JOIN clerk_civil_cases cc
-    ON normalize_case_number_fn(hs.case_number_raw) = cc.case_number
+    ON normalize_case_number_fn(f2.case_number_raw) = cc.case_number
 -- Tax data (latest tax year per strap)
 LEFT JOIN LATERAL (
     SELECT dn2.homestead_exempt, dn2.estimated_annual_tax
     FROM dor_nal_parcels dn2
-    WHERE dn2.strap = COALESCE(hs.strap, bp.strap)
+    WHERE dn2.strap = COALESCE(f2.strap, bp.strap)
     ORDER BY dn2.tax_year DESC
     LIMIT 1
-) dn ON COALESCE(hs.strap, bp.strap) IS NOT NULL
+) dn ON COALESCE(f2.strap, bp.strap) IS NOT NULL
 -- Market snapshot
 LEFT JOIN property_market pm
-    ON COALESCE(hs.strap, bp.strap) = pm.strap
-
-ON CONFLICT (case_number_raw, auction_date) DO UPDATE SET
-    auction_status        = EXCLUDED.auction_status,
-    listing_id            = COALESCE(EXCLUDED.listing_id, foreclosures.listing_id),
-    folio                 = COALESCE(EXCLUDED.folio, foreclosures.folio),
-    strap                 = COALESCE(EXCLUDED.strap, foreclosures.strap),
-    property_address      = COALESCE(EXCLUDED.property_address, foreclosures.property_address),
-    latitude              = COALESCE(EXCLUDED.latitude, foreclosures.latitude),
-    longitude             = COALESCE(EXCLUDED.longitude, foreclosures.longitude),
-    winning_bid           = COALESCE(EXCLUDED.winning_bid, foreclosures.winning_bid),
-    final_judgment_amount = COALESCE(EXCLUDED.final_judgment_amount, foreclosures.final_judgment_amount),
-    appraised_value       = COALESCE(EXCLUDED.appraised_value, foreclosures.appraised_value),
-    sold_to               = COALESCE(EXCLUDED.sold_to, foreclosures.sold_to),
-    buyer_type            = COALESCE(EXCLUDED.buyer_type, foreclosures.buyer_type),
-    owner_name            = COALESCE(EXCLUDED.owner_name, foreclosures.owner_name),
-    land_use              = COALESCE(EXCLUDED.land_use, foreclosures.land_use),
-    year_built            = COALESCE(EXCLUDED.year_built, foreclosures.year_built),
-    beds                  = COALESCE(EXCLUDED.beds, foreclosures.beds),
-    baths                 = COALESCE(EXCLUDED.baths, foreclosures.baths),
-    heated_area           = COALESCE(EXCLUDED.heated_area, foreclosures.heated_area),
-    market_value          = EXCLUDED.market_value,
-    assessed_value        = EXCLUDED.assessed_value,
-    clerk_case_type       = COALESCE(EXCLUDED.clerk_case_type, foreclosures.clerk_case_type),
-    clerk_case_status     = COALESCE(EXCLUDED.clerk_case_status, foreclosures.clerk_case_status),
-    filing_date           = COALESCE(EXCLUDED.filing_date, foreclosures.filing_date),
-    judgment_date         = COALESCE(EXCLUDED.judgment_date, foreclosures.judgment_date),
-    is_foreclosure        = COALESCE(EXCLUDED.is_foreclosure, foreclosures.is_foreclosure),
-    homestead_exempt      = EXCLUDED.homestead_exempt,
-    estimated_annual_tax  = EXCLUDED.estimated_annual_tax,
-    zestimate             = EXCLUDED.zestimate,
-    list_price            = EXCLUDED.list_price,
-    listing_status        = EXCLUDED.listing_status;
+    ON COALESCE(f2.strap, bp.strap) = pm.strap
+WHERE f.foreclosure_id = f2.foreclosure_id;
 """
 
 # ---------------------------------------------------------------------------
@@ -347,40 +290,6 @@ WHERE auction_date < CURRENT_DATE
 """
 
 # ---------------------------------------------------------------------------
-# Step 5.5 — Age-out sync into foreclosures_history
-# ---------------------------------------------------------------------------
-
-ENSURE_HISTORY_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS foreclosures_history (
-    LIKE foreclosures INCLUDING DEFAULTS INCLUDING CONSTRAINTS
-);
-"""
-
-ENSURE_HISTORY_COLUMN_SQL = """
-ALTER TABLE foreclosures_history
-ADD COLUMN IF NOT EXISTS moved_to_history_at TIMESTAMPTZ NOT NULL DEFAULT now();
-"""
-
-ENSURE_HISTORY_INDEX_SQL = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_fch_case_date_unique
-ON foreclosures_history(case_number_raw, auction_date);
-"""
-
-HISTORY_SYNC_SQL = """
-INSERT INTO foreclosures_history
-SELECT f.*, now() AS moved_to_history_at
-FROM foreclosures f
-WHERE f.auction_date < CURRENT_DATE
-ON CONFLICT (case_number_raw, auction_date) DO UPDATE
-SET
-    auction_status = EXCLUDED.auction_status,
-    archived_at = COALESCE(EXCLUDED.archived_at, foreclosures_history.archived_at),
-    updated_at = EXCLUDED.updated_at,
-    moved_to_history_at = now();
-"""
-
-
-# ---------------------------------------------------------------------------
 # Step 6 — Load judgment extractions from disk JSON files
 # ---------------------------------------------------------------------------
 
@@ -394,9 +303,14 @@ def _load_judgment_data(conn: object) -> int:
     if not FORECLOSURE_DATA_DIR.exists():
         return 0
 
-    # Build lookup maps
+    # Build lookup maps — prefer active rows; within active, prefer newest auction_date
     rows = conn.execute(  # type: ignore[union-attr]
-        text("SELECT foreclosure_id, case_number_raw, strap FROM foreclosures")
+        text(
+            "SELECT DISTINCT ON (case_number_raw)"
+            "  foreclosure_id, case_number_raw, strap"
+            " FROM foreclosures"
+            " ORDER BY case_number_raw, archived_at NULLS FIRST, auction_date DESC"
+        )
     ).fetchall()
     case_map: dict[str, int] = {r[1]: r[0] for r in rows}
     strap_map: dict[str, int] = {r[2]: r[0] for r in rows if r[2]}
@@ -459,6 +373,48 @@ def _load_judgment_data(conn: object) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Step 7 — Copy enrichment data from archived rows to rescheduled auctions
+# ---------------------------------------------------------------------------
+
+RESCHEDULED_REUSE_SQL = """
+UPDATE foreclosures new_f SET
+    strap = COALESCE(new_f.strap, donor.strap),
+    folio = COALESCE(new_f.folio, donor.folio),
+    property_address = COALESCE(new_f.property_address, donor.property_address),
+    judgment_data = COALESCE(new_f.judgment_data, donor.judgment_data),
+    step_judgment_extracted = COALESCE(new_f.step_judgment_extracted, donor.step_judgment_extracted),
+    step_ori_searched = CASE
+        WHEN COALESCE(new_f.strap, donor.strap) = donor.strap
+         AND EXISTS (SELECT 1 FROM ori_encumbrances WHERE strap = donor.strap)
+        THEN COALESCE(new_f.step_ori_searched, donor.step_ori_searched)
+        ELSE new_f.step_ori_searched
+    END,
+    step_survival_analyzed = CASE
+        WHEN COALESCE(new_f.strap, donor.strap) = donor.strap
+         AND NOT EXISTS (SELECT 1 FROM ori_encumbrances WHERE strap = donor.strap AND survival_status IS NULL)
+        THEN COALESCE(new_f.step_survival_analyzed, donor.step_survival_analyzed)
+        ELSE new_f.step_survival_analyzed
+    END
+FROM (
+    SELECT DISTINCT ON (case_number_raw)
+        foreclosure_id, case_number_raw, strap, folio, property_address,
+        judgment_data, step_judgment_extracted,
+        step_ori_searched, step_survival_analyzed
+    FROM foreclosures
+    WHERE archived_at IS NOT NULL
+    ORDER BY case_number_raw, archived_at DESC NULLS LAST
+) donor
+WHERE new_f.case_number_raw = donor.case_number_raw
+  AND new_f.archived_at IS NULL
+  AND new_f.foreclosure_id > donor.foreclosure_id
+  AND (new_f.judgment_data IS NULL
+       OR new_f.strap IS NULL
+       OR new_f.folio IS NULL
+       OR new_f.property_address IS NULL);
+"""
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -493,7 +449,11 @@ def _log_unresolved_coord_sample(conn: object, *, limit: int = 10) -> None:
     ).fetchall()
     if not rows:
         return
-    logger.warning(f"Unresolved coordinate sample (up to {limit}):")
+    logger.warning(
+        f"Missing Map Coordinates ({len(rows)} upcoming properties):\\n"
+        f"These properties do not have lat/lon coordinates yet because their addresses "
+        f"could not be definitively mapped by the bulk data load."
+    )
     for r in rows:
         d = dict(r._mapping)  # noqa: SLF001
         logger.warning(
@@ -513,10 +473,10 @@ def refresh(dsn: str | None = None) -> dict[str, int]:
 
     t0 = time.monotonic()
     with engine.begin() as conn:
-        # Step 1: Seed / update from foreclosures_history
-        r = conn.execute(text(UPSERT_SQL))
-        counts["upserted"] = r.rowcount
-        logger.info(f"Step 1: upserted {r.rowcount} foreclosures")
+        # Step 1: Enrich foreclosure rows from bulk reference data
+        r = conn.execute(text(ENRICH_BASE_SQL))
+        counts["enriched"] = r.rowcount
+        logger.info(f"Step 1: enriched {r.rowcount} foreclosures from bulk data")
 
         # Step 1.5: Resolve strap/folio from address
         r = conn.execute(text(RESOLVE_STRAP_SQL))
@@ -570,18 +530,16 @@ def refresh(dsn: str | None = None) -> dict[str, int]:
         counts["archived"] = r.rowcount
         logger.info(f"Step 5: archived {r.rowcount} past auctions")
 
-        # Step 5.5: Sync archived rows into history table
-        conn.execute(text(ENSURE_HISTORY_TABLE_SQL))
-        conn.execute(text(ENSURE_HISTORY_COLUMN_SQL))
-        conn.execute(text(ENSURE_HISTORY_INDEX_SQL))
-        r = conn.execute(text(HISTORY_SYNC_SQL))
-        counts["history_synced"] = r.rowcount
-        logger.info(f"Step 5.5: synced {r.rowcount} rows into foreclosures_history")
-
         # Step 6: Judgment data from disk
         n = _load_judgment_data(conn)
         counts["judgments"] = n
         logger.info(f"Step 6: loaded {n} judgment extractions from disk")
+
+        # Step 7: Reuse enrichment data for rescheduled auctions
+        r = conn.execute(text(RESCHEDULED_REUSE_SQL))
+        counts["rescheduled_reused"] = r.rowcount
+        logger.info(f"Step 7: copied enrichment data to {r.rowcount} rescheduled auction rows")
+
         upcoming = (
             conn.execute(
                 text(
@@ -597,7 +555,7 @@ def refresh(dsn: str | None = None) -> dict[str, int]:
         )
         counts["upcoming_auctions"] = int(upcoming)
         logger.info(
-            "Step 7: {} upcoming auctions currently present in foreclosures",
+            "Summary: {} upcoming auctions currently present in foreclosures",
             upcoming,
         )
 

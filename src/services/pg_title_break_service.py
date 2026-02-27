@@ -354,7 +354,7 @@ class PgTitleBreakService:
                         "strap": row.strap,
                         "event_date": self._parse_pav_record_date(parsed["record_date"]) or (row.sale_date or date(1970, 1, 1)),
                         "event_source": "ORI_DEED_BACKFILL",
-                        "event_subtype": normalize_document_type(parsed["doc_type"]) or None,
+                        "event_subtype": normalize_document_type(parsed["doc_type"] or "") or None,
                         "instrument_number": doc_num,
                         "grantor": parsed["from_text"],
                         "grantee": parsed["to_text"],

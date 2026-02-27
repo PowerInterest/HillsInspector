@@ -19,6 +19,7 @@ from sqlalchemy import text
 
 from src.services.CountyPermit import CountyPermitService
 from src.services.TampaPermit import TampaPermitService
+from src.services.pg_permit_single_pin_service import PgPermitSinglePinService
 from src.services.pg_clerk_bulk_service import PgClerkBulkService
 from src.services.pg_flr_service import PgFlrService
 from src.services.pg_foreclosure_service import PgForeclosureService
@@ -48,6 +49,7 @@ class ControllerSettings:
     skip_sunbiz_entity: bool = False
     skip_county_permits: bool = False
     skip_tampa_permits: bool = False
+    skip_single_pin_permits: bool = False
     skip_foreclosure_refresh: bool = False
     skip_final_refresh: bool = False
     skip_trust_accounts: bool = False
@@ -61,6 +63,8 @@ class ControllerSettings:
     skip_ori_search: bool = False
     skip_mortgage_extract: bool = False
     skip_survival: bool = False
+    # Market Data specific
+    use_windows_chrome: bool = False
     # Staleness windows
     hcpa_stale_days: int = 7
     clerk_stale_days: int = 7
@@ -84,10 +88,14 @@ class ControllerSettings:
     tampa_end_date: dt.date | None = None
     tampa_keep_csv: bool = False
     tampa_enrich_limit: int = 250
+    # Single-pin permit fallback options
+    single_pin_permit_limit: int = 25
+    single_pin_permit_max_permits: int = 0
+    single_pin_permit_timeout_seconds: int = 45
     # Title-chain scope
     foreclosure_id: int | None = None
     case_number: str | None = None
-    active_only: bool = False
+    active_only: bool = True
     limit: int | None = None
     similarity_threshold: float = 0.68
     # Phase B limits
@@ -135,6 +143,11 @@ class PgPipelineController:
                 self._run_county_permits,
             ),
             ("tampa_permits", self.settings.skip_tampa_permits, self._run_tampa_permits),
+            (
+                "single_pin_permits",
+                self.settings.skip_single_pin_permits,
+                self._run_single_pin_permits,
+            ),
             (
                 "foreclosure_refresh",
                 self.settings.skip_foreclosure_refresh,
@@ -422,16 +435,31 @@ class PgPipelineController:
         ):
             return {"skipped": True, "reason": "fresh", "state": state}
 
+        # Incremental: only fetch ArcGIS records newer than what we already have.
+        where = self.settings.county_where or "1=1"
+        max_oid = self._get_county_max_object_id()
+        if max_oid is not None and not self.settings.force_all:
+            where = f"({where}) AND OBJECTID > {max_oid}"
+            logger.info(
+                "County permits: last OBJECTID in DB is {}, fetching only new records (existing {} rows)",
+                max_oid,
+                state["row_count"],
+            )
+        else:
+            logger.info(
+                "County permits: no existing data or force mode, full ArcGIS layer pull"
+            )
+
         svc = CountyPermitService(
             page_size=self.settings.county_page_size,
             pg_dsn=self.dsn,
         )
         stats = svc.sync_postgres(
-            where=self.settings.county_where,
+            where=where,
             clear_existing=False,
             page_size=self.settings.county_page_size,
         )
-        return {"state_before": state, "update": stats}
+        return {"state_before": state, "max_oid_before": max_oid, "update": stats}
 
     def _run_tampa_permits(self) -> dict[str, Any]:
         state = self._get_table_state("tampa_accela_records", "source_ingested_at")
@@ -472,6 +500,71 @@ class PgPipelineController:
             "window": {"start_date": start_date, "end_date": end_date},
             "sync": sync_stats,
             "enrich": enrich_stats,
+        }
+
+    def _run_single_pin_permits(self) -> dict[str, Any]:
+        if self.settings.single_pin_permit_limit <= 0:
+            return {"skipped": True, "reason": "disabled_limit"}
+
+        missing_tables = self._missing_tables(
+            [
+                "foreclosures",
+                "hcpa_bulk_parcels",
+                "county_permits",
+                "tampa_accela_records",
+            ]
+        )
+        if missing_tables:
+            raise RuntimeError(
+                "single_pin_permits requires missing table(s): "
+                + ", ".join(sorted(missing_tables))
+            )
+
+        candidates = self._select_single_pin_permit_candidates(
+            limit=self.settings.single_pin_permit_limit
+        )
+        if not candidates:
+            return {"skipped": True, "reason": "no_gaps_detected"}
+
+        pins = [
+            str(row.get("pin")).strip()
+            for row in candidates
+            if row.get("pin") is not None and str(row.get("pin")).strip()
+        ]
+        pins = list(dict.fromkeys(pins))
+        if not pins:
+            return {"skipped": True, "reason": "no_valid_pins"}
+
+        max_permits = (
+            self.settings.single_pin_permit_max_permits
+            if self.settings.single_pin_permit_max_permits > 0
+            else None
+        )
+        svc = PgPermitSinglePinService(
+            dsn=self.dsn,
+            timeout_seconds=max(5, self.settings.single_pin_permit_timeout_seconds),
+            include_accela=True,
+            include_arcgis=True,
+        )
+        sync_stats = svc.sync_pins_to_postgres(
+            pins,
+            max_permits_per_pin=max_permits,
+            fail_on_pin_error=True,
+        )
+
+        permits_observed = int(sync_stats.get("permits_observed_total") or 0)
+        total_writes = int(sync_stats.get("total_writes") or 0)
+        if permits_observed > 0 and total_writes == 0:
+            raise RuntimeError(
+                "single_pin_permits observed permit rows but wrote nothing to permit tables; "
+                "failing to avoid silent no-op."
+            )
+
+        return {
+            "candidate_count": len(candidates),
+            "pins_targeted": len(pins),
+            "candidate_sample": candidates[:10],
+            "update": sync_stats,
         }
 
     def _run_foreclosure_refresh(self) -> dict[str, Any]:
@@ -516,10 +609,12 @@ class PgPipelineController:
     def _run_market_data(self) -> dict[str, Any]:
         if self.settings.background_market_data:
             from src.services.market_data_dispatcher import dispatch_market_data_worker
-            return dispatch_market_data_worker(dsn=self.dsn)
+
+            return dispatch_market_data_worker(dsn=self.dsn, use_windows_chrome=self.settings.use_windows_chrome)
 
         from src.services.market_data_worker import run_market_data_update
-        return run_market_data_update(dsn=self.dsn)
+
+        return run_market_data_update(dsn=self.dsn, use_windows_chrome=self.settings.use_windows_chrome)
 
     def _should_dispatch_bulk_step(self, name: str) -> bool:
         return self.settings.background_bulk_steps and name in self.BACKGROUND_BULK_STEPS
@@ -687,6 +782,136 @@ class PgPipelineController:
             state["latest_at"] = conn.execute(text(f"SELECT MAX({time_col}) FROM {table_name}")).scalar()
         return state
 
+    def _missing_tables(self, table_names: list[str]) -> list[str]:
+        missing: list[str] = []
+        with self.engine.connect() as conn:
+            for table_name in table_names:
+                exists = (
+                    conn.execute(
+                        text(
+                            """
+                            SELECT COUNT(*)
+                            FROM information_schema.tables
+                            WHERE table_schema = 'public'
+                              AND table_name = :table_name
+                            """
+                        ),
+                        {"table_name": table_name},
+                    ).scalar()
+                    or 0
+                )
+                if exists == 0:
+                    missing.append(table_name)
+        return missing
+
+    def _select_single_pin_permit_candidates(self, *, limit: int) -> list[dict[str, Any]]:
+        where_clauses = ["1=1"]
+        params: dict[str, Any] = {"pin_limit": max(1, int(limit))}
+
+        if self.settings.foreclosure_id is not None:
+            where_clauses.append("f.foreclosure_id = :foreclosure_id")
+            params["foreclosure_id"] = self.settings.foreclosure_id
+        if self.settings.case_number:
+            where_clauses.append("f.case_number_raw = :case_number")
+            params["case_number"] = self.settings.case_number
+        # Always exclude archived rows for permit scraping
+        where_clauses.append("f.archived_at IS NULL")
+
+        scope_limit_clause = ""
+        if self.settings.limit and self.settings.limit > 0:
+            scope_limit_clause = "LIMIT :scope_limit"
+            params["scope_limit"] = int(self.settings.limit)
+
+        sql = text(
+            f"""
+            WITH scope AS (
+                SELECT
+                    f.foreclosure_id,
+                    f.case_number_raw,
+                    COALESCE(NULLIF(btrim(f.strap), ''), bp.strap) AS pin,
+                    COALESCE(NULLIF(btrim(f.folio), ''), bp.folio) AS folio,
+                    COALESCE(NULLIF(btrim(f.property_address), ''), bp.property_address) AS property_address
+                FROM foreclosures f
+                LEFT JOIN LATERAL (
+                    SELECT bp2.folio, bp2.strap, bp2.property_address
+                    FROM hcpa_bulk_parcels bp2
+                    WHERE (f.strap IS NOT NULL AND bp2.strap = f.strap)
+                       OR (f.folio IS NOT NULL AND bp2.folio = f.folio)
+                    ORDER BY bp2.source_file_id DESC NULLS LAST
+                    LIMIT 1
+                ) bp ON TRUE
+                WHERE {" AND ".join(where_clauses)}
+                ORDER BY f.foreclosure_id
+                {scope_limit_clause}
+            ),
+            scored AS (
+                SELECT
+                    s.foreclosure_id,
+                    s.case_number_raw,
+                    s.pin,
+                    s.folio,
+                    s.property_address,
+                    COALESCE(cp.county_total, 0) AS county_total,
+                    COALESCE(cp.county_with_value, 0) AS county_with_value,
+                    COALESCE(tp.tampa_total, 0) AS tampa_total,
+                    COALESCE(tp.tampa_with_value, 0) AS tampa_with_value
+                FROM scope s
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COUNT(*) AS county_total,
+                        COUNT(*) FILTER (WHERE cp.permit_value IS NOT NULL) AS county_with_value
+                    FROM county_permits cp
+                    WHERE s.folio IS NOT NULL
+                      AND regexp_replace(
+                            COALESCE(cp.folio_clean, cp.folio_raw, ''),
+                            '[^0-9]',
+                            '',
+                            'g'
+                          ) = regexp_replace(s.folio, '[^0-9]', '', 'g')
+                ) cp ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COUNT(*) AS tampa_total,
+                        COUNT(*) FILTER (WHERE tr.estimated_work_cost IS NOT NULL) AS tampa_with_value
+                    FROM tampa_accela_records tr
+                    WHERE s.property_address IS NOT NULL
+                      AND btrim(s.property_address) <> ''
+                      AND btrim(COALESCE(tr.address_normalized, tr.address_raw, '')) <> ''
+                      AND upper(trim(
+                            split_part(
+                                replace(COALESCE(tr.address_normalized, tr.address_raw, ''), E'\\t', ' '),
+                                ',',
+                                1
+                            )
+                        )) = upper(trim(split_part(replace(s.property_address, E'\\t', ' '), ',', 1)))
+                ) tp ON TRUE
+            )
+            SELECT DISTINCT ON (pin)
+                foreclosure_id,
+                case_number_raw,
+                pin,
+                folio,
+                property_address,
+                county_total,
+                county_with_value,
+                tampa_total,
+                tampa_with_value
+            FROM scored
+            WHERE pin IS NOT NULL
+              AND btrim(pin) <> ''
+              AND (
+                    (county_total + tampa_total) = 0
+                 OR (county_with_value + tampa_with_value) = 0
+              )
+            ORDER BY pin, foreclosure_id
+            LIMIT :pin_limit
+            """
+        )
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(sql, params).mappings().all()
+        return [dict(r) for r in rows]
+
     def _resolve_tampa_window(self) -> tuple[dt.date, dt.date]:
         if self.settings.tampa_start_date and self.settings.tampa_end_date:
             if self.settings.tampa_end_date < self.settings.tampa_start_date:
@@ -694,8 +919,50 @@ class PgPipelineController:
             return self.settings.tampa_start_date, self.settings.tampa_end_date
 
         today = dt.datetime.now(dt.UTC).date()
-        start = today - dt.timedelta(days=self.settings.tampa_lookback_days)
+        fallback_start = today - dt.timedelta(days=self.settings.tampa_lookback_days)
+
+        # Incremental: start from last record_date in DB (with 1-day overlap)
+        # instead of re-downloading the full 30-day lookback every run.
+        latest_record = None
+        try:
+            with self.engine.connect() as conn:
+                latest_record = conn.execute(
+                    text("SELECT MAX(record_date) FROM tampa_accela_records")
+                ).scalar()
+        except Exception:
+            pass  # Table may not exist yet on fresh DB
+
+        if latest_record is not None:
+            incremental_start = latest_record - dt.timedelta(days=1)
+            start = max(incremental_start, fallback_start)
+            window_days = (today - start).days
+            logger.info(
+                "Tampa permits: last record_date in DB is {}, fetching {} days ({} -> {})",
+                latest_record,
+                window_days,
+                start,
+                today,
+            )
+        else:
+            start = fallback_start
+            window_days = (today - start).days
+            logger.info(
+                "Tampa permits: no existing data, full {} day lookback ({} -> {})",
+                window_days,
+                start,
+                today,
+            )
+
         return start, today
+
+    def _get_county_max_object_id(self) -> int | None:
+        try:
+            with self.engine.connect() as conn:
+                return conn.execute(
+                    text("SELECT MAX(source_object_id) FROM county_permits")
+                ).scalar()
+        except Exception:
+            return None  # Table may not exist yet on fresh DB
 
     @staticmethod
     def _should_run(
@@ -781,12 +1048,16 @@ def parse_args() -> ControllerSettings:
     parser.add_argument("--skip-sunbiz-entity", action="store_true")
     parser.add_argument("--skip-county-permits", action="store_true")
     parser.add_argument("--skip-tampa-permits", action="store_true")
+    parser.add_argument("--skip-single-pin-permits", action="store_true")
     parser.add_argument("--skip-foreclosure-refresh", action="store_true")
     parser.add_argument("--skip-final-refresh", action="store_true")
     parser.add_argument("--skip-trust-accounts", action="store_true")
     parser.add_argument("--skip-title-chain", action="store_true")
     parser.add_argument("--skip-title-breaks", action="store_true")
     parser.add_argument("--skip-market-data", action="store_true")
+    parser.add_argument(
+        "--use-windows-chrome", action="store_true", help="Connect to Windows Chrome via CDP for Realtor scraping"
+    )
     # Phase B toggles
     parser.add_argument("--skip-auction-scrape", action="store_true")
     parser.add_argument("--skip-judgment-extract", action="store_true")
@@ -819,10 +1090,33 @@ def parse_args() -> ControllerSettings:
         default=250,
         help="0 disables enrichment; negative = all missing",
     )
+    parser.add_argument(
+        "--single-pin-permit-limit",
+        type=int,
+        default=25,
+        help="Max foreclosure properties to target in single-pin permit fallback (<=0 disables step).",
+    )
+    parser.add_argument(
+        "--single-pin-permit-max-permits",
+        type=int,
+        default=0,
+        help="Per-pin cap on permits to process (<=0 means all permits from parcel payload).",
+    )
+    parser.add_argument(
+        "--single-pin-permit-timeout-seconds",
+        type=int,
+        default=45,
+        help="HTTP timeout per request for single-pin permit fallback.",
+    )
 
     parser.add_argument("--foreclosure-id", type=int)
     parser.add_argument("--case-number")
-    parser.add_argument("--active-only", action="store_true")
+    parser.add_argument(
+        "--active-only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Filter to active (non-archived) foreclosures (default: True; use --no-active-only to include archived)",
+    )
     parser.add_argument("--limit", type=int)
     parser.add_argument("--similarity-threshold", type=float, default=0.68)
 
@@ -854,12 +1148,14 @@ def parse_args() -> ControllerSettings:
         skip_sunbiz_entity=bool(args.skip_sunbiz_entity),
         skip_county_permits=bool(args.skip_county_permits),
         skip_tampa_permits=bool(args.skip_tampa_permits),
+        skip_single_pin_permits=bool(args.skip_single_pin_permits),
         skip_foreclosure_refresh=bool(args.skip_foreclosure_refresh),
         skip_final_refresh=bool(args.skip_final_refresh),
         skip_trust_accounts=bool(args.skip_trust_accounts),
         skip_title_chain=bool(args.skip_title_chain),
         skip_title_breaks=bool(args.skip_title_breaks),
         skip_market_data=bool(args.skip_market_data),
+        use_windows_chrome=bool(args.use_windows_chrome),
         skip_auction_scrape=bool(args.skip_auction_scrape),
         skip_judgment_extract=bool(args.skip_judgment_extract),
         skip_identifier_recovery=bool(args.skip_identifier_recovery),
@@ -877,6 +1173,9 @@ def parse_args() -> ControllerSettings:
         tampa_end_date=_parse_date(args.tampa_end_date),
         tampa_keep_csv=bool(args.tampa_keep_csv),
         tampa_enrich_limit=args.tampa_enrich_limit,
+        single_pin_permit_limit=args.single_pin_permit_limit,
+        single_pin_permit_max_permits=args.single_pin_permit_max_permits,
+        single_pin_permit_timeout_seconds=args.single_pin_permit_timeout_seconds,
         foreclosure_id=args.foreclosure_id,
         case_number=args.case_number,
         active_only=bool(args.active_only),

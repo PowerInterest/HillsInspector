@@ -53,7 +53,7 @@ async def hcpa_failures(
             ).mappings().fetchall()
 
             failed_auctions = [dict(r) for r in rows]
-    except Exception as e:
+    except Exception:
         logger.exception("review query failed")
         failed_auctions = []
         total = 0

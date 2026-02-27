@@ -84,18 +84,76 @@ class PgDashboardQueries:
         """Get key parcel attributes for a PG folio."""
         row = conn.execute(
             text("""
-                SELECT folio, strap, owner_name, property_address, city,
-                       zip_code, land_use_desc, year_built, beds, baths,
-                       heated_area, lot_size, just_value, market_value,
-                       units, buildings, raw_legal1, raw_legal2,
-                       last_sale_date, last_sale_price
-                FROM hcpa_bulk_parcels
-                WHERE folio = :folio
+                SELECT bp.folio, bp.strap, bp.owner_name, bp.property_address, bp.city,
+                       bp.zip_code, COALESCE(bp.land_use_desc, d.description) AS land_use_desc, bp.year_built, bp.beds, bp.baths,
+                       bp.heated_area, bp.lot_size, bp.just_value, bp.market_value,
+                       bp.units, bp.buildings, bp.raw_legal1, bp.raw_legal2,
+                       bp.last_sale_date, bp.last_sale_price
+                FROM hcpa_bulk_parcels bp
+                LEFT JOIN hcpa_parcel_dor_names d ON bp.land_use = d.dor_code
+                WHERE bp.folio = :folio
                 LIMIT 1
             """),
             {"folio": pg_folio},
         ).fetchone()
         return dict(row._mapping) if row else None  # noqa: SLF001
+
+    # =================================================================
+    # Land Use & CDD Warnings
+    # =================================================================
+
+    def get_cdd_warning(self, folio: str) -> dict[str, Any] | None:
+        """Check if a property is likely in a Community Development District (CDD).
+
+        Matches the subdivision name from sales against the CDD table using ILIKE.
+        Returns a dict with CDD info if found, else None.
+        """
+        if not self._available or not folio:
+            return None
+        try:
+            with self._engine.connect() as conn:
+                pg_folio = self._resolve_pg_folio(conn, folio)
+                if not pg_folio:
+                    return None
+
+                row = conn.execute(
+                    text("""
+                        SELECT c.cdd_code, c.name AS cdd_name
+                        FROM hcpa_allsales a
+                        JOIN hcpa_parcel_sub_names s ON a.sub_code = s.sub_code
+                        JOIN hcpa_special_district_cdds c ON s.sub_name ILIKE '%%' || c.name || '%%'
+                        WHERE a.folio = :folio
+                           AND a.sub_code IS NOT NULL
+                           AND a.sub_code != ''
+                        LIMIT 1
+                    """),
+                    {"folio": pg_folio},
+                ).fetchone()
+
+                if row:
+                    return dict(row._mapping)  # noqa: SLF001
+
+                # Fallback: check raw_legal1
+                parcel = self._get_parcel_info(conn, pg_folio)
+                if parcel and parcel.get("raw_legal1"):
+                    legal1 = parcel["raw_legal1"].strip()
+                    sub_name = legal1.split(" LOT")[0].split(" BLK")[0].split(" UNIT")[0].strip()
+                    if len(sub_name) > 3:
+                        match = conn.execute(
+                            text("""
+                                SELECT c.cdd_code, c.name AS cdd_name
+                                FROM hcpa_special_district_cdds c
+                                WHERE :name ILIKE '%%' || c.name || '%%'
+                                LIMIT 1
+                            """),
+                            {"name": sub_name},
+                        ).fetchone()
+                        if match:
+                            return dict(match._mapping)  # noqa: SLF001
+                return None
+        except SQLAlchemyError:
+            logger.exception(f"get_cdd_warning({folio}) failed")
+            return None
 
     # =================================================================
     # Fuzzy Search

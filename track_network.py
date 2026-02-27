@@ -8,7 +8,7 @@ async def main():
 
         # Monitor requests
         async def log_request(route, request):
-            if request.method == "POST" and "api/Search" in request.url or "KeywordSearch" in request.url:
+            if (request.method == "POST" and "api/Search" in request.url) or "KeywordSearch" in request.url:
                 print("FOUND API REQUEST!")
                 print("URL:", request.url)
                 print("Headers:", request.headers)

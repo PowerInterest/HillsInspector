@@ -1325,11 +1325,12 @@ class PgOriService:
         if truncated and split_on_truncated:
             stats["unresolved_truncations"] += 1
             logger.warning(
-                "PAV truncated unresolved: label={} query_id={} from={} to={}",
-                query_label,
-                query_id,
-                from_date,
-                to_date,
+                "Skipping '{label}' from {from_date} to {to_date}: Search matched >1500 records. "
+                "This usually happens for massive corporate entities (like 'LENNAR HOMES INC'). "
+                "The system ignores these to prevent polluting the database with false positives.",
+                label=query_label.replace("party:", ""),
+                from_date=from_date,
+                to_date=to_date,
             )
 
         return docs

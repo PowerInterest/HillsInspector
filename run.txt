@@ -1,5 +1,6 @@
 claude --dangerously-skip-permissions
 codex --ask-for-approval never --sandbox danger-full-access --enable web_search_request
+sudo pg_ctlcluster 18 main start
   
   # Start web server with ngrok tunnel
   uv run main.py --web --ngrok

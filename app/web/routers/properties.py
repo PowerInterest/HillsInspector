@@ -2,6 +2,7 @@
 Property detail routes.
 """
 
+import contextlib
 import json
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -616,9 +617,7 @@ def _match_nocs_to_permits(
         if not rec_raw:
             continue
         try:
-            rec_date = (
-                rec_raw if isinstance(rec_raw, date) else datetime.strptime(str(rec_raw)[:10], "%Y-%m-%d").date()
-            )
+            rec_date = rec_raw if isinstance(rec_raw, date) else datetime.strptime(str(rec_raw)[:10], "%Y-%m-%d").date()
         except (ValueError, TypeError):
             continue
 
@@ -1196,6 +1195,9 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
         enc_summary = _summarize_encumbrances(encumbrances)
         est_surviving_debt = _as_float(enc_summary["liens_total_amount"])
         net_equity = _as_float(market_value) - _as_float(auction.get("final_judgment_amount")) - est_surviving_debt
+
+        cdd_warning = get_pg_queries().get_cdd_warning(strap_or_folio)
+
         enrichments = {
             "permits_total": len(permits),
             "permits_open": sum(1 for p in permits if str(p.get("status") or "").lower() in {"open", "active", "issued"}),
@@ -1207,7 +1209,8 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
             "flood_zone": None,
             "flood_risk": None,
             "insurance_required": False,
-            "has_enrichments": bool(len(permits) > 0 or enc_summary["liens_total"] > 0),
+            "cdd_warning": cdd_warning,
+            "has_enrichments": bool(len(permits) > 0 or enc_summary["liens_total"] > 0 or cdd_warning),
         }
 
         auction_payload = {
@@ -1481,10 +1484,8 @@ async def property_chain_of_title(request: Request, folio: str):
                 dates.append(raw)
             else:
                 text = str(raw).strip()[:10]
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     dates.append(datetime.strptime(text, "%Y-%m-%d").date())
-                except (ValueError, TypeError):
-                    pass
         if dates:
             chain_start_year = min(dates).year
             chain_end_year = max(dates).year

@@ -41,9 +41,10 @@ class MarketDataService:
     ZILLOW_BLOCK_LIMIT = 3  # consecutive CAPTCHAs → stop Zillow
     REDFIN_FAIL_LIMIT = 5  # consecutive Tier 2 failures → stop
 
-    def __init__(self, dsn: str | None = None):
+    def __init__(self, dsn: str | None = None, use_windows_chrome: bool = False):
         self._dsn = resolve_pg_dsn(dsn)
         self._engine = get_engine(self._dsn)
+        self._use_windows_chrome = use_windows_chrome
         self._ensure_pg_table()
         self._has_realtor_column = self._column_exists("property_market", "realtor_json")
         if not self._has_realtor_column:
@@ -254,7 +255,11 @@ class MarketDataService:
             finally:
                 if context:
                     with contextlib.suppress(Exception):
-                        await context.close()
+                        if self._use_windows_chrome:
+                            # CDP contexts belong to the user's running browser instance; don't close them!
+                            pass
+                        else:
+                            await context.close()
                 if pw:
                     with contextlib.suppress(Exception):
                         await pw.stop()
@@ -759,8 +764,34 @@ class MarketDataService:
 
     async def _launch_browser(self):
         """Launch real Chrome with user_chrome profile, stealth, CDP."""
-        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+        import os
+
         pw = await async_playwright().start()
+
+        if self._use_windows_chrome:
+            # Connect to an existing Windows Chrome instance over CDP
+            host = os.getenv("WSL_HOST_IP", "127.0.0.1")
+            port = os.getenv("CHROME_CDP_PORT", "9222")
+            endpoint = f"http://{host}:{port}"
+
+            logger.info(f"MarketDataService: Connecting to Windows Chrome CDP at {endpoint}")
+            try:
+                browser = await pw.chromium.connect_over_cdp(endpoint)
+                context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                page = context.pages[0] if context.pages else await context.new_page()
+                await Stealth().apply_stealth_async(page)
+                cdp = await context.new_cdp_session(page)
+                return pw, context, page, cdp
+            except Exception as e:
+                logger.error(f"Failed to connect to Windows Chrome CDP at {endpoint}: {e}")
+                logger.error(
+                    "Please ensure you launched Windows Chrome with --remote-debugging-port=9222 and --remote-allow-origins=*"
+                )
+                # Fall back to launching local headless if desired, or raise
+                raise
+
+        # Original isolated launch for WSL
+        PROFILE_DIR.mkdir(parents=True, exist_ok=True)
         context = await pw.chromium.launch_persistent_context(
             user_data_dir=str(PROFILE_DIR),
             channel="chrome",
@@ -774,11 +805,12 @@ class MarketDataService:
             timezone_id="America/New_York",
             args=["--disable-blink-features=AutomationControlled"],
         )
+        logger.info("MarketDataService: Chrome launched with user_chrome profile")
+
         await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
         page = context.pages[0] if context.pages else await context.new_page()
         await Stealth().apply_stealth_async(page)
         cdp = await context.new_cdp_session(page)
-        logger.info("MarketDataService: Chrome launched with user_chrome profile")
         return pw, context, page, cdp
 
     # ------------------------------------------------------------------
@@ -933,11 +965,17 @@ class MarketDataService:
 
             logger.info(f"Zillow [{i + 1}/{len(properties)}]: searching '{addr}'")
 
-            try:
-                listing = await search_property(page, cdp, addr)
             except Exception as search_exc:
                 # Captcha iframe or DOM detach — treat as a block, don't crash
-                logger.warning(f"Zillow: search_property raised {type(search_exc).__name__}: {search_exc}")
+                err_str = str(search_exc)
+                if "Execution context was destroyed" in err_str:
+                    logger.warning(
+                        "Zillow Blocked: 'Execution context was destroyed'. "
+                        "This usually happens when Zillow hits the bot with a Captcha overlay "
+                        "or maliciously redirects the page to block automated interaction."
+                    )
+                else:
+                    logger.warning(f"Zillow: search_property raised {type(search_exc).__name__}: {search_exc}")
                 listing = None
 
             if listing is None:
