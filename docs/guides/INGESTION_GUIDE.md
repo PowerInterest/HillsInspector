@@ -194,4 +194,3 @@ If properties aren't being enriched:
 ## Related Documentation
 
 - **Pipeline Architecture & Step Details**: `docs/guides/PIPELINE_STEPS.md`
-- **Database Schema**: `docs/architecture/DATABASE_SCHEMA.md`

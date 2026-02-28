@@ -1,231 +1,308 @@
-"""
-PostgreSQL Database Audit Script for HillsInspector Pipeline.
-Provides comprehensive statistics on data completeness across the PG schema.
+"""PostgreSQL Database Audit — single-file state-of-the-database report.
+
+Covers:
+  - Active foreclosure counts and auction date breakdown
+  - Pipeline step completion rates (the CLAUDE.md completeness gates)
+  - Bulk table health (HCPA parcels, clerk cases, NAL, Sunbiz, permits)
+  - Market data and sales coverage
+  - Encumbrance and survival analysis status
+  - Job control run history (if tables exist)
+
+Usage:
+  uv run python -m src.tools.db_audit
+  uv run python -m src.tools.db_audit --dsn postgresql://...
 """
 
+from __future__ import annotations
+
+import argparse
 import sys
 from pathlib import Path
 
 from loguru import logger
 
-# Add project root to sys.path
 project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from sqlalchemy import text  # noqa: E402
 from sunbiz.db import get_engine, resolve_pg_dsn  # noqa: E402
-from src.utils.time import today_local  # noqa: E402
 
 
-def _fetchone_value(conn, query: str, params: dict | None = None, default: int = 0) -> int:
+def _val(conn, query: str, params: dict | None = None, default: int = 0) -> int:
     try:
         result = conn.execute(text(query), params or {}).scalar()
         return result if result is not None else default
     except Exception as e:
-        logger.error(f"Error fetching value for query '{query}': {e}")
+        conn.rollback()
+        logger.error(f"Query error: {e}")
         return default
 
 
-def _fetchone_row(conn, query: str, params: dict | None = None, default=None):
+def _row(conn, query: str, params: dict | None = None) -> dict | None:
     try:
         row = conn.execute(text(query), params or {}).mappings().first()
-        return dict(row) if row is not None else default
+        return dict(row) if row else None
     except Exception as e:
-        logger.error(f"Error fetching row for query '{query}': {e}")
-        return default
+        conn.rollback()
+        logger.error(f"Query error: {e}")
+        return None
 
 
-def _table_exists(conn, table_name: str) -> bool:
+def _rows(conn, query: str, params: dict | None = None) -> list[dict]:
     try:
-        row = conn.execute(
-            text("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=:name"),
-            {"name": table_name},
-        ).scalar()
-        return bool(row)
+        return [dict(r) for r in conn.execute(text(query), params or {}).mappings().all()]
     except Exception as e:
-        logger.error(f"Error checking if table {table_name} exists: {e}")
+        conn.rollback()
+        logger.error(f"Query error: {e}")
+        return []
+
+
+def _has_table(conn, name: str) -> bool:
+    try:
+        return bool(
+            conn.execute(
+                text("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=:n"),
+                {"n": name},
+            ).scalar()
+        )
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"Table check error: {e}")
         return False
 
 
-def audit_database():
+def _pct(num: int, den: int) -> str:
+    if den == 0:
+        return "N/A"
+    return f"{100.0 * num / den:.1f}%"
+
+
+def _section(title: str) -> None:
+    logger.info("")
+    logger.info(f"{'─' * 60}")
+    logger.info(f"  {title}")
+    logger.info(f"{'─' * 60}")
+
+
+def audit_database(dsn: str | None = None) -> None:
+    engine = get_engine(resolve_pg_dsn(dsn))
+
+    with engine.connect() as conn:
+        logger.info("=" * 60)
+        logger.info("       HILLSINSPECTOR DATABASE AUDIT REPORT")
+        logger.info("=" * 60)
+
+        # ==================================================================
+        # 1. FORECLOSURE OVERVIEW
+        # ==================================================================
+        _section("FORECLOSURES")
+
+        total = _val(conn, "SELECT COUNT(*) FROM foreclosures")
+        active = _val(conn, "SELECT COUNT(*) FROM foreclosures WHERE archived_at IS NULL")
+        archived = total - active
+        logger.info(f"Total rows: {total}  (active: {active}, archived: {archived})")
+
+        by_type = _rows(conn, """
+            SELECT COALESCE(auction_type, 'UNKNOWN') AS atype, COUNT(*) AS cnt
+            FROM foreclosures WHERE archived_at IS NULL
+            GROUP BY auction_type ORDER BY cnt DESC
+        """)
+        for r in by_type:
+            logger.info(f"  {r['atype']}: {r['cnt']}")
+
+        dr = _row(conn, """
+            SELECT MIN(auction_date) AS min_d, MAX(auction_date) AS max_d
+            FROM foreclosures WHERE archived_at IS NULL
+        """)
+        if dr:
+            logger.info(f"Auction date range: {dr['min_d']} → {dr['max_d']}")
+
+        upcoming = _val(conn, "SELECT COUNT(*) FROM foreclosures WHERE archived_at IS NULL AND auction_date >= CURRENT_DATE")
+        past = _val(conn, "SELECT COUNT(*) FROM foreclosures WHERE archived_at IS NULL AND auction_date < CURRENT_DATE")
+        logger.info(f"Upcoming: {upcoming}  |  Past: {past}")
+
+        valid_strap = _val(conn, """
+            SELECT COUNT(*) FROM foreclosures
+            WHERE archived_at IS NULL AND strap IS NOT NULL AND strap != ''
+        """)
+        logger.info(f"With valid strap: {valid_strap}/{active} ({_pct(valid_strap, active)})")
+
+        # ==================================================================
+        # 2. PIPELINE STEP COMPLETION (COMPLETENESS GATES)
+        # ==================================================================
+        _section("PIPELINE STEP COMPLETION (active foreclosures)")
+
+        if active == 0:
+            logger.warning("No active foreclosures — skipping step rates")
+        else:
+            steps = [
+                ("step_pdf_downloaded", "PDF downloaded"),
+                ("step_judgment_extracted", "Judgment extracted"),
+                ("step_ori_searched", "ORI searched"),
+                ("step_survival_analyzed", "Survival analyzed"),
+            ]
+            for col, label in steps:
+                done = _val(conn, f"SELECT COUNT(*) FROM foreclosures WHERE archived_at IS NULL AND {col} IS NOT NULL")
+                logger.info(f"  {label}: {done}/{active} ({_pct(done, active)})")
+
+            # CLAUDE.md completeness gates
+            logger.info("")
+            logger.info("  Completeness gates (CLAUDE.md targets):")
+
+            with_jd = _val(conn, "SELECT COUNT(*) FROM foreclosures WHERE archived_at IS NULL AND judgment_data IS NOT NULL")
+            logger.info(f"  Judgment data:    {with_jd}/{active} ({_pct(with_jd, active)}) — target ≥90%")
+
+            with_jd_strap = _val(conn, """
+                SELECT COUNT(*) FROM foreclosures
+                WHERE archived_at IS NULL AND judgment_data IS NOT NULL AND strap IS NOT NULL
+            """)
+
+            chain_covered = _val(conn, """
+                SELECT COUNT(DISTINCT f.foreclosure_id)
+                FROM foreclosures f
+                JOIN foreclosure_title_chain c ON c.foreclosure_id = f.foreclosure_id
+                WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL
+            """) if _has_table(conn, "foreclosure_title_chain") else 0
+            logger.info(f"  Chain coverage:   {chain_covered}/{with_jd} ({_pct(chain_covered, with_jd)}) — target ≥80%")
+
+            enc_covered = _val(conn, """
+                SELECT COUNT(DISTINCT f.foreclosure_id)
+                FROM foreclosures f
+                JOIN ori_encumbrances oe ON oe.strap = f.strap
+                WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL AND f.strap IS NOT NULL
+            """) if _has_table(conn, "ori_encumbrances") else 0
+            logger.info(f"  Encumbrance cov:  {enc_covered}/{with_jd_strap} ({_pct(enc_covered, with_jd_strap)}) — target ≥80%")
+
+            surv_covered = _val(conn, """
+                SELECT COUNT(DISTINCT f.foreclosure_id)
+                FROM foreclosures f
+                JOIN ori_encumbrances oe ON oe.strap = f.strap
+                WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL
+                  AND f.strap IS NOT NULL AND oe.survival_status IS NOT NULL
+            """) if _has_table(conn, "ori_encumbrances") else 0
+            logger.info(f"  Survival cov:     {surv_covered}/{with_jd_strap} ({_pct(surv_covered, with_jd_strap)}) — target ≥80%")
+
+        # ==================================================================
+        # 3. BULK TABLE HEALTH
+        # ==================================================================
+        _section("BULK TABLES")
+
+        bulk_tables = [
+            ("hcpa_bulk_parcels", "HCPA parcels"),
+            ("hcpa_allsales", "HCPA sales"),
+            ("hcpa_latlon", "HCPA lat/lon"),
+            ("clerk_civil_cases", "Clerk civil cases"),
+            ("clerk_civil_events", "Clerk events"),
+            ("dor_nal_parcels", "DOR NAL parcels"),
+            ("sunbiz_flr_filings", "Sunbiz UCC filings"),
+            ("sunbiz_entity_cordata", "Sunbiz corp data"),
+            ("county_permits", "County permits"),
+            ("tampa_accela_records", "Tampa permits"),
+        ]
+        for tbl, label in bulk_tables:
+            if _has_table(conn, tbl):
+                cnt = _val(conn, f"SELECT COUNT(*) FROM {tbl}")
+                logger.info(f"  {label} ({tbl}): {cnt:,}")
+            else:
+                logger.info(f"  {label} ({tbl}): TABLE MISSING")
+
+        # ==================================================================
+        # 4. MARKET DATA
+        # ==================================================================
+        _section("MARKET DATA")
+
+        if _has_table(conn, "property_market"):
+            mkt_total = _val(conn, "SELECT COUNT(*) FROM property_market")
+            mkt_zest = _val(conn, "SELECT COUNT(*) FROM property_market WHERE zestimate IS NOT NULL")
+            mkt_photos = _val(conn, "SELECT COUNT(*) FROM property_market WHERE photo_cdn_urls IS NOT NULL AND photo_cdn_urls != '[]'::jsonb")
+            logger.info(f"  Property market rows: {mkt_total:,}")
+            logger.info(f"  With zestimate: {mkt_zest:,}")
+            logger.info(f"  With photos: {mkt_photos:,}")
+        else:
+            logger.info("  property_market: TABLE MISSING")
+
+        # ==================================================================
+        # 5. ENCUMBRANCES & SURVIVAL
+        # ==================================================================
+        _section("ENCUMBRANCES & SURVIVAL")
+
+        if _has_table(conn, "ori_encumbrances"):
+            total_enc = _val(conn, "SELECT COUNT(*) FROM ori_encumbrances")
+            by_status = _rows(conn, """
+                SELECT COALESCE(survival_status, 'PENDING') AS status, COUNT(*) AS cnt
+                FROM ori_encumbrances GROUP BY survival_status ORDER BY cnt DESC
+            """)
+            logger.info(f"  Total encumbrances: {total_enc:,}")
+            for r in by_status:
+                logger.info(f"    {r['status']}: {r['cnt']:,}")
+
+            distinct_straps = _val(conn, "SELECT COUNT(DISTINCT strap) FROM ori_encumbrances")
+            logger.info(f"  Distinct straps: {distinct_straps:,}")
+        else:
+            logger.info("  ori_encumbrances: TABLE MISSING")
+
+        # ==================================================================
+        # 6. TITLE CHAIN
+        # ==================================================================
+        _section("TITLE CHAIN")
+
+        if _has_table(conn, "foreclosure_title_chain"):
+            chain_rows = _val(conn, "SELECT COUNT(*) FROM foreclosure_title_chain")
+            chain_props = _val(conn, "SELECT COUNT(DISTINCT foreclosure_id) FROM foreclosure_title_chain")
+            logger.info(f"  Chain rows: {chain_rows:,}  covering {chain_props} foreclosures")
+        else:
+            logger.info("  foreclosure_title_chain: TABLE MISSING")
+
+        if _has_table(conn, "foreclosure_title_summary"):
+            summ_rows = _val(conn, "SELECT COUNT(*) FROM foreclosure_title_summary")
+            logger.info(f"  Title summaries: {summ_rows:,}")
+
+        # ==================================================================
+        # 7. TRUST ACCOUNTS
+        # ==================================================================
+        _section("TRUST ACCOUNTS")
+
+        if _has_table(conn, "TrustAccount"):
+            trust = _val(conn, 'SELECT COUNT(*) FROM "TrustAccount"')
+            logger.info(f"  Trust account snapshots: {trust:,}")
+        else:
+            logger.info("  TrustAccount: TABLE MISSING")
+
+        # ==================================================================
+        # 8. JOB CONTROL (scheduled jobs)
+        # ==================================================================
+        if _has_table(conn, "pipeline_job_runs"):
+            _section("RECENT JOB RUNS (last 10)")
+            recent = _rows(conn, """
+                SELECT job_name, status, triggered_by,
+                       started_at, finished_at,
+                       EXTRACT(EPOCH FROM (finished_at - started_at))::int AS duration_sec
+                FROM pipeline_job_runs
+                ORDER BY started_at DESC LIMIT 10
+            """)
+            for r in recent:
+                dur = f"{r['duration_sec']}s" if r.get("duration_sec") is not None else "running"
+                logger.info(f"  {r['job_name']:30s} {r['status']:8s} {dur:>8s}  ({r['triggered_by']}, {r['started_at']})")
+
+        # ==================================================================
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("       AUDIT COMPLETE")
+        logger.info("=" * 60)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="HillsInspector PostgreSQL database audit")
+    parser.add_argument("--dsn", help="PostgreSQL DSN override")
+    args = parser.parse_args()
+
     try:
-        engine = get_engine(resolve_pg_dsn())
-        with engine.connect() as conn:
-            logger.info("=" * 60)
-            logger.info("         HILLSINSPECTOR POSTGRESQL API DB AUDIT REPORT")
-            logger.info("=" * 60)
-
-            # ==========================================================================
-            # FORECLOSURES
-            # ==========================================================================
-            logger.info("\n[STEP 1] FORECLOSURES")
-            logger.info("-" * 40)
-            try:
-                total_auctions = _fetchone_value(conn, "SELECT COUNT(*) FROM foreclosures")
-                logger.info(f"Total Foreclosures: {total_auctions}")
-
-                by_type = (
-                    conn.execute(
-                        text("""
-                    SELECT auction_type, COUNT(*) as cnt
-                    FROM foreclosures
-                    GROUP BY auction_type
-                """)
-                    )
-                    .mappings()
-                    .all()
-                )
-                for row in by_type:
-                    logger.info(f"  - {row['auction_type'] or 'UNKNOWN'}: {row['cnt']}")
-
-                date_range = _fetchone_row(
-                    conn,
-                    "SELECT MIN(auction_date) as min_d, MAX(auction_date) as max_d FROM foreclosures",
-                    default={"min_d": None, "max_d": None},
-                )
-                logger.info(f"Date Range: {date_range['min_d']} to {date_range['max_d']}")
-
-                today = today_local()
-                upcoming = _fetchone_value(conn, "SELECT COUNT(*) FROM foreclosures WHERE auction_date >= :t", {"t": str(today)})
-                past = _fetchone_value(conn, "SELECT COUNT(*) FROM foreclosures WHERE auction_date < :t", {"t": str(today)})
-                logger.info(f"Upcoming: {upcoming} | Past: {past}")
-
-                valid_parcels = _fetchone_value(
-                    conn,
-                    """
-                    SELECT COUNT(*) FROM foreclosures
-                    WHERE strap IS NOT NULL
-                      AND strap != ''
-                      AND LOWER(strap) NOT IN ('n/a', 'none', 'unknown', 'property appraiser')
-                    """,
-                )
-                logger.info(f"With Valid Parcel Strap: {valid_parcels} ({total_auctions - valid_parcels} invalid/missing)")
-
-            except Exception as e:
-                logger.error(f"Error: {e}")
-
-            # ==========================================================================
-            # PIPELINE STATE
-            # ==========================================================================
-            logger.info("\n[STEP 2] PIPELINE EXTRACTION STATUS")
-            logger.info("-" * 40)
-            try:
-                has_pdf = _fetchone_value(conn, "SELECT COUNT(*) FROM foreclosures WHERE pdf_path IS NOT NULL")
-                has_judgment_data = _fetchone_value(conn, "SELECT COUNT(*) FROM foreclosures WHERE judgment_data IS NOT NULL")
-                has_amounts = _fetchone_value(conn, "SELECT COUNT(*) FROM foreclosures WHERE final_judgment_amount IS NOT NULL")
-
-                logger.info(f"Has PDF Downloaded: {has_pdf}")
-                logger.info(f"Has Judgment JSON Data: {has_judgment_data}")
-                logger.info(f"Has Judgment Amount: {has_amounts}")
-            except Exception as e:
-                logger.error(f"Error: {e}")
-
-            # ==========================================================================
-            # BULK ENRICHMENT (PARCELS)
-            # ==========================================================================
-            logger.info("\n[STEP 3] HCPA BULK PARCELS")
-            logger.info("-" * 40)
-            try:
-                if _table_exists(conn, "hcpa_bulk_parcels"):
-                    total_parcels = _fetchone_value(conn, "SELECT COUNT(*) FROM hcpa_bulk_parcels")
-                    logger.info(f"Total Parcels: {total_parcels}")
-
-                    has_owner = _fetchone_value(
-                        conn, "SELECT COUNT(*) FROM hcpa_bulk_parcels WHERE owner_name IS NOT NULL AND owner_name != ''"
-                    )
-                    has_address = _fetchone_value(
-                        conn,
-                        "SELECT COUNT(*) FROM hcpa_bulk_parcels WHERE property_address IS NOT NULL AND property_address != ''",
-                    )
-                    has_coords = _fetchone_value(conn, "SELECT COUNT(*) FROM hcpa_latlon")
-                    has_legal = _fetchone_value(
-                        conn, "SELECT COUNT(*) FROM hcpa_bulk_parcels WHERE raw_legal1 IS NOT NULL AND raw_legal1 != ''"
-                    )
-
-                    logger.info(f"With Owner Name: {has_owner} ({total_parcels - has_owner} missing)")
-                    logger.info(f"With Address: {has_address} ({total_parcels - has_address} missing)")
-                    logger.info(f"With Coordinates (inc. hcpa_latlon): {has_coords}")
-                    logger.info(f"With Legal Description: {has_legal} ({total_parcels - has_legal} missing)")
-                else:
-                    logger.warning("Table 'hcpa_bulk_parcels' does not exist in schema.")
-            except Exception as e:
-                logger.error(f"Error: {e}")
-
-            # ==========================================================================
-            # MARKET DATA
-            # ==========================================================================
-            logger.info("\n[STEP 4] PROPERTY MARKET & SALES")
-            logger.info("-" * 40)
-            try:
-                if _table_exists(conn, "property_market"):
-                    total_market = _fetchone_value(conn, "SELECT COUNT(*) FROM property_market")
-                    with_zestimate = _fetchone_value(conn, "SELECT COUNT(*) FROM property_market WHERE zestimate IS NOT NULL")
-                    logger.info(f"Total Property Market Records: {total_market}")
-                    logger.info(f"With Zestimate: {with_zestimate}")
-                else:
-                    logger.warning("Table 'property_market' does not exist in schema.")
-
-                if _table_exists(conn, "hcpa_allsales"):
-                    total_sales = _fetchone_value(conn, "SELECT COUNT(*) FROM hcpa_allsales")
-                    logger.info(f"Total HCPA Sales Records: {total_sales}")
-                else:
-                    logger.warning("Table 'hcpa_allsales' does not exist in schema.")
-            except Exception as e:
-                logger.error(f"Error: {e}")
-
-            # ==========================================================================
-            # CIVIL CASES & TRUST ACCOUNTS
-            # ==========================================================================
-            logger.info("\n[STEP 5] CLERK CIVIL CASES & TRUST ACCOUNTS")
-            logger.info("-" * 40)
-            try:
-                if _table_exists(conn, "clerk_civil_cases"):
-                    total_cases = _fetchone_value(conn, "SELECT COUNT(*) FROM clerk_civil_cases")
-                    foreclosures = _fetchone_value(conn, "SELECT COUNT(*) FROM clerk_civil_cases WHERE is_foreclosure = true")
-                    logger.info(f"Total Civil Cases: {total_cases}")
-                    logger.info(f"Foreclosure Cases: {foreclosures}")
-                else:
-                    logger.warning("Table 'clerk_civil_cases' does not exist in schema.")
-
-                if _table_exists(conn, "TrustAccount"):
-                    total_trust = _fetchone_value(conn, 'SELECT COUNT(*) FROM "TrustAccount"')
-                    logger.info(f"Trust Account Snapshots: {total_trust}")
-                else:
-                    logger.warning("Table 'TrustAccount' does not exist in schema.")
-            except Exception as e:
-                logger.error(f"Error: {e}")
-
-            # ==========================================================================
-            # ENCUMBRANCES
-            # ==========================================================================
-            logger.info("\n[STEP 6] ORI AND SUNBIZ ENCUMBRANCES")
-            logger.info("-" * 40)
-            try:
-                if _table_exists(conn, "ori_encumbrances"):
-                    total_ori = _fetchone_value(conn, "SELECT COUNT(*) FROM ori_encumbrances")
-                    logger.info(f"Total ORI Encumbrances: {total_ori}")
-                else:
-                    logger.warning("Table 'ori_encumbrances' does not exist in schema.")
-
-                if _table_exists(conn, "sunbiz_flr_filings"):
-                    total_ucc = _fetchone_value(conn, "SELECT COUNT(*) FROM sunbiz_flr_filings")
-                    total_ucc_parties = _fetchone_value(conn, "SELECT COUNT(*) FROM sunbiz_flr_parties")
-                    logger.info(f"Total UCC Filings: {total_ucc}")
-                    logger.info(f"Total UCC Parties: {total_ucc_parties}")
-                else:
-                    logger.warning("Table 'sunbiz_flr_filings' does not exist in schema.")
-            except Exception as e:
-                logger.error(f"Error: {e}")
-
-            logger.info("\n" + "=" * 60)
-            logger.info("         AUDIT COMPLETE")
-            logger.info("=" * 60)
-
+        audit_database(dsn=args.dsn)
     except Exception as e:
-        logger.error(f"CRITICAL: Failed to connect to database or execute audit: {e}")
+        logger.error(f"CRITICAL: Audit failed: {e}")
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    audit_database()
+    main()

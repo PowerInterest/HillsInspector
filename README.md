@@ -142,7 +142,6 @@ We provide a `Makefile` to streamline the setup process.
 The `docs/` folder contains comprehensive guides and technical design artifacts, systematically broken down into domains:
 
 ### 📐 Architecture & Infrastructure
-- [Database Schema](docs/architecture/DATABASE_SCHEMA.md) - Contains the complete PostgreSQL schema, tables, triggers, extension dependencies and operational SQLite flow.
 - [Ingestion Guide](docs/guides/INGESTION_GUIDE.md) - End-to-end data pipeline logic and ingestion states.
 
 ### ⚖️ Real Estate Domain Logic

@@ -74,7 +74,7 @@ Before executing the full restructure, the following files have been identified 
 - `src/tools/db_audit.py` (PostgreSQL DB audit script)
 - `src/tools/purge_fuzzy_encumbrances.py` (One-time DB cleanup run)
 - `src/tools/run_ori_remaining.py` (One-time batch execution script)
-- `src/analysis/db_audit.py` (Old SQLite-era analysis script)
+
 
 ### Project Root / Throwaway Scripts
 - `Controller.py` (Old SQLite pipeline controller, replaced by `pg_pipeline_controller.py`)
