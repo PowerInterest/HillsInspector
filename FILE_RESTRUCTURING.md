@@ -71,7 +71,7 @@ Before executing the full restructure, the following files have been identified 
 ### Obsolete / One-Off Tools
 - `src/tools/check_success_rates.py` (Old SQLite-based CLI tool)
 - `src/tools/pg_check_success_rates.py` (One-off manual dashboard)
-- `src/tools/pg_db_audit.py` (One-off DB audit script)
+- `src/tools/db_audit.py` (PostgreSQL DB audit script)
 - `src/tools/purge_fuzzy_encumbrances.py` (One-time DB cleanup run)
 - `src/tools/run_ori_remaining.py` (One-time batch execution script)
 - `src/analysis/db_audit.py` (Old SQLite-era analysis script)

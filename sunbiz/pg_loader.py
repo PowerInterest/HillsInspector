@@ -1180,80 +1180,98 @@ def load_sunbiz_entity(
             )
             session.commit()
 
-            filings: list[dict] = []
-            parties: list[dict] = []
-            events: list[dict] = []
+            try:
+                filings: list[dict] = []
+                parties: list[dict] = []
+                events: list[dict] = []
 
-            for source_member, line_no, line in _iter_text_records(path):
-                if limit_lines is not None and (
-                    len(filings) + len(parties) + len(events) >= limit_lines
-                ):
-                    break
+                for source_member, line_no, line in _iter_text_records(path):
+                    if limit_lines is not None and (
+                        len(filings) + len(parties) + len(events) >= limit_lines
+                    ):
+                        break
 
-                kind = _classify_entity_member(source_member)
-                if kind == "cor_data":
-                    filing, parsed_parties = _parse_cor_data_line(
-                        line, file_id, source_member, line_no
+                    kind = _classify_entity_member(source_member)
+                    if kind == "cor_data":
+                        filing, parsed_parties = _parse_cor_data_line(
+                            line, file_id, source_member, line_no
+                        )
+                        if filing:
+                            filings.append(filing)
+                        parties.extend(parsed_parties)
+                    elif kind == "cor_event":
+                        event = _parse_cor_event_line(line, file_id, source_member, line_no)
+                        if event:
+                            events.append(event)
+                    elif kind == "gen_data":
+                        filing, parsed_parties = _parse_gen_data_line(
+                            line, file_id, source_member, line_no
+                        )
+                        if filing:
+                            filings.append(filing)
+                        parties.extend(parsed_parties)
+                    elif kind == "gen_event":
+                        event = _parse_gen_event_line(line, file_id, source_member, line_no)
+                        if event:
+                            events.append(event)
+
+                row_count = len(filings) + len(parties) + len(events)
+                if row_count <= 0:
+                    raise RuntimeError(
+                        f"No entity records parsed from {rel}; refusing to mark empty load as current"
                     )
-                    if filing:
-                        filings.append(filing)
-                    parties.extend(parsed_parties)
-                elif kind == "cor_event":
-                    event = _parse_cor_event_line(line, file_id, source_member, line_no)
-                    if event:
-                        events.append(event)
-                elif kind == "gen_data":
-                    filing, parsed_parties = _parse_gen_data_line(
-                        line, file_id, source_member, line_no
-                    )
-                    if filing:
-                        filings.append(filing)
-                    parties.extend(parsed_parties)
-                elif kind == "gen_event":
-                    event = _parse_gen_event_line(line, file_id, source_member, line_no)
-                    if event:
-                        events.append(event)
 
-            if filings:
-                for chunk in _chunked(filings, batch_size):
-                    stmt = pg_insert(SunbizEntityFiling).values(chunk)
-                    update_cols = {
-                        col.name: getattr(stmt.excluded, col.name)
-                        for col in SunbizEntityFiling.__table__.columns
-                        if col.name not in {"id"}
-                    }
-                    stmt = stmt.on_conflict_do_update(
-                        constraint="uq_sunbiz_entity_filings_dataset_doc",
-                        set_=update_cols,
-                    )
-                    session.execute(stmt)
-                stats["filings_upserted"] += len(filings)
+                if filings:
+                    for chunk in _chunked(filings, batch_size):
+                        stmt = pg_insert(SunbizEntityFiling).values(chunk)
+                        update_cols = {
+                            col.name: getattr(stmt.excluded, col.name)
+                            for col in SunbizEntityFiling.__table__.columns
+                            if col.name not in {"id"}
+                        }
+                        stmt = stmt.on_conflict_do_update(
+                            constraint="uq_sunbiz_entity_filings_dataset_doc",
+                            set_=update_cols,
+                        )
+                        session.execute(stmt)
+                    stats["filings_upserted"] += len(filings)
 
-            if parties:
-                for chunk in _chunked(parties, batch_size):
-                    stmt = pg_insert(SunbizEntityParty).values(chunk)
-                    stmt = stmt.on_conflict_do_nothing(
-                        constraint="uq_sunbiz_entity_parties_identity"
-                    )
-                    session.execute(stmt)
-                stats["parties_inserted"] += len(parties)
+                if parties:
+                    for chunk in _chunked(parties, batch_size):
+                        stmt = pg_insert(SunbizEntityParty).values(chunk)
+                        stmt = stmt.on_conflict_do_nothing(
+                            constraint="uq_sunbiz_entity_parties_identity"
+                        )
+                        session.execute(stmt)
+                    stats["parties_inserted"] += len(parties)
 
-            if events:
-                for chunk in _chunked(events, batch_size):
-                    stmt = pg_insert(SunbizEntityEvent).values(chunk)
-                    stmt = stmt.on_conflict_do_nothing(
-                        constraint="uq_sunbiz_entity_events_identity"
-                    )
-                    session.execute(stmt)
-                stats["events_inserted"] += len(events)
+                if events:
+                    for chunk in _chunked(events, batch_size):
+                        stmt = pg_insert(SunbizEntityEvent).values(chunk)
+                        stmt = stmt.on_conflict_do_nothing(
+                            constraint="uq_sunbiz_entity_events_identity"
+                        )
+                        session.execute(stmt)
+                    stats["events_inserted"] += len(events)
 
-            _mark_ingest_file(
-                session=session,
-                file_id=file_id,
-                status="loaded",
-                row_count=len(filings) + len(parties) + len(events),
-            )
-            session.commit()
+                _mark_ingest_file(
+                    session=session,
+                    file_id=file_id,
+                    status="loaded",
+                    row_count=row_count,
+                )
+                session.commit()
+            except Exception as exc:
+                session.rollback()
+                _mark_ingest_file(
+                    session=session,
+                    file_id=file_id,
+                    status="failed",
+                    row_count=None,
+                    error_message=str(exc)[:4000],
+                )
+                session.commit()
+                raise
 
     return stats
 

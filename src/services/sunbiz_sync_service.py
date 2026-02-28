@@ -23,6 +23,7 @@ import time
 from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from typing import Iterable
 
 from loguru import logger
@@ -295,8 +296,8 @@ class SunbizMirror:
             return bool(
                 re.search(
                     (
-                        r"/public/doc/quarterly/(cor|gen|non-profit)/"
-                        r"(cordata|corevt|genfile|genevt|npcordata)\.zip$"
+                        r"/public/doc/quarterly/(cor|gen)/"
+                        r"(cordata|corevt|genfile|genevt)\.zip$"
                     ),
                     normalized,
                 )
@@ -315,7 +316,7 @@ class SunbizMirror:
         max_files: int | None,
         dry_run: bool,
         force: bool,
-    ) -> None:
+    ) -> dict[str, Any]:
         transport, sftp = self._connect()
         manifest = self.load_manifest()
         try:
@@ -349,7 +350,8 @@ class SunbizMirror:
             if max_files is not None:
                 files = files[:max_files]
 
-            _print(f"Candidate files: {len(files)}")
+            candidate_files = len(files)
+            _print(f"Candidate files: {candidate_files}")
             downloaded = 0
             skipped = 0
 
@@ -412,10 +414,18 @@ class SunbizMirror:
             if not dry_run:
                 self.save_manifest(manifest)
 
+            summary = {
+                "resolved_dirs": dirs,
+                "candidate_files": candidate_files,
+                "downloaded": downloaded,
+                "skipped": skipped,
+                "manifest_path": str(self.manifest_path),
+            }
             _print(
                 f"Sync finished: downloaded={downloaded}, skipped={skipped}, "
                 f"manifest={self.manifest_path}"
             )
+            return summary
         finally:
             sftp.close()
             transport.close()

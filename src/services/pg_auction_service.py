@@ -52,7 +52,12 @@ class PgAuctionService:
     # ------------------------------------------------------------------
 
     def _dates_with_auctions(self, start: date, end: date) -> set[date]:
-        """Return set of auction_dates in PG foreclosures within range."""
+        """Return future auction dates already covered in PG foreclosures.
+
+        Today is intentionally excluded so the inventory scraper always rechecks
+        same-day auctions. That keeps late-added cases discoverable even after
+        `auction_results` archives terminal rows intraday.
+        """
         with self.engine.connect() as conn:
             rows = conn.execute(
                 text("""
@@ -60,6 +65,7 @@ class PgAuctionService:
                     FROM foreclosures
                     WHERE auction_date BETWEEN :start AND :end
                       AND archived_at IS NULL
+                      AND auction_date > CURRENT_DATE
                 """),
                 {"start": start, "end": end},
             ).fetchall()

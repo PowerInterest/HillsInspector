@@ -162,6 +162,8 @@ The `docs/` folder contains comprehensive guides and technical design artifacts,
 
 ### 📖 Guides
 - [Operations Runbook](docs/guides/RUNBOOK.md) - Standard operational procedures and recurring scripts.
+- [Scheduled Jobs](docs/guides/SCHEDULED_JOBS.md) - PG-controlled job config/run tracking with cron-triggered Python workers.
+- [Scheduled Jobs Walkthrough](docs/guides/WALKTHROUGH_SCHEDULED_JOBS.md) - Notes captured from the initial bulk-job scheduler integration pass.
 
 ## Roadmap / TODO
 *   **System Identification**: The backend is **Hyland OnBase**.
@@ -248,7 +250,5 @@ We enforce strict code quality using the [Astral](https://astral.sh) suite.
 * **Web Framework:** `FastAPI` + `Jinja2` (SSR) + `HTMX` (Interactivity). **No React/SPA.**
 * **Scraping:** `Playwright` (Browser Automation) + `playwright-stealth`.
 * **AI/Vision:** `Qwen-VL` via VisionService (Visual extraction & OCR). No EasyOCR.
-
-
 
 
