@@ -44,8 +44,8 @@ def main():
                 "legal3": r.legal3 or "",
                 "legal4": r.legal4 or "",
             }
-            chain = svc._get_ownership_chain(target["strap"])
-            tokens = svc._build_property_tokens(target, chain)
+            chain = svc.get_ownership_chain(target["strap"])
+            tokens = svc.build_property_tokens(target, chain)
             if target["folio"]:
                 prop_map[target["folio"]] = tokens
             if target["strap"]:
@@ -82,7 +82,7 @@ def main():
                 "CaseNum": e.case_number or "",
             }
 
-            if not svc._matches_property(doc, tokens):
+            if not svc.matches_property(doc, tokens):
                 to_delete.append(e.id)
 
         logger.info(f"Found {len(to_delete)} false-positive encumbrances to delete.")

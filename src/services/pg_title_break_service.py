@@ -160,7 +160,7 @@ class PgTitleBreakService:
                 "unresolved_truncations": 0,
             }
             try:
-                results = self._ori._search_party_pav(
+                results = self._ori.search_party_pav(
                     party,
                     stats,
                     from_date=from_date,
@@ -201,7 +201,7 @@ class PgTitleBreakService:
                 continue
             seen_instruments.add(instrument)
 
-            record_date = PgOriService._parse_date(doc.get("RecordDate") or doc.get("record_date"))
+            record_date = PgOriService.parse_date(doc.get("RecordDate") or doc.get("record_date"))
             if not record_date:
                 continue
 

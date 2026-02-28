@@ -965,6 +965,8 @@ class MarketDataService:
 
             logger.info(f"Zillow [{i + 1}/{len(properties)}]: searching '{addr}'")
 
+            try:
+                listing = await search_property(page, cdp, addr)
             except Exception as search_exc:
                 # Captcha iframe or DOM detach — treat as a block, don't crash
                 err_str = str(search_exc)

@@ -695,6 +695,10 @@ class PgOriService:
             if str(r[4] or "").strip()
         ]
 
+    def get_ownership_chain(self, strap: str) -> list[dict[str, Any]]:
+        """Public wrapper for ownership-chain lookup used by adjacent services."""
+        return self._get_ownership_chain(strap)
+
     def _get_clerk_case_seeds(
         self,
         target: dict[str, Any],
@@ -1110,6 +1114,14 @@ class PgOriService:
             "case_number": (target.get("case_number") or "").strip().upper(),
         }
 
+    def build_property_tokens(
+        self,
+        target: dict[str, Any],
+        ownership_chain: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Public wrapper for property-token generation."""
+        return self._build_property_tokens(target, ownership_chain)
+
     @staticmethod
     def _matches_property(doc: dict[str, Any], tokens: dict[str, Any]) -> bool:
         legal_text = (doc.get("Legal") or "").upper()
@@ -1146,6 +1158,11 @@ class PgOriService:
             if doc_case and prop_case and doc_case == prop_case:
                 return True
         return False
+
+    @staticmethod
+    def matches_property(doc: dict[str, Any], tokens: dict[str, Any]) -> bool:
+        """Public wrapper for property-level document matching."""
+        return PgOriService._matches_property(doc, tokens)
 
     def _extract_references_from_doc(
         self,
@@ -1238,6 +1255,26 @@ class PgOriService:
             keywords=[(486, name)],
             query_label=f"party:{name}",
             stats=stats,
+            from_date=from_date,
+            to_date=to_date,
+            split_on_truncated=split_on_truncated,
+            depth=depth,
+        )
+
+    def search_party_pav(
+        self,
+        name: str,
+        stats: dict[str, int],
+        *,
+        from_date: date,
+        to_date: date,
+        split_on_truncated: bool,
+        depth: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Public wrapper for party-name PAV searches."""
+        return self._search_party_pav(
+            name,
+            stats,
             from_date=from_date,
             to_date=to_date,
             split_on_truncated=split_on_truncated,
@@ -2022,3 +2059,8 @@ class PgOriService:
         if re.match(r"\d{4}-\d{2}-\d{2}", s):
             return s[:10]
         return None
+
+    @staticmethod
+    def parse_date(val: Any) -> str | None:
+        """Public wrapper for ORI date parsing."""
+        return PgOriService._parse_date(val)

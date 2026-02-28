@@ -1,6 +1,6 @@
 # HillsInspector MASTERPLAN
 
-**Updated: 2026-02-21 (full reality sync for agent startup)**
+**Updated: 2026-02-28 (scheduler-owned bulk ingest reality sync)**
 
 ## 0) Agent Startup Context
 
@@ -13,9 +13,21 @@ This document is the startup source of truth for active work.
 
 Critical runtime behavior:
 
-- Steps `hcpa_suite`, `clerk_bulk`, `dor_nal`, `sunbiz_flr`, `sunbiz_entity`, `county_permits`, `tampa_permits` are dispatched as background workers.
-- Step `market_data` is also background-dispatched.
-- A `Controller.py` summary can return before those workers finish, so completion must be verified via logs + table-level validation.
+- Bulk PostgreSQL collectors are no longer expected to run as one long `Controller.py` pass.
+- The canonical recurring execution model for bulk loads is:
+  - cron/systemd triggers `src.tools.run_scheduled_job`
+  - `PgJobControlService` enforces `pipeline_job_config` policy gates
+  - execution history is written to `pipeline_job_runs`
+- Implemented scheduled bulk jobs:
+  - `clerk_bulk`
+  - `sunbiz_daily`
+  - `sunbiz_flr_quarterly`
+  - `sunbiz_entity_quarterly`
+  - `dor_nal_annual`
+  - `hcpa_bulk`
+  - `auction_results`
+- `Controller.py` remains valid for manual/full orchestration, bounded test runs, and backfills.
+- Success still requires downstream completeness validation; a scheduled job returning `success` is not enough by itself.
 
 ## 1) Mission
 
@@ -27,37 +39,45 @@ Build and operate a single PG-first foreclosure intelligence pipeline that answe
 
 ## 2) Canonical Pipeline Architecture
 
-## Phase A: Bulk Refresh
+## Phase A: Scheduled Bulk Refresh
 
-| # | Step Name | Implementation | Primary Outputs | Execution Mode |
-|---|-----------|----------------|-----------------|----------------|
-| 1 | `hcpa_suite` | `sunbiz.pg_loader.load_hcpa_suite` | `hcpa_bulk_parcels`, `hcpa_allsales`, related HCPA tables | background worker |
-| 2 | `clerk_bulk` | `PgClerkBulkService.update()` | `clerk_civil_cases`, `clerk_civil_parties`, events/index tables | background worker |
-| 3 | `dor_nal` | `PgNalService.update()` | `dor_nal_parcels` | background worker |
-| 4 | `sunbiz_flr` | `PgFlrService.update()` | `sunbiz_flr_*` | background worker |
-| 5 | `sunbiz_entity` | `load_sunbiz_entity` | `sunbiz_entity_*` | background worker |
-| 6 | `county_permits` | `CountyPermitService.sync_postgres()` | `county_permits` | background worker |
-| 7 | `tampa_permits` | `TampaPermitService.sync_date_range()` | `tampa_accela_records` | background worker |
-| 8 | `foreclosure_refresh` | `PgForeclosureService.refresh()` | `foreclosures` hub refresh | inline |
-| 9 | `trust_accounts` | `PgTrustAccountsService.run()` | `TrustAccount`, `TrustAccountSummary` | inline |
-| 10 | `title_chain` | `TitleChainController.run()` | `foreclosure_title_events`, `foreclosure_title_chain`, `foreclosure_title_summary` | inline |
+| # | Job / Step Name | Implementation | Primary Outputs | Execution Mode |
+|---|-----------------|----------------|-----------------|----------------|
+| 1 | `hcpa_bulk` | `sunbiz.pg_loader.load_hcpa_suite` | `hcpa_bulk_parcels`, `hcpa_allsales`, related HCPA tables | scheduled job |
+| 2 | `clerk_bulk` | `PgClerkBulkService.update()` | `clerk_civil_cases`, `clerk_civil_parties`, events/index tables | scheduled job |
+| 3 | `dor_nal_annual` | `PgNalService.update()` | `dor_nal_parcels` | scheduled job |
+| 4 | `sunbiz_daily` | `SunbizMirror.sync()` + `load_sunbiz_raw` | `sunbiz_raw_records` | scheduled job |
+| 5 | `sunbiz_flr_quarterly` | `PgFlrService.update()` | `sunbiz_flr_*` | scheduled job |
+| 6 | `sunbiz_entity_quarterly` | `SunbizMirror.sync()` + `load_sunbiz_entity` | `sunbiz_entity_*` | scheduled job |
+| 7 | `county_permits` | `CountyPermitService.sync_postgres()` | `county_permits` | controller step |
+| 8 | `tampa_permits` | `TampaPermitService.sync_date_range()` | `tampa_accela_records` | controller step |
+| 9 | `foreclosure_refresh` | `PgForeclosureService.refresh()` | `foreclosures` hub refresh | controller step |
+| 10 | `trust_accounts` | `PgTrustAccountsService.run()` | `TrustAccount`, `TrustAccountSummary` | controller step |
+| 11 | `title_chain` | `TitleChainController.run()` | `foreclosure_title_events`, `foreclosure_title_chain`, `foreclosure_title_summary` | controller step |
 
 ## Phase B: Per-Auction Enrichment
 
-| # | Step Name | Implementation | Primary Outputs | Execution Mode |
-|---|-----------|----------------|-----------------|----------------|
-| 11 | `auction_scrape` | `PgAuctionService.run()` | refreshed auction rows in `foreclosures` | inline |
-| 12 | `judgment_extract` | `PgJudgmentService.run()` | `foreclosures.judgment_data`, `step_judgment_extracted` | inline |
-| 13 | `ori_search` | `PgOriService.run()` | `ori_encumbrances`, `step_ori_searched` | inline |
-| 14 | `survival_analysis` | `PgSurvivalService.run()` | `ori_encumbrances.survival_status`, `step_survival_analyzed` | inline |
-| 15 | `final_refresh` | `scripts.refresh_foreclosures.refresh()` | recomputed foreclosure hub metrics | inline |
-| 16 | `market_data` | `dispatch_market_data_worker()` | `property_market` + post-market refresh | background worker |
+| # | Job / Step Name | Implementation | Primary Outputs | Execution Mode |
+|---|-----------------|----------------|-----------------|----------------|
+| 12 | `auction_scrape` | `PgAuctionService.run()` | refreshed auction rows in `foreclosures` | controller step |
+| 13 | `auction_results` | `PgAuctionResultsService.run()` | `auction_status`, `winning_bid`, `sold_to`, `buyer_type`, `archived_at` | scheduled job |
+| 14 | `judgment_extract` | `PgJudgmentService.run()` | `foreclosures.judgment_data`, `step_judgment_extracted` | controller step |
+| 15 | `ori_search` | `PgOriService.run()` | `ori_encumbrances`, `step_ori_searched` | controller step |
+| 16 | `survival_analysis` | `PgSurvivalService.run()` | `ori_encumbrances.survival_status`, `step_survival_analyzed` | controller step |
+| 17 | `final_refresh` | `scripts.refresh_foreclosures.refresh()` | recomputed foreclosure hub metrics | controller step |
+| 18 | `market_data` | `dispatch_market_data_worker()` | `property_market` + post-market refresh | background worker |
 
 ## 3) Current Implementation Reality (Code-Verified)
 
 Implemented and wired:
 
 - PG-first controller orchestration is active in `Controller.py` + `src/services/pg_pipeline_controller.py`.
+- PG-controlled scheduled jobs are active via `src/tools/run_scheduled_job.py` + `src/services/pg_job_control_service.py`.
+- `pipeline_job_config` and `pipeline_job_runs` now provide auditable control/history for recurring bulk collectors and `auction_results`.
+- Immediate auction finalization is active:
+  - `auction_results` writes sale/cancel outcomes to `foreclosures`
+  - terminal same-day rows are archived immediately via `archived_at`
+  - today is intentionally always re-scraped by `PgAuctionService` so late-added same-day auctions are still discoverable
 - ORI search and survival analysis write to `ori_encumbrances` via `PgOriService` + `PgSurvivalService`.
 - Property detail (`app/web/routers/properties.py`) now loads encumbrances from `ori_encumbrances` and computes:
   - `liens_total`
@@ -78,7 +98,8 @@ Still incomplete (high-priority web/product gaps):
 Operational gap:
 
 - Controller run summaries are not persisted to `pipeline_runs` / `pipeline_run_steps` tables yet.
-- No scheduler-owned, auditable daily run loop is implemented.
+- County/Tampa permits are not migrated into the scheduled-job control plane yet.
+- Title-chain/Phase B completeness still depends on explicit controller runs or equivalent orchestration; only the bulk collectors and `auction_results` are scheduler-owned today.
 
 ## 4) Definition of Done: Completeness Gates
 
@@ -187,7 +208,7 @@ Required failure loop if any gate misses target:
 ## 5) Runbook (Valid Commands Only)
 
 ```bash
-# Full pipeline (Phase A + Phase B)
+# Full pipeline / manual backfill
 uv run Controller.py
 
 # Force all sources
@@ -196,11 +217,16 @@ uv run Controller.py --force-all
 # Quick bounded sanity run
 uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --survival-limit 5 --limit 5
 
-# Phase A only (skip per-auction enrichment + final refresh)
+# Controller-only Phase A follow-up (bulk collectors are normally scheduler-owned)
 uv run Controller.py --skip-auction-scrape --skip-judgment-extract --skip-ori-search --skip-survival --skip-final-refresh
 
 # Phase B core only (skip bulk refresh and market background dispatch)
 uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain --skip-market-data
+
+# Run one scheduled bulk / audit job through PG job control
+uv run python -m src.tools.run_scheduled_job --job clerk_bulk
+uv run python -m src.tools.run_scheduled_job --job sunbiz_daily
+uv run python -m src.tools.run_scheduled_job --job auction_results
 
 # Market-only worker
 uv run python -m src.services.market_data_worker
@@ -213,6 +239,21 @@ uv run python -m app.web.main
 
 # (Re)create PG schema functions/triggers
 uv run python -m src.db.migrations.create_foreclosures --dsn <postgres-dsn>
+```
+
+Scheduled-job verification:
+
+```sql
+SELECT run_id, job_name, status, started_at, finished_at
+FROM pipeline_job_runs
+ORDER BY run_id DESC
+LIMIT 20;
+```
+
+```sql
+SELECT job_name, enabled, min_interval_sec, singleton, args_json
+FROM pipeline_job_config
+ORDER BY job_name;
 ```
 
 Background-worker verification after controller runs:
@@ -236,7 +277,20 @@ Do not use:
 
 ## 7) Priority Execution Plan (What Is Next)
 
-## Priority 1: Close web bridge gaps to make UI fully investment-grade
+## Priority 1: Finish migration from controller-owned collection to scheduler-owned collection
+
+1. Move county permits into the same `pipeline_job_config` / `pipeline_job_runs` framework.
+2. Move Tampa permits into the same framework.
+3. Decide whether `auction_scrape` itself should become a scheduled job beside `auction_results`.
+4. Add alerting/staleness checks over `pipeline_job_runs` so stale/failed collectors are visible without reading logs.
+
+Acceptance criteria:
+
+- Heavy recurring collectors no longer depend on a single long `Controller.py` invocation.
+- Operators can pause/retune each collector in PostgreSQL without editing cron entries.
+- Failed/skipped/timed_out recurring jobs are visible in `pipeline_job_runs`.
+
+## Priority 2: Close web bridge gaps to make UI fully investment-grade
 
 1. Wire property market payload directly from `property_market` into property detail + market tab.
 2. Populate `property.sources` provenance from actual source JSON timestamps/URLs.
@@ -252,12 +306,12 @@ Acceptance criteria:
 - Tax tab lists tax-related encumbrance rows.
 - Chain tab renders working document links for rows with discoverable files.
 
-## Priority 1: Make runs operationally auditable
+## Priority 3: Make controller runs operationally auditable
 
 1. Add `pipeline_runs` + `pipeline_run_steps` tables.
 2. Persist controller summary payloads for every run.
 3. Record background worker dispatch + completion states.
-4. Add scheduler for daily controller execution with logs.
+4. Decide whether controller itself needs a scheduled cadence once the remaining collectors are scheduler-owned.
 
 Acceptance criteria:
 
