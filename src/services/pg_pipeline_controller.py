@@ -32,6 +32,10 @@ from sunbiz.db import get_engine, resolve_pg_dsn
 DEFAULT_HCPA_DOWNLOAD_DIR = Path("data/bulk_data/hcpa")
 DEFAULT_SUNBIZ_DATA_DIR = Path("data/sunbiz")
 DEFAULT_SUNBIZ_MANIFEST = Path("data/sunbiz/manifest.json")
+DEFAULT_SUNBIZ_ENTITY_ROOT = DEFAULT_SUNBIZ_DATA_DIR / "public/doc/quarterly"
+SUNBIZ_ENTITY_FILE_PATTERN = (
+    r"(?i)^(cor|gen)/(cordata|corevt|genfile|genevt)\.zip$"
+)
 
 
 @dataclass(slots=True)
@@ -128,6 +132,7 @@ class PgPipelineController:
             "dsn": self._dsn_tag(self.dsn),
             "started_at": dt.datetime.now(dt.UTC).isoformat(),
             "steps": [],
+            "degraded_steps": 0,
             "failed_steps": 0,
         }
 
@@ -209,6 +214,8 @@ class PgPipelineController:
                 summary["failed_steps"] += 1
                 if self.settings.fail_fast:
                     break
+            elif result["status"] == "degraded":
+                summary["degraded_steps"] += 1
 
         summary["elapsed_seconds"] = round(time.monotonic() - started, 2)
         summary["completed_at"] = dt.datetime.now(dt.UTC).isoformat()
@@ -238,7 +245,16 @@ class PgPipelineController:
                 payload = fn()
             payload_dict = payload if isinstance(payload, dict) else {"result": payload}
             failed, failure_reason = self._is_failed_payload(payload_dict)
-            status = "failed" if failed else "skipped" if payload_dict.get("skipped") else "ok"
+            degraded = self._is_degraded_payload(payload_dict)
+            status = (
+                "failed"
+                if failed
+                else "skipped"
+                if payload_dict.get("skipped")
+                else "degraded"
+                if degraded
+                else "ok"
+            )
             result = {
                 "name": name,
                 "status": status,
@@ -255,6 +271,12 @@ class PgPipelineController:
                     "Step failed (payload): {} reason={} payload={}",
                     name,
                     failure_reason or "unknown",
+                    self._json_safe(payload_dict),
+                )
+            elif status == "degraded":
+                logger.warning(
+                    "Step degraded: {} payload={}",
+                    name,
                     self._json_safe(payload_dict),
                 )
             else:
@@ -285,6 +307,17 @@ class PgPipelineController:
                 return True, "update_error_present"
 
         return False, None
+
+    @staticmethod
+    def _is_degraded_payload(payload: dict[str, Any]) -> bool:
+        if payload.get("degraded") is True or payload.get("status") == "degraded":
+            return True
+
+        update = payload.get("update")
+        if isinstance(update, dict):
+            return update.get("degraded") is True or update.get("status") == "degraded"
+
+        return False
 
     def _run_hcpa_suite(self) -> dict[str, Any]:
         state = self._get_hcpa_state()
@@ -415,14 +448,19 @@ class PgPipelineController:
             dry_run=False,
             force=self.settings.force_all,
         )
+        entity_root = self.settings.sunbiz_data_dir / "public/doc/quarterly"
         load_stats = load_sunbiz_entity(
             dsn=self.dsn,
-            root=self.settings.sunbiz_data_dir,
-            pattern=None,
+            root=entity_root,
+            pattern=SUNBIZ_ENTITY_FILE_PATTERN,
             limit_files=None,
             limit_lines=None,
             batch_size=5000,
         )
+        if int(load_stats.get("files_scanned") or 0) <= 0:
+            raise RuntimeError(
+                f"sunbiz_entity sync completed but no entity files were scanned under {entity_root}"
+            )
         return {"state_before": state, "update": load_stats}
 
     def _run_county_permits(self) -> dict[str, Any]:
@@ -446,9 +484,7 @@ class PgPipelineController:
                 state["row_count"],
             )
         else:
-            logger.info(
-                "County permits: no existing data or force mode, full ArcGIS layer pull"
-            )
+            logger.info("County permits: no existing data or force mode, full ArcGIS layer pull")
 
         svc = CountyPermitService(
             page_size=self.settings.county_page_size,
@@ -506,40 +542,25 @@ class PgPipelineController:
         if self.settings.single_pin_permit_limit <= 0:
             return {"skipped": True, "reason": "disabled_limit"}
 
-        missing_tables = self._missing_tables(
-            [
-                "foreclosures",
-                "hcpa_bulk_parcels",
-                "county_permits",
-                "tampa_accela_records",
-            ]
-        )
+        missing_tables = self._missing_tables([
+            "foreclosures",
+            "hcpa_bulk_parcels",
+            "county_permits",
+            "tampa_accela_records",
+        ])
         if missing_tables:
-            raise RuntimeError(
-                "single_pin_permits requires missing table(s): "
-                + ", ".join(sorted(missing_tables))
-            )
+            raise RuntimeError("single_pin_permits requires missing table(s): " + ", ".join(sorted(missing_tables)))
 
-        candidates = self._select_single_pin_permit_candidates(
-            limit=self.settings.single_pin_permit_limit
-        )
+        candidates = self._select_single_pin_permit_candidates(limit=self.settings.single_pin_permit_limit)
         if not candidates:
             return {"skipped": True, "reason": "no_gaps_detected"}
 
-        pins = [
-            str(row.get("pin")).strip()
-            for row in candidates
-            if row.get("pin") is not None and str(row.get("pin")).strip()
-        ]
+        pins = [str(row.get("pin")).strip() for row in candidates if row.get("pin") is not None and str(row.get("pin")).strip()]
         pins = list(dict.fromkeys(pins))
         if not pins:
             return {"skipped": True, "reason": "no_valid_pins"}
 
-        max_permits = (
-            self.settings.single_pin_permit_max_permits
-            if self.settings.single_pin_permit_max_permits > 0
-            else None
-        )
+        max_permits = self.settings.single_pin_permit_max_permits if self.settings.single_pin_permit_max_permits > 0 else None
         svc = PgPermitSinglePinService(
             dsn=self.dsn,
             timeout_seconds=max(5, self.settings.single_pin_permit_timeout_seconds),
@@ -549,23 +570,55 @@ class PgPipelineController:
         sync_stats = svc.sync_pins_to_postgres(
             pins,
             max_permits_per_pin=max_permits,
-            fail_on_pin_error=True,
+            fail_on_pin_error=False,
         )
+
+        pins_failed = int(sync_stats.get("pins_failed") or 0)
+        pins_targeted = int(sync_stats.get("pins_targeted") or 0)
+        failed_pins: list[str] = []
+        if pins_failed > 0:
+            failed_pins = [e["pin"] for e in sync_stats.get("errors", [])]
+            logger.warning(
+                "Single-pin permits: {}/{} pins failed — {}. "
+                "These properties will not have permit data until the underlying "
+                "issue is resolved (e.g. HCPA parcel lookup returning no data).",
+                pins_failed,
+                pins_targeted,
+                ", ".join(failed_pins),
+            )
+            if pins_failed == pins_targeted and pins_targeted > 0:
+                logger.error("All {} targeted pins failed. Marking step as failed.", pins_targeted)
+                return {
+                    "candidate_count": len(candidates),
+                    "pins_targeted": len(pins),
+                    "pins_failed": pins_failed,
+                    "failed_pins": failed_pins,
+                    "candidate_sample": candidates[:10],
+                    "update": sync_stats,
+                    "success": False,
+                    "error": f"All {pins_targeted} targeted pins failed to sync permits",
+                }
 
         permits_observed = int(sync_stats.get("permits_observed_total") or 0)
         total_writes = int(sync_stats.get("total_writes") or 0)
         if permits_observed > 0 and total_writes == 0:
             raise RuntimeError(
-                "single_pin_permits observed permit rows but wrote nothing to permit tables; "
-                "failing to avoid silent no-op."
+                "single_pin_permits observed permit rows but wrote nothing to permit tables; failing to avoid silent no-op."
             )
 
-        return {
+        result = {
             "candidate_count": len(candidates),
             "pins_targeted": len(pins),
+            "pins_failed": pins_failed,
+            "failed_pins": failed_pins,
             "candidate_sample": candidates[:10],
             "update": sync_stats,
         }
+        if 0 < pins_failed < pins_targeted:
+            result["status"] = "degraded"
+            result["degraded"] = True
+            result["reason"] = "partial_pin_failures"
+        return result
 
     def _run_foreclosure_refresh(self) -> dict[str, Any]:
         svc = PgForeclosureService(dsn=self.dsn)
@@ -926,11 +979,12 @@ class PgPipelineController:
         latest_record = None
         try:
             with self.engine.connect() as conn:
-                latest_record = conn.execute(
-                    text("SELECT MAX(record_date) FROM tampa_accela_records")
-                ).scalar()
-        except Exception:
-            pass  # Table may not exist yet on fresh DB
+                latest_record = conn.execute(text("SELECT MAX(record_date) FROM tampa_accela_records")).scalar()
+        except Exception as exc:
+            logger.debug(
+                "Tampa permits: unable to read tampa_accela_records max record_date yet: {}",
+                exc,
+            )
 
         if latest_record is not None:
             incremental_start = latest_record - dt.timedelta(days=1)
@@ -958,11 +1012,13 @@ class PgPipelineController:
     def _get_county_max_object_id(self) -> int | None:
         try:
             with self.engine.connect() as conn:
-                return conn.execute(
-                    text("SELECT MAX(source_object_id) FROM county_permits")
-                ).scalar()
-        except Exception:
-            return None  # Table may not exist yet on fresh DB
+                return conn.execute(text("SELECT MAX(source_object_id) FROM county_permits")).scalar()
+        except Exception as exc:
+            logger.debug(
+                "County permits: unable to read county_permits max source_object_id yet: {}",
+                exc,
+            )
+            return None
 
     @staticmethod
     def _should_run(
