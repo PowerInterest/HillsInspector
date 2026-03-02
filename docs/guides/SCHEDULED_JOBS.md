@@ -155,3 +155,10 @@ Updates property sales records and folio-to-strap mappings.
 # Every Sunday at 3:00 AM
 0 3 * * 0 cd /opt/HillsInspector && /usr/local/bin/uv run python -m src.tools.run_scheduled_job --job hcpa_bulk --triggered-by cron >> logs/cron_hcpa.log 2>&1
 ```
+
+**7. Hillsborough Clerk Criminal Name Index (Weekly)**
+Downloads criminal name index from Circuit + County courts and loads into PostgreSQL.
+```cron
+# Every Monday at 3:00 AM
+0 3 * * 1 cd /opt/HillsInspector && /usr/local/bin/uv run python -m src.tools.run_scheduled_job --job clerk_criminal --triggered-by cron >> logs/cron_clerk_criminal.log 2>&1
+```

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PostgreSQL loader for Hillsborough County Clerk of Court civil bulk data.
+PostgreSQL loader for Hillsborough County Clerk of Court bulk data (civil + criminal).
 
 Downloads and loads monthly CSV files from:
     https://publicrec.hillsclerk.com/Civil/bulkdata/
@@ -10,6 +10,8 @@ and return-of-service/garnishment weekly CSV files from:
     https://publicrec.hillsclerk.com/Civil/Circuit%20and%20County%20Civil%20with%20Return%20of%20Service%20and%20Garnishment%20Data/
 and Official Records daily indexes from:
     https://publicrec.hillsclerk.com/OfficialRecords/DailyIndexes/
+and criminal name index pipe-delimited TXT files from:
+    https://publicrec.hillsclerk.com/Criminal/name_index/{Circuit,County}/
 
 Examples:
     uv run python sunbiz/pg_loader_clerk.py download-clerk-bulk
@@ -18,6 +20,8 @@ Examples:
     uv run python sunbiz/pg_loader_clerk.py load-clerk-parties --root data/bulk_data/clerk_civil
     uv run python sunbiz/pg_loader_clerk.py load-clerk-garnishment --root data/bulk_data/clerk_civil
     uv run python sunbiz/pg_loader_clerk.py load-clerk-official-records --root data/bulk_data/clerk_civil
+    uv run python sunbiz/pg_loader_clerk.py download-criminal-name-index
+    uv run python sunbiz/pg_loader_clerk.py load-criminal-name-index
     uv run python sunbiz/pg_loader_clerk.py load-all --root data/bulk_data/clerk_civil
     uv run python sunbiz/pg_loader_clerk.py load-all --sync-first
 """
@@ -57,6 +61,7 @@ from src.services.models_clerk import ClerkCivilEvent
 from src.services.models_clerk import ClerkCivilParty
 from src.services.models_clerk import ClerkDisposedCase
 from src.services.models_clerk import ClerkGarnishmentCase
+from src.services.models_clerk import ClerkCriminalNameIndex
 from src.services.models_clerk import ClerkNameIndex
 from src.services.models_clerk import OfficialRecordsDailyInstrument
 
@@ -69,6 +74,10 @@ CLERK_GARNISHMENT_URL = (
 OFFICIAL_RECORDS_DAILY_URL = "https://publicrec.hillsclerk.com/OfficialRecords/DailyIndexes/"
 DEFAULT_CLERK_DIR = Path("data/bulk_data/clerk_civil")
 DEFAULT_ALPHA_DIR = Path("data/bulk_data/clerk_alpha_index")
+CLERK_CRIMINAL_NAME_INDEX_CIRCUIT_URL = "https://publicrec.hillsclerk.com/Criminal/name_index/Circuit/"
+CLERK_CRIMINAL_NAME_INDEX_COUNTY_URL = "https://publicrec.hillsclerk.com/Criminal/name_index/County/"
+DEFAULT_CRIMINAL_ALPHA_DIR = Path("data/bulk_data/clerk_criminal_name_index")
+CRIMINAL_NAME_INDEX_FILE_PATTERN = re.compile(r"(?:Circuit|County)CriminalNameIndex_[A-Z_]+\.txt", re.IGNORECASE)
 DEFAULT_BATCH_SIZE = 2000
 LOADER_VERSION = "pg_loader_clerk_v1"
 PG_MAX_BIND_PARAMS = 65535
@@ -512,6 +521,86 @@ def download_clerk_bulk(
 
         for filename in filenames:
             if not pattern.match(filename):
+                continue
+
+            files_found += 1
+            dedup_key = (base_url, filename)
+            if dedup_key in seen_downloads:
+                continue
+            seen_downloads.add(dedup_key)
+
+            target = output_dir / filename
+            if target.exists() and not force:
+                logger.debug(f"Skipping (exists): {filename}")
+                skipped += 1
+                continue
+
+            encoded = urllib.parse.quote(filename)
+            url = f"{base_url}{encoded}"
+            logger.info(f"Downloading {filename} ...")
+
+            try:
+                request = urllib.request.Request(  # noqa: S310 - clerk HTTPS endpoint
+                    url,
+                    headers={"User-Agent": "HillsInspector/1.0"},
+                )
+                with urllib.request.urlopen(request, timeout=120) as resp:  # noqa: S310 - clerk endpoint
+                    content = resp.read()
+                target.write_bytes(content)
+                if target.stat().st_size == 0:
+                    logger.warning(f"Downloaded file is empty: {filename}")
+                    errors += 1
+                    continue
+                downloaded += 1
+                logger.info(f"Downloaded: {filename} ({len(content):,} bytes)")
+            except Exception as exc:
+                logger.error(f"Failed to download {filename}: {exc}")
+                errors += 1
+
+    return {
+        "files_found": files_found,
+        "downloaded": downloaded,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
+def download_clerk_criminal_name_index(
+    output_dir: Path | None = None,
+    force: bool = False,
+) -> dict:
+    """Download criminal name index TXT files from Circuit and County directories.
+
+    Source URLs:
+        Circuit: https://publicrec.hillsclerk.com/Criminal/name_index/Circuit/
+        County:  https://publicrec.hillsclerk.com/Criminal/name_index/County/
+
+    54 files total (27 per court type, A-Z + NonAlpha). ~800 MB total.
+    Pipe-delimited, same format conventions as the civil name index.
+    """
+    if output_dir is None:
+        output_dir = DEFAULT_CRIMINAL_ALPHA_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    downloaded = 0
+    skipped = 0
+    errors = 0
+    files_found = 0
+    seen_downloads: set[tuple[str, str]] = set()
+
+    for base_url in (
+        CLERK_CRIMINAL_NAME_INDEX_CIRCUIT_URL,
+        CLERK_CRIMINAL_NAME_INDEX_COUNTY_URL,
+    ):
+        filenames = _fetch_listing_filenames(base_url)
+        logger.info(
+            "Found {} files on {} listing page",
+            len(filenames),
+            base_url,
+        )
+
+        for filename in filenames:
+            if not CRIMINAL_NAME_INDEX_FILE_PATTERN.match(filename):
                 continue
 
             files_found += 1
@@ -1773,6 +1862,206 @@ def _insert_name_index_batch(session: Session, rows: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Criminal name index loader
+# ---------------------------------------------------------------------------
+
+
+def load_clerk_criminal_name_index(
+    dsn: str,
+    root: Path | None = None,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    skip_unchanged: bool = True,
+    limit_files: int | None = None,
+) -> dict:
+    """
+    Load pipe-delimited criminal name index TXT files into clerk_criminal_name_index table.
+
+    Source: https://publicrec.hillsclerk.com/Criminal/name_index/{Circuit,County}/
+    Format: Pipe-delimited, 50 columns, 27 files per court type (A-Z + NonAlpha).
+
+    This is the complete alphabetical criminal party index covering ALL criminal
+    cases (Circuit + County) going back 20+ years. ~800 MB total.
+    """
+    if root is None:
+        root = DEFAULT_CRIMINAL_ALPHA_DIR
+
+    files = sorted(
+        f for f in root.glob("*CriminalNameIndex*.txt")
+        if f.is_file() and f.stat().st_size > 0
+    )
+    if limit_files:
+        files = files[:limit_files]
+
+    if not files:
+        logger.warning(f"No criminal name index files found in {root}")
+        return {"files_found": 0, "files_loaded": 0, "rows_inserted": 0}
+
+    logger.info(f"Found {len(files)} criminal name index files in {root}")
+    session_factory = get_session_factory(dsn)
+    stats = {
+        "files_found": len(files),
+        "files_loaded": 0,
+        "files_skipped": 0,
+        "rows_inserted": 0,
+        "rows_skipped_no_ucn": 0,
+    }
+
+    with session_factory() as session:
+        for path in files:
+            rel = path.name
+            sha = _compute_sha256(path)
+            st = path.stat()
+            modified_at = dt.datetime.fromtimestamp(st.st_mtime, tz=dt.UTC)
+
+            existing = _get_existing_ingest_file(session, "clerk_criminal", rel)
+            if (
+                skip_unchanged
+                and existing
+                and existing.status == "loaded"
+                and existing.file_sha256 == sha
+            ):
+                logger.debug(f"Skipping unchanged: {path.name}")
+                stats["files_skipped"] += 1
+                continue
+
+            file_id = _upsert_ingest_file(
+                session=session,
+                source_system="clerk_criminal",
+                category="criminal_name_index",
+                relative_path=rel,
+                file_sha256=sha,
+                file_size_bytes=st.st_size,
+                file_modified_at=modified_at,
+                status="loading",
+            )
+            session.commit()
+
+            try:
+                rows: list[dict] = []
+                row_count = 0
+                skipped = 0
+                eff_batch = batch_size
+
+                for pipe_row in _iter_pipe_delimited(path):
+                    ucn = _clean_text(pipe_row.get("Uniform Case Number"))
+                    if not ucn:
+                        skipped += 1
+                        continue
+
+                    court_type_raw = _clean_text(pipe_row.get("Court Type"))
+                    case_number = _extract_case_number_from_ucn(ucn)
+
+                    mapped = {
+                        "court_type": court_type_raw or ("Circuit" if "Circuit" in path.name else "County"),
+                        "business_name": _clean_text(pipe_row.get("Business Name")),
+                        "last_name": _clean_text(pipe_row.get("Last Name") or pipe_row.get("LastName")),
+                        "first_name": _clean_text(pipe_row.get("First Name") or pipe_row.get("FirstName")),
+                        "middle_name": _clean_text(pipe_row.get("Middle Name") or pipe_row.get("MiddleName")),
+                        "suffix": _clean_text(pipe_row.get("Suffix")),
+                        "party_type": _clean_text(pipe_row.get("Party Connection Type")),
+                        "ucn": ucn,
+                        "case_number": case_number,
+                        "utc_number": _clean_text(pipe_row.get("Uniform Traffic Citation")),
+                        "case_type": _clean_text(pipe_row.get("Case Type")),
+                        "division": _clean_text(pipe_row.get("Division")),
+                        "judge_name": _clean_text(pipe_row.get("Judge Name")),
+                        "date_filed": _parse_date_mdy(pipe_row.get("Date Filed")),
+                        "current_status": _clean_text(pipe_row.get("Current Status")),
+                        "status_date": _parse_date_mdy(pipe_row.get("Current Status Date")),
+                        "sex_gender": _clean_text(pipe_row.get("Sex/Gender")),
+                        "address1": _clean_text(pipe_row.get("Party Address Line 1")),
+                        "address2": _clean_text(pipe_row.get("Party Address Line 2")),
+                        "city": _clean_text(pipe_row.get("Party Address City")),
+                        "state": _clean_text(pipe_row.get("Party Address State")),
+                        "zip_code": _clean_text(pipe_row.get("Party Address Zip Code")),
+                        "race": _clean_text(pipe_row.get("Race")),
+                        "date_of_birth": _parse_date_mdy(pipe_row.get("Date of Birth")),
+                        "count_number": _clean_text(pipe_row.get("Count Number")),
+                        "count_level_degree": _clean_text(pipe_row.get("Count Level and Degree")),
+                        "statute_violation": _clean_text(pipe_row.get("Statute Violation")),
+                        "charge_description": _clean_text(pipe_row.get("Charge Description")),
+                        "offense_date": _parse_date_mdy(pipe_row.get("Offense Date")),
+                        "disposition_code": _clean_text(pipe_row.get("Disposition Code")),
+                        "disposition_desc": _clean_text(pipe_row.get("Disposition Description")),
+                        "disposition_date": _parse_date_mdy(pipe_row.get("Disposition Date")),
+                        "law_enforcement_agency": _clean_text(pipe_row.get("Law Enforcement Agency Name")),
+                        "officer_name": _clean_text(pipe_row.get("Law Enforcement Officer Name")),
+                        "driver_license_number": _clean_text(pipe_row.get("Driver License Number")),
+                        "driver_license_state": _clean_text(pipe_row.get("Driver License State")),
+                        "commercial_vehicle": _clean_text(pipe_row.get("Commercial Vehicle")),
+                        "blood_alcohol_level": _clean_text(pipe_row.get("Blood Alcohol Level")),
+                        "posted_speed": _clean_text(pipe_row.get("Posted Speed")),
+                        "actual_speed": _clean_text(pipe_row.get("Actual Speed")),
+                        "amount_paid": _clean_text(pipe_row.get("Amount Paid")),
+                        "date_paid": _parse_date_mdy(pipe_row.get("Date Paid")),
+                        "akas": _clean_text(pipe_row.get("AKAs")),
+                        "balance_due": _clean_text(pipe_row.get("Balance Due")),
+                        "source_file": path.name,
+                        "loaded_at": _utc_now(),
+                    }
+
+                    if row_count == 0:
+                        eff_batch = _effective_batch_size(batch_size, len(mapped))
+
+                    rows.append(mapped)
+                    row_count += 1
+
+                    if len(rows) >= eff_batch:
+                        _insert_criminal_name_index_batch(session, rows)
+                        session.commit()
+                        rows.clear()
+
+                if rows:
+                    _insert_criminal_name_index_batch(session, rows)
+                    session.commit()
+
+                _mark_ingest_file(session, file_id, "loaded", row_count=row_count)
+                session.commit()
+                stats["files_loaded"] += 1
+                stats["rows_inserted"] += row_count
+                stats["rows_skipped_no_ucn"] += skipped
+                logger.info(
+                    f"Loaded {row_count:,} criminal name index rows from {path.name} "
+                    f"(skipped {skipped:,} no-UCN)"
+                )
+
+            except Exception as exc:
+                session.rollback()
+                _mark_ingest_file(
+                    session, file_id, "failed", error_message=str(exc)[:4000]
+                )
+                session.commit()
+                logger.error(f"Failed to load {path.name}: {exc}")
+                raise
+
+    return stats
+
+
+def _dedup_criminal_name_index(rows: list[dict]) -> list[dict]:
+    """Deduplicate criminal name index rows by (ucn, count_number, disposition_code) within a batch."""
+    seen: dict[tuple, dict] = {}
+    for row in rows:
+        key = (
+            row.get("ucn"),
+            row.get("count_number") or "",
+            row.get("disposition_code") or "",
+        )
+        seen[key] = row
+    return list(seen.values())
+
+
+def _insert_criminal_name_index_batch(session: Session, rows: list[dict]) -> None:
+    if not rows:
+        return
+    rows = _dedup_criminal_name_index(rows)
+    stmt = pg_insert(ClerkCriminalNameIndex).values(rows)
+    stmt = stmt.on_conflict_do_nothing(
+        constraint="uq_clerk_crim_ni_ucn_count_disp"
+    )
+    session.execute(stmt)
+
+
+# ---------------------------------------------------------------------------
 # Init DB + Load All
 # ---------------------------------------------------------------------------
 
@@ -1835,6 +2124,11 @@ def load_all(
     logger.info("--- Loading name index (alpha_index) ---")
     all_stats["name_index"] = load_clerk_name_index(
         dsn, DEFAULT_ALPHA_DIR, batch_size, skip_unchanged
+    )
+
+    logger.info("--- Loading criminal name index ---")
+    all_stats["criminal_name_index"] = load_clerk_criminal_name_index(
+        dsn, DEFAULT_CRIMINAL_ALPHA_DIR, batch_size, skip_unchanged
     )
 
     return all_stats
@@ -1924,6 +2218,28 @@ def _build_parser() -> argparse.ArgumentParser:
     ni_cmd.add_argument("--no-skip-unchanged", action="store_true")
     ni_cmd.add_argument("--limit-files", type=int, default=None)
 
+    dl_crim_cmd = sub.add_parser(
+        "download-criminal-name-index",
+        help="Download criminal name index TXT files from Circuit and County directories.",
+    )
+    dl_crim_cmd.add_argument(
+        "--output-dir", type=Path, default=DEFAULT_CRIMINAL_ALPHA_DIR,
+        help="Directory to save downloaded TXT files.",
+    )
+    dl_crim_cmd.add_argument("--force", action="store_true", help="Re-download existing files.")
+
+    crim_ni_cmd = sub.add_parser(
+        "load-criminal-name-index",
+        help="Parse and load criminal name index pipe-delimited TXT files.",
+    )
+    crim_ni_cmd.add_argument(
+        "--root", type=Path, default=DEFAULT_CRIMINAL_ALPHA_DIR,
+        help="Directory containing *CriminalNameIndex*.txt files.",
+    )
+    crim_ni_cmd.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    crim_ni_cmd.add_argument("--no-skip-unchanged", action="store_true")
+    crim_ni_cmd.add_argument("--limit-files", type=int, default=None)
+
     all_cmd = sub.add_parser("load-all", help="Run all loaders (download + load).")
     all_cmd.add_argument("--root", type=Path, default=DEFAULT_CLERK_DIR)
     all_cmd.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
@@ -1951,6 +2267,14 @@ def main() -> int:
             file_types=args.file_types,
         )
         logger.info(f"Download stats: {stats}")
+        return 0
+
+    if args.command == "download-criminal-name-index":
+        stats = download_clerk_criminal_name_index(
+            output_dir=args.output_dir,
+            force=args.force,
+        )
+        logger.info(f"Criminal name index download stats: {stats}")
         return 0
 
     # For all load commands, ensure tables exist first
@@ -2031,6 +2355,17 @@ def main() -> int:
             limit_files=args.limit_files,
         )
         logger.info(f"Name index loader stats: {stats}")
+        return 0
+
+    if args.command == "load-criminal-name-index":
+        stats = load_clerk_criminal_name_index(
+            dsn=dsn,
+            root=args.root,
+            batch_size=args.batch_size,
+            skip_unchanged=not args.no_skip_unchanged,
+            limit_files=args.limit_files,
+        )
+        logger.info(f"Criminal name index loader stats: {stats}")
         return 0
 
     if args.command == "load-all":

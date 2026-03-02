@@ -197,17 +197,27 @@ class MarketDataService:
                 realtor_cdp = await context.new_cdp_session(realtor_page) if run_realtor else cdp
 
                 # Wait for captcha overlay if present on any of the loaded tabs
-                for _cw in range(12):  # 60 seconds max
+                for _cw in range(24):  # 120 seconds max
                     cf = False
                     if zillow_page:
-                        cf = cf or await zillow_page.query_selector('iframe#px-captcha-modal, iframe[id*="px-captcha"]')
+                        try:
+                            await zillow_page.wait_for_load_state("domcontentloaded", timeout=5000)
+                            cf = cf or await zillow_page.query_selector('iframe#px-captcha-modal, iframe[id*="px-captcha"]')
+                        except Exception:
+                            # Page navigated (anti-bot redirect); wait for it to settle and retry
+                            logger.warning("Zillow page navigated during captcha check — waiting for load")
+                            try:
+                                await zillow_page.wait_for_load_state("domcontentloaded", timeout=10000)
+                            except Exception:
+                                logger.warning("Zillow page failed to stabilize — may be blocked")
+                            continue
                     # Optionally check redfin/realtor for their specific captchas here if known
 
                     if not cf:
                         break
 
                     if _cw == 0:
-                        logger.warning("Captcha overlay detected! Waiting up to 60s for user to solve...")
+                        logger.warning("Captcha overlay detected! Waiting up to 120s for user to solve...")
                     await asyncio.sleep(5)
 
                 # Keep the extra preview tabs open as requested by user

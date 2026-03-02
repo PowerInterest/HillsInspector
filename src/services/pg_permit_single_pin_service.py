@@ -9,6 +9,10 @@ Architectural purpose:
 - Persist results into existing permit tables only:
   - `county_permits`
   - `tampa_accela_records`
+- When HCPA exposes a county permit that is not present in the ArcGIS export,
+  write a fallback `county_permits` row using reserved source identity
+  `(source_layer_id=-1, source_object_id=<HCPA permit row id>)` so downstream
+  county-permit joins can still see the permit instead of dropping it.
 
 How this fits the broader system:
 - Intended as a fallback step inside `pg_pipeline_controller`, between permit
@@ -23,6 +27,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from typing import cast
 
 from loguru import logger
 from sqlalchemy import text
@@ -33,12 +38,39 @@ from src.tools.pg_permit_single_pin import PermitSinglePinFetcher
 from sunbiz.db import get_engine
 from sunbiz.db import resolve_pg_dsn
 
+COUNTY_ARCGIS_LAYER_ID = 0
+HCPA_SINGLE_PIN_LAYER_ID = -1
+
 
 def _clean_text(value: Any) -> str | None:
     if value is None:
         return None
     text_value = str(value).strip()
     return text_value if text_value else None
+
+
+def _normalize_folio(value: str | None) -> str | None:
+    if not value:
+        return None
+    digits = "".join(ch for ch in value if ch.isdigit())
+    return digits or None
+
+
+def _to_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_city_from_site_address(site_address: str | None) -> str | None:
+    text_value = _clean_text(site_address)
+    if not text_value or "," not in text_value:
+        return None
+    _, city = text_value.rsplit(",", 1)
+    return _clean_text(city)
 
 
 def _looks_like_tampa_record_number(record_number: str | None) -> bool:
@@ -122,7 +154,7 @@ class PgPermitSinglePinService:
 
         payload = {
             "permit_number": permit_number,
-            "source_layer_id": 0,
+            "source_layer_id": COUNTY_ARCGIS_LAYER_ID,
             "source_object_id": source_object_id,
             "source_payload": json.dumps(attrs, default=str),
             "folio_raw": normalized.get("folio_raw"),
@@ -249,10 +281,19 @@ class PgPermitSinglePinService:
         conn: Any,
         *,
         permit_number: str | None,
+        folio_raw: str | None,
+        folio_clean: str | None,
+        address: str | None,
+        city: str | None,
+        status: str | None,
+        category: str | None,
+        permit_type: str | None,
+        type2: str | None,
         estimated_value: float | None,
         issue_date: str | None,
         description: str | None,
         permit_url: str | None,
+        source_payload: str | None,
     ) -> int:
         permit_number = _clean_text(permit_number)
         if not permit_number:
@@ -261,31 +302,157 @@ class PgPermitSinglePinService:
         sql = text(
             """
             UPDATE county_permits
-            SET permit_value = COALESCE(county_permits.permit_value, :permit_value),
+            SET folio_raw = COALESCE(county_permits.folio_raw, :folio_raw),
+                folio_clean = COALESCE(county_permits.folio_clean, :folio_clean),
+                address = COALESCE(county_permits.address, :address),
+                city = COALESCE(county_permits.city, :city),
+                status = COALESCE(county_permits.status, :status),
+                category = COALESCE(county_permits.category, :category),
+                permit_type = COALESCE(county_permits.permit_type, :permit_type),
+                type2 = COALESCE(county_permits.type2, :type2),
+                source_payload = COALESCE(county_permits.source_payload, CAST(:source_payload AS jsonb)),
+                permit_value = COALESCE(county_permits.permit_value, :permit_value),
                 issue_date = COALESCE(county_permits.issue_date, :issue_date),
                 description = COALESCE(county_permits.description, :description),
                 aca_link = COALESCE(county_permits.aca_link, :permit_url),
                 source_ingested_at = now(),
                 updated_at = now()
             WHERE permit_number = :permit_number
-              AND (
-                    county_permits.permit_value IS NULL
-                 OR county_permits.issue_date IS NULL
-                 OR county_permits.description IS NULL
-                 OR county_permits.aca_link IS NULL
-              )
             """
         )
         return conn.execute(
             sql,
             {
                 "permit_number": permit_number,
+                "folio_raw": folio_raw,
+                "folio_clean": folio_clean,
+                "address": address,
+                "city": city,
+                "status": status,
+                "category": category,
+                "permit_type": permit_type,
+                "type2": type2,
                 "permit_value": estimated_value,
                 "issue_date": issue_date,
                 "description": description,
                 "permit_url": permit_url,
+                "source_payload": source_payload,
             },
         ).rowcount or 0
+
+    @staticmethod
+    def _upsert_county_hcpa_single_pin(
+        conn: Any,
+        *,
+        pin: str,
+        permit: dict[str, Any],
+        parcel_context: dict[str, Any],
+        site_address: str | None,
+    ) -> int:
+        permit_number = _clean_text(permit.get("permit_number"))
+        source_object_id = _to_int(permit.get("source_row_id"))
+        if not permit_number or source_object_id is None:
+            return 0
+
+        accela = permit.get("accela") if isinstance(permit.get("accela"), dict) else {}
+        detail_extract = (
+            accela.get("detail_extract") if isinstance(accela.get("detail_extract"), dict) else {}
+        )
+        search_extract = (
+            accela.get("search_extract") if isinstance(accela.get("search_extract"), dict) else {}
+        )
+        permit_url = (
+            _clean_text(accela.get("detail_url")) or _clean_text(permit.get("permit_url"))
+        )
+        folio_raw = _clean_text(parcel_context.get("folio"))
+        payload = {
+            "permit_number": permit_number,
+            "source_layer_id": HCPA_SINGLE_PIN_LAYER_ID,
+            "source_object_id": source_object_id,
+            "source_payload": json.dumps(
+                {
+                    "pin": pin,
+                    "parcel_context": parcel_context,
+                    "permit": permit,
+                },
+                default=str,
+            ),
+            "folio_raw": folio_raw,
+            "folio_clean": _normalize_folio(folio_raw),
+            "address": site_address,
+            "city": _extract_city_from_site_address(site_address),
+            "status": _clean_text(detail_extract.get("status"))
+            or _clean_text(search_extract.get("status")),
+            "category": "HCPA_SINGLE_PIN",
+            "permit_type": _clean_text(permit.get("permit_type_code")),
+            "type2": _clean_text(permit.get("property_type_code")),
+            "description": _clean_text(permit.get("description")),
+            "permit_value": permit.get("estimated_value"),
+            "issue_date": _clean_text(permit.get("issue_date")),
+            "aca_link": permit_url,
+        }
+
+        sql = text(
+            """
+            INSERT INTO county_permits (
+                permit_number,
+                source_layer_id,
+                source_object_id,
+                source_payload,
+                folio_raw,
+                folio_clean,
+                address,
+                city,
+                status,
+                category,
+                permit_type,
+                type2,
+                description,
+                permit_value,
+                issue_date,
+                aca_link,
+                source_ingested_at,
+                updated_at
+            ) VALUES (
+                :permit_number,
+                :source_layer_id,
+                :source_object_id,
+                CAST(:source_payload AS jsonb),
+                :folio_raw,
+                :folio_clean,
+                :address,
+                :city,
+                :status,
+                :category,
+                :permit_type,
+                :type2,
+                :description,
+                :permit_value,
+                :issue_date,
+                :aca_link,
+                now(),
+                now()
+            )
+            ON CONFLICT (source_layer_id, source_object_id) DO UPDATE SET
+                permit_number = EXCLUDED.permit_number,
+                source_payload = COALESCE(EXCLUDED.source_payload, county_permits.source_payload),
+                folio_raw = COALESCE(EXCLUDED.folio_raw, county_permits.folio_raw),
+                folio_clean = COALESCE(EXCLUDED.folio_clean, county_permits.folio_clean),
+                address = COALESCE(EXCLUDED.address, county_permits.address),
+                city = COALESCE(EXCLUDED.city, county_permits.city),
+                status = COALESCE(EXCLUDED.status, county_permits.status),
+                category = COALESCE(EXCLUDED.category, county_permits.category),
+                permit_type = COALESCE(EXCLUDED.permit_type, county_permits.permit_type),
+                type2 = COALESCE(EXCLUDED.type2, county_permits.type2),
+                description = COALESCE(EXCLUDED.description, county_permits.description),
+                permit_value = COALESCE(EXCLUDED.permit_value, county_permits.permit_value),
+                issue_date = COALESCE(EXCLUDED.issue_date, county_permits.issue_date),
+                aca_link = COALESCE(EXCLUDED.aca_link, county_permits.aca_link),
+                source_ingested_at = now(),
+                updated_at = now()
+            """
+        )
+        return conn.execute(sql, payload).rowcount or 0
 
     @staticmethod
     def _upsert_tampa_from_single_pin(
@@ -462,11 +629,17 @@ class PgPermitSinglePinService:
         if not isinstance(permits, list):
             permits = []
 
-        parcel_context = payload.get("parcel_context") if isinstance(payload.get("parcel_context"), dict) else {}
+        parcel_context_raw = payload.get("parcel_context")
+        parcel_context: dict[str, Any] = (
+            cast("dict[str, Any]", parcel_context_raw)
+            if isinstance(parcel_context_raw, dict)
+            else {}
+        )
         site_address = _clean_text(parcel_context.get("site_address"))
 
         county_arcgis_upserts = 0
         county_backfill_updates = 0
+        county_hcpa_upserts = 0
         tampa_upserts = 0
         arcgis_errors = 0
         accela_errors = 0
@@ -486,20 +659,61 @@ class PgPermitSinglePinService:
                     county_arcgis_upserts += count
                     wrote_this_permit += count
 
+                accela = permit.get("accela") if isinstance(permit.get("accela"), dict) else {}
+                if accela.get("error"):
+                    accela_errors += 1
+
+                detail_url = _clean_text(accela.get("detail_url"))
                 count = self._backfill_county_from_hcpa(
                     conn,
                     permit_number=_clean_text(permit.get("permit_number")),
+                    folio_raw=_clean_text(parcel_context.get("folio")),
+                    folio_clean=_normalize_folio(_clean_text(parcel_context.get("folio"))),
+                    address=site_address,
+                    city=_extract_city_from_site_address(site_address),
+                    status=_clean_text(
+                        (
+                            accela.get("detail_extract")
+                            if isinstance(accela.get("detail_extract"), dict)
+                            else {}
+                        ).get("status")
+                    )
+                    or _clean_text(
+                        (
+                            accela.get("search_extract")
+                            if isinstance(accela.get("search_extract"), dict)
+                            else {}
+                        ).get("status")
+                    ),
+                    category="HCPA_SINGLE_PIN",
+                    permit_type=_clean_text(permit.get("permit_type_code")),
+                    type2=_clean_text(permit.get("property_type_code")),
                     estimated_value=permit.get("estimated_value"),
                     issue_date=_clean_text(permit.get("issue_date")),
                     description=_clean_text(permit.get("description")),
-                    permit_url=_clean_text(permit.get("permit_url")),
+                    permit_url=detail_url or _clean_text(permit.get("permit_url")),
+                    source_payload=json.dumps(
+                        {
+                            "pin": pin,
+                            "parcel_context": parcel_context,
+                            "permit": permit,
+                        },
+                        default=str,
+                    ),
                 )
                 county_backfill_updates += count
                 wrote_this_permit += count
 
-                accela = permit.get("accela") if isinstance(permit.get("accela"), dict) else {}
-                if accela.get("error"):
-                    accela_errors += 1
+                if count == 0 and not arcgis_matches and not self._is_tampa_candidate(permit):
+                    count = self._upsert_county_hcpa_single_pin(
+                        conn,
+                        pin=pin,
+                        permit=permit if isinstance(permit, dict) else {},
+                        parcel_context=parcel_context,
+                        site_address=site_address,
+                    )
+                    county_hcpa_upserts += count
+                    wrote_this_permit += count
 
                 count = self._upsert_tampa_from_single_pin(
                     conn,
@@ -518,8 +732,14 @@ class PgPermitSinglePinService:
             "permit_count": len(permits),
             "county_arcgis_upserts": county_arcgis_upserts,
             "county_backfill_updates": county_backfill_updates,
+            "county_hcpa_upserts": county_hcpa_upserts,
             "tampa_upserts": tampa_upserts,
-            "total_writes": county_arcgis_upserts + county_backfill_updates + tampa_upserts,
+            "total_writes": (
+                county_arcgis_upserts
+                + county_backfill_updates
+                + county_hcpa_upserts
+                + tampa_upserts
+            ),
             "permits_with_any_write": permits_with_any_write,
             "arcgis_errors": arcgis_errors,
             "accela_errors": accela_errors,

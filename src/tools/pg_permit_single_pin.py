@@ -200,7 +200,8 @@ class PermitSinglePinFetcher:
         if payload.get("Message"):
             raise RuntimeError(f"HCPA parcel lookup failed: {payload.get('Message')}")
         if not payload.get("pin"):
-            raise RuntimeError("HCPA parcel lookup returned no parcel payload")
+            logger.warning("HCPA parcel lookup returned no data for pin={}; treating as empty parcel", pin)
+            return {"pin": pin}
         return payload
 
     def _query_arcgis_by_permit(self, permit_number: str) -> list[dict[str, Any]]:

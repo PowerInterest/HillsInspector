@@ -103,18 +103,24 @@ def audit_database(dsn: str | None = None) -> None:
         archived = total - active
         logger.info(f"Total rows: {total}  (active: {active}, archived: {archived})")
 
-        by_type = _rows(conn, """
+        by_type = _rows(
+            conn,
+            """
             SELECT COALESCE(auction_type, 'UNKNOWN') AS atype, COUNT(*) AS cnt
             FROM foreclosures WHERE archived_at IS NULL
             GROUP BY auction_type ORDER BY cnt DESC
-        """)
+        """,
+        )
         for r in by_type:
             logger.info(f"  {r['atype']}: {r['cnt']}")
 
-        dr = _row(conn, """
+        dr = _row(
+            conn,
+            """
             SELECT MIN(auction_date) AS min_d, MAX(auction_date) AS max_d
             FROM foreclosures WHERE archived_at IS NULL
-        """)
+        """,
+        )
         if dr:
             logger.info(f"Auction date range: {dr['min_d']} → {dr['max_d']}")
 
@@ -122,10 +128,13 @@ def audit_database(dsn: str | None = None) -> None:
         past = _val(conn, "SELECT COUNT(*) FROM foreclosures WHERE archived_at IS NULL AND auction_date < CURRENT_DATE")
         logger.info(f"Upcoming: {upcoming}  |  Past: {past}")
 
-        valid_strap = _val(conn, """
+        valid_strap = _val(
+            conn,
+            """
             SELECT COUNT(*) FROM foreclosures
             WHERE archived_at IS NULL AND strap IS NOT NULL AND strap != ''
-        """)
+        """,
+        )
         logger.info(f"With valid strap: {valid_strap}/{active} ({_pct(valid_strap, active)})")
 
         # ==================================================================
@@ -153,34 +162,58 @@ def audit_database(dsn: str | None = None) -> None:
             with_jd = _val(conn, "SELECT COUNT(*) FROM foreclosures WHERE archived_at IS NULL AND judgment_data IS NOT NULL")
             logger.info(f"  Judgment data:    {with_jd}/{active} ({_pct(with_jd, active)}) — target ≥90%")
 
-            with_jd_strap = _val(conn, """
+            with_jd_strap = _val(
+                conn,
+                """
                 SELECT COUNT(*) FROM foreclosures
                 WHERE archived_at IS NULL AND judgment_data IS NOT NULL AND strap IS NOT NULL
-            """)
+            """,
+            )
 
-            chain_covered = _val(conn, """
+            chain_covered = (
+                _val(
+                    conn,
+                    """
                 SELECT COUNT(DISTINCT f.foreclosure_id)
                 FROM foreclosures f
                 JOIN foreclosure_title_chain c ON c.foreclosure_id = f.foreclosure_id
                 WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL
-            """) if _has_table(conn, "foreclosure_title_chain") else 0
+            """,
+                )
+                if _has_table(conn, "foreclosure_title_chain")
+                else 0
+            )
             logger.info(f"  Chain coverage:   {chain_covered}/{with_jd} ({_pct(chain_covered, with_jd)}) — target ≥80%")
 
-            enc_covered = _val(conn, """
+            enc_covered = (
+                _val(
+                    conn,
+                    """
                 SELECT COUNT(DISTINCT f.foreclosure_id)
                 FROM foreclosures f
                 JOIN ori_encumbrances oe ON oe.strap = f.strap
                 WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL AND f.strap IS NOT NULL
-            """) if _has_table(conn, "ori_encumbrances") else 0
+            """,
+                )
+                if _has_table(conn, "ori_encumbrances")
+                else 0
+            )
             logger.info(f"  Encumbrance cov:  {enc_covered}/{with_jd_strap} ({_pct(enc_covered, with_jd_strap)}) — target ≥80%")
 
-            surv_covered = _val(conn, """
+            surv_covered = (
+                _val(
+                    conn,
+                    """
                 SELECT COUNT(DISTINCT f.foreclosure_id)
                 FROM foreclosures f
                 JOIN ori_encumbrances oe ON oe.strap = f.strap
                 WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL
                   AND f.strap IS NOT NULL AND oe.survival_status IS NOT NULL
-            """) if _has_table(conn, "ori_encumbrances") else 0
+            """,
+                )
+                if _has_table(conn, "ori_encumbrances")
+                else 0
+            )
             logger.info(f"  Survival cov:     {surv_covered}/{with_jd_strap} ({_pct(surv_covered, with_jd_strap)}) — target ≥80%")
 
         # ==================================================================
@@ -215,7 +248,9 @@ def audit_database(dsn: str | None = None) -> None:
         if _has_table(conn, "property_market"):
             mkt_total = _val(conn, "SELECT COUNT(*) FROM property_market")
             mkt_zest = _val(conn, "SELECT COUNT(*) FROM property_market WHERE zestimate IS NOT NULL")
-            mkt_photos = _val(conn, "SELECT COUNT(*) FROM property_market WHERE photo_cdn_urls IS NOT NULL AND photo_cdn_urls != '[]'::jsonb")
+            mkt_photos = _val(
+                conn, "SELECT COUNT(*) FROM property_market WHERE photo_cdn_urls IS NOT NULL AND photo_cdn_urls != '[]'::jsonb"
+            )
             logger.info(f"  Property market rows: {mkt_total:,}")
             logger.info(f"  With zestimate: {mkt_zest:,}")
             logger.info(f"  With photos: {mkt_photos:,}")
@@ -229,10 +264,13 @@ def audit_database(dsn: str | None = None) -> None:
 
         if _has_table(conn, "ori_encumbrances"):
             total_enc = _val(conn, "SELECT COUNT(*) FROM ori_encumbrances")
-            by_status = _rows(conn, """
+            by_status = _rows(
+                conn,
+                """
                 SELECT COALESCE(survival_status, 'PENDING') AS status, COUNT(*) AS cnt
                 FROM ori_encumbrances GROUP BY survival_status ORDER BY cnt DESC
-            """)
+            """,
+            )
             logger.info(f"  Total encumbrances: {total_enc:,}")
             for r in by_status:
                 logger.info(f"    {r['status']}: {r['cnt']:,}")
@@ -274,13 +312,16 @@ def audit_database(dsn: str | None = None) -> None:
         # ==================================================================
         if _has_table(conn, "pipeline_job_runs"):
             _section("RECENT JOB RUNS (last 10)")
-            recent = _rows(conn, """
+            recent = _rows(
+                conn,
+                """
                 SELECT job_name, status, triggered_by,
                        started_at, finished_at,
                        EXTRACT(EPOCH FROM (finished_at - started_at))::int AS duration_sec
                 FROM pipeline_job_runs
                 ORDER BY started_at DESC LIMIT 10
-            """)
+            """,
+            )
             for r in recent:
                 dur = f"{r['duration_sec']}s" if r.get("duration_sec") is not None else "running"
                 logger.info(f"  {r['job_name']:30s} {r['status']:8s} {dur:>8s}  ({r['triggered_by']}, {r['started_at']})")

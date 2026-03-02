@@ -1,16 +1,34 @@
+"""Active FastAPI entrypoint for the HillsInspector web dashboard.
+
+Architectural purpose:
+- expose the PG-first dashboard and API routers used for operational review,
+  property inspection, and history pages;
+- provide the supported local launcher for the web app when developers run
+  `uv run python -m app.web.main`;
+- optionally open an `ngrok` HTTP tunnel from the active web entrypoint so
+  remote access uses the same application process as local access.
+
+How this fits into the broader system:
+- `Controller.py` remains the pipeline entrypoint;
+- this module is the dashboard entrypoint only;
+- the tunnel lifecycle is kept here rather than in archived/legacy launchers so
+  the current PG-first app has one authoritative runtime path.
 """
-HillsInspector Web Interface
-FastAPI + Jinja2 + HTMX
-"""
+
+import argparse
+import os
+import socket
 import traceback
 import uuid
+from pathlib import Path
+
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from pathlib import Path
 from contextlib import asynccontextmanager
 from loguru import logger
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.web.routers import dashboard, properties, api, review, history, database_view
 from app.web.exceptions import DatabaseLockedError, DatabaseUnavailableError
@@ -285,10 +303,108 @@ async def health_check():
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "app.web.main:app",
-        host="0.0.0.0",
-        port=8080,
-        reload=True
-    )
+    def _build_parser() -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(description="Run the HillsInspector web dashboard")
+        parser.add_argument(
+            "--host",
+            default=os.getenv("WEB_HOST", "0.0.0.0"),
+            help="Host interface to bind (default: WEB_HOST or 0.0.0.0)",
+        )
+        parser.add_argument(
+            "--port",
+            type=int,
+            default=int(os.getenv("WEB_PORT", "8080")),
+            help="Port to bind (default: WEB_PORT or 8080)",
+        )
+        parser.add_argument(
+            "--reload",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Enable auto-reload while developing (default: on)",
+        )
+        parser.add_argument(
+            "--ngrok",
+            action="store_true",
+            help="Start an ngrok HTTP tunnel for remote access",
+        )
+        return parser
+
+
+    def _get_local_ip() -> str:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect(("10.255.255.255", 1))
+            return sock.getsockname()[0]
+        except OSError as exc:
+            logger.debug("Falling back to localhost IP detection: {}", exc)
+            return "127.0.0.1"
+        finally:
+            sock.close()
+
+
+    def _start_ngrok_tunnel(port: int) -> str | None:
+        try:
+            from pyngrok import ngrok
+        except ImportError:
+            logger.error("pyngrok is not installed; starting local server without ngrok")
+            return None
+
+        auth_token = os.getenv("NGROK_AUTHTOKEN", "").strip()
+        if auth_token:
+            ngrok.set_auth_token(auth_token)
+
+        logger.info("Starting ngrok tunnel for port {}", port)
+        tunnel = ngrok.connect(str(port), "http")
+        public_url = tunnel.public_url
+        logger.success("ngrok tunnel established: {}", public_url)
+        print()
+        print("=" * 72)
+        print(f"  PUBLIC URL: {public_url}")
+        print("=" * 72)
+        print()
+        return public_url
+
+
+    def _stop_ngrok_tunnel(public_url: str | None) -> None:
+        if not public_url:
+            return
+
+        from pyngrok import ngrok
+
+        logger.info("Closing ngrok tunnel: {}", public_url)
+        ngrok.disconnect(public_url)
+
+
+    def main() -> None:
+        args = _build_parser().parse_args()
+
+        logger.info("Starting HillsInspector Web on {}:{}", args.host, args.port)
+        logger.info("Local Access: http://localhost:{}", args.port)
+        if args.host == "0.0.0.0":
+            ip_addr = _get_local_ip()
+            if ip_addr != "127.0.0.1":
+                logger.info("Network Access: http://{}:{}", ip_addr, args.port)
+
+        public_url: str | None = None
+        if args.ngrok:
+            try:
+                public_url = _start_ngrok_tunnel(args.port)
+            except Exception as exc:
+                logger.error("Failed to start ngrok: {}", exc)
+                logger.info(
+                    "Configure ngrok with `ngrok config add-authtoken <token>` "
+                    "or set NGROK_AUTHTOKEN"
+                )
+
+        try:
+            uvicorn.run(
+                "app.web.main:app",
+                host=args.host,
+                port=args.port,
+                reload=args.reload,
+            )
+        finally:
+            _stop_ngrok_tunnel(public_url)
+
+
+    main()

@@ -421,10 +421,15 @@ class PgForeclosureIdentifierRecoveryService:
                     )
 
         if stats["ambiguous"] or stats["unresolved"]:
+            samples = stats.get("unresolved_samples") or []
+            sample_lines = "; ".join(
+                f"{s['case_number']} ({s['reason']})" for s in samples
+            )
             logger.warning(
-                "Identifier recovery unresolved cases: ambiguous={}, unresolved={}",
+                "Identifier recovery unresolved cases: ambiguous={}, unresolved={} — [{}]",
                 stats["ambiguous"],
                 stats["unresolved"],
+                sample_lines or "no samples",
             )
         if stats["errors"]:
             logger.error(

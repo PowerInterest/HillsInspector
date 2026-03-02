@@ -39,6 +39,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from urllib.parse import unquote
 
 from bs4 import BeautifulSoup
 from loguru import logger
@@ -105,6 +106,29 @@ SHOWING_TOTAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+DETAIL_VALUE_LABELS = (
+    "Job Value",
+    "Total Project Value",
+    "Project Value",
+    "Valuation",
+    "Estimated Work Cost",
+    "Estimated Cost",
+)
+
+ACCELA_AJAX_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+    "Sec-CH-UA": '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+    "Sec-CH-UA-Mobile": "?0",
+    "Sec-CH-UA-Platform": '"Linux"',
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) HeadlessChrome/143.0.0.0 Safari/537.36"
+    ),
+    "X-MicrosoftAjax": "Delta=true",
+    "X-Requested-With": "XMLHttpRequest",
+}
+
 
 def _clean_text(value: Any) -> str | None:
     if value is None:
@@ -133,6 +157,88 @@ def _to_float(value: Any) -> float | None:
         return float(text_value)
     except ValueError:
         return None
+
+
+def _normalize_inline_text(value: Any) -> str | None:
+    cleaned = _clean_text(value)
+    if not cleaned:
+        return None
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _extract_currency_amount(text_value: str | None) -> float | None:
+    normalized = _normalize_inline_text(text_value)
+    if not normalized:
+        return None
+
+    match = re.search(
+        r"\$?\s*([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{1,2})?|[0-9]{1,}(?:\.[0-9]{1,2})?)",
+        normalized,
+    )
+    if not match:
+        return None
+    return _to_float(match.group(1))
+
+
+def _extract_labeled_currency(text_value: str | None) -> float | None:
+    normalized = _normalize_inline_text(text_value)
+    if not normalized:
+        return None
+
+    for label in DETAIL_VALUE_LABELS:
+        match = re.search(
+            rf"{re.escape(label)}\s*:?\s*\$?\s*"
+            r"([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{1,2})?|[0-9]{1,}(?:\.[0-9]{1,2})?)",
+            normalized,
+            re.IGNORECASE,
+        )
+        if not match:
+            continue
+        amount = _to_float(match.group(1))
+        if amount is not None:
+            return amount
+    return None
+
+
+def _detail_label_candidates(
+    soup: BeautifulSoup,
+    labels: tuple[str, ...],
+) -> list[str]:
+    label_lookup = {label.lower() for label in labels}
+    candidates: list[str] = []
+
+    for element in soup.find_all(["span", "div", "td", "th", "label", "strong"]):
+        label_text = _normalize_inline_text(element.get_text(" ", strip=True))
+        if not label_text:
+            continue
+
+        lowered = label_text.lower()
+        matched_label = next(
+            (label for label in label_lookup if lowered in {label, f"{label}:"}),
+            None,
+        )
+        if matched_label is None:
+            continue
+
+        next_element = element.find_next_sibling()
+        if next_element is not None:
+            next_text = _normalize_inline_text(next_element.get_text(" ", strip=True))
+            if next_text:
+                candidates.append(next_text)
+
+        parent = element.parent
+        if parent is not None:
+            next_sibling = parent.find_next_sibling()
+            if next_sibling is not None:
+                sibling_text = _normalize_inline_text(next_sibling.get_text(" ", strip=True))
+                if sibling_text:
+                    candidates.append(sibling_text)
+
+            parent_text = _normalize_inline_text(parent.get_text(" ", strip=True))
+            if parent_text:
+                candidates.append(parent_text)
+
+    return candidates
 
 
 def _extract_showing_total(showing_text: str | None) -> int | None:
@@ -303,6 +409,21 @@ class TampaPermitService:
         return any(keyword in haystack for keyword in VIOLATION_KEYWORDS)
 
     @staticmethod
+    def is_business_tax_record(
+        record_number: str | None,
+        module: str | None,
+        record_type: str | None,
+    ) -> bool:
+        module_text = (module or "").strip().lower()
+        record_number_text = (record_number or "").strip().upper()
+        record_type_text = (record_type or "").strip().lower()
+        return (
+            module_text == "business"
+            or record_number_text.startswith("BTX-")
+            or record_type_text.startswith("tax receipt")
+        )
+
+    @staticmethod
     def is_fix_record(record_type: str | None, short_notes: str | None = None) -> bool:
         record_text = (record_type or "").lower()
         notes_text = (short_notes or "").lower()
@@ -315,6 +436,26 @@ class TampaPermitService:
         if not status_text:
             return False
         return not any(keyword in status_text for keyword in CLOSED_STATUS_KEYWORDS)
+
+    @classmethod
+    def needs_closeout_for_record(
+        cls,
+        *,
+        record_number: str | None,
+        module: str | None,
+        record_type: str | None,
+        status: str | None,
+        is_violation: bool | None = None,
+    ) -> bool:
+        violation = bool(is_violation) if is_violation is not None else cls.is_violation_record(
+            module,
+            record_type,
+        )
+        if violation:
+            return False
+        if cls.is_business_tax_record(record_number, module, record_type):
+            return False
+        return cls.is_open_status(status)
 
     @staticmethod
     def estimate_cost_from_export(
@@ -376,7 +517,13 @@ class TampaPermitService:
 
         is_violation = self.is_violation_record(module, record_type)
         is_open = self.is_open_status(status)
-        needs_closeout = is_open and not is_violation
+        needs_closeout = self.needs_closeout_for_record(
+            record_number=record_number,
+            module=module,
+            record_type=record_type,
+            status=status,
+            is_violation=is_violation,
+        )
         is_fix_record = self.is_fix_record(record_type, short_notes)
 
         return {
@@ -1177,23 +1324,53 @@ class TampaPermitService:
     @staticmethod
     def _extract_detail_fields(page_html: str) -> dict[str, Any]:
         soup = BeautifulSoup(page_html, "html.parser")
-        text_value = soup.get_text(" ", strip=True)
+        text_value = _normalize_inline_text(soup.get_text(" ", strip=True)) or ""
 
-        status_match = re.search(
-            r"Record\s+Status:\s*([A-Za-z][A-Za-z /&()\-]{0,80})",
-            text_value,
+        status = next(
+            (
+                _clean_text(candidate)
+                for candidate in _detail_label_candidates(soup, ("Record Status",))
+                if _clean_text(candidate)
+            ),
+            None,
         )
-        expiration_match = re.search(r"Expiration\s+Date:\s*(\d{2}/\d{2}/\d{4})", text_value)
-        job_value_match = re.search(
-            r"Job\s+Value:\s*\$?\s*([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{1,})",
-            text_value,
+        expiration_date = next(
+            (
+                parsed
+                for parsed in (
+                    _parse_mmddyyyy(candidate)
+                    for candidate in _detail_label_candidates(soup, ("Expiration Date",))
+                )
+                if parsed is not None
+            ),
+            None,
         )
+        estimated_work_cost = _extract_labeled_currency(text_value)
 
-        status = _clean_text(status_match.group(1) if status_match else None)
-        expiration_date = _parse_mmddyyyy(
-            expiration_match.group(1) if expiration_match else None
-        )
-        estimated_work_cost = _to_float(job_value_match.group(1) if job_value_match else None)
+        if estimated_work_cost is None:
+            for candidate in _detail_label_candidates(soup, DETAIL_VALUE_LABELS):
+                estimated_work_cost = _extract_labeled_currency(candidate)
+                if estimated_work_cost is not None:
+                    break
+                estimated_work_cost = _extract_currency_amount(candidate)
+                if estimated_work_cost is not None:
+                    break
+
+        if status is None:
+            status_match = re.search(
+                r"Record\s+Status\s*:?\s*([A-Za-z][A-Za-z /&()\-]{0,80})",
+                text_value,
+            )
+            status = _clean_text(status_match.group(1) if status_match else None)
+
+        if expiration_date is None:
+            expiration_match = re.search(
+                r"Expiration\s+Date:\s*(\d{2}/\d{2}/\d{4})",
+                text_value,
+            )
+            expiration_date = _parse_mmddyyyy(
+                expiration_match.group(1) if expiration_match else None
+            )
 
         return {
             "status": status,
@@ -1214,6 +1391,114 @@ class TampaPermitService:
             return fallback_url
         return None
 
+    @staticmethod
+    def _extract_postback_target(page_html: str, record_number: str) -> str | None:
+        soup = BeautifulSoup(page_html, "html.parser")
+        for link in soup.find_all("a", href=True):
+            link_text = _normalize_inline_text(link.get_text(" ", strip=True))
+            if link_text != record_number:
+                continue
+
+            href = html.unescape(link["href"])
+            match = re.search(r"__doPostBack\('([^']+)'", href)
+            if match:
+                return match.group(1)
+        return None
+
+    @staticmethod
+    def _build_postback_request(
+        page_html: str,
+        *,
+        page_url: str,
+        event_target: str,
+    ) -> tuple[str, dict[str, str]] | None:
+        soup = BeautifulSoup(page_html, "html.parser")
+        form = soup.find("form")
+        if form is None:
+            return None
+
+        action = _clean_text(form.get("action"))
+        if not action:
+            return None
+
+        payload: dict[str, str] = {}
+        for input_tag in form.find_all("input"):
+            name = _clean_text(input_tag.get("name"))
+            if name:
+                payload[name] = input_tag.get("value") or ""
+
+        module_select = soup.find("select", {"name": "ctl00$PlaceHolderMain$CapView$ddlModule"})
+        if module_select is not None:
+            module_values = [
+                value
+                for option in module_select.find_all("option")
+                for value in [_clean_text(option.get("value")) or _clean_text(option.get_text())]
+                if value and value != "All Records"
+            ]
+            if module_values:
+                payload["ctl00$PlaceHolderMain$CapView$ddlModule"] = ",".join(module_values)
+
+        payload["ctl00$ScriptManager1"] = f"ctl00$PlaceHolderMain$upCAPView|{event_target}"
+        payload["__EVENTTARGET"] = event_target
+        payload["__EVENTARGUMENT"] = ""
+        payload["__LASTFOCUS"] = ""
+        payload["Submit"] = "Submit"
+        payload["__ASYNCPOST"] = "true"
+
+        return requests.compat.urljoin(page_url, action), payload
+
+    @staticmethod
+    def _extract_async_redirect_url(response_text: str, base_url: str) -> str | None:
+        match = re.search(r"pageRedirect\|\|([^|]+)\|", response_text)
+        if not match:
+            return None
+
+        redirect_url = unquote(match.group(1))
+        return requests.compat.urljoin(base_url, redirect_url)
+
+    def _resolve_cap_detail_url_from_search_results(
+        self,
+        session: requests.Session,
+        *,
+        record_number: str,
+        page_html: str,
+        page_url: str,
+    ) -> str | None:
+        event_target = self._extract_postback_target(page_html, record_number)
+        if not event_target:
+            return None
+
+        request_data = self._build_postback_request(
+            page_html,
+            page_url=page_url,
+            event_target=event_target,
+        )
+        if request_data is None:
+            return None
+
+        post_url, payload = request_data
+        headers = dict(ACCELA_AJAX_HEADERS)
+        headers["Referer"] = page_url
+
+        response = session.post(
+            post_url,
+            data=payload,
+            headers=headers,
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+        return self._extract_async_redirect_url(response.text, post_url)
+
+    @staticmethod
+    def _merge_detail_fields(
+        primary: dict[str, Any],
+        fallback: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            key: primary.get(key) if primary.get(key) is not None else fallback.get(key)
+            for key in ("status", "expiration_date", "estimated_work_cost")
+        }
+
     def enrich_missing_details(self, *, limit: int | None = None) -> dict[str, int]:
         """
         Enrich missing estimated work cost / expiration from detail pages.
@@ -1222,7 +1507,7 @@ class TampaPermitService:
         exact record queries frequently resolve directly to CapDetail content.
         """
         select_sql = """
-            SELECT record_number
+            SELECT record_number, module, record_type, is_violation
             FROM tampa_accela_records
             WHERE estimated_work_cost IS NULL
                OR expiration_date IS NULL
@@ -1235,11 +1520,18 @@ class TampaPermitService:
             params: dict[str, Any] = {}
             if limit and limit > 0:
                 params["limit"] = limit
-            record_numbers = [
-                row[0] for row in conn.execute(text(select_sql), params).fetchall() if row[0]
+            records = [
+                {
+                    "record_number": row[0],
+                    "module": row[1],
+                    "record_type": row[2],
+                    "is_violation": row[3],
+                }
+                for row in conn.execute(text(select_sql), params).fetchall()
+                if row[0]
             ]
 
-        if not record_numbers:
+        if not records:
             logger.info("Tampa detail enrichment: no candidate records selected")
             return {"selected": 0, "updated": 0, "errors": 0}
 
@@ -1249,7 +1541,8 @@ class TampaPermitService:
         session = requests.Session()
         session.headers.update({"User-Agent": "HillsInspector/TampaPermit/1.0"})
 
-        for record_number in record_numbers:
+        for record in records:
+            record_number = str(record["record_number"])
             try:
                 url = GLOBAL_SEARCH_URL.format(query=quote(record_number))
                 response = session.get(url, timeout=self.timeout_seconds)
@@ -1257,6 +1550,26 @@ class TampaPermitService:
 
                 parsed = self._extract_detail_fields(response.text)
                 detail_url = self._extract_cap_detail_url(response.text, response.url)
+                if detail_url is None and "GlobalSearchResults.aspx" in response.url:
+                    detail_url = self._resolve_cap_detail_url_from_search_results(
+                        session,
+                        record_number=record_number,
+                        page_html=response.text,
+                        page_url=response.request.url or response.url,
+                    )
+
+                if detail_url and detail_url != response.url and (
+                    parsed["status"] is None
+                    or parsed["expiration_date"] is None
+                    or parsed["estimated_work_cost"] is None
+                ):
+                    detail_response = session.get(detail_url, timeout=self.timeout_seconds)
+                    detail_response.raise_for_status()
+                    parsed = self._merge_detail_fields(
+                        parsed,
+                        self._extract_detail_fields(detail_response.text),
+                    )
+
                 status = parsed["status"]
                 expiration_date = parsed["expiration_date"]
                 estimated_work_cost = parsed["estimated_work_cost"]
@@ -1264,7 +1577,13 @@ class TampaPermitService:
                 # If the lookup is not a detail page, fields can be missing.
                 # We still keep detail_url if resolvable and mark open-state from status.
                 is_open = self.is_open_status(status)
-                needs_closeout = is_open
+                needs_closeout = self.needs_closeout_for_record(
+                    record_number=record_number,
+                    module=record["module"],
+                    record_type=record["record_type"],
+                    status=status,
+                    is_violation=record["is_violation"],
+                )
 
                 with self._engine.begin() as conn:
                     conn.execute(
@@ -1314,11 +1633,11 @@ class TampaPermitService:
 
         logger.info(
             "Tampa detail enrichment complete: selected={}, updated={}, errors={}",
-            len(record_numbers),
+            len(records),
             updated,
             errors,
         )
-        return {"selected": len(record_numbers), "updated": updated, "errors": errors}
+        return {"selected": len(records), "updated": updated, "errors": errors}
 
 
 def _parse_iso_date(value: str) -> date:

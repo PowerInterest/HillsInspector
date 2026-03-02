@@ -95,6 +95,7 @@
             <button class="tab-link" onclick="openTab(event, 'comparables')">Comparables</button>
             <button class="tab-link" onclick="openTab(event, 'permits')">Permits & NOCs</button>
             <button class="tab-link" onclick="openTab(event, 'tax')">Tax</button>
+            <button class="tab-link" onclick="openTab(event, 'personal')">Personal</button>
             <button class="tab-link" onclick="openTab(event, 'documents')">Documents</button>
         </div>
 
@@ -389,6 +390,12 @@
     <div id="tax" class="tab-content" hx-get="/property/{{ property.folio }}/tax" hx-trigger="tab-show once"
         hx-swap="innerHTML" style="display:none;">
         <div class="htmx-loading">Loading tax...</div>
+    </div>
+
+    <!-- Personal Tab -->
+    <div id="personal" class="tab-content" hx-get="/property/{{ property.folio }}/personal" hx-trigger="tab-show once"
+        hx-swap="innerHTML" style="display:none;">
+        <div class="htmx-loading">Loading personal dossier...</div>
     </div>
 
     <!-- Documents Tab -->

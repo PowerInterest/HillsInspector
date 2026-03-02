@@ -18,6 +18,14 @@ Phase B Step 3, alongside mortgages, judgments, and other encumbrances.
 The web UI already had a query (`_pg_nocs_for_property()`) and a template
 section for NOCs, but they always returned empty.
 
+**A later discovery bug** still blocked live PG NOCs even after persistence was
+added:
+
+1. `_discover_property()` in `pg_ori_service.py` dropped NOCs in its final
+   keep-filter before `_save_documents()` ever ran.
+2. Official-record seeding could admit owner-only NOC matches with no legal or
+   address evidence, which risks attaching the wrong NOC to a foreclosure.
+
 ## Architecture
 
 ### Data Flow
@@ -30,6 +38,72 @@ ORI API  ──>  pg_ori_service._save_documents()
                   ├── is_noc    = True  →  passes filter
                   └── INSERT INTO ori_encumbrances (encumbrance_type = 'noc', ...)
 ```
+
+### Discovery Guardrails
+
+NOCs must have **property-text evidence** before they are kept:
+
+- legal-description token overlap, or
+- address/street token overlap
+
+Owner-name overlap by itself is **not enough** for NOCs. That rule is stricter
+than mortgages / assignments because NOCs are frequently filed by the same
+owner across multiple properties, so owner-only matching creates false
+positives.
+
+If the NOC text contains an **explicit street address**, we require street-token
+overlap with the foreclosure property. Shared subdivision or city words like
+`THERESA ARBOR` or `TEMPLE TERRACE` are not enough once the NOC is clearly
+addressed to a different site.
+
+In practice the address matcher is stricter than simple token overlap:
+
+- the exact house number must match when the NOC contains an explicit address,
+- generic road suffixes like `AVE`, `DR`, `CT`, `CIR`, and `WAY` do **not**
+  count as street-name evidence,
+- if the parcel legal includes `LOT` / `BLOCK`, those locators take precedence
+  over broader `UNIT` text when both appear,
+- condo-style `UNIT` matching is only used when `LOT` is not part of the
+  parcel identity.
+
+Those guardrails were necessary to stop recent permit-backed live PAV searches
+from attaching subdivision-neighbor NOCs or same-house-number/different-street
+records to the wrong foreclosure.
+
+### Targeted Live Fallback
+
+Local `official_records_daily_instruments` seeding is not complete enough to be
+the sole NOC source. Some real live PAV NOCs are absent from that table even
+for recent years.
+
+`pg_ori_service.py` now adds a bounded live NOC fallback, but only when all of
+these are true:
+
+1. the standard discovery passes still found no NOC for the property,
+2. the property shows recent permit signal in `county_permits` or
+   permit-relevant `tampa_accela_records`,
+3. the property still passes the NOC property-text guardrails above.
+
+The live fallback search order is:
+
+1. NOC-filtered legal search using subdivision / lot-block terms,
+2. NOC-filtered party search using owner plus recent chain names,
+3. exact-address full-text NOC search as a last resort.
+
+That keeps the more expensive Hyland full-text endpoint off the normal ORI path
+while still letting recent permit-backed no-NOC cases probe the live source.
+
+Maintenance command:
+
+```bash
+uv run python -m src.tools.pg_ori_recent_noc_backfill --limit 25
+```
+
+Useful flags:
+
+- `--dry-run` to inspect hits without saving
+- `--foreclosure-id <id>` to probe one case
+- `--include-never-searched` to widen the target pool beyond already-searched actives
 
 ### Where NOCs Are Excluded
 

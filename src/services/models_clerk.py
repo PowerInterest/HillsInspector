@@ -1,5 +1,5 @@
 """
-SQLAlchemy ORM models for Hillsborough County Clerk of Court civil bulk data.
+SQLAlchemy ORM models for Hillsborough County Clerk of Court bulk data.
 
 Tables:
 - clerk_civil_cases: Monthly bulk case data
@@ -7,7 +7,8 @@ Tables:
 - clerk_civil_parties: Monthly bulk party data (plaintiff, defendant, attorney)
 - clerk_disposed_cases: Monthly disposed cases report
 - clerk_garnishment_cases: Weekly return-of-service and garnishment report
-- clerk_name_index: Complete alphabetical party index (20+ years, Circuit + County)
+- clerk_name_index: Complete alphabetical civil party index (20+ years, Circuit + County)
+- clerk_criminal_name_index: Complete alphabetical criminal party index (Circuit + County)
 - official_records_daily_instruments: Daily Official Records D/P/M instrument feed
 
 Data sources:
@@ -16,6 +17,8 @@ Data sources:
 - https://publicrec.hillsclerk.com/Civil/Circuit%20and%20County%20Civil%20with%20Return%20of%20Service%20and%20Garnishment%20Data/
 - https://publicrec.hillsclerk.com/Civil/alpha_index/Circuit/
 - https://publicrec.hillsclerk.com/Civil/alpha_index/County/
+- https://publicrec.hillsclerk.com/Criminal/name_index/Circuit/
+- https://publicrec.hillsclerk.com/Criminal/name_index/County/
 - https://publicrec.hillsclerk.com/OfficialRecords/DailyIndexes/
 """
 
@@ -277,6 +280,102 @@ class ClerkNameIndex(Base):
             "business_name",
             postgresql_using="gin",
             postgresql_ops={"business_name": "gin_trgm_ops"},
+        ),
+    )
+
+
+class ClerkCriminalNameIndex(Base):
+    """Complete alphabetical criminal party index — all criminal cases, Circuit + County.
+
+    Source: https://publicrec.hillsclerk.com/Criminal/name_index/{Circuit,County}/
+    Format: Pipe-delimited TXT, 27 files per court type (A-Z + NonAlpha).
+    Updated weekly by the Clerk.
+
+    Contains charge-level detail: each row represents one count against one party
+    in one case.  A single defendant with multiple charges produces multiple rows
+    sharing the same UCN but differing in count_number / statute_violation / etc.
+
+    The UCN (Uniform Case Number) encodes: county(29) + year + court_type + sequence
+    + party_designator + location(HC).
+    Example: 292019CF123456A001HC
+    """
+
+    __tablename__ = "clerk_criminal_name_index"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    court_type: Mapped[str] = mapped_column(Text, nullable=False)
+    business_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    middle_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suffix: Mapped[str | None] = mapped_column(Text, nullable=True)
+    party_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ucn: Mapped[str] = mapped_column(String(64), nullable=False)
+    case_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    utc_number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    case_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    division: Mapped[str | None] = mapped_column(Text, nullable=True)
+    judge_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    date_filed: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    current_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    sex_gender: Mapped[str | None] = mapped_column(Text, nullable=True)
+    address1: Mapped[str | None] = mapped_column(Text, nullable=True)
+    address2: Mapped[str | None] = mapped_column(Text, nullable=True)
+    city: Mapped[str | None] = mapped_column(Text, nullable=True)
+    state: Mapped[str | None] = mapped_column(Text, nullable=True)
+    zip_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    race: Mapped[str | None] = mapped_column(Text, nullable=True)
+    date_of_birth: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    count_number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    count_level_degree: Mapped[str | None] = mapped_column(Text, nullable=True)
+    statute_violation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    charge_description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    offense_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    disposition_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    disposition_desc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    disposition_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    law_enforcement_agency: Mapped[str | None] = mapped_column(Text, nullable=True)
+    officer_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    driver_license_number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    driver_license_state: Mapped[str | None] = mapped_column(Text, nullable=True)
+    commercial_vehicle: Mapped[str | None] = mapped_column(Text, nullable=True)
+    blood_alcohol_level: Mapped[str | None] = mapped_column(Text, nullable=True)
+    posted_speed: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actual_speed: Mapped[str | None] = mapped_column(Text, nullable=True)
+    amount_paid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    date_paid: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    akas: Mapped[str | None] = mapped_column(Text, nullable=True)
+    balance_due: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_file: Mapped[str | None] = mapped_column(Text, nullable=True)
+    loaded_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "ucn", "count_number", "disposition_code",
+            name="uq_clerk_crim_ni_ucn_count_disp",
+        ),
+        Index("idx_clerk_crim_ni_case_number", "case_number"),
+        Index("idx_clerk_crim_ni_ucn", "ucn"),
+        Index("idx_clerk_crim_ni_case_type", "case_type"),
+        Index("idx_clerk_crim_ni_date_filed", "date_filed"),
+        Index("idx_clerk_crim_ni_party_type", "party_type"),
+        Index("idx_clerk_crim_ni_court_type", "court_type"),
+        Index("idx_clerk_crim_ni_status", "current_status"),
+        Index("idx_clerk_crim_ni_disposition_code", "disposition_code"),
+        Index(
+            "idx_clerk_crim_ni_last_name_trgm",
+            "last_name",
+            postgresql_using="gin",
+            postgresql_ops={"last_name": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_clerk_crim_ni_first_name_trgm",
+            "first_name",
+            postgresql_using="gin",
+            postgresql_ops={"first_name": "gin_trgm_ops"},
         ),
     )
 

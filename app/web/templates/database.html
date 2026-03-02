@@ -1,97 +1,355 @@
 {% extends "base.html" %}
-
-{% block title %}Database - HillsInspector{% endblock %}
+{% block title %}Database Search - HillsInspector{% endblock %}
 
 {% block extra_head %}
 <style>
-    .database-card {
-        background: #fff;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-        padding: 1rem;
+    /* ── Search Page Layout ── */
+    .search-page-title {
+        font-size: 1.5rem;
+        font-weight: 700;
+        margin-bottom: 0.25rem;
+    }
+
+    .search-page-subtitle {
+        color: var(--color-text-muted);
+        font-size: 0.9rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .search-container {
+        display: flex;
+        gap: 1.5rem;
+    }
+
+    @media (max-width: 768px) {
+        .search-container {
+            flex-direction: column;
+        }
+    }
+
+    /* ── Search Cards ── */
+    .search-card {
+        flex: 1;
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        box-shadow: var(--shadow-sm);
+        padding: 1.5rem;
+    }
+
+    .search-card h2 {
+        font-size: 1.1rem;
+        font-weight: 700;
+        margin-bottom: 0.25rem;
+    }
+
+    .search-card-desc {
+        color: var(--color-text-muted);
+        font-size: 0.85rem;
+        margin-bottom: 1rem;
+        line-height: 1.4;
+    }
+
+    .search-input {
+        display: block;
+        width: 100%;
+        padding: 0.75rem;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-sm);
+        font-size: 0.9rem;
+        font-family: inherit;
+        color: var(--color-text);
+        background: var(--color-surface);
+        margin-bottom: 0.75rem;
+        outline: none;
+        transition: border-color 0.15s;
+    }
+
+    .search-input:focus {
+        border-color: var(--color-primary);
+        box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+    }
+
+    .search-input::placeholder {
+        color: #9ca3af;
+    }
+
+    .search-btn {
+        display: block;
+        width: 100%;
+        padding: 0.75rem;
+        background: var(--color-primary);
+        color: #fff;
+        font-weight: 600;
+        font-size: 0.9rem;
+        font-family: inherit;
+        border: none;
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        transition: background 0.15s;
+    }
+
+    .search-btn:hover {
+        background: var(--color-primary-dark);
+    }
+
+    .search-btn:active {
+        transform: translateY(1px);
+    }
+
+    /* ── Loading Spinner ── */
+    .search-spinner {
+        display: none;
+        text-align: center;
+        padding: 1.5rem 0;
+    }
+
+    .search-spinner .spinner-dot {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--color-primary);
+        margin: 0 4px;
+        animation: spinner-bounce 1.2s ease-in-out infinite;
+    }
+
+    .search-spinner .spinner-dot:nth-child(2) {
+        animation-delay: 0.15s;
+    }
+
+    .search-spinner .spinner-dot:nth-child(3) {
+        animation-delay: 0.3s;
+    }
+
+    @keyframes spinner-bounce {
+        0%, 80%, 100% {
+            opacity: 0.25;
+            transform: scale(0.8);
+        }
+        40% {
+            opacity: 1;
+            transform: scale(1);
+        }
+    }
+
+    .htmx-request .search-spinner {
+        display: block;
+    }
+
+    .htmx-request .search-btn {
+        opacity: 0.6;
+        pointer-events: none;
+    }
+
+    /* ── Results Area ── */
+    .results-area {
+        margin-top: 1.5rem;
+    }
+
+    /* ── Section Headers (used by result partials) ── */
+    .result-header {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
         margin-bottom: 1rem;
     }
 
-    .database-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 1rem;
-        flex-wrap: wrap;
+    .result-header h2 {
+        font-size: 1.1rem;
+        font-weight: 700;
+        margin: 0;
     }
 
-    .database-open {
+    .total-badge {
         display: inline-block;
-        padding: 0.5rem 0.9rem;
-        border-radius: 6px;
-        border: 1px solid #2563eb;
+        background: var(--color-primary);
         color: #fff;
-        background: #2563eb;
-        text-decoration: none;
+        font-size: 0.75rem;
+        font-weight: 600;
+        padding: 0.15rem 0.6rem;
+        border-radius: 999px;
+        vertical-align: middle;
+    }
+
+    .section-header {
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 0.95rem;
+        padding: 0.75rem 1rem;
+        background: var(--color-bg);
+        border-radius: var(--radius-sm);
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        user-select: none;
+        list-style: none;
+    }
+
+    .section-header::-webkit-details-marker {
+        display: none;
+    }
+
+    .section-header::before {
+        content: "\25B6";
+        font-size: 0.65rem;
+        transition: transform 0.15s;
+        color: var(--color-text-muted);
+    }
+
+    details[open] > .section-header::before {
+        transform: rotate(90deg);
+    }
+
+    .count-badge {
+        display: inline-block;
+        background: #6b7280;
+        color: #fff;
+        font-size: 0.7rem;
+        font-weight: 600;
+        padding: 0.1rem 0.5rem;
+        border-radius: 999px;
+        margin-left: auto;
+    }
+
+    /* ── Result Tables (data-table class used by partials) ── */
+    .results-area .data-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+    }
+
+    .results-area .data-table th,
+    .results-area .data-table td {
+        padding: 0.6rem 0.75rem;
+        text-align: left;
+        border-bottom: 1px solid var(--color-border);
+    }
+
+    .results-area .data-table th {
+        background: var(--color-bg);
+        font-weight: 600;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        color: var(--color-text-muted);
+        white-space: nowrap;
+    }
+
+    .results-area .data-table tbody tr:hover {
+        background: #f9fafb;
+    }
+
+    .results-area .data-table .money {
+        font-family: 'SF Mono', 'Consolas', monospace;
+        text-align: right;
+        white-space: nowrap;
+    }
+
+    .results-area .table-container {
+        overflow-x: auto;
+        margin-top: 0.5rem;
+        margin-bottom: 1rem;
+    }
+
+    /* ── Section Spacing ── */
+    .results-area details {
+        margin-bottom: 0.75rem;
+    }
+
+    .results-area details .table-container {
+        margin-top: 0;
+    }
+
+    /* ── Score Colors ── */
+    .score-high {
+        color: var(--color-success);
         font-weight: 600;
     }
 
-    .database-open:hover {
-        text-decoration: none;
-        background: #1d4ed8;
+    .score-medium {
+        color: var(--color-text);
     }
 
-    .database-frame {
-        width: 100%;
-        height: calc(100vh - 220px);
-        min-height: 640px;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        background: #fff;
+    .score-low {
+        color: #d97706;
     }
 
-    @media (max-width: 900px) {
-        .database-frame {
-            height: calc(100vh - 180px);
-            min-height: 480px;
-        }
+    /* ── Status Colors ── */
+    .status-open {
+        color: var(--color-danger);
+        font-weight: 600;
+    }
+
+    .status-closed {
+        color: var(--color-text-muted);
+    }
+
+    /* ── Property Summary Card ── */
+    .property-summary-card {
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-md);
+        box-shadow: var(--shadow-sm);
+        padding: 1.25rem;
+        margin-bottom: 1rem;
+    }
+
+    .property-summary-card h3 {
+        font-size: 1rem;
+        font-weight: 700;
+        margin-bottom: 0.75rem;
+    }
+
+    .no-results {
+        text-align: center;
+        padding: 2rem;
+        color: var(--color-text-muted);
+        font-size: 0.95rem;
     }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="database-card">
-    <div class="database-header">
-        <div>
-            <h1 style="font-size:1.2rem; margin:0;">
-                PostgreSQL Database
-            </h1>
-            <p class="muted" style="margin-top:0.25rem;">
-                CloudBeaver connection for viewing and querying PostgreSQL data.
-            </p>
-        </div>
+<h1 class="search-page-title">Database Search</h1>
+<p class="search-page-subtitle">Search across all public records in Hillsborough County</p>
 
-        {% if cloudbeaver_pg_url %}
-        <a class="database-open" href="{{ cloudbeaver_pg_url }}" target="_blank" rel="noopener noreferrer">
-            Open In New Tab
-        </a>
-        {% endif %}
+<div class="search-container">
+    <!-- Person Search Card -->
+    <div class="search-card" id="person-search-card">
+        <h2>Person Search</h2>
+        <p class="search-card-desc">Search civil, criminal, UCC, property, and corporate records by name</p>
+        <form hx-post="/database/person-search" hx-target="#person-results" hx-indicator="#person-search-card">
+            <input type="text" name="name" class="search-input"
+                placeholder="Enter name (e.g. SMITH, JOHN or JOHN SMITH)"
+                required>
+            <button type="submit" class="search-btn">Search Person Records</button>
+        </form>
+        <div class="search-spinner" id="person-spinner">
+            <span class="spinner-dot"></span>
+            <span class="spinner-dot"></span>
+            <span class="spinner-dot"></span>
+        </div>
+    </div>
+
+    <!-- Property Search Card -->
+    <div class="search-card" id="property-search-card">
+        <h2>Property Search</h2>
+        <p class="search-card-desc">Search by folio, strap, address, or case number</p>
+        <form hx-post="/database/property-search" hx-target="#property-results" hx-indicator="#property-search-card">
+            <input type="text" name="identifier" class="search-input"
+                placeholder="Enter folio, address, or case number"
+                required>
+            <button type="submit" class="search-btn">Search Property Records</button>
+        </form>
+        <div class="search-spinner" id="property-spinner">
+            <span class="spinner-dot"></span>
+            <span class="spinner-dot"></span>
+            <span class="spinner-dot"></span>
+        </div>
     </div>
 </div>
 
-{% if not cloudbeaver_pg_url %}
-<div class="database-card">
-    <p><strong>CLOUDBEAVER_PG_URL</strong> (or <strong>CLOUDBEAVER_URL</strong>) is not configured.</p>
-    <p class="muted">Set it in your environment (example: <code>http://localhost:8978</code>).</p>
-</div>
-{% elif not cloudbeaver_embed_enabled %}
-<div class="database-card">
-    <p>Embedded database view is disabled.</p>
-    <p class="muted">Set <code>CLOUDBEAVER_EMBED=1</code> to render inline.</p>
-</div>
-{% else %}
-<iframe
-    class="database-frame"
-    src="{{ cloudbeaver_pg_url }}"
-    title="CloudBeaver PostgreSQL Browser"
-    loading="lazy"
-    referrerpolicy="no-referrer"
-></iframe>
-{% endif %}
+<!-- Results Areas (full width, below the search cards) -->
+<div class="results-area" id="person-results"></div>
+<div class="results-area" id="property-results"></div>
 {% endblock %}

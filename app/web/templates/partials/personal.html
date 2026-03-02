@@ -1,0 +1,256 @@
+{# ── Match Confidence Note ── #}
+{% if owner_name %}
+<div style="background: #fef3c7; border: 1px solid #f59e0b; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; font-size: 0.9rem; color: #92400e;">
+    Records matched by fuzzy name search for: <strong>{{ owner_name }}</strong>.
+    Results may include records for different people with similar names.
+</div>
+{% endif %}
+
+{# ── Section 1: Identity Summary ── #}
+<section class="card">
+    <h2>Identity Summary</h2>
+    <div class="info-grid">
+        <div class="info-item">
+            <span class="info-label">Owner Name</span>
+            <span class="info-value">{{ owner_name or 'Unknown' }}</span>
+        </div>
+        {% if dossier.identity.aliases %}
+        <div class="info-item">
+            <span class="info-label">Known Aliases</span>
+            <span class="info-value">{{ dossier.identity.aliases|join(', ') }}</span>
+        </div>
+        {% endif %}
+        {% if dossier.identity.addresses %}
+        <div class="info-item" style="grid-column: 1 / -1;">
+            <span class="info-label">Known Addresses ({{ dossier.identity.addresses|length }})</span>
+            <span class="info-value">
+                {% for addr in dossier.identity.addresses[:8] %}
+                <div>{{ addr }}</div>
+                {% endfor %}
+                {% if dossier.identity.addresses|length > 8 %}
+                <div class="muted">... and {{ dossier.identity.addresses|length - 8 }} more</div>
+                {% endif %}
+            </span>
+        </div>
+        {% endif %}
+    </div>
+</section>
+
+{# ── Section 2: Civil Litigation ── #}
+<section class="card">
+    <h2>Civil Litigation ({{ dossier.civil_cases|length }} case{{ 's' if dossier.civil_cases|length != 1 }})</h2>
+    {% if dossier.civil_cases %}
+    <div class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Case #</th>
+                    <th>Type</th>
+                    <th>Status</th>
+                    <th>Filed Date</th>
+                    <th>Role</th>
+                    <th>Case Style</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for c in dossier.civil_cases %}
+                <tr>
+                    <td>{{ c.case_number or '-' }}</td>
+                    <td>{{ c.case_type or '-' }}</td>
+                    <td>
+                        {% if c.case_status and 'OPEN' in (c.case_status|upper) %}
+                        <span style="color: #dc2626; font-weight: 600;">{{ c.case_status }}</span>
+                        {% elif c.case_status and 'CLOSED' in (c.case_status|upper) %}
+                        <span style="color: #6b7280;">{{ c.case_status }}</span>
+                        {% else %}
+                        {{ c.case_status or '-' }}
+                        {% endif %}
+                    </td>
+                    <td>{{ c.filing_date|format_date if c.filing_date else '-' }}</td>
+                    <td>{{ c.party_type or '-' }}</td>
+                    <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ c.style or '-' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">No civil cases found for this owner.</p>
+    {% endif %}
+</section>
+
+{# ── Section 2b: Garnishments ── #}
+{% if dossier.garnishments %}
+<section class="card" style="border-left: 4px solid #ef4444;">
+    <h2 style="color: #dc2626;">Garnishments ({{ dossier.garnishments|length }})</h2>
+    <div class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Case #</th>
+                    <th>Plaintiff</th>
+                    <th>Defendant</th>
+                    <th>Garnishee</th>
+                    <th>Filed Date</th>
+                    <th>Status</th>
+                    <th>Writ Issued</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for g in dossier.garnishments %}
+                <tr>
+                    <td>{{ g.case_number or '-' }}</td>
+                    <td>{{ g.plaintiff_name or '-' }}</td>
+                    <td>{{ g.defendant_name or '-' }}</td>
+                    <td>{{ g.garnishee_name or '-' }}</td>
+                    <td>{{ g.filing_date|format_date if g.filing_date else '-' }}</td>
+                    <td>{{ g.case_status_description or '-' }}</td>
+                    <td>{{ g.writ_issued_date|format_date if g.writ_issued_date else '-' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
+
+{# ── Section 3: Criminal History ── #}
+<section class="card">
+    <h2>Criminal History ({{ dossier.criminal_cases|length }} case{{ 's' if dossier.criminal_cases|length != 1 }})</h2>
+    {% if dossier.criminal_cases %}
+    <div class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Case #</th>
+                    <th>Case Type</th>
+                    <th>Charges</th>
+                    <th>Status</th>
+                    <th>Filed Date</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for cc in dossier.criminal_cases %}
+                <tr>
+                    <td colspan="5" style="padding: 0;">
+                        <details>
+                            <summary style="padding: 8px 12px; cursor: pointer; display: flex; gap: 0;">
+                                <span style="flex: 0 0 120px;">{{ cc.case_number or '-' }}</span>
+                                <span style="flex: 0 0 120px;">{{ cc.case_type or '-' }}</span>
+                                <span style="flex: 0 0 80px;">{{ cc.charges|length }} charge{{ 's' if cc.charges|length != 1 }}</span>
+                                <span style="flex: 0 0 100px;">
+                                    {% if cc.current_status and 'OPEN' in (cc.current_status|upper) %}
+                                    <span style="color: #dc2626; font-weight: 600;">{{ cc.current_status }}</span>
+                                    {% elif cc.current_status and 'CLOSED' in (cc.current_status|upper) %}
+                                    <span style="color: #6b7280;">{{ cc.current_status }}</span>
+                                    {% else %}
+                                    {{ cc.current_status or '-' }}
+                                    {% endif %}
+                                </span>
+                                <span style="flex: 0 0 100px;">{{ cc.date_filed|format_date if cc.date_filed else '-' }}</span>
+                            </summary>
+                            <div style="padding: 8px 12px 12px 24px; background: #f9fafb;">
+                                <table class="data-table" style="font-size: 0.85rem;">
+                                    <thead>
+                                        <tr>
+                                            <th>Count</th>
+                                            <th>Charge</th>
+                                            <th>Level/Degree</th>
+                                            <th>Statute</th>
+                                            <th>Offense Date</th>
+                                            <th>Disposition</th>
+                                            <th>Disp. Date</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for ch in cc.charges %}
+                                        <tr>
+                                            <td>{{ ch.count_number or '-' }}</td>
+                                            <td>{{ ch.charge_description or '-' }}</td>
+                                            <td>{{ ch.count_level_degree or '-' }}</td>
+                                            <td>{{ ch.statute_violation or '-' }}</td>
+                                            <td>{{ ch.offense_date|format_date if ch.offense_date else '-' }}</td>
+                                            <td>{{ ch.disposition_desc or '-' }}</td>
+                                            <td>{{ ch.disposition_date|format_date if ch.disposition_date else '-' }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </details>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">No criminal records found for this owner.</p>
+    {% endif %}
+</section>
+
+{# ── Section 4: UCC / Federal Liens ── #}
+<section class="card">
+    <h2>UCC / Federal Liens ({{ dossier.ucc_liens|length }})</h2>
+    {% if dossier.ucc_liens %}
+    <div class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Filing #</th>
+                    <th>Secured Party</th>
+                    <th>Status</th>
+                    <th>Filed Date</th>
+                    <th>Expiration</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in dossier.ucc_liens %}
+                <tr style="{% if u.is_active %}font-weight: 600;{% else %}color: #9ca3af;{% endif %}">
+                    <td>{{ u.doc_number or '-' }}</td>
+                    <td>{{ u.secured_party or '-' }}</td>
+                    <td>{{ u.filing_status or '-' }}</td>
+                    <td>{{ u.filing_date|format_date if u.filing_date else '-' }}</td>
+                    <td>{{ u.expiration_date|format_date if u.expiration_date else '-' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">No UCC liens found for this owner.</p>
+    {% endif %}
+</section>
+
+{# ── Section 5: Cross-Property ORI Records ── #}
+<section class="card">
+    <h2>Cross-Property ORI Records ({{ dossier.ori_docs|length }})</h2>
+    {% if dossier.ori_docs %}
+    <div class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Recording Date</th>
+                    <th>Doc Type</th>
+                    <th>Other Party</th>
+                    <th>Amount</th>
+                    <th>Instrument #</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for d in dossier.ori_docs %}
+                <tr>
+                    <td>{{ d.recording_date|format_date if d.recording_date else '-' }}</td>
+                    <td>{{ d.encumbrance_type or '-' }}</td>
+                    <td>{{ d.other_party or '-' }}</td>
+                    <td class="money">{{ "${:,.2f}".format(d.amount) if d.amount else '-' }}</td>
+                    <td>{{ d.instrument_number or '-' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="muted">No additional recorded documents found.</p>
+    {% endif %}
+</section>

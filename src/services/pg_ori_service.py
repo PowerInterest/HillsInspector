@@ -4,14 +4,20 @@ PG-first, phased discovery for encumbrances:
 1. Case-number anchors + deed-chain seeds from ``hcpa_allsales``.
 2. Adjacent instrument expansion + reference chase (CLK/INST/book-page).
 3. Guarded fallback (clerk case seeds + targeted legal/address/party search).
+4. Targeted live NOC fallback for recent permit-backed properties that still
+   have no discovered Notice of Commencement after the normal passes.
 
-All ORI calls use PAV ``CustomQuery/KeywordSearch`` API paths with truncation
-splitting for bounded date-window searches.
+Most ORI calls use the Hyland PAV ``CustomQuery/KeywordSearch`` API with
+truncation splitting for bounded date-window searches. A narrower full-text
+probe is reserved for exact-address NOC lookups when the local seed data and
+standard live passes still leave a recent permit-backed property without a NOC.
 
 ``_save_documents()`` persists encumbrances, satisfactions, assignments, and
-NOCs (Notices of Commencement).  NOCs are stored with encumbrance_type='noc'
-but excluded from survival analysis and lien counts downstream.
-See docs/NOC_PERMIT_LINKING.md.
+NOCs (Notices of Commencement). NOCs are stored with encumbrance_type='noc'
+but excluded from survival analysis and lien counts downstream. Discovery keeps
+NOCs through the final filter and requires property-text evidence
+(legal/address), so owner-only NOC matches do not pollute unrelated parcels.
+See docs/NOC_PERMIT_LINKING.md and docs/external/HYLAND_PAV_NOC_DISCOVERY.md.
 """
 
 from __future__ import annotations
@@ -71,9 +77,43 @@ _BKPG_REF_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _CASE_VARIANT_RE = re.compile(r"^\d{2}(\d{4})([A-Z]{2})(\d{6}).*$")
+_ADDRESS_LINE_RE = re.compile(r"\b\d{3,6}[A-Z]?(?:\s+[A-Z0-9]+){1,4}\b", re.IGNORECASE)
+_LEGAL_LOCATOR_RE = re.compile(
+    r"\b(LOT|UNIT|BLOCK|BLK)\s*(?:NO\.?\s*)?([A-Z0-9]+)\b",
+    re.IGNORECASE,
+)
+_STREET_STOP_TOKENS = frozenset({
+    "ALLEY",
+    "AVE",
+    "AVENUE",
+    "BLVD",
+    "BOULEVARD",
+    "CIR",
+    "CIRCLE",
+    "COURT",
+    "CT",
+    "DR",
+    "DRIVE",
+    "HWY",
+    "LANE",
+    "LN",
+    "PKWY",
+    "PLACE",
+    "PL",
+    "RD",
+    "ROAD",
+    "ST",
+    "STREET",
+    "TER",
+    "TERRACE",
+    "TRAIL",
+    "TRL",
+    "WAY",
+})
 
 # PAV CustomQuery endpoint
 _PAV_KEYWORD_URL = "https://publicaccess.hillsclerk.com/PAVDirectSearch/api/CustomQuery/KeywordSearch"
+_PAV_FULL_TEXT_URL = "https://publicaccess.hillsclerk.com/PAVDirectSearch/api/DocumentType/FullTextSearch"
 _PAV_HEADERS = {
     "Content-Type": "application/json",
     "Origin": "https://publicaccess.hillsclerk.com",
@@ -83,6 +123,12 @@ _PAV_QUERY_LIMIT = 500
 _PAV_MAX_RETRIES = 3
 _PAV_SPLIT_DEPTH = 6
 _PAV_TIMEOUT_SECONDS = 30
+_PAV_FULL_TEXT_TIMEOUT_SECONDS = 60
+_PAV_FULL_TEXT_RETRIES = 1
+
+_PAV_NOC_DOC_TYPE = "(NOC) NOTICE OF COMMENCEMENT"
+_PAV_NOC_DOC_TYPE_ID = 1138
+_RECENT_PERMIT_FALLBACK_YEARS = 5
 
 # Query caps to keep per-property execution bounded.
 _MAX_DEEDS_TO_SCAN = 20
@@ -225,6 +271,13 @@ def _is_assignment_type(doc: dict[str, Any]) -> bool:
     return enc_type == "assignment"
 
 
+def _is_noc_type(doc: dict[str, Any]) -> bool:
+    raw = doc.get("DocType") or doc.get("document_type") or doc.get("doc_type") or ""
+    canonical = normalize_document_type(raw)
+    enc_type = normalize_encumbrance_type(canonical or raw)
+    return canonical in CANONICAL_NOC_TYPES or enc_type == "noc"
+
+
 def _format_mm_dd_yyyy(iso_date: str | None) -> str | None:
     """Convert YYYY-MM-DD to MM/DD/YYYY for ORI API."""
     if not iso_date:
@@ -297,6 +350,7 @@ class PgOriService:
         self.engine = get_engine(self.dsn)
         self._pav_session = requests.Session()
         self._pav_session.headers.update(_PAV_HEADERS)
+        self._official_noc_coverage_start_cache: date | None = None
 
     def run(self, *, limit: int | None = None) -> dict[str, Any]:
         """Find foreclosures needing ORI search, run searches, save to PG."""
@@ -307,9 +361,167 @@ class PgOriService:
         logger.info(f"ORI search: {len(targets)} foreclosures to process")
         return asyncio.run(self._search_all(targets))
 
+    def run_recent_permit_noc_backfill(
+        self,
+        *,
+        limit: int | None = None,
+        foreclosure_ids: list[int] | None = None,
+        dry_run: bool = False,
+        require_ori_searched: bool = True,
+    ) -> dict[str, Any]:
+        """Probe live PAV for NOCs on recent permit-backed active foreclosures."""
+        before_targets = self._find_recent_permit_no_noc_targets(
+            limit=None,
+            foreclosure_ids=foreclosure_ids,
+            require_ori_searched=require_ori_searched,
+        )
+        targets = before_targets[:limit] if limit is not None else before_targets
+        if not targets:
+            return {"skipped": True, "reason": "no_recent_permit_no_noc_targets"}
+
+        total_docs = 0
+        total_saved = 0
+        targets_with_docs = 0
+        errors = 0
+        total_api_calls = 0
+        total_retries = 0
+        total_truncated = 0
+        total_unresolved_truncations = 0
+        per_target: list[dict[str, Any]] = []
+        latest_date = datetime.now(tz=UTC).date()
+
+        for i, target in enumerate(targets):
+            fid = target["foreclosure_id"]
+            case = target["case_number"]
+            strap = target["strap"]
+            folio = target["folio"]
+            logger.info(
+                "[{}/{}] Live NOC backfill for {} (strap={})",
+                i + 1,
+                len(targets),
+                case,
+                strap,
+            )
+            try:
+                ownership_chain = self._get_ownership_chain(strap)
+                property_tokens = self._build_property_tokens(target, ownership_chain)
+                earliest_date = self._earliest_relevant_date(ownership_chain, target)
+                stats = {
+                    "api_calls": 0,
+                    "retries": 0,
+                    "truncated": 0,
+                    "unresolved_truncations": 0,
+                }
+                docs = self._run_live_noc_fallback(
+                    target=target,
+                    ownership_chain=ownership_chain,
+                    property_tokens=property_tokens,
+                    earliest_date=earliest_date,
+                    latest_date=latest_date,
+                    stats=stats,
+                )
+                saved = 0
+                if docs and not dry_run:
+                    saved = self._save_documents(strap, folio, docs)
+
+                total_docs += len(docs)
+                total_saved += saved
+                total_api_calls += stats["api_calls"]
+                total_retries += stats["retries"]
+                total_truncated += stats["truncated"]
+                total_unresolved_truncations += stats["unresolved_truncations"]
+                if docs:
+                    targets_with_docs += 1
+
+                per_target.append(
+                    {
+                        "foreclosure_id": fid,
+                        "case_number": case,
+                        "strap": strap,
+                        "folio": folio,
+                        "docs_found": len(docs),
+                        "saved": saved,
+                        "api_calls": stats["api_calls"],
+                        "truncated": stats["truncated"],
+                        "instruments": [_get_instrument(doc) for doc in docs if _get_instrument(doc)],
+                    }
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Live NOC backfill error for case={} strap={} foreclosure_id={}",
+                    case,
+                    strap,
+                    fid,
+                )
+                errors += 1
+                per_target.append(
+                    {
+                        "foreclosure_id": fid,
+                        "case_number": case,
+                        "strap": strap,
+                        "folio": folio,
+                        "docs_found": 0,
+                        "saved": 0,
+                        "error": str(exc),
+                    }
+                )
+
+        after_remaining = len(
+            self._find_recent_permit_no_noc_targets(
+                limit=None,
+                foreclosure_ids=foreclosure_ids,
+                require_ori_searched=require_ori_searched,
+            )
+        )
+        return {
+            "targets": len(targets),
+            "targets_with_live_noc": targets_with_docs,
+            "total_noc_docs_found": total_docs,
+            "total_saved": total_saved,
+            "errors": errors,
+            "api_calls": total_api_calls,
+            "retries": total_retries,
+            "truncated": total_truncated,
+            "unresolved_truncations": total_unresolved_truncations,
+            "remaining_recent_permit_no_noc_before": len(before_targets),
+            "remaining_recent_permit_no_noc_after": after_remaining,
+            "dry_run": dry_run,
+            "per_target": per_target,
+        }
+
     # ------------------------------------------------------------------
     # Target selection
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _row_to_target(row: Any) -> dict[str, Any]:
+        jdata = row[4] or {}
+        if isinstance(jdata, str):
+            try:
+                jdata = json.loads(jdata)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(
+                    "Invalid judgment_data JSON for foreclosure_id={} case={}; using empty object",
+                    row[0],
+                    row[1],
+                )
+                jdata = {}
+
+        return {
+            "foreclosure_id": row[0],
+            "case_number": row[1],
+            "strap": row[2],
+            "folio": row[3],
+            "judgment_data": jdata,
+            "auction_date": row[5],
+            "filing_date": row[6],
+            "legal1": row[7] or "",
+            "legal2": row[8] or "",
+            "legal3": row[9] or "",
+            "legal4": row[10] or "",
+            "owner_name": row[11] or "",
+            "property_address": row[12] or "",
+        }
 
     def _find_targets(self, limit: int | None) -> list[dict[str, Any]]:
         """Find foreclosures needing ORI search."""
@@ -333,36 +545,125 @@ class PgOriService:
                 {"limit": limit or 1000},
             ).fetchall()
 
-        targets = []
-        for r in rows:
-            jdata = r[4] or {}
-            if isinstance(jdata, str):
-                try:
-                    jdata = json.loads(jdata)
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning(
-                        "Invalid judgment_data JSON for foreclosure_id={} case={}; using empty object",
-                        r[0],
-                        r[1],
+        return [self._row_to_target(r) for r in rows]
+
+    def _find_recent_permit_no_noc_targets(
+        self,
+        *,
+        limit: int | None,
+        foreclosure_ids: list[int] | None = None,
+        require_ori_searched: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Find active foreclosures with recent permit signal but no persisted NOC."""
+        coverage_start = self._official_noc_coverage_start()
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    WITH scope AS (
+                        SELECT
+                            f.foreclosure_id,
+                            f.case_number_raw,
+                            f.strap,
+                            f.folio,
+                            f.judgment_data,
+                            f.auction_date,
+                            f.filing_date,
+                            bp.raw_legal1,
+                            bp.raw_legal2,
+                            bp.raw_legal3,
+                            bp.raw_legal4,
+                            bp.owner_name,
+                            COALESCE(NULLIF(btrim(f.property_address), ''), bp.property_address) AS property_address
+                        FROM foreclosures f
+                        LEFT JOIN hcpa_bulk_parcels bp ON bp.strap = f.strap
+                        WHERE f.archived_at IS NULL
+                          AND f.strap IS NOT NULL
+                          AND f.strap <> 'MULTIPLE PARCEL'
+                          AND f.folio IS NOT NULL
+                          AND (:require_ori_searched = FALSE OR f.step_ori_searched IS NOT NULL)
+                    ),
+                    no_noc AS (
+                        SELECT s.*
+                        FROM scope s
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM ori_encumbrances oe
+                            WHERE oe.encumbrance_type = 'noc'
+                              AND (
+                                    oe.strap = s.strap
+                                 OR (oe.folio IS NOT NULL AND oe.folio = s.folio)
+                              )
+                        )
                     )
-                    jdata = {}
+                    SELECT *
+                    FROM no_noc s
+                    WHERE (
+                        EXISTS (
+                            SELECT 1
+                            FROM county_permits cp
+                            WHERE regexp_replace(
+                                    COALESCE(cp.folio_clean, cp.folio_raw, ''),
+                                    '[^0-9]',
+                                    '',
+                                    'g'
+                                  ) = regexp_replace(s.folio, '[^0-9]', '', 'g')
+                              AND (
+                                    cp.issue_date >= :coverage_start
+                                 OR (
+                                        COALESCE(cp.permit_number, '') ~ '^HC-(BLD|BTR)-[0-9]{2}-'
+                                    AND 2000 + CAST(
+                                            split_part(COALESCE(cp.permit_number, ''), '-', 3) AS INTEGER
+                                        ) >= :coverage_year
+                                 )
+                              )
+                        )
+                        OR EXISTS (
+                            SELECT 1
+                            FROM tampa_accela_records tr
+                            WHERE s.property_address IS NOT NULL
+                              AND btrim(s.property_address) <> ''
+                              AND btrim(COALESCE(tr.address_normalized, tr.address_raw, '')) <> ''
+                              AND upper(trim(
+                                    split_part(
+                                        replace(COALESCE(tr.address_normalized, tr.address_raw, ''), E'\\t', ' '),
+                                        ',',
+                                        1
+                                    )
+                                  )) = upper(trim(
+                                    split_part(replace(s.property_address, E'\\t', ' '), ',', 1)
+                                  ))
+                              AND COALESCE(tr.is_violation, FALSE) = FALSE
+                              AND COALESCE(tr.module, '') <> 'Business'
+                              AND COALESCE(tr.record_number, '') NOT LIKE 'BTX-%'
+                              AND COALESCE(tr.record_type, '') NOT ILIKE 'Tax Receipt%'
+                              AND (
+                                    tr.record_date >= :coverage_start
+                                 OR (
+                                        COALESCE(tr.record_number, '') ~ '^(BLD|BTR)-[0-9]{2}-'
+                                    AND 2000 + CAST(
+                                            split_part(COALESCE(tr.record_number, ''), '-', 2) AS INTEGER
+                                        ) >= :coverage_year
+                                 )
+                              )
+                        )
+                    )
+                    ORDER BY s.auction_date NULLS LAST, s.foreclosure_id
+                    LIMIT :limit
+                    """
+                ),
+                {
+                    "coverage_start": coverage_start,
+                    "coverage_year": coverage_start.year,
+                    "require_ori_searched": require_ori_searched,
+                    "limit": limit or 100000,
+                },
+            ).fetchall()
 
-            targets.append({
-                "foreclosure_id": r[0],
-                "case_number": r[1],
-                "strap": r[2],
-                "folio": r[3],
-                "judgment_data": jdata,
-                "auction_date": r[5],
-                "filing_date": r[6],
-                "legal1": r[7] or "",
-                "legal2": r[8] or "",
-                "legal3": r[9] or "",
-                "legal4": r[10] or "",
-                "owner_name": r[11] or "",
-                "property_address": r[12] or "",
-            })
-
+        targets = [self._row_to_target(r) for r in rows]
+        if foreclosure_ids:
+            wanted = set(foreclosure_ids)
+            targets = [target for target in targets if int(target["foreclosure_id"]) in wanted]
         return targets
 
     # ------------------------------------------------------------------
@@ -467,6 +768,7 @@ class PgOriService:
             "deed_count": 0,
             "clerk_case_count": 0,
             "official_seed_docs": 0,
+            "live_noc_docs": 0,
         }
 
         docs_by_inst: dict[str, dict[str, Any]] = {}
@@ -648,7 +950,9 @@ class PgOriService:
             party_fallbacks: list[str] = []
             for name in (plaintiff, defendant, target.get("owner_name") or ""):
                 clean = (name or "").strip()
-                if clean and not _is_generic_name(clean) and clean not in party_fallbacks:
+                if clean and _is_generic_name(clean):
+                    logger.debug("Skipping generic party '{}' for fallback search (case={})", clean, case_number)
+                elif clean and clean not in party_fallbacks:
                     party_fallbacks.append(clean)
             for name in party_fallbacks[:2]:
                 docs = self._search_party_pav(
@@ -661,12 +965,26 @@ class PgOriService:
                 filtered = [d for d in docs if self._matches_property(d, property_tokens)]
                 self._merge_docs(docs_by_inst, filtered)
 
+        if not any(_is_noc_type(doc) for doc in docs_by_inst.values()):
+            live_noc_docs = self._run_live_noc_fallback(
+                target=target,
+                ownership_chain=ownership_chain,
+                property_tokens=property_tokens,
+                earliest_date=earliest_date,
+                latest_date=latest_date,
+                stats=stats,
+            )
+            if live_noc_docs:
+                self._merge_docs(docs_by_inst, live_noc_docs)
+                stats["live_noc_docs"] = len(live_noc_docs)
+
         # Final keep: only relevant document classes for saving.
         discovered = [
             d
             for d in docs_by_inst.values()
             if _is_encumbrance_type(d)
             or _is_assignment_type(d)
+            or _is_noc_type(d)
             or normalize_document_type(d.get("DocType") or "") in CANONICAL_SATISFACTION_TYPES
         ]
         return discovered, stats
@@ -826,6 +1144,13 @@ class PgOriService:
         if not address:
             return ""
         return address.split(",", maxsplit=1)[0].strip()
+
+    @staticmethod
+    def _extract_street_number(address: str) -> str:
+        if not address:
+            return ""
+        match = re.match(r"\s*(\d{3,6}[A-Z]?)\b", address.strip().upper())
+        return match.group(1) if match else ""
 
     def _seed_from_official_records(
         self,
@@ -1032,6 +1357,205 @@ class PgOriService:
                     return tokens
         return tokens
 
+    def _official_noc_coverage_start(self) -> date:
+        """Return the earliest NOC recording date present in the local seed feed."""
+        if self._official_noc_coverage_start_cache is not None:
+            return self._official_noc_coverage_start_cache
+
+        fallback = datetime.now(tz=UTC).date() - timedelta(days=365 * _RECENT_PERMIT_FALLBACK_YEARS)
+        sql = text("""
+            SELECT MIN(recording_date)
+            FROM official_records_daily_instruments
+            WHERE COALESCE(recording_date, DATE '1900-01-01') > DATE '1900-01-01'
+              AND (
+                    UPPER(COALESCE(doc_type, '')) LIKE '%NOC%'
+                 OR UPPER(COALESCE(facc_doc_type, '')) LIKE '%NOC%'
+                 OR UPPER(COALESCE(doc_description, '')) LIKE '%NOTICE OF COMMENCEMENT%'
+              )
+        """)
+
+        with self.engine.connect() as conn:
+            value = conn.execute(sql).scalar()
+
+        self._official_noc_coverage_start_cache = value if isinstance(value, date) else fallback
+        return self._official_noc_coverage_start_cache
+
+    def _target_has_recent_permit_signal(self, target: dict[str, Any]) -> bool:
+        """Return True when a property has recent permit activity worth live NOC probing."""
+        folio = (target.get("folio") or "").strip()
+        property_address = (target.get("property_address") or "").strip()
+        if not folio and not property_address:
+            return False
+
+        coverage_start = self._official_noc_coverage_start()
+        sql = text("""
+            SELECT
+                EXISTS (
+                    SELECT 1
+                    FROM county_permits cp
+                    WHERE :folio <> ''
+                      AND regexp_replace(
+                            COALESCE(cp.folio_clean, cp.folio_raw, ''),
+                            '[^0-9]',
+                            '',
+                            'g'
+                          ) = regexp_replace(:folio, '[^0-9]', '', 'g')
+                      AND (
+                            cp.issue_date >= :coverage_start
+                         OR (
+                                COALESCE(cp.permit_number, '') ~ '^HC-(BLD|BTR)-[0-9]{2}-'
+                            AND 2000 + CAST(
+                                    split_part(COALESCE(cp.permit_number, ''), '-', 3) AS INTEGER
+                                ) >= :coverage_year
+                         )
+                      )
+                ) AS county_recent,
+                EXISTS (
+                    SELECT 1
+                    FROM tampa_accela_records tr
+                    WHERE :property_address <> ''
+                      AND btrim(COALESCE(tr.address_normalized, tr.address_raw, '')) <> ''
+                      AND upper(trim(
+                            split_part(
+                                replace(COALESCE(tr.address_normalized, tr.address_raw, ''), E'\\t', ' '),
+                                ',',
+                                1
+                            )
+                          )) = upper(trim(
+                            split_part(replace(:property_address, E'\\t', ' '), ',', 1)
+                          ))
+                      AND COALESCE(tr.is_violation, FALSE) = FALSE
+                      AND COALESCE(tr.module, '') <> 'Business'
+                      AND COALESCE(tr.record_number, '') NOT LIKE 'BTX-%'
+                      AND COALESCE(tr.record_type, '') NOT ILIKE 'Tax Receipt%'
+                      AND (
+                            tr.record_date >= :coverage_start
+                         OR (
+                                COALESCE(tr.record_number, '') ~ '^(BLD|BTR)-[0-9]{2}-'
+                            AND 2000 + CAST(
+                                    split_part(COALESCE(tr.record_number, ''), '-', 2) AS INTEGER
+                                ) >= :coverage_year
+                         )
+                      )
+                ) AS tampa_recent
+        """)
+
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                sql,
+                {
+                    "folio": folio,
+                    "property_address": property_address,
+                    "coverage_start": coverage_start,
+                    "coverage_year": coverage_start.year,
+                },
+            ).one()
+
+        return bool(row[0] or row[1])
+
+    def _collect_noc_party_terms(
+        self,
+        target: dict[str, Any],
+        ownership_chain: list[dict[str, Any]],
+    ) -> list[str]:
+        terms: list[str] = []
+
+        def add(value: str) -> None:
+            clean = value.strip()
+            if not clean or _is_generic_name(clean) or clean in terms:
+                return
+            terms.append(clean)
+
+        add(str(target.get("owner_name") or ""))
+
+        jdata = target.get("judgment_data") or {}
+        add(str(jdata.get("defendant") or ""))
+
+        for deed in reversed(ownership_chain[-10:]):
+            add(str(deed.get("grantee") or ""))
+            add(str(deed.get("grantor") or ""))
+            if len(terms) >= 6:
+                break
+
+        return terms[:6]
+
+    def _run_live_noc_fallback(
+        self,
+        *,
+        target: dict[str, Any],
+        ownership_chain: list[dict[str, Any]],
+        property_tokens: dict[str, Any],
+        earliest_date: date,
+        latest_date: date,
+        stats: dict[str, int],
+    ) -> list[dict[str, Any]]:
+        """Run bounded live NOC discovery for recent permit-backed properties."""
+        if not self._target_has_recent_permit_signal(target):
+            return []
+
+        case_number = (target.get("case_number") or "").strip()
+        strap = (target.get("strap") or "").strip()
+        logger.info(
+            "Running targeted live NOC fallback for case={} strap={}",
+            case_number,
+            strap,
+        )
+
+        search_start = max(earliest_date, self._official_noc_coverage_start())
+        docs_by_inst: dict[str, dict[str, Any]] = {}
+        legal_terms: list[str] = []
+        seen_terms: set[str] = set()
+
+        for term in self._build_search_terms(target):
+            clean = (term or "").strip()
+            key = clean.upper()
+            if clean and key not in seen_terms:
+                legal_terms.append(clean)
+                seen_terms.add(key)
+
+        primary_legal = self._extract_primary_legal_line(target)
+        if primary_legal and primary_legal.upper() not in seen_terms:
+            legal_terms.append(primary_legal)
+
+        for term in legal_terms[:3]:
+            docs = self._search_noc_legal_pav(
+                term,
+                stats,
+                from_date=search_start,
+                to_date=latest_date,
+                split_on_truncated=True,
+            )
+            filtered = [d for d in docs if self._matches_property(d, property_tokens)]
+            self._merge_docs(docs_by_inst, filtered)
+
+        if not docs_by_inst:
+            for name in self._collect_noc_party_terms(target, ownership_chain)[:4]:
+                docs = self._search_noc_party_pav(
+                    name,
+                    stats,
+                    from_date=search_start,
+                    to_date=latest_date,
+                    split_on_truncated=True,
+                )
+                filtered = [d for d in docs if self._matches_property(d, property_tokens)]
+                self._merge_docs(docs_by_inst, filtered)
+                if docs_by_inst:
+                    break
+
+        if not docs_by_inst:
+            street = self._extract_street_only(target.get("property_address") or "")
+            if street:
+                docs = self._search_noc_full_text_pav(
+                    street,
+                    stats,
+                    from_date=search_start,
+                    to_date=latest_date,
+                )
+                filtered = [d for d in docs if self._matches_property(d, property_tokens)]
+                self._merge_docs(docs_by_inst, filtered)
+
+        return list(docs_by_inst.values())
+
     def _official_match_score(
         self,
         *,
@@ -1048,6 +1572,11 @@ class PgOriService:
             (doc.get("party1") or ""),
             (doc.get("party2") or ""),
         ]).upper()
+        doc_type = normalize_document_type(doc.get("DocType") or "")
+        matches_property = self._matches_property(doc, property_tokens)
+
+        if doc_type == "noc" and not matches_property:
+            return 0
 
         score = 0
         if any(v and v in legal_text for v in case_variants_upper):
@@ -1065,10 +1594,9 @@ class PgOriService:
                 party_hits += 1
         score += min(2, party_hits)
 
-        if self._matches_property(doc, property_tokens):
+        if matches_property:
             score += 2
 
-        doc_type = normalize_document_type(doc.get("DocType") or "")
         if (
             doc_type in CANONICAL_ENCUMBRANCE_TYPES
             or doc_type in CANONICAL_SATISFACTION_TYPES
@@ -1084,10 +1612,13 @@ class PgOriService:
         ownership_chain: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         legal_tokens: set[str] = set()
+        legal_locators: set[tuple[str, str]] = set()
         for legal_field in ("legal1", "legal2", "legal3", "legal4"):
             value = (target.get(legal_field) or "").upper()
             words = [w for w in re.split(r"[^A-Z0-9]+", value) if len(w) >= 3]
             legal_tokens.update(words[:8])
+            for match in _LEGAL_LOCATOR_RE.finditer(value):
+                legal_locators.add((match.group(1).upper(), match.group(2).upper()))
 
         owner_names: set[str] = set()
         if target.get("owner_name"):
@@ -1107,9 +1638,18 @@ class PgOriService:
             for t in re.split(r"[^A-Z0-9]+", self._extract_street_only(target.get("property_address") or "").upper())
             if len(t) >= 3
         }
+        street_name_tokens = {
+            t
+            for t in street_tokens
+            if not re.fullmatch(r"\d+[A-Z]?", t)
+            and t not in _STREET_STOP_TOKENS
+        }
         return {
             "legal_tokens": legal_tokens,
+            "legal_locators": list(legal_locators),
             "owner_names": list(owner_names),
+            "street_number": self._extract_street_number(target.get("property_address") or ""),
+            "street_name_tokens": street_name_tokens,
             "street_tokens": street_tokens,
             "case_number": (target.get("case_number") or "").strip().upper(),
         }
@@ -1123,27 +1663,93 @@ class PgOriService:
         return self._build_property_tokens(target, ownership_chain)
 
     @staticmethod
-    def _matches_property(doc: dict[str, Any], tokens: dict[str, Any]) -> bool:
+    def _has_property_text_match(doc: dict[str, Any], tokens: dict[str, Any]) -> bool:
         legal_text = (doc.get("Legal") or "").upper()
+        if not legal_text:
+            return False
+
+        legal_tokens = tokens.get("legal_tokens") or set()
+        legal_hits = 0
+        if legal_tokens:
+            legal_hits = sum(1 for t in legal_tokens if t in legal_text)
+
+        street_tokens = tokens.get("street_tokens") or set()
+        street_hits = 0
+        if street_tokens:
+            street_hits = sum(1 for t in street_tokens if t in legal_text)
+        street_name_tokens = tokens.get("street_name_tokens") or {
+            t
+            for t in street_tokens
+            if not re.fullmatch(r"\d+[A-Z]?", str(t))
+            and str(t) not in _STREET_STOP_TOKENS
+        }
+        street_name_hits = 0
+        if street_name_tokens:
+            street_name_hits = sum(1 for t in street_name_tokens if t in legal_text)
+
+        legal_locators = tokens.get("legal_locators") or []
+        locator_hits = 0
+        locator_matches: dict[str, set[str]] = {}
+        locator_expected: dict[str, set[str]] = {}
+        for label, value in legal_locators:
+            locator_expected.setdefault(label, set()).add(value)
+            locator_pattern = (
+                rf"\b{re.escape(label)}\b(?:\s+NO\.?)?\s*{re.escape(value)}\b"
+            )
+            if re.search(locator_pattern, legal_text):
+                locator_hits += 1
+                locator_matches.setdefault(label, set()).add(value)
+
+        if _is_noc_type(doc):
+            street_number = str(tokens.get("street_number") or "").strip().upper()
+            has_explicit_street_address = bool(_ADDRESS_LINE_RE.search(legal_text))
+            if has_explicit_street_address:
+                if street_number:
+                    return bool(
+                        re.search(rf"\b{re.escape(street_number)}\b", legal_text)
+                    ) and street_name_hits >= 1
+                return locator_hits > 0 and street_name_hits >= 1
+
+            if "LOT" in locator_expected:
+                lot_match = bool(locator_matches.get("LOT"))
+                block_expected = "BLOCK" in locator_expected or "BLK" in locator_expected
+                block_match = bool(locator_matches.get("BLOCK") or locator_matches.get("BLK"))
+                if block_expected:
+                    return lot_match and block_match and legal_hits >= 1
+                return lot_match and legal_hits >= 1
+
+            if "UNIT" in locator_expected:
+                return bool(locator_matches.get("UNIT")) and legal_hits >= 1
+
+            if "BLOCK" in locator_expected or "BLK" in locator_expected:
+                return bool(locator_matches.get("BLOCK") or locator_matches.get("BLK")) and legal_hits >= 2
+
+            if legal_locators:
+                return locator_hits > 0 and legal_hits >= 1
+
+            return bool(legal_tokens) and legal_hits >= min(3, len(legal_tokens))
+
+        if street_hits >= min(2, len(street_tokens)):
+            return True
+
+        return bool(legal_tokens) and legal_hits >= min(2, len(legal_tokens))
+
+    @staticmethod
+    def _matches_property(doc: dict[str, Any], tokens: dict[str, Any]) -> bool:
+        if PgOriService._has_property_text_match(doc, tokens):
+            return True
+
         parties_text = " ".join([
             *(doc.get("PartiesOne") or []),
             *(doc.get("PartiesTwo") or []),
             (doc.get("party1") or ""),
             (doc.get("party2") or ""),
         ]).upper()
+        doc_type = normalize_document_type(doc.get("DocType") or "")
+        if _is_noc_type(doc):
+            return False
 
-        legal_tokens = tokens.get("legal_tokens") or set()
         owner_names = tokens.get("owner_names") or []
-        street_tokens = tokens.get("street_tokens") or set()
-
-        if legal_tokens and legal_text:
-            hits = sum(1 for t in legal_tokens if t in legal_text)
-            if hits >= min(2, len(legal_tokens)):
-                return True
-        if street_tokens and legal_text:
-            hits = sum(1 for t in street_tokens if t in legal_text)
-            if hits >= min(2, len(street_tokens)):
-                return True
         if owner_names and parties_text:
             from rapidfuzz import fuzz
 
@@ -1151,7 +1757,6 @@ class PgOriService:
                 if fuzz.token_set_ratio(owner_name, parties_text) > 80:
                     return True
         # LP/JUD docs: keep only if they belong to this foreclosure case.
-        doc_type = normalize_document_type(doc.get("DocType") or "")
         if doc_type in {"lis_pendens", "judgment"}:
             doc_case = (doc.get("CaseNum") or "").strip().upper()
             prop_case = (tokens.get("case_number") or "").strip().upper()
@@ -1240,6 +1845,38 @@ class PgOriService:
             depth=depth,
         )
 
+    def _search_noc_legal_pav(
+        self,
+        text_value: str,
+        stats: dict[str, int],
+        *,
+        from_date: date,
+        to_date: date,
+        split_on_truncated: bool,
+        depth: int = 0,
+    ) -> list[dict[str, Any]]:
+        docs = self._pav_search(
+            query_id=321,
+            keywords=[(1011, text_value), (1285, _PAV_NOC_DOC_TYPE)],
+            query_label=f"noc_legal:{text_value}",
+            stats=stats,
+            from_date=from_date,
+            to_date=to_date,
+            split_on_truncated=split_on_truncated,
+            depth=depth,
+        )
+        if docs:
+            return docs
+        fallback_docs = self._search_legal_pav(
+            text_value,
+            stats,
+            from_date=from_date,
+            to_date=to_date,
+            split_on_truncated=split_on_truncated,
+            depth=depth,
+        )
+        return [doc for doc in fallback_docs if _is_noc_type(doc)]
+
     def _search_party_pav(
         self,
         name: str,
@@ -1260,6 +1897,38 @@ class PgOriService:
             split_on_truncated=split_on_truncated,
             depth=depth,
         )
+
+    def _search_noc_party_pav(
+        self,
+        name: str,
+        stats: dict[str, int],
+        *,
+        from_date: date,
+        to_date: date,
+        split_on_truncated: bool,
+        depth: int = 0,
+    ) -> list[dict[str, Any]]:
+        docs = self._pav_search(
+            query_id=326,
+            keywords=[(486, name), (1285, _PAV_NOC_DOC_TYPE)],
+            query_label=f"noc_party:{name}",
+            stats=stats,
+            from_date=from_date,
+            to_date=to_date,
+            split_on_truncated=split_on_truncated,
+            depth=depth,
+        )
+        if docs:
+            return docs
+        fallback_docs = self._search_party_pav(
+            name,
+            stats,
+            from_date=from_date,
+            to_date=to_date,
+            split_on_truncated=split_on_truncated,
+            depth=depth,
+        )
+        return [doc for doc in fallback_docs if _is_noc_type(doc)]
 
     def search_party_pav(
         self,
@@ -1293,6 +1962,31 @@ class PgOriService:
             query_label=f"book_page:{book}/{page}",
             stats=stats,
         )
+
+    def _search_noc_full_text_pav(
+        self,
+        text_value: str,
+        stats: dict[str, int],
+        *,
+        from_date: date,
+        to_date: date,
+    ) -> list[dict[str, Any]]:
+        payload: dict[str, Any] = {
+            "DocTypeID": _PAV_NOC_DOC_TYPE_ID,
+            "SearchText": text_value,
+            "FromDate": from_date.strftime("%m/%d/%Y"),
+            "ToDate": to_date.strftime("%m/%d/%Y"),
+            "Keywords": [],
+            "QueryLimit": _PAV_QUERY_LIMIT,
+        }
+        data = self._post_pav_full_text(payload, f"noc_full_text:{text_value}", stats)
+        if data is None:
+            return []
+
+        docs = self._parse_pav_full_text_rows(data.get("Data") or [])
+        if bool(data.get("Truncated")):
+            stats["truncated"] += 1
+        return docs
 
     def _pav_search(
         self,
@@ -1447,6 +2141,81 @@ class PgOriService:
         )
         return None
 
+    def _post_pav_full_text(
+        self,
+        payload: dict[str, Any],
+        query_label: str,
+        stats: dict[str, int],
+    ) -> dict[str, Any] | None:
+        cache_payload = {"_endpoint": "full_text", **payload}
+        cached = pav_cache_get(cache_payload)
+        if cached is not None:
+            stats.setdefault("cache_hits", 0)
+            stats["cache_hits"] += 1
+            return cached
+
+        for attempt in range(1, _PAV_FULL_TEXT_RETRIES + 1):
+            stats["api_calls"] += 1
+            try:
+                response = self._pav_session.post(
+                    _PAV_FULL_TEXT_URL,
+                    json=payload,
+                    timeout=_PAV_FULL_TEXT_TIMEOUT_SECONDS,
+                )
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                    except ValueError as exc:
+                        body_sample = (response.text or "").replace("\n", " ")[:200]
+                        logger.warning(
+                            "PAV full-text returned invalid JSON label={} attempt={}/{}: {} body={}",
+                            query_label,
+                            attempt,
+                            _PAV_FULL_TEXT_RETRIES,
+                            exc,
+                            body_sample,
+                        )
+                    else:
+                        if isinstance(data, dict):
+                            pav_cache_put(cache_payload, data)
+                            return data
+                        logger.warning(
+                            "PAV full-text returned non-object JSON label={} attempt={}/{} type={}",
+                            query_label,
+                            attempt,
+                            _PAV_FULL_TEXT_RETRIES,
+                            type(data).__name__,
+                        )
+                logger.warning(
+                    "PAV full-text HTTP {} label={} attempt={}/{}",
+                    response.status_code,
+                    query_label,
+                    attempt,
+                    _PAV_FULL_TEXT_RETRIES,
+                )
+            except requests.RequestException as exc:
+                logger.warning(
+                    "PAV full-text request failed label={} attempt={}/{}: {}",
+                    query_label,
+                    attempt,
+                    _PAV_FULL_TEXT_RETRIES,
+                    exc,
+                )
+
+            if attempt < _PAV_FULL_TEXT_RETRIES:
+                stats["retries"] += 1
+                time.sleep(0.5 * attempt)
+
+        logger.error(
+            "PAV full-text request failed after retries: label={} doc_type_id={} search={} from={} to={}",
+            query_label,
+            payload.get("DocTypeID"),
+            payload.get("SearchText"),
+            payload.get("FromDate"),
+            payload.get("ToDate"),
+        )
+        return None
+
     def _parse_pav_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         grouped: dict[str, dict[str, Any]] = {}
         for row in rows:
@@ -1492,6 +2261,51 @@ class PgOriService:
                 elif name not in doc["PartiesOne"]:
                     doc["PartiesOne"].append(name)
         return list(grouped.values())
+
+    def _parse_pav_full_text_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        docs: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            name_blob = str(row.get("Name") or "").strip()
+            summary = str(row.get("Summary") or "").strip()
+            if not name_blob:
+                continue
+
+            instrument_match = re.search(r"Inst\.\s*#:\s*(\d{7,10})", name_blob, re.IGNORECASE)
+            if not instrument_match:
+                continue
+            instrument = instrument_match.group(1)
+
+            doc_type = name_blob.split(" Record Date -", 1)[0].strip() or "NOC"
+
+            record_date = ""
+            date_match = re.search(r"Record Date -\s*(.*?)\s+Name -", name_blob, re.IGNORECASE)
+            if date_match:
+                record_date = date_match.group(1).strip()
+
+            parties_one: list[str] = []
+            parties_two: list[str] = []
+            parties_match = re.search(r"Name -\s*(.*?)\s*,\s*Inst\.\s*#:", name_blob, re.IGNORECASE)
+            if parties_match:
+                raw_parties = [part.strip() for part in parties_match.group(1).split(" - ") if part.strip()]
+                if raw_parties:
+                    parties_one = [raw_parties[0]]
+                if len(raw_parties) > 1:
+                    parties_two = raw_parties[1:]
+
+            docs[instrument] = {
+                "Instrument": instrument,
+                "DocType": doc_type,
+                "RecordDate": record_date,
+                "BookType": "OR",
+                "Book": "",
+                "Page": "",
+                "Legal": summary,
+                "PartiesOne": parties_one,
+                "PartiesTwo": parties_two,
+                "ID": row.get("ID"),
+            }
+
+        return list(docs.values())
 
     # ------------------------------------------------------------------
     # Iterative discovery
@@ -1553,6 +2367,8 @@ class PgOriService:
                     priority=20,
                 )
             )
+        elif plaintiff:
+            logger.debug("Skipping generic plaintiff '{}' for iterative search", plaintiff)
         if defendant and not _is_generic_name(defendant):
             state.enqueue(
                 _SearchItem(
@@ -1561,6 +2377,8 @@ class PgOriService:
                     priority=20,
                 )
             )
+        elif defendant:
+            logger.debug("Skipping generic defendant '{}' for iterative search", defendant)
 
         if not state.queue:
             logger.warning(f"No iterative ORI seeds for {case}")
@@ -1677,6 +2495,7 @@ class PgOriService:
 
         for name in grantors:
             if _is_generic_name(name):
+                logger.debug("Skipping generic grantor '{}' from doc {}", name, own_instrument)
                 continue
             # Grantor owned *before* this recording date
             date_to = _format_mm_dd_yyyy(recording_date)
@@ -1692,6 +2511,7 @@ class PgOriService:
 
         for name in grantees:
             if _is_generic_name(name):
+                logger.debug("Skipping generic grantee '{}' from doc {}", name, own_instrument)
                 continue
             # Grantee owned *after* this recording date
             date_from = _format_mm_dd_yyyy(recording_date)

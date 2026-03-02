@@ -40,7 +40,7 @@ FORECLOSURE_DATA_DIR = Path("data/Foreclosure")
 ENRICH_BASE_SQL = """
 UPDATE foreclosures f SET
     folio                 = COALESCE(f.folio, bp.folio),
-    strap                 = COALESCE(f.strap, bp.strap),
+    strap                 = COALESCE(bp.strap, f.strap),
     property_address      = COALESCE(bp.property_address, f.property_address),
     latitude              = COALESCE(f.latitude, bp.latitude, ll.latitude),
     longitude             = COALESCE(f.longitude, bp.longitude, ll.longitude),
@@ -63,7 +63,8 @@ UPDATE foreclosures f SET
     list_price            = COALESCE(pm.list_price, f.list_price),
     listing_status        = COALESCE(pm.listing_status, f.listing_status)
 FROM foreclosures f2
--- Property enrichment (latest bulk parcel row per strap)
+-- Property enrichment (prefer exact strap+folio match, then current strap,
+-- then folio-only repair when the stored strap is missing or invalid)
 LEFT JOIN LATERAL (
     SELECT bp2.folio, bp2.strap, bp2.property_address, bp2.owner_name,
            bp2.land_use_desc, bp2.year_built, bp2.beds, bp2.baths,
@@ -71,8 +72,23 @@ LEFT JOIN LATERAL (
            bp2.latitude, bp2.longitude
     FROM hcpa_bulk_parcels bp2
     WHERE (f2.strap IS NOT NULL AND bp2.strap = f2.strap)
-       OR (f2.strap IS NULL AND f2.folio IS NOT NULL AND bp2.folio = f2.folio)
-    ORDER BY bp2.source_file_id DESC
+       OR (f2.folio IS NOT NULL AND bp2.folio = f2.folio)
+    ORDER BY
+        CASE
+            WHEN f2.strap IS NOT NULL
+             AND f2.folio IS NOT NULL
+             AND bp2.strap = f2.strap
+             AND bp2.folio = f2.folio
+            THEN 0
+            WHEN f2.strap IS NOT NULL
+             AND bp2.strap = f2.strap
+            THEN 1
+            WHEN f2.folio IS NOT NULL
+             AND bp2.folio = f2.folio
+            THEN 2
+            ELSE 3
+        END,
+        bp2.source_file_id DESC
     LIMIT 1
 ) bp ON TRUE
 -- Coordinates fallback

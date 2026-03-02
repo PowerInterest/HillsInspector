@@ -1411,7 +1411,317 @@ async def property_tax(request: Request, folio: str):
             "request": request,
             "folio": prop.get("folio") or folio,
             "auction": prop.get("auction", {}),
+            "parcel": prop.get("parcel") or prop.get("parcels_data") or {},
             "tax": status,
+        },
+    )
+
+
+def _parse_owner_name(owner_name: str) -> tuple[str, str]:
+    """Parse owner name into (last_name, first_name) components.
+
+    Handles common formats:
+    - "LAST, FIRST MIDDLE" -> ("LAST", "FIRST")
+    - "FIRST LAST" -> ("LAST", "FIRST")
+    - "LAST NAME ONLY" -> ("LAST NAME ONLY", "")
+    """
+    if not owner_name:
+        return ("", "")
+    name = owner_name.strip().upper()
+    if "," in name:
+        parts = name.split(",", 1)
+        last = parts[0].strip()
+        first = parts[1].strip().split()[0] if parts[1].strip() else ""
+        return (last, first)
+    parts = name.split()
+    if len(parts) >= 2:
+        return (parts[-1], parts[0])
+    return (name, "")
+
+
+def _pg_personal_dossier(
+    owner_name: str,
+    strap: str | None,
+    folio: str | None,
+) -> dict[str, Any]:
+    """Build a personal dossier for the given owner from PG public records.
+
+    Queries clerk civil cases, garnishments, criminal records, UCC filings,
+    and cross-property ORI documents using fuzzy name matching.
+    Returns a dict with keys: identity, civil_cases, garnishments,
+    criminal_cases, ucc_liens, ori_docs.
+    """
+    result: dict[str, Any] = {
+        "identity": {"aliases": [], "addresses": []},
+        "civil_cases": [],
+        "garnishments": [],
+        "criminal_cases": [],
+        "ucc_liens": [],
+        "ori_docs": [],
+    }
+    if not owner_name or not owner_name.strip():
+        return result
+
+    last_name, first_name = _parse_owner_name(owner_name)
+    owner_upper = owner_name.strip().upper()
+
+    if not last_name:
+        return result
+
+    with _pg_engine().connect() as conn:
+        # ── 1. Civil cases via clerk_name_index (has trgm index on last_name) ──
+        try:
+            civil_rows = (
+                conn.execute(
+                    sa_text("""
+                        SELECT DISTINCT ON (ni.case_number)
+                            ni.case_number,
+                            ni.case_type,
+                            ni.current_status AS case_status,
+                            ni.date_filed AS filing_date,
+                            ni.party_type,
+                            COALESCE(cc.style, ni.business_name) AS style,
+                            ni.akas,
+                            ni.address1, ni.address2, ni.city, ni.state, ni.zip_code,
+                            similarity(ni.last_name, :last_name) AS match_score
+                        FROM clerk_name_index ni
+                        LEFT JOIN clerk_civil_cases cc ON cc.case_number = ni.case_number
+                        WHERE ni.last_name % :last_name
+                          AND similarity(ni.last_name, :last_name) > 0.4
+                          AND (
+                              :first_name = ''
+                              OR ni.first_name IS NULL
+                              OR similarity(ni.first_name, :first_name) > 0.3
+                          )
+                        ORDER BY ni.case_number, match_score DESC
+                        LIMIT 100
+                    """),
+                    {"last_name": last_name, "first_name": first_name},
+                )
+                .mappings()
+                .all()
+            )
+            aliases: set[str] = set()
+            addresses: set[str] = set()
+            for row in civil_rows:
+                r = dict(row)
+                result["civil_cases"].append(r)
+                # Collect aliases
+                if r.get("akas"):
+                    for aka in str(r["akas"]).split(";"):
+                        aka = aka.strip()
+                        if aka and aka.upper() != owner_upper:
+                            aliases.add(aka)
+                # Collect addresses
+                addr_parts = [
+                    p for p in [r.get("address1"), r.get("city"), r.get("state")]
+                    if p and str(p).strip()
+                ]
+                if addr_parts:
+                    addr = ", ".join(str(p).strip() for p in addr_parts)
+                    if r.get("zip_code"):
+                        addr += " " + str(r["zip_code"]).strip()
+                    addresses.add(addr)
+
+            result["identity"]["aliases"] = sorted(aliases)[:20]
+            result["identity"]["addresses"] = sorted(addresses)[:20]
+        except Exception:
+            logger.opt(exception=True).warning("Personal dossier: civil cases query failed")
+
+        # ── 2. Garnishments ──
+        try:
+            garn_rows = (
+                conn.execute(
+                    sa_text("""
+                        SELECT case_number, plaintiff_name, defendant_name,
+                               garnishee_name, filing_date,
+                               case_status_description, writ_issued_date,
+                               similarity(defendant_name, :owner_name) AS match_score
+                        FROM clerk_garnishment_cases
+                        WHERE defendant_name IS NOT NULL
+                          AND defendant_name % :owner_name
+                          AND similarity(defendant_name, :owner_name) > 0.4
+                        ORDER BY filing_date DESC NULLS LAST
+                        LIMIT 50
+                    """),
+                    {"owner_name": owner_upper},
+                )
+                .mappings()
+                .all()
+            )
+            result["garnishments"] = [dict(r) for r in garn_rows]
+        except Exception:
+            logger.opt(exception=True).warning("Personal dossier: garnishments query failed")
+
+        # ── 3. Criminal records (table may not exist yet) ──
+        try:
+            crim_rows = (
+                conn.execute(
+                    sa_text("""
+                        SELECT case_number, case_type, current_status, date_filed,
+                               charge_description, count_number, count_level_degree,
+                               statute_violation, offense_date,
+                               disposition_desc, disposition_date,
+                               similarity(last_name, :last_name) AS match_score
+                        FROM clerk_criminal_name_index
+                        WHERE last_name % :last_name
+                          AND similarity(last_name, :last_name) > 0.4
+                          AND (
+                              :first_name = ''
+                              OR first_name IS NULL
+                              OR similarity(first_name, :first_name) > 0.3
+                          )
+                        ORDER BY date_filed DESC NULLS LAST
+                        LIMIT 200
+                    """),
+                    {"last_name": last_name, "first_name": first_name},
+                )
+                .mappings()
+                .all()
+            )
+            # Group by case_number
+            cases_map: dict[str, dict[str, Any]] = {}
+            for row in crim_rows:
+                r = dict(row)
+                cn = r.get("case_number") or "UNKNOWN"
+                if cn not in cases_map:
+                    cases_map[cn] = {
+                        "case_number": cn,
+                        "case_type": r.get("case_type"),
+                        "current_status": r.get("current_status"),
+                        "date_filed": r.get("date_filed"),
+                        "charges": [],
+                    }
+                cases_map[cn]["charges"].append({
+                    "count_number": r.get("count_number"),
+                    "charge_description": r.get("charge_description"),
+                    "count_level_degree": r.get("count_level_degree"),
+                    "statute_violation": r.get("statute_violation"),
+                    "offense_date": r.get("offense_date"),
+                    "disposition_desc": r.get("disposition_desc"),
+                    "disposition_date": r.get("disposition_date"),
+                })
+            result["criminal_cases"] = list(cases_map.values())
+        except Exception:
+            logger.opt(exception=True).warning(
+                "Personal dossier: criminal records query failed (table may not exist)"
+            )
+
+        # ── 4. UCC / Federal Liens via sunbiz_flr ──
+        try:
+            ucc_rows = (
+                conn.execute(
+                    sa_text("""
+                        SELECT DISTINCT ON (sf.doc_number)
+                            sf.doc_number,
+                            sf.filing_date,
+                            sf.filing_status,
+                            sf.expiration_date,
+                            sp_s.name AS secured_party,
+                            similarity(sp.name, :owner_name) AS match_score,
+                            CASE
+                                WHEN sf.filing_status IN ('A', 'ACTIVE')
+                                     AND (sf.expiration_date IS NULL OR sf.expiration_date > CURRENT_DATE)
+                                THEN TRUE
+                                ELSE FALSE
+                            END AS is_active
+                        FROM sunbiz_flr_parties sp
+                        JOIN sunbiz_flr_filings sf ON sp.doc_number = sf.doc_number
+                        LEFT JOIN sunbiz_flr_parties sp_s
+                            ON sp_s.doc_number = sf.doc_number
+                            AND sp_s.party_role = 'secured'
+                        WHERE sp.party_role = 'debtor'
+                          AND sp.name IS NOT NULL
+                          AND sp.name % :owner_name
+                          AND similarity(sp.name, :owner_name) > 0.4
+                        ORDER BY sf.doc_number, match_score DESC
+                        LIMIT 50
+                    """),
+                    {"owner_name": owner_upper},
+                )
+                .mappings()
+                .all()
+            )
+            result["ucc_liens"] = [dict(r) for r in ucc_rows]
+        except Exception:
+            logger.opt(exception=True).warning("Personal dossier: UCC liens query failed")
+
+        # ── 5. Cross-property ORI documents ──
+        try:
+            params: dict[str, Any] = {"owner_name": owner_upper}
+            strap_clause = ""
+            if strap:
+                strap_clause = "AND (oe.strap != :strap OR oe.strap IS NULL)"
+                params["strap"] = strap
+
+            ori_rows = (
+                conn.execute(
+                    sa_text(f"""
+                        SELECT recording_date,
+                               encumbrance_type::text AS encumbrance_type,
+                               party1, party2, amount,
+                               instrument_number, book, page
+                        FROM ori_encumbrances oe
+                        WHERE (
+                            (oe.party1 % :owner_name AND similarity(oe.party1, :owner_name) > 0.4)
+                            OR (oe.party2 % :owner_name AND similarity(oe.party2, :owner_name) > 0.4)
+                        )
+                        {strap_clause}
+                        ORDER BY recording_date DESC NULLS LAST
+                        LIMIT 100
+                    """),
+                    params,
+                )
+                .mappings()
+                .all()
+            )
+            for row in ori_rows:
+                r = dict(row)
+                # Determine which party is "other"
+                p1_sim = 0.0
+                p2_sim = 0.0
+                try:
+                    p1 = str(r.get("party1") or "").upper()
+                    p2 = str(r.get("party2") or "").upper()
+                    # Simple check: which party matches the owner more
+                    if p1 and owner_upper and owner_upper[:4] in p1:
+                        p1_sim = 1.0
+                    if p2 and owner_upper and owner_upper[:4] in p2:
+                        p2_sim = 1.0
+                except Exception:
+                    logger.opt(exception=True).debug(
+                        "Personal dossier: failed to compare ORI parties for other_party selection"
+                    )
+                r["other_party"] = r.get("party2") if p1_sim >= p2_sim else r.get("party1")
+                result["ori_docs"].append(r)
+        except Exception:
+            logger.opt(exception=True).warning("Personal dossier: ORI docs query failed")
+
+    return result
+
+
+@router.get("/{folio}/personal", response_class=HTMLResponse)
+async def property_personal(request: Request, folio: str):
+    """HTMX partial - personal owner dossier."""
+    prop = _pg_property_detail(folio)
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+
+    owner_name = (
+        (prop.get("parcel") or {}).get("owner_name")
+        or (prop.get("auction") or {}).get("owner_name")
+        or ""
+    )
+
+    dossier = _pg_personal_dossier(owner_name, prop.get("_strap"), prop.get("_folio_raw"))
+
+    return templates.TemplateResponse(
+        "partials/personal.html",
+        {
+            "request": request,
+            "folio": prop.get("folio") or folio,
+            "owner_name": owner_name,
+            "dossier": dossier,
         },
     )
 

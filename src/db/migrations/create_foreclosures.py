@@ -4,8 +4,9 @@ Migration: Create foreclosures hub table + supporting objects in PostgreSQL.
 Idempotent — safe to re-run.  All DDL uses IF NOT EXISTS / OR REPLACE.
 
 Tables:
-  - foreclosures          (one row per case+auction_date)
-  - foreclosure_events    (docket timeline, child of foreclosures)
+  - foreclosures                (one row per case+auction_date)
+  - foreclosure_events          (docket timeline, child of foreclosures)
+  - clerk_criminal_name_index   (criminal party index, charge-level rows)
 
 Views:
   - foreclosures_history  (archived rows from foreclosures, replaces former table)
@@ -275,6 +276,19 @@ DDL: list[str] = [
         IF NEW.strap IS NULL AND NEW.folio IS NOT NULL THEN
             SELECT bp.strap INTO NEW.strap
             FROM hcpa_bulk_parcels bp WHERE bp.folio = NEW.folio LIMIT 1;
+        END IF;
+        -- Repair non-null straps that do not resolve to the same folio.
+        IF NEW.strap IS NOT NULL AND NEW.folio IS NOT NULL
+           AND NOT EXISTS (
+               SELECT 1
+               FROM hcpa_bulk_parcels bp
+               WHERE bp.strap = NEW.strap
+                 AND bp.folio = NEW.folio
+           ) THEN
+            SELECT bp.strap INTO NEW.strap
+            FROM hcpa_bulk_parcels bp
+            WHERE bp.folio = NEW.folio
+            LIMIT 1;
         END IF;
 
         -- Clean strings
@@ -1157,6 +1171,90 @@ DDL: list[str] = [
         GROUP BY u.tax_auth_cd;
     END;
     $$ LANGUAGE plpgsql;
+    """,
+
+    # ------------------------------------------------------------------
+    # Clerk criminal name index — charge-level party records from
+    # the Clerk's weekly Criminal Name Index export (Circuit + County).
+    # Source: publicrec.hillsclerk.com/Criminal/name_index/
+    # ------------------------------------------------------------------
+    """
+    CREATE TABLE IF NOT EXISTS clerk_criminal_name_index (
+        id                    BIGSERIAL PRIMARY KEY,
+        court_type            TEXT        NOT NULL,
+        business_name         TEXT,
+        last_name             TEXT,
+        first_name            TEXT,
+        middle_name           TEXT,
+        suffix                TEXT,
+        party_type            TEXT,
+        ucn                   VARCHAR(64) NOT NULL,
+        case_number           VARCHAR(32),
+        utc_number            TEXT,
+        case_type             TEXT,
+        division              TEXT,
+        judge_name            TEXT,
+        date_filed            DATE,
+        current_status        TEXT,
+        status_date           DATE,
+        sex_gender            TEXT,
+        address1              TEXT,
+        address2              TEXT,
+        city                  TEXT,
+        state                 TEXT,
+        zip_code              TEXT,
+        race                  TEXT,
+        date_of_birth         DATE,
+        count_number          TEXT,
+        count_level_degree    TEXT,
+        statute_violation     TEXT,
+        charge_description    TEXT,
+        offense_date          DATE,
+        disposition_code      TEXT,
+        disposition_desc      TEXT,
+        disposition_date      DATE,
+        law_enforcement_agency TEXT,
+        officer_name          TEXT,
+        driver_license_number TEXT,
+        driver_license_state  TEXT,
+        commercial_vehicle    TEXT,
+        blood_alcohol_level   TEXT,
+        posted_speed          TEXT,
+        actual_speed          TEXT,
+        amount_paid           TEXT,
+        date_paid             DATE,
+        akas                  TEXT,
+        balance_due           TEXT,
+        source_file           TEXT,
+        loaded_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+        CONSTRAINT uq_clerk_crim_ni_ucn_count_disp
+            UNIQUE (ucn, count_number, disposition_code)
+    );
+    """,
+
+    # Indexes for clerk_criminal_name_index
+    """
+    CREATE INDEX IF NOT EXISTS idx_clerk_crim_ni_case_number
+        ON clerk_criminal_name_index (case_number);
+    CREATE INDEX IF NOT EXISTS idx_clerk_crim_ni_ucn
+        ON clerk_criminal_name_index (ucn);
+    CREATE INDEX IF NOT EXISTS idx_clerk_crim_ni_case_type
+        ON clerk_criminal_name_index (case_type);
+    CREATE INDEX IF NOT EXISTS idx_clerk_crim_ni_date_filed
+        ON clerk_criminal_name_index (date_filed);
+    CREATE INDEX IF NOT EXISTS idx_clerk_crim_ni_party_type
+        ON clerk_criminal_name_index (party_type);
+    CREATE INDEX IF NOT EXISTS idx_clerk_crim_ni_court_type
+        ON clerk_criminal_name_index (court_type);
+    CREATE INDEX IF NOT EXISTS idx_clerk_crim_ni_status
+        ON clerk_criminal_name_index (current_status);
+    CREATE INDEX IF NOT EXISTS idx_clerk_crim_ni_disposition_code
+        ON clerk_criminal_name_index (disposition_code);
+    CREATE INDEX IF NOT EXISTS idx_clerk_crim_ni_last_name_trgm
+        ON clerk_criminal_name_index USING gin (last_name gin_trgm_ops);
+    CREATE INDEX IF NOT EXISTS idx_clerk_crim_ni_first_name_trgm
+        ON clerk_criminal_name_index USING gin (first_name gin_trgm_ops);
     """,
 ]
 

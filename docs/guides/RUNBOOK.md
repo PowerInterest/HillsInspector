@@ -23,7 +23,14 @@ uv run Controller.py
 # Start web UI
 uv run python -m app.web.main
 # → http://localhost:8080
+
+# Start web UI with ngrok tunnel
+uv run python -m app.web.main --ngrok
+# → prints a public https://...ngrok-free.app URL
 ```
+
+`ngrok` auth can come from either `ngrok config add-authtoken <token>` or
+`NGROK_AUTHTOKEN=<token>`.
 
 ---
 

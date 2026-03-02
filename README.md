@@ -47,6 +47,14 @@ Launches the local web dashboard to view results.
 ```powershell
 uv run python -m app.web.main
 ```
+Start the same web app with a public `ngrok` tunnel:
+```powershell
+uv run python -m app.web.main --ngrok
+```
+`ngrok` auth can come from either:
+- `ngrok config add-authtoken <token>`
+- `NGROK_AUTHTOKEN=<token>`
+
 Database tab (CloudBeaver):
 - `CLOUDBEAVER_PG_URL` (or fallback `CLOUDBEAVER_URL`, default `http://localhost:8978`) controls PostgreSQL embed.
 - `CLOUDBEAVER_SQLITE_URL` (optional) can point to a CloudBeaver SQLite connection.
@@ -155,12 +163,15 @@ The `docs/` folder contains comprehensive guides and technical design artifacts,
 
 ### 🌐 External Systems & Scraping
 - [Deep Search Implementation](docs/DEEP_SEARCH_IMPLEMENTATION.md) - Bypassing ORI rate limits and complex search logic.
+- [Hyland PAV NOC Discovery](docs/external/HYLAND_PAV_NOC_DISCOVERY.md) - Live query IDs, keyword fields, and the search order that actually finds NOCs in the Clerk's Hyland public-access stack.
 - [Sunbiz Data Dictionary](docs/external/SUNBIZ_DATA_DICTIONARY.md) - Layout definition and tables for the Florida Division of Corporations bulk open datasets.
 - [Tax Data Research](docs/external/TAX_DATA_RESEARCH.md) - Scraping instructions for the DOR (Department of Revenue) property millage layers.
 - [Case Fallback Scraping](docs/domain/CASE_FALLBACK.md) - Fail-safe mechanisms when primary URLs vanish.
 
 ### 📖 Guides
 - [Operations Runbook](docs/guides/RUNBOOK.md) - Standard operational procedures and recurring scripts.
+- [Foreclosure Identifier Repair](docs/guides/FORECLOSURE_IDENTIFIER_REPAIR.md) - How the pipeline repairs non-null but invalid HCPA straps from folio-backed parcel data.
+- [Tampa Permit Value And Enforcement](docs/guides/TAMPA_PERMIT_VALUE_AND_ENFORCEMENT.md) - Why enforcement rows stay stored, but are excluded from permit-gap scoring, and how Tampa valuation parsing works.
 - [Scheduled Jobs](docs/guides/SCHEDULED_JOBS.md) - PG-controlled job config/run tracking with cron-triggered Python workers.
 - [Scheduled Jobs Walkthrough](docs/guides/WALKTHROUGH_SCHEDULED_JOBS.md) - Notes captured from the initial bulk-job scheduler integration pass.
 
@@ -249,5 +260,3 @@ We enforce strict code quality using the [Astral](https://astral.sh) suite.
 * **Web Framework:** `FastAPI` + `Jinja2` (SSR) + `HTMX` (Interactivity). **No React/SPA.**
 * **Scraping:** `Playwright` (Browser Automation) + `playwright-stealth`.
 * **AI/Vision:** `Qwen-VL` via VisionService (Visual extraction & OCR). No EasyOCR.
-
-
