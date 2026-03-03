@@ -61,6 +61,7 @@ update() → init_db() → download_clerk_civil_alpha_index() → load_civil_alp
 - Registered as `clerk_civil_alpha` step in `PgPipelineController` (runs after `clerk_criminal`)
 - Registered as `clerk_civil_alpha` scheduled job (weekly, 2h max, singleton)
 - CLI: `--skip-clerk-civil-alpha` flag
+- `load-all` now routes civil alpha data through `load_civil_alpha_index()` instead of the removed legacy loader
 
 ### Web Query Changes
 
@@ -101,11 +102,13 @@ SELECT MIN(filing_date), MAX(filing_date) FROM clerk_civil_cases;
 ## Rollback
 
 ```bash
+# Rollback table drop + recreate clerk_name_index
+uv run alembic downgrade 004_merge_civil_alpha
+
+# Full rollback (also removes new columns, indexes, job config)
 uv run alembic downgrade 003_seed_scheduled_jobs
 ```
 
-This removes the new columns, indexes, and job config row. The `clerk_name_index` table remains available as fallback.
+## Table Removal
 
-## Deprecation
-
-`clerk_name_index` is deprecated but not dropped. It can be removed in a future migration once the normalised tables are validated in production.
+`clerk_name_index` has been **dropped** (migration 005). All alpha index data now lives in `clerk_civil_cases` + `clerk_civil_parties`. The `ClerkNameIndex` ORM model and `load_clerk_name_index()` loader function have been removed.

@@ -62,7 +62,6 @@ from src.services.models_clerk import ClerkCivilParty
 from src.services.models_clerk import ClerkDisposedCase
 from src.services.models_clerk import ClerkGarnishmentCase
 from src.services.models_clerk import ClerkCriminalNameIndex
-from src.services.models_clerk import ClerkNameIndex
 from src.services.models_clerk import OfficialRecordsDailyInstrument
 
 CLERK_BULK_URL = "https://publicrec.hillsclerk.com/Civil/bulkdata/"
@@ -73,7 +72,6 @@ CLERK_GARNISHMENT_URL = (
 )
 OFFICIAL_RECORDS_DAILY_URL = "https://publicrec.hillsclerk.com/OfficialRecords/DailyIndexes/"
 DEFAULT_CLERK_DIR = Path("data/bulk_data/clerk_civil")
-DEFAULT_ALPHA_DIR = Path("data/bulk_data/clerk_alpha_index")
 CLERK_CRIMINAL_NAME_INDEX_CIRCUIT_URL = "https://publicrec.hillsclerk.com/Criminal/name_index/Circuit/"
 CLERK_CRIMINAL_NAME_INDEX_COUNTY_URL = "https://publicrec.hillsclerk.com/Criminal/name_index/County/"
 DEFAULT_CRIMINAL_ALPHA_DIR = Path("data/bulk_data/clerk_criminal_name_index")
@@ -1787,186 +1785,6 @@ def _upsert_official_records_batch(session: Session, rows: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Name index loader (alpha_index — complete party index, 20+ years)
-# ---------------------------------------------------------------------------
-
-
-def load_clerk_name_index(
-    dsn: str,
-    root: Path | None = None,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-    skip_unchanged: bool = True,
-    limit_files: int | None = None,
-) -> dict:
-    """
-    Load pipe-delimited alpha_index TXT files into clerk_name_index table.
-
-    Source: https://publicrec.hillsclerk.com/Civil/alpha_index/{Circuit,County}/
-    Format: Pipe-delimited, 50 columns, 27 files per court type (A-Z + NonAlpha).
-
-    This is the complete alphabetical party index covering ALL civil cases
-    (Circuit + County) going back 20+ years. ~1.4 GB total.
-    """
-    if root is None:
-        root = DEFAULT_ALPHA_DIR
-
-    files = sorted(
-        f for f in root.glob("*CivilNameIndex*.txt")
-        if f.is_file() and f.stat().st_size > 0
-    )
-    if limit_files:
-        files = files[:limit_files]
-
-    if not files:
-        logger.warning(f"No name index files found in {root}")
-        return {"files_found": 0, "files_loaded": 0, "rows_inserted": 0}
-
-    logger.info(f"Found {len(files)} name index files in {root}")
-    session_factory = get_session_factory(dsn)
-    stats = {
-        "files_found": len(files),
-        "files_loaded": 0,
-        "files_skipped": 0,
-        "rows_inserted": 0,
-        "rows_skipped_no_ucn": 0,
-    }
-
-    with session_factory() as session:
-        for path in files:
-            rel = path.name
-            sha = _compute_sha256(path)
-            st = path.stat()
-            modified_at = dt.datetime.fromtimestamp(st.st_mtime, tz=dt.UTC)
-
-            existing = _get_existing_ingest_file(session, "clerk_civil", rel)
-            if (
-                skip_unchanged
-                and existing
-                and existing.status == "loaded"
-                and existing.file_sha256 == sha
-            ):
-                logger.debug(f"Skipping unchanged: {path.name}")
-                stats["files_skipped"] += 1
-                continue
-
-            file_id = _upsert_ingest_file(
-                session=session,
-                source_system="clerk_civil",
-                category="name_index",
-                relative_path=rel,
-                file_sha256=sha,
-                file_size_bytes=st.st_size,
-                file_modified_at=modified_at,
-                status="loading",
-            )
-            session.commit()
-
-            try:
-                rows: list[dict] = []
-                row_count = 0
-                skipped = 0
-                eff_batch = batch_size
-
-                for pipe_row in _iter_pipe_delimited(path):
-                    ucn = _clean_text(pipe_row.get("Uniform Case Number"))
-                    if not ucn:
-                        skipped += 1
-                        continue
-
-                    court_type_raw = _clean_text(pipe_row.get("Court Type"))
-                    case_type_val = _clean_text(pipe_row.get("Case Type"))
-                    case_number = _extract_case_number_from_ucn(ucn)
-
-                    mapped = {
-                        "court_type": court_type_raw or ("Circuit" if "Circuit" in path.name else "County"),
-                        "business_name": _clean_text(pipe_row.get("BusinessName")),
-                        "last_name": _clean_text(pipe_row.get("LastName")),
-                        "first_name": _clean_text(pipe_row.get("FirstName")),
-                        "middle_name": _clean_text(pipe_row.get("MiddleName")),
-                        "suffix": _clean_text(pipe_row.get("Suffix")),
-                        "party_type": _clean_text(pipe_row.get("Party Connection Type")),
-                        "ucn": ucn,
-                        "case_number": case_number,
-                        "case_type": case_type_val,
-                        "division": _clean_text(pipe_row.get("Division")),
-                        "judge_name": _clean_text(pipe_row.get("Judge Name")),
-                        "date_filed": _parse_date_mdy(pipe_row.get("Date Filed")),
-                        "current_status": _clean_text(pipe_row.get("Current Status")),
-                        "status_date": _parse_date_mdy(pipe_row.get("Current Status Date")),
-                        "address1": _clean_text(pipe_row.get("Party Address Line 1")),
-                        "address2": _clean_text(pipe_row.get("Party Address Line 2")),
-                        "city": _clean_text(pipe_row.get("Party Address City")),
-                        "state": _clean_text(pipe_row.get("Party Address State")),
-                        "zip_code": _clean_text(pipe_row.get("Party Address Zip Code")),
-                        "disposition_code": _clean_text(pipe_row.get("Disposition Code")),
-                        "disposition_desc": _clean_text(pipe_row.get("Disposition Description")),
-                        "disposition_date": _parse_date_mdy(pipe_row.get("Disposition Date")),
-                        "amount_paid": _clean_text(pipe_row.get("Amount Paid")),
-                        "date_paid": _parse_date_mdy(pipe_row.get("Date Paid")),
-                        "akas": _clean_text(pipe_row.get("AKAs")),
-                        "is_foreclosure": _is_foreclosure(case_type_val),
-                        "source_file": path.name,
-                        "loaded_at": _utc_now(),
-                    }
-
-                    if row_count == 0:
-                        eff_batch = _effective_batch_size(batch_size, len(mapped))
-
-                    rows.append(mapped)
-                    row_count += 1
-
-                    if len(rows) >= eff_batch:
-                        _insert_name_index_batch(session, rows)
-                        session.commit()
-                        rows.clear()
-
-                if rows:
-                    _insert_name_index_batch(session, rows)
-                    session.commit()
-
-                _mark_ingest_file(session, file_id, "loaded", row_count=row_count)
-                session.commit()
-                stats["files_loaded"] += 1
-                stats["rows_inserted"] += row_count
-                stats["rows_skipped_no_ucn"] += skipped
-                logger.info(
-                    f"Loaded {row_count:,} name index rows from {path.name} "
-                    f"(skipped {skipped:,} no-UCN)"
-                )
-
-            except Exception as exc:
-                session.rollback()
-                _mark_ingest_file(
-                    session, file_id, "failed", error_message=str(exc)[:4000]
-                )
-                session.commit()
-                logger.error(f"Failed to load {path.name}: {exc}")
-                raise
-
-    return stats
-
-
-def _dedup_name_index(rows: list[dict]) -> list[dict]:
-    """Deduplicate name index rows by (ucn, disposition_code) within a batch."""
-    seen: dict[tuple, dict] = {}
-    for row in rows:
-        key = (row.get("ucn"), row.get("disposition_code") or "")
-        seen[key] = row
-    return list(seen.values())
-
-
-def _insert_name_index_batch(session: Session, rows: list[dict]) -> None:
-    if not rows:
-        return
-    rows = _dedup_name_index(rows)
-    stmt = pg_insert(ClerkNameIndex).values(rows)
-    stmt = stmt.on_conflict_do_nothing(
-        constraint="uq_clerk_name_index_ucn_disp"
-    )
-    session.execute(stmt)
-
-
-# ---------------------------------------------------------------------------
 # Civil alpha index → normalised tables loader
 # ---------------------------------------------------------------------------
 
@@ -1980,8 +1798,7 @@ def load_civil_alpha_index(
 ) -> dict:
     """Load civil alpha index TXT files into clerk_civil_cases + clerk_civil_parties.
 
-    Unlike ``load_clerk_name_index`` (which writes to the denormalised
-    ``clerk_name_index`` table), this loader merges rows into the existing
+    This loader merges alpha index rows into the existing
     normalised case/party schema so that web queries and pipeline logic
     can use a single set of tables for both bulk CSV and historical alpha
     index data.
@@ -2522,9 +2339,9 @@ def load_all(
         dsn, root, batch_size, skip_unchanged
     )
 
-    logger.info("--- Loading name index (alpha_index) ---")
-    all_stats["name_index"] = load_clerk_name_index(
-        dsn, DEFAULT_ALPHA_DIR, batch_size, skip_unchanged
+    logger.info("--- Loading civil alpha index into normalised tables ---")
+    all_stats["civil_alpha_index"] = load_civil_alpha_index(
+        dsn, DEFAULT_CIVIL_ALPHA_DIR, batch_size, skip_unchanged
     )
 
     logger.info("--- Loading criminal name index ---")
@@ -2606,18 +2423,6 @@ def _build_parser() -> argparse.ArgumentParser:
     official_cmd.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     official_cmd.add_argument("--no-skip-unchanged", action="store_true")
     official_cmd.add_argument("--limit-files", type=int, default=None)
-
-    ni_cmd = sub.add_parser(
-        "load-clerk-name-index",
-        help="Parse and load alpha_index pipe-delimited TXT files.",
-    )
-    ni_cmd.add_argument(
-        "--root", type=Path, default=DEFAULT_ALPHA_DIR,
-        help="Directory containing *CivilNameIndex*.txt files.",
-    )
-    ni_cmd.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
-    ni_cmd.add_argument("--no-skip-unchanged", action="store_true")
-    ni_cmd.add_argument("--limit-files", type=int, default=None)
 
     dl_crim_cmd = sub.add_parser(
         "download-criminal-name-index",
@@ -2767,17 +2572,6 @@ def main() -> int:
             limit_files=args.limit_files,
         )
         logger.info(f"Official records loader stats: {stats}")
-        return 0
-
-    if args.command == "load-clerk-name-index":
-        stats = load_clerk_name_index(
-            dsn=dsn,
-            root=args.root,
-            batch_size=args.batch_size,
-            skip_unchanged=not args.no_skip_unchanged,
-            limit_files=args.limit_files,
-        )
-        logger.info(f"Name index loader stats: {stats}")
         return 0
 
     if args.command == "load-criminal-name-index":

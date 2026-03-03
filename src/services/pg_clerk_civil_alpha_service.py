@@ -5,10 +5,9 @@ Downloads and loads Hillsborough County Clerk civil alphabetical index data
 The index is a 1.5 GB pipe-delimited listing covering all civil cases back
 to 1958, including party details, dispositions, and addresses.
 
-Unlike the legacy ``load_clerk_name_index`` (which writes to the denormalised
-``clerk_name_index`` table), this service merges the alpha index rows into the
-normalised ``clerk_civil_cases`` + ``clerk_civil_parties`` tables using
-COALESCE upserts so that richer bulk CSV data is never overwritten.
+This service merges the alpha index rows into the normalised
+``clerk_civil_cases`` + ``clerk_civil_parties`` tables using COALESCE upserts
+so that richer bulk CSV data is never overwritten.
 
 This service follows the same pattern as PgClerkCriminalService.  It is
 registered as a scheduled job ('clerk_civil_alpha') and runs as a Phase A

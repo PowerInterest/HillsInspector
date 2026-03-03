@@ -7,7 +7,6 @@ Tables:
 - clerk_civil_parties: Monthly bulk party data (plaintiff, defendant, attorney)
 - clerk_disposed_cases: Monthly disposed cases report
 - clerk_garnishment_cases: Weekly return-of-service and garnishment report
-- clerk_name_index: Complete alphabetical civil party index (20+ years, Circuit + County)
 - clerk_criminal_name_index: Complete alphabetical criminal party index (Circuit + County)
 - official_records_daily_instruments: Daily Official Records D/P/M instrument feed
 
@@ -239,81 +238,6 @@ class ClerkGarnishmentCase(Base):
         Index("idx_clerk_garnishment_snapshot_date", "snapshot_date"),
         Index("idx_clerk_garnishment_writ_issued_date", "writ_issued_date"),
         Index("idx_clerk_garnishment_defendant_name", "defendant_name"),
-    )
-
-
-class ClerkNameIndex(Base):
-    """DEPRECATED: Use clerk_civil_cases + clerk_civil_parties instead.
-
-    Alpha index data is now merged into the normalised tables by
-    ``PgClerkCivilAlphaService``.  This model is retained only for
-    backward compatibility during the transition period.
-
-    Source: https://publicrec.hillsclerk.com/Civil/alpha_index/{Circuit,County}/
-    Format: Pipe-delimited TXT, 27 files per court type (A-Z + NonAlpha).
-    Updated weekly by the Clerk.
-
-    The UCN (Uniform Case Number) encodes: county(29) + year + court_type + sequence + party_designator + location(HC).
-    Example: 292019CA123456A001HC
-    """
-
-    __tablename__ = "clerk_name_index"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    court_type: Mapped[str] = mapped_column(Text, nullable=False)
-    business_name: Mapped[str | None] = mapped_column(Text, nullable=True)
-    last_name: Mapped[str | None] = mapped_column(Text, nullable=True)
-    first_name: Mapped[str | None] = mapped_column(Text, nullable=True)
-    middle_name: Mapped[str | None] = mapped_column(Text, nullable=True)
-    suffix: Mapped[str | None] = mapped_column(Text, nullable=True)
-    party_type: Mapped[str | None] = mapped_column(Text, nullable=True)
-    ucn: Mapped[str] = mapped_column(String(64), nullable=False)
-    case_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    case_type: Mapped[str | None] = mapped_column(Text, nullable=True)
-    division: Mapped[str | None] = mapped_column(Text, nullable=True)
-    judge_name: Mapped[str | None] = mapped_column(Text, nullable=True)
-    date_filed: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
-    current_status: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
-    address1: Mapped[str | None] = mapped_column(Text, nullable=True)
-    address2: Mapped[str | None] = mapped_column(Text, nullable=True)
-    city: Mapped[str | None] = mapped_column(Text, nullable=True)
-    state: Mapped[str | None] = mapped_column(Text, nullable=True)
-    zip_code: Mapped[str | None] = mapped_column(Text, nullable=True)
-    disposition_code: Mapped[str | None] = mapped_column(Text, nullable=True)
-    disposition_desc: Mapped[str | None] = mapped_column(Text, nullable=True)
-    disposition_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
-    amount_paid: Mapped[str | None] = mapped_column(Text, nullable=True)
-    date_paid: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
-    akas: Mapped[str | None] = mapped_column(Text, nullable=True)
-    is_foreclosure: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    source_file: Mapped[str | None] = mapped_column(Text, nullable=True)
-    loaded_at: Mapped[dt.datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
-    )
-
-    __table_args__ = (
-        UniqueConstraint("ucn", "disposition_code", name="uq_clerk_name_index_ucn_disp"),
-        Index("idx_clerk_ni_case_number", "case_number"),
-        Index("idx_clerk_ni_case_type", "case_type"),
-        Index("idx_clerk_ni_date_filed", "date_filed"),
-        Index("idx_clerk_ni_party_type", "party_type"),
-        Index("idx_clerk_ni_court_type", "court_type"),
-        Index("idx_clerk_ni_status", "current_status"),
-        Index("idx_clerk_ni_disposition_code", "disposition_code"),
-        Index("idx_clerk_ni_foreclosure", "case_number", postgresql_where="is_foreclosure = true"),
-        Index(
-            "idx_clerk_ni_last_name_trgm",
-            "last_name",
-            postgresql_using="gin",
-            postgresql_ops={"last_name": "gin_trgm_ops"},
-        ),
-        Index(
-            "idx_clerk_ni_business_name_trgm",
-            "business_name",
-            postgresql_using="gin",
-            postgresql_ops={"business_name": "gin_trgm_ops"},
-        ),
     )
 
 

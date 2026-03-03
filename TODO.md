@@ -190,9 +190,18 @@ The file claims `Controller.py` is an "Old SQLite pipeline controller, replaced 
 
 The `db_audit` report shows this table doesn't exist. Either the Sunbiz entity quarterly job hasn't been run yet, or the table name is different. Verify against `sunbiz/pg_loader.py` and run the job if needed.
 
-### Drop `clerk_name_index` Table
+### `clerk_name_index` Removal
 
-The `clerk_name_index` table (and its corresponding SQLAlchemy model) is slated for deletion. Its historical data is being merged directly into `clerk_civil_cases` and `clerk_civil_parties` to fix the UCN join bug and simplify the schema. Once the data backfill migration is complete, `clerk_name_index` should be dropped entirely.
+Completed via Alembic migration `005_drop_clerk_name_index`. The redundant
+denormalised table and ORM model were removed after alpha index coverage was
+merged into `clerk_civil_cases` and `clerk_civil_parties`.
+
+Remaining follow-up:
+1. Keep validating that web/person search and dossier queries continue to use
+   only the normalised clerk tables.
+2. Keep the new civil alpha load path (`download-civil-alpha-index`,
+   `load-civil-alpha-index`, controller step, and `load_all`) in sync with the
+   active ingest workflow.
 
 ---
 

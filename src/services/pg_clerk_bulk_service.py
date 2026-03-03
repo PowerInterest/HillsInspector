@@ -99,7 +99,6 @@ class PgClerkBulkService:
             "parties_count": 0,
             "disposed_count": 0,
             "garnishment_count": 0,
-            "name_index_count": 0,
             "official_records_count": 0,
             "latest_loaded_at": None,
             "loaded_files": [],
@@ -118,12 +117,12 @@ class PgClerkBulkService:
                         WHERE table_name IN (
                             'clerk_civil_cases', 'clerk_civil_events',
                             'clerk_civil_parties', 'clerk_disposed_cases',
-                            'clerk_garnishment_cases', 'clerk_name_index',
+                            'clerk_garnishment_cases',
                             'official_records_daily_instruments'
                         )
                     """)
                 ).scalar()
-                state["tables_exist"] = (row or 0) >= 7
+                state["tables_exist"] = (row or 0) >= 6
 
                 if not state["tables_exist"]:
                     logger.info(
@@ -139,7 +138,6 @@ class PgClerkBulkService:
                     ("clerk_civil_parties", "parties_count"),
                     ("clerk_disposed_cases", "disposed_count"),
                     ("clerk_garnishment_cases", "garnishment_count"),
-                    ("clerk_name_index", "name_index_count"),
                     ("official_records_daily_instruments", "official_records_count"),
                 ]:
                     try:
