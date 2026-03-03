@@ -1,5 +1,6 @@
 # HillsInspector API Endpoints & URLs
-
+# https://www.hillsclerk.com/About-Us/What-Records-is-the-Clerk-the-Custodian-Of
+### https://kofilequicklinks.com/HillsboroughFL/
 ## https://hillsborough.maps.arcgis.com/apps/MapSeries/index.html?appid=ea0aa3dabf00443b983e904587455673 has flood data down to a science
 ## GIS Viewer: https://hillsborough.maps.arcgis.com/apps/dashboards/30eb1fb6bf3c4d6382f2f5f8fc65f52a
 ## Bulk Civil Cases: https://publicrec.hillsclerk.com/Civil/bulkdata/ 
@@ -45,6 +46,16 @@
 | GET | `https://hillsborough.realforeclose.com/index.cfm?zaction=user&zmethod=calendar` | Auction calendar view | `auction_scraper.py` |
 | GET | `https://hillsborough.realforeclose.com/index.cfm?zaction=AUCTION&Zmethod=PREVIEW&AUCTIONDATE={date}` | Auction preview for specific date | `auction_scraper.py` |
 | GET | `https://hillsborough.realtaxdeed.com` | Tax deed auction portal | `tax_deed_scraper.py` |
+
+### Hillsborough County Clerk - Additional Bulk Data
+
+| Method | URL Pattern | Description | Source |
+|--------|-------------|-------------|--------|
+| GET | `https://publicrec.hillsclerk.com/Civil/dailyfilings/` | Daily New Civil Case Filings (CSV) | Pending Integration |
+| GET | `https://publicrec.hillsclerk.com/Civil/undisposed/` | Weekly Undisposed Case Snapshots (CSV) | Pending Integration |
+| GET | `https://publicrec.hillsclerk.com/DailyNewCaseFilings/` | Root-level daily filings (Civil/Criminal/Probate) | Pending Integration |
+| GET | `https://hillsborough.realforeclose.com/` | RealAuction Foreclosure Escrow Balances (Daily PDF) | Pending Integration |
+| GET | `https://hillsborough.realtaxdeed.com` | Tax Deed Sales Excess Proceeds (Excel) | Pending Integration |
 
 ### Building Permits - Accela Platform
 

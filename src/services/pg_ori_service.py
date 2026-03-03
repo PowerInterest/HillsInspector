@@ -6,6 +6,8 @@ PG-first, phased discovery for encumbrances:
 3. Guarded fallback (clerk case seeds + targeted legal/address/party search).
 4. Targeted live NOC fallback for recent permit-backed properties that still
    have no discovered Notice of Commencement after the normal passes.
+5. Lis pendens recovery for judged active cases that still have no persisted
+   LP, including case-only retries when parcel identity is missing.
 
 Most ORI calls use the Hyland PAV ``CustomQuery/KeywordSearch`` API with
 truncation splitting for bounded date-window searches. A narrower full-text
@@ -361,6 +363,137 @@ class PgOriService:
         logger.info(f"ORI search: {len(targets)} foreclosures to process")
         return asyncio.run(self._search_all(targets))
 
+    def run_lis_pendens_backfill(
+        self,
+        *,
+        limit: int | None = None,
+        foreclosure_ids: list[int] | None = None,
+        dry_run: bool = False,
+        require_ori_searched: bool = True,
+    ) -> dict[str, Any]:
+        """Re-probe active foreclosure cases that still have no persisted LP."""
+        before_targets = self._find_lis_pendens_gap_targets(
+            limit=None,
+            foreclosure_ids=foreclosure_ids,
+            require_ori_searched=require_ori_searched,
+        )
+        targets = before_targets[:limit] if limit is not None else before_targets
+        if not targets:
+            return {"skipped": True, "reason": "no_lis_pendens_gap_targets"}
+
+        total_docs = 0
+        total_saved = 0
+        total_inferred = 0
+        errors = 0
+        total_api_calls = 0
+        total_retries = 0
+        total_truncated = 0
+        total_unresolved_truncations = 0
+        targets_with_docs = 0
+        per_target: list[dict[str, Any]] = []
+
+        for index, target in enumerate(targets, start=1):
+            fid = target["foreclosure_id"]
+            case = target["case_number"]
+            strap = (target.get("strap") or "").strip() or None
+            folio = (target.get("folio") or "").strip() or None
+            logger.info(
+                "[{}/{}] LP backfill for {} (strap={})",
+                index,
+                len(targets),
+                case,
+                strap,
+            )
+            try:
+                discovered_docs, metrics = self._discover_property(target)
+                lp_docs = [
+                    doc
+                    for doc in discovered_docs
+                    if normalize_encumbrance_type(normalize_document_type(doc.get("DocType") or ""))
+                    == "lis_pendens"
+                ]
+                saved = 0
+                persisted_lp = self._has_persisted_lis_pendens(case, strap)
+                if lp_docs and not dry_run:
+                    saved = self._save_documents(strap, folio, lp_docs)
+                    persisted_lp = self._has_persisted_lis_pendens(case, strap)
+                    if persisted_lp:
+                        self._mark_searched(fid)
+
+                total_docs += len(lp_docs)
+                total_saved += saved
+                total_api_calls += metrics["api_calls"]
+                total_retries += metrics["retries"]
+                total_truncated += metrics["truncated"]
+                total_unresolved_truncations += metrics["unresolved_truncations"]
+                if lp_docs:
+                    targets_with_docs += 1
+                per_target.append(
+                    {
+                        "foreclosure_id": fid,
+                        "case_number": case,
+                        "strap": strap,
+                        "folio": folio,
+                        "docs_found": len(lp_docs),
+                        "saved": saved,
+                        "persisted_lp": persisted_lp,
+                        "inferred": 0,
+                        "api_calls": metrics["api_calls"],
+                        "retries": metrics["retries"],
+                        "truncated": metrics["truncated"],
+                        "unresolved_truncations": metrics["unresolved_truncations"],
+                        "official_seed_docs": metrics["official_seed_docs"],
+                        "deed_count": metrics["deed_count"],
+                        "clerk_case_count": metrics["clerk_case_count"],
+                        "instruments": [
+                            _get_instrument(doc) for doc in lp_docs if _get_instrument(doc)
+                        ],
+                    }
+                )
+            except Exception as exc:
+                logger.exception(
+                    "LP backfill error for case={} foreclosure_id={}",
+                    case,
+                    fid,
+                )
+                errors += 1
+                per_target.append(
+                    {
+                        "foreclosure_id": fid,
+                        "case_number": case,
+                        "strap": target.get("strap"),
+                        "folio": target.get("folio"),
+                        "docs_found": 0,
+                        "saved": 0,
+                        "inferred": 0,
+                        "error": str(exc),
+                    }
+                )
+
+        after_remaining = len(
+            self._find_lis_pendens_gap_targets(
+                limit=None,
+                foreclosure_ids=foreclosure_ids,
+                require_ori_searched=require_ori_searched,
+            )
+        )
+        return {
+            "targets": len(targets),
+            "targets_with_lp_docs": targets_with_docs,
+            "total_lp_docs_found": total_docs,
+            "total_saved": total_saved,
+            "total_inferred": total_inferred,
+            "errors": errors,
+            "api_calls": total_api_calls,
+            "retries": total_retries,
+            "truncated": total_truncated,
+            "unresolved_truncations": total_unresolved_truncations,
+            "remaining_lp_gaps_before": len(before_targets),
+            "remaining_lp_gaps_after": after_remaining,
+            "dry_run": dry_run,
+            "per_target": per_target,
+        }
+
     def run_recent_permit_noc_backfill(
         self,
         *,
@@ -524,7 +657,16 @@ class PgOriService:
         }
 
     def _find_targets(self, limit: int | None) -> list[dict[str, Any]]:
-        """Find foreclosures needing ORI search."""
+        """Find foreclosures needing ORI search or LP recovery."""
+        standard_targets = self._find_standard_targets(limit=None)
+        lp_gap_targets = self._find_lis_pendens_gap_targets(
+            limit=None,
+            require_ori_searched=None,
+        )
+        return self._merge_targets(standard_targets, lp_gap_targets, limit=limit)
+
+    def _find_standard_targets(self, limit: int | None) -> list[dict[str, Any]]:
+        """Find foreclosures needing the normal parcel-backed ORI pass."""
         with self.engine.connect() as conn:
             rows = conn.execute(
                 text("""
@@ -546,6 +688,136 @@ class PgOriService:
             ).fetchall()
 
         return [self._row_to_target(r) for r in rows]
+
+    @staticmethod
+    def _lp_case_sql(alias: str) -> str:
+        return (
+            f"({alias}.case_number_norm LIKE '%-CA-%' "
+            f"OR COALESCE({alias}.clerk_case_type, '') ILIKE 'CC Real Property/Mortgage Foreclosure%')"
+        )
+
+    @staticmethod
+    def _decorate_lis_pendens_gap_target(target: dict[str, Any]) -> dict[str, Any]:
+        decorated = dict(target)
+        decorated["lp_recovery_mode"] = True
+        decorated["skip_inferred_fallback"] = True
+        decorated["skip_live_noc_fallback"] = True
+        # LP gap retries should only mark ORI searched after a persisted LP exists.
+        decorated["mark_ori_searched"] = False
+        return decorated
+
+    @staticmethod
+    def _merge_targets(
+        primary: list[dict[str, Any]],
+        secondary: list[dict[str, Any]],
+        *,
+        limit: int | None,
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        for target in [*primary, *secondary]:
+            foreclosure_id = int(target["foreclosure_id"])
+            if foreclosure_id in seen:
+                continue
+            seen.add(foreclosure_id)
+            merged.append(target)
+            if limit is not None and len(merged) >= limit:
+                break
+        return merged
+
+    def _find_lis_pendens_gap_targets(
+        self,
+        *,
+        limit: int | None,
+        foreclosure_ids: list[int] | None = None,
+        require_ori_searched: bool | None = True,
+    ) -> list[dict[str, Any]]:
+        """Find active judged foreclosures that still lack a persisted LP."""
+        where_clauses = [
+            "f.archived_at IS NULL",
+            "f.judgment_data IS NOT NULL",
+            self._lp_case_sql("f"),
+            """
+            NOT EXISTS (
+                SELECT 1
+                FROM ori_encumbrances oe
+                WHERE oe.encumbrance_type = 'lis_pendens'
+                  AND (
+                        (f.strap IS NOT NULL AND oe.strap = f.strap)
+                     OR oe.case_number = f.case_number_raw
+                     OR oe.case_number = f.case_number_norm
+                  )
+            )
+            """,
+        ]
+        params: dict[str, Any] = {"limit": limit or 100000}
+
+        if require_ori_searched is True:
+            where_clauses.append("f.step_ori_searched IS NOT NULL")
+        elif require_ori_searched is False:
+            where_clauses.append("f.step_ori_searched IS NULL")
+
+        if foreclosure_ids:
+            where_clauses.append("f.foreclosure_id = ANY(:foreclosure_ids)")
+            params["foreclosure_ids"] = foreclosure_ids
+
+        sql = f"""
+            SELECT
+                f.foreclosure_id,
+                f.case_number_raw,
+                f.strap,
+                f.folio,
+                f.judgment_data,
+                f.auction_date,
+                f.filing_date,
+                bp.raw_legal1,
+                bp.raw_legal2,
+                bp.raw_legal3,
+                bp.raw_legal4,
+                bp.owner_name,
+                COALESCE(NULLIF(btrim(f.property_address), ''), bp.property_address) AS property_address
+            FROM foreclosures f
+            LEFT JOIN hcpa_bulk_parcels bp ON f.strap = bp.strap
+            WHERE {" AND ".join(where_clauses)}
+            ORDER BY f.auction_date NULLS LAST, f.foreclosure_id
+            LIMIT :limit
+        """
+        with self.engine.connect() as conn:
+            rows = conn.execute(text(sql), params).fetchall()
+        return [
+            self._decorate_lis_pendens_gap_target(self._row_to_target(row))
+            for row in rows
+        ]
+
+    def _has_persisted_lis_pendens(
+        self,
+        case_number: str | None,
+        strap: str | None,
+    ) -> bool:
+        case_candidates = [candidate for candidate in self._case_variants(case_number or "") if candidate]
+        clauses = ["oe.encumbrance_type = 'lis_pendens'"]
+        match_clauses: list[str] = []
+        params: dict[str, Any] = {}
+
+        if strap:
+            match_clauses.append("oe.strap = :strap")
+            params["strap"] = strap
+        if case_candidates:
+            match_clauses.append("oe.case_number = ANY(:case_numbers)")
+            params["case_numbers"] = case_candidates
+        if not match_clauses:
+            return False
+
+        sql = f"""
+            SELECT EXISTS (
+                SELECT 1
+                FROM ori_encumbrances oe
+                WHERE {' AND '.join(clauses)}
+                  AND ({' OR '.join(match_clauses)})
+            )
+        """
+        with self.engine.connect() as conn:
+            return bool(conn.execute(text(sql), params).scalar())
 
     def _find_recent_permit_no_noc_targets(
         self,
@@ -673,6 +945,7 @@ class PgOriService:
     async def _search_all(self, targets: list[dict]) -> dict[str, Any]:
         total_docs = 0
         total_saved = 0
+        total_inferred = 0
         errors = 0
         total_api_calls = 0
         total_retries = 0
@@ -684,48 +957,19 @@ class PgOriService:
             fid = target["foreclosure_id"]
             case = target["case_number"]
             strap = target["strap"]
-            folio = target["folio"]
 
             logger.info(f"[{i + 1}/{len(targets)}] ORI search for {case} (strap={strap})")
 
             try:
-                docs, metrics = self._discover_property(target)
-                total_docs += len(docs)
-                total_api_calls += metrics["api_calls"]
-                total_retries += metrics["retries"]
-                total_truncated += metrics["truncated"]
-                total_unresolved_truncations += metrics["unresolved_truncations"]
-                total_official_seed_docs += metrics["official_seed_docs"]
-
-                logger.info(
-                    "  Discovery complete: docs={} api_calls={} retries={} "
-                    "truncated={} unresolved_trunc={} seeds=(deeds={}, clerk_cases={}, official={})",
-                    len(docs),
-                    metrics["api_calls"],
-                    metrics["retries"],
-                    metrics["truncated"],
-                    metrics["unresolved_truncations"],
-                    metrics["deed_count"],
-                    metrics["clerk_case_count"],
-                    metrics["official_seed_docs"],
-                )
-
-                # Save encumbrance-type documents to PG
-                saved = self._save_documents(strap, folio, docs)
-                total_saved += saved
-
-                # If no encumbrances found, try judgment-inferred
-                if saved == 0:
-                    inferred = self._infer_from_judgment(strap, folio, target)
-                    total_saved += inferred
-                    if inferred == 0:
-                        logger.warning(
-                            "No encumbrances saved and no inferred fallback for case={} strap={}",
-                            case,
-                            strap,
-                        )
-
-                self._mark_searched(fid)
+                result = self._process_target(target, persist=True)
+                total_docs += result["docs_found"]
+                total_saved += result["saved"]
+                total_inferred += result["inferred"]
+                total_api_calls += result["api_calls"]
+                total_retries += result["retries"]
+                total_truncated += result["truncated"]
+                total_unresolved_truncations += result["unresolved_truncations"]
+                total_official_seed_docs += result["official_seed_docs"]
 
             except Exception:
                 logger.exception(
@@ -740,12 +984,73 @@ class PgOriService:
             "targets": len(targets),
             "total_documents_found": total_docs,
             "encumbrances_saved": total_saved,
+            "inferred_saved": total_inferred,
             "errors": errors,
             "api_calls": total_api_calls,
             "retries": total_retries,
             "truncated_responses": total_truncated,
             "unresolved_truncations": total_unresolved_truncations,
             "official_seed_docs": total_official_seed_docs,
+        }
+
+    def _process_target(
+        self,
+        target: dict[str, Any],
+        *,
+        persist: bool,
+    ) -> dict[str, Any]:
+        """Discover, save, and optionally mark a single ORI target."""
+        foreclosure_id = int(target["foreclosure_id"])
+        case_number = target.get("case_number") or ""
+        strap = (target.get("strap") or "").strip() or None
+        folio = (target.get("folio") or "").strip() or None
+
+        docs, metrics = self._discover_property(target)
+        logger.info(
+            "  Discovery complete: docs={} api_calls={} retries={} "
+            "truncated={} unresolved_trunc={} seeds=(deeds={}, clerk_cases={}, official={})",
+            len(docs),
+            metrics["api_calls"],
+            metrics["retries"],
+            metrics["truncated"],
+            metrics["unresolved_truncations"],
+            metrics["deed_count"],
+            metrics["clerk_case_count"],
+            metrics["official_seed_docs"],
+        )
+
+        saved = 0
+        inferred = 0
+        if persist:
+            saved = self._save_documents(strap, folio, docs)
+            if saved == 0 and not bool(target.get("skip_inferred_fallback")):
+                inferred = self._infer_from_judgment(strap, folio, target)
+                saved += inferred
+                if inferred == 0:
+                    logger.warning(
+                        "No encumbrances saved and no inferred fallback for case={} strap={}",
+                        case_number,
+                        strap or "",
+                    )
+            if bool(target.get("mark_ori_searched", True)):
+                self._mark_searched(foreclosure_id)
+
+        return {
+            "foreclosure_id": foreclosure_id,
+            "case_number": case_number,
+            "strap": strap,
+            "folio": folio,
+            "docs_found": len(docs),
+            "saved": saved,
+            "inferred": inferred,
+            "api_calls": metrics["api_calls"],
+            "retries": metrics["retries"],
+            "truncated": metrics["truncated"],
+            "unresolved_truncations": metrics["unresolved_truncations"],
+            "official_seed_docs": metrics["official_seed_docs"],
+            "deed_count": metrics["deed_count"],
+            "clerk_case_count": metrics["clerk_case_count"],
+            "instruments": [_get_instrument(doc) for doc in docs if _get_instrument(doc)],
         }
 
     # ------------------------------------------------------------------
@@ -759,6 +1064,8 @@ class PgOriService:
         judgment_data = target.get("judgment_data") or {}
         plaintiff = (judgment_data.get("plaintiff") or "").strip()
         defendant = (judgment_data.get("defendant") or "").strip()
+        lp_recovery_mode = bool(target.get("lp_recovery_mode"))
+        skip_live_noc_fallback = bool(target.get("skip_live_noc_fallback"))
 
         stats = {
             "api_calls": 0,
@@ -805,7 +1112,12 @@ class PgOriService:
 
         # Phase 1A: Case-number anchors.
         for variant in self._case_variants(case_number):
-            docs = self._search_case_pav(variant, stats)
+            docs = self._search_case_pav(
+                variant,
+                stats,
+                persist_case_number=case_number,
+                bypass_cache=lp_recovery_mode,
+            )
             self._merge_docs(docs_by_inst, docs)
 
         # Phase 1B: Ownership chain + adjacent instruments.
@@ -843,7 +1155,11 @@ class PgOriService:
 
         # Phase 1C: Related foreclosure cases from CT/CD transfer docs.
         for ct_case in sorted(ct_cd_cases):
-            docs = self._search_case_pav(ct_case, stats)
+            docs = self._search_case_pav(
+                ct_case,
+                stats,
+                persist_case_number=ct_case,
+            )
             filtered = [d for d in docs if self._matches_property(d, property_tokens)]
             self._merge_docs(docs_by_inst, filtered)
 
@@ -921,7 +1237,12 @@ class PgOriService:
             clerk_cases = self._get_clerk_case_seeds(target, ownership_chain)
             stats["clerk_case_count"] = len(clerk_cases)
             for cnum in clerk_cases[:_MAX_CLERK_CASE_SEEDS]:
-                docs = self._search_case_pav(cnum, stats)
+                docs = self._search_case_pav(
+                    cnum,
+                    stats,
+                    persist_case_number=cnum,
+                    bypass_cache=lp_recovery_mode,
+                )
                 filtered = [d for d in docs if self._matches_property(d, property_tokens)]
                 self._merge_docs(docs_by_inst, filtered)
 
@@ -965,7 +1286,7 @@ class PgOriService:
                 filtered = [d for d in docs if self._matches_property(d, property_tokens)]
                 self._merge_docs(docs_by_inst, filtered)
 
-        if not any(_is_noc_type(doc) for doc in docs_by_inst.values()):
+        if not skip_live_noc_fallback and not any(_is_noc_type(doc) for doc in docs_by_inst.values()):
             live_noc_docs = self._run_live_noc_fallback(
                 target=target,
                 ownership_chain=ownership_chain,
@@ -1107,6 +1428,10 @@ class PgOriService:
                 existing["RecordDate"] = doc.get("RecordDate")
             if not existing.get("Legal") and doc.get("Legal"):
                 existing["Legal"] = doc.get("Legal")
+            if not existing.get("CaseNum") and doc.get("CaseNum"):
+                existing["CaseNum"] = doc.get("CaseNum")
+            if not existing.get("case_number") and doc.get("case_number"):
+                existing["case_number"] = doc.get("case_number")
             # Preserve PAV document ID for downstream PDF download
             if not existing.get("ID") and doc.get("ID"):
                 existing["ID"] = doc.get("ID")
@@ -1808,13 +2133,27 @@ class PgOriService:
         found.update(m.group(0) for m in re.finditer(r"\b\d{2}\d{4}[A-Z]{2}\d{6}[A-Z0-9]*\b", joined))
         return found
 
-    def _search_case_pav(self, case_number: str, stats: dict[str, int]) -> list[dict[str, Any]]:
-        return self._pav_search(
+    def _search_case_pav(
+        self,
+        case_number: str,
+        stats: dict[str, int],
+        *,
+        persist_case_number: str | None = None,
+        bypass_cache: bool = False,
+    ) -> list[dict[str, Any]]:
+        docs = self._pav_search(
             query_id=350,
             keywords=[(1259, case_number)],
             query_label=f"case:{case_number}",
             stats=stats,
+            bypass_cache=bypass_cache,
         )
+        canonical_case = (persist_case_number or case_number or "").strip().upper()
+        if canonical_case:
+            for doc in docs:
+                if not doc.get("CaseNum") and not doc.get("case_number"):
+                    doc["CaseNum"] = canonical_case
+        return docs
 
     def _search_instrument_pav(self, instrument: str, stats: dict[str, int]) -> list[dict[str, Any]]:
         return self._pav_search(
@@ -1999,6 +2338,7 @@ class PgOriService:
         to_date: date | None = None,
         split_on_truncated: bool = False,
         depth: int = 0,
+        bypass_cache: bool = False,
     ) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {
             "QueryID": query_id,
@@ -2010,7 +2350,12 @@ class PgOriService:
         if to_date is not None:
             payload["ToDate"] = to_date.strftime("%m/%d/%Y")
 
-        data = self._post_pav(payload, query_label, stats)
+        data = self._post_pav(
+            payload,
+            query_label,
+            stats,
+            bypass_cache=bypass_cache,
+        )
         if data is None:
             return []
 
@@ -2071,13 +2416,16 @@ class PgOriService:
         payload: dict[str, Any],
         query_label: str,
         stats: dict[str, int],
+        *,
+        bypass_cache: bool = False,
     ) -> dict[str, Any] | None:
         # --- disk cache check ---
-        cached = pav_cache_get(payload)
-        if cached is not None:
-            stats.setdefault("cache_hits", 0)
-            stats["cache_hits"] += 1
-            return cached
+        if not bypass_cache:
+            cached = pav_cache_get(payload)
+            if cached is not None:
+                stats.setdefault("cache_hits", 0)
+                stats["cache_hits"] += 1
+                return cached
 
         for attempt in range(1, _PAV_MAX_RETRIES + 1):
             stats["api_calls"] += 1
@@ -2102,7 +2450,8 @@ class PgOriService:
                         )
                     else:
                         if isinstance(data, dict):
-                            pav_cache_put(payload, data)
+                            if not bypass_cache:
+                                pav_cache_put(payload, data)
                             return data
                         logger.warning(
                             "PAV returned non-object JSON label={} attempt={}/{} type={}",
@@ -2581,7 +2930,7 @@ class PgOriService:
 
     def _save_documents(
         self,
-        strap: str,
+        strap: str | None,
         folio: str | None,
         documents: list[dict],
     ) -> int:
@@ -2629,6 +2978,10 @@ class PgOriService:
                     book_type = "OR"
                 amount = doc.get("SalesPrice") or doc.get("sales_price")
                 case_number = doc.get("CaseNum") or doc.get("case_number")
+                if not case_number:
+                    extracted_cases = sorted(self._extract_case_numbers(doc))
+                    if extracted_cases:
+                        case_number = extracted_cases[0]
                 legal = doc.get("Legal") or doc.get("legal_description") or doc.get("legal")
                 ori_uuid = doc.get("UUID") or doc.get("ori_uuid")
                 # Pre-truncated to 64 chars by _normalize_result()
@@ -2637,10 +2990,65 @@ class PgOriService:
                 # Determine if satisfaction
                 is_sat = canonical in CANONICAL_SATISFACTION_TYPES
 
+                params = {
+                    "folio": folio,
+                    "strap": strap,
+                    "instrument": instrument,
+                    "book": book,
+                    "page": page,
+                    "book_type": book_type or "OR",
+                    "ori_uuid": ori_uuid,
+                    "ori_id": str(ori_id) if ori_id else None,
+                    "raw_type": raw_type,
+                    "enc_type": enc_type,
+                    "party1": party1 or None,
+                    "party2": party2 or None,
+                    "p1_json": (json.dumps(parties_one) if parties_one else None),
+                    "p2_json": (json.dumps(parties_two) if parties_two else None),
+                    "amount": float(amount) if amount else None,
+                    "rec_date": recording_date or "",
+                    "case_number": case_number,
+                    "legal": legal,
+                    "is_sat": is_sat,
+                }
+
                 conn.execute(text("SAVEPOINT ori_doc"))
                 try:
-                    conn.execute(
+                    existing = conn.execute(
                         text("""
+                            UPDATE ori_encumbrances
+                            SET folio = COALESCE(:folio, folio),
+                                strap = COALESCE(:strap, strap),
+                                book = COALESCE(:book, book),
+                                page = COALESCE(:page, page),
+                                book_type = COALESCE(:book_type, book_type),
+                                ori_uuid = COALESCE(:ori_uuid, ori_uuid),
+                                ori_id = COALESCE(:ori_id, ori_id),
+                                raw_document_type = COALESCE(:raw_type, raw_document_type),
+                                encumbrance_type = COALESCE(
+                                    CAST(:enc_type AS encumbrance_type_enum),
+                                    encumbrance_type
+                                ),
+                                party1 = COALESCE(:party1, party1),
+                                party2 = COALESCE(:party2, party2),
+                                parties_one_json = COALESCE(CAST(:p1_json AS JSONB), parties_one_json),
+                                parties_two_json = COALESCE(CAST(:p2_json AS JSONB), parties_two_json),
+                                amount = COALESCE(:amount, amount),
+                                recording_date = COALESCE(
+                                    CAST(NULLIF(:rec_date, '') AS DATE),
+                                    recording_date
+                                ),
+                                case_number = COALESCE(:case_number, case_number),
+                                legal_description = COALESCE(:legal, legal_description),
+                                is_satisfied = COALESCE(:is_sat, is_satisfied),
+                                updated_at = now()
+                            WHERE instrument_number = :instrument
+                        """),
+                        params,
+                    )
+                    if existing.rowcount == 0:
+                        conn.execute(
+                            text("""
                             INSERT INTO ori_encumbrances (
                                 folio, strap, instrument_number,
                                 book, page, book_type,
@@ -2706,28 +3114,8 @@ class PgOriService:
                                 is_satisfied = COALESCE(EXCLUDED.is_satisfied, ori_encumbrances.is_satisfied),
                                 updated_at = now()
                         """),
-                        {
-                            "folio": folio,
-                            "strap": strap,
-                            "instrument": instrument,
-                            "book": book,
-                            "page": page,
-                            "book_type": book_type or "OR",
-                            "ori_uuid": ori_uuid,
-                            "ori_id": str(ori_id) if ori_id else None,
-                            "raw_type": raw_type,
-                            "enc_type": enc_type,
-                            "party1": party1 or None,
-                            "party2": party2 or None,
-                            "p1_json": (json.dumps(parties_one) if parties_one else None),
-                            "p2_json": (json.dumps(parties_two) if parties_two else None),
-                            "amount": float(amount) if amount else None,
-                            "rec_date": recording_date or "",
-                            "case_number": case_number,
-                            "legal": legal,
-                            "is_sat": is_sat,
-                        },
-                    )
+                            params,
+                        )
                     conn.execute(text("RELEASE SAVEPOINT ori_doc"))
                     saved += 1
                 except Exception as exc:
@@ -2738,7 +3126,7 @@ class PgOriService:
 
     def _infer_from_judgment(
         self,
-        strap: str,
+        strap: str | None,
         folio: str | None,
         target: dict,
     ) -> int:

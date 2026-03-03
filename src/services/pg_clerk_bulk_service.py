@@ -247,7 +247,6 @@ class PgClerkBulkService:
                 load_clerk_parties,
                 load_clerk_disposed,
                 load_clerk_garnishment,
-                load_clerk_name_index,
                 load_official_records_daily,
             )
         except ImportError as exc:
@@ -343,24 +342,6 @@ class PgClerkBulkService:
                     f"PgClerkBulkService: {step_name} failed: {exc}\n"
                     f"  Traceback: {traceback.format_exc()}"
                 )
-
-        # Step 4: Name index (separate directory, not part of bulk download)
-        try:
-            logger.info("PgClerkBulkService: loading name_index ...")
-            ni_stats = load_clerk_name_index(dsn=self._dsn)
-            result["name_index"] = ni_stats
-            logger.info(
-                f"PgClerkBulkService name_index: "
-                f"loaded={ni_stats.get('files_loaded', 0)}, "
-                f"rows={ni_stats.get('rows_inserted', 0)}"
-            )
-        except Exception as exc:
-            all_ok = False
-            result["name_index"] = {"error": str(exc)}
-            logger.error(
-                f"PgClerkBulkService: name_index failed: {exc}\n"
-                f"  Traceback: {traceback.format_exc()}"
-            )
 
         elapsed = (dt.datetime.now(dt.UTC) - started_at).total_seconds()
         result["success"] = all_ok

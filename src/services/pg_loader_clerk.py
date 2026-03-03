@@ -78,6 +78,10 @@ CLERK_CRIMINAL_NAME_INDEX_CIRCUIT_URL = "https://publicrec.hillsclerk.com/Crimin
 CLERK_CRIMINAL_NAME_INDEX_COUNTY_URL = "https://publicrec.hillsclerk.com/Criminal/name_index/County/"
 DEFAULT_CRIMINAL_ALPHA_DIR = Path("data/bulk_data/clerk_criminal_name_index")
 CRIMINAL_NAME_INDEX_FILE_PATTERN = re.compile(r"(?:Circuit|County)CriminalNameIndex_[A-Z_]+\.txt", re.IGNORECASE)
+CLERK_CIVIL_ALPHA_CIRCUIT_URL = "https://publicrec.hillsclerk.com/Civil/alpha_index/Circuit/"
+CLERK_CIVIL_ALPHA_COUNTY_URL = "https://publicrec.hillsclerk.com/Civil/alpha_index/County/"
+DEFAULT_CIVIL_ALPHA_DIR = Path("data/bulk_data/clerk_civil_alpha_index")
+CIVIL_ALPHA_FILE_PATTERN = re.compile(r"(?:Circuit|County)CivilNameIndex_[A-Z_]+\.txt", re.IGNORECASE)
 DEFAULT_BATCH_SIZE = 2000
 LOADER_VERSION = "pg_loader_clerk_v1"
 PG_MAX_BIND_PARAMS = 65535
@@ -301,6 +305,27 @@ def _extract_case_number_from_ucn(ucn: str | None) -> str | None:
     ucn = ucn.strip()
     m = UCN_CASE_RE.match(ucn)
     return m.group(1) if m else None
+
+
+def _ucn_to_human_case_number(ucn: str | None) -> str | None:
+    """Convert UCN prefix to human-readable case number matching clerk_civil_cases PK.
+
+    UCN prefix: 292008CA009351  →  08-CA-009351
+
+    The UCN encodes: county(29) + year(4) + court_type(2) + sequence(6).
+    Strip the county prefix '29', then format as YY-CC-SSSSSS.
+    """
+    prefix = _extract_case_number_from_ucn(ucn)
+    if not prefix:
+        return None
+    # prefix is e.g. '292008CA009351' — strip county '29'
+    body = prefix[2:]  # '2008CA009351'
+    if len(body) < 12:
+        return None
+    year = body[:4]       # '2008'
+    court = body[4:6]     # 'CA'
+    seq = body[6:12]      # '009351'
+    return f"{year[2:]}-{court}-{seq}"
 
 
 def _parse_party_name(full_name: str | None) -> tuple[str | None, str | None, str | None]:
@@ -625,6 +650,86 @@ def download_clerk_criminal_name_index(
                     headers={"User-Agent": "HillsInspector/1.0"},
                 )
                 with urllib.request.urlopen(request, timeout=120) as resp:  # noqa: S310 - clerk endpoint
+                    content = resp.read()
+                target.write_bytes(content)
+                if target.stat().st_size == 0:
+                    logger.warning(f"Downloaded file is empty: {filename}")
+                    errors += 1
+                    continue
+                downloaded += 1
+                logger.info(f"Downloaded: {filename} ({len(content):,} bytes)")
+            except Exception as exc:
+                logger.error(f"Failed to download {filename}: {exc}")
+                errors += 1
+
+    return {
+        "files_found": files_found,
+        "downloaded": downloaded,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
+def download_clerk_civil_alpha_index(
+    output_dir: Path | None = None,
+    force: bool = False,
+) -> dict:
+    """Download civil alpha index TXT files from Circuit and County directories.
+
+    Source URLs:
+        Circuit: https://publicrec.hillsclerk.com/Civil/alpha_index/Circuit/
+        County:  https://publicrec.hillsclerk.com/Civil/alpha_index/County/
+
+    54 files total (27 per court type, A-Z + NonAlpha). ~1.5 GB total.
+    Pipe-delimited, same format conventions as the criminal name index.
+    """
+    if output_dir is None:
+        output_dir = DEFAULT_CIVIL_ALPHA_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    downloaded = 0
+    skipped = 0
+    errors = 0
+    files_found = 0
+    seen_downloads: set[tuple[str, str]] = set()
+
+    for base_url in (
+        CLERK_CIVIL_ALPHA_CIRCUIT_URL,
+        CLERK_CIVIL_ALPHA_COUNTY_URL,
+    ):
+        filenames = _fetch_listing_filenames(base_url)
+        logger.info(
+            "Found {} files on {} listing page",
+            len(filenames),
+            base_url,
+        )
+
+        for filename in filenames:
+            if not CIVIL_ALPHA_FILE_PATTERN.match(filename):
+                continue
+
+            files_found += 1
+            dedup_key = (base_url, filename)
+            if dedup_key in seen_downloads:
+                continue
+            seen_downloads.add(dedup_key)
+
+            target = output_dir / filename
+            if target.exists() and not force:
+                logger.debug(f"Skipping (exists): {filename}")
+                skipped += 1
+                continue
+
+            encoded = urllib.parse.quote(filename)
+            url = f"{base_url}{encoded}"
+            logger.info(f"Downloading {filename} ...")
+
+            try:
+                request = urllib.request.Request(  # noqa: S310 - clerk HTTPS endpoint
+                    url,
+                    headers={"User-Agent": "HillsInspector/1.0"},
+                )
+                with urllib.request.urlopen(request, timeout=300) as resp:  # noqa: S310 - clerk endpoint
                     content = resp.read()
                 target.write_bytes(content)
                 if target.stat().st_size == 0:
@@ -1862,6 +1967,302 @@ def _insert_name_index_batch(session: Session, rows: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Civil alpha index → normalised tables loader
+# ---------------------------------------------------------------------------
+
+
+def load_civil_alpha_index(
+    dsn: str,
+    root: Path | None = None,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    skip_unchanged: bool = True,
+    limit_files: int | None = None,
+) -> dict:
+    """Load civil alpha index TXT files into clerk_civil_cases + clerk_civil_parties.
+
+    Unlike ``load_clerk_name_index`` (which writes to the denormalised
+    ``clerk_name_index`` table), this loader merges rows into the existing
+    normalised case/party schema so that web queries and pipeline logic
+    can use a single set of tables for both bulk CSV and historical alpha
+    index data.
+
+    Source: https://publicrec.hillsclerk.com/Civil/alpha_index/{Circuit,County}/
+    Format: Pipe-delimited TXT, 27 files per court type (A-Z + NonAlpha).
+    """
+    if root is None:
+        root = DEFAULT_CIVIL_ALPHA_DIR
+
+    files = sorted(
+        f for f in root.glob("*CivilNameIndex*.txt")
+        if f.is_file() and f.stat().st_size > 0
+    )
+    if limit_files:
+        files = files[:limit_files]
+
+    if not files:
+        logger.warning(f"No civil alpha index files found in {root}")
+        return {"files_found": 0, "files_loaded": 0, "cases_upserted": 0, "parties_upserted": 0}
+
+    logger.info(f"Found {len(files)} civil alpha index files in {root}")
+    session_factory = get_session_factory(dsn)
+    stats = {
+        "files_found": len(files),
+        "files_loaded": 0,
+        "files_skipped": 0,
+        "cases_upserted": 0,
+        "parties_upserted": 0,
+        "rows_skipped_no_ucn": 0,
+    }
+
+    with session_factory() as session:
+        for path in files:
+            rel = path.name
+            sha = _compute_sha256(path)
+            st = path.stat()
+            modified_at = dt.datetime.fromtimestamp(st.st_mtime, tz=dt.UTC)
+
+            existing = _get_existing_ingest_file(session, "clerk_civil_alpha", rel)
+            if (
+                skip_unchanged
+                and existing
+                and existing.status == "loaded"
+                and existing.file_sha256 == sha
+            ):
+                logger.debug(f"Skipping unchanged: {path.name}")
+                stats["files_skipped"] += 1
+                continue
+
+            file_id = _upsert_ingest_file(
+                session=session,
+                source_system="clerk_civil_alpha",
+                category="civil_alpha_index",
+                relative_path=rel,
+                file_sha256=sha,
+                file_size_bytes=st.st_size,
+                file_modified_at=modified_at,
+                status="loading",
+            )
+            session.commit()
+
+            try:
+                case_rows: list[dict] = []
+                party_rows: list[dict] = []
+                row_count = 0
+                skipped = 0
+                # Compute effective batch sizes once we see column counts
+                eff_case_batch = batch_size
+                eff_party_batch = batch_size
+
+                for pipe_row in _iter_pipe_delimited(path):
+                    ucn = _clean_text(pipe_row.get("Uniform Case Number"))
+                    if not ucn:
+                        skipped += 1
+                        continue
+
+                    case_number = _ucn_to_human_case_number(ucn)
+                    if not case_number:
+                        skipped += 1
+                        continue
+
+                    court_type_raw = _clean_text(pipe_row.get("Court Type"))
+                    case_type_val = _clean_text(pipe_row.get("Case Type"))
+                    court_type = court_type_raw or ("Circuit" if "Circuit" in path.name else "County")
+
+                    # --- Case upsert row ---
+                    case_mapped = {
+                        "case_number": case_number,
+                        "ucn": ucn,
+                        "case_type": case_type_val,
+                        "division": _clean_text(pipe_row.get("Division")),
+                        "judge": _clean_text(pipe_row.get("Judge Name")),
+                        "case_status": _clean_text(pipe_row.get("Current Status")),
+                        "filing_date": _parse_date_mdy(pipe_row.get("Date Filed")),
+                        "is_foreclosure": _is_foreclosure(case_type_val),
+                        "court_type": court_type,
+                        "status_date": _parse_date_mdy(pipe_row.get("Current Status Date")),
+                        "source_file": f"alpha:{path.name}",
+                        "loaded_at": _utc_now(),
+                    }
+
+                    if row_count == 0:
+                        eff_case_batch = _effective_batch_size(batch_size, len(case_mapped))
+
+                    case_rows.append(case_mapped)
+
+                    # --- Party upsert row ---
+                    last_name = _clean_text(pipe_row.get("LastName"))
+                    first_name = _clean_text(pipe_row.get("FirstName"))
+                    middle_name = _clean_text(pipe_row.get("MiddleName"))
+                    business_name = _clean_text(pipe_row.get("BusinessName"))
+
+                    # Construct composite name to match existing unique constraint
+                    if last_name:
+                        name_parts = [last_name]
+                        if first_name:
+                            rest = first_name
+                            if middle_name:
+                                rest += f" {middle_name}"
+                            name_parts.append(rest)
+                        name = ", ".join(name_parts)
+                    elif business_name:
+                        name = business_name
+                    else:
+                        name = None
+
+                    party_mapped = {
+                        "case_number": case_number,
+                        "party_type": _clean_text(pipe_row.get("Party Connection Type")),
+                        "name": name,
+                        "first_name": first_name,
+                        "middle_name": middle_name,
+                        "last_name": last_name,
+                        "suffix": _clean_text(pipe_row.get("Suffix")),
+                        "business_name": business_name,
+                        "address1": _clean_text(pipe_row.get("Party Address Line 1")),
+                        "address2": _clean_text(pipe_row.get("Party Address Line 2")),
+                        "city": _clean_text(pipe_row.get("Party Address City")),
+                        "state": _clean_text(pipe_row.get("Party Address State")),
+                        "zip": _clean_text(pipe_row.get("Party Address Zip Code")),
+                        "disposition_code": _clean_text(pipe_row.get("Disposition Code")),
+                        "disposition_desc": _clean_text(pipe_row.get("Disposition Description")),
+                        "disposition_date": _parse_date_mdy(pipe_row.get("Disposition Date")),
+                        "amount_paid": _clean_text(pipe_row.get("Amount Paid")),
+                        "date_paid": _parse_date_mdy(pipe_row.get("Date Paid")),
+                        "akas": _clean_text(pipe_row.get("AKAs")),
+                        "source_file": f"alpha:{path.name}",
+                        "loaded_at": _utc_now(),
+                    }
+
+                    if row_count == 0:
+                        eff_party_batch = _effective_batch_size(batch_size, len(party_mapped))
+
+                    party_rows.append(party_mapped)
+                    row_count += 1
+
+                    # Flush case batches
+                    if len(case_rows) >= eff_case_batch:
+                        _upsert_alpha_cases_batch(session, case_rows)
+                        session.commit()
+                        case_rows.clear()
+
+                    # Flush party batches
+                    if len(party_rows) >= eff_party_batch:
+                        _upsert_alpha_parties_batch(session, party_rows)
+                        session.commit()
+                        party_rows.clear()
+
+                # Final flush
+                if case_rows:
+                    _upsert_alpha_cases_batch(session, case_rows)
+                    session.commit()
+                if party_rows:
+                    _upsert_alpha_parties_batch(session, party_rows)
+                    session.commit()
+
+                _mark_ingest_file(session, file_id, "loaded", row_count=row_count)
+                session.commit()
+                stats["files_loaded"] += 1
+                stats["cases_upserted"] += row_count
+                stats["parties_upserted"] += row_count
+                stats["rows_skipped_no_ucn"] += skipped
+                logger.info(
+                    f"Loaded {row_count:,} alpha rows from {path.name} "
+                    f"(skipped {skipped:,} no-UCN/bad-UCN)"
+                )
+
+            except Exception as exc:
+                session.rollback()
+                _mark_ingest_file(
+                    session, file_id, "failed", error_message=str(exc)[:4000]
+                )
+                session.commit()
+                logger.error(f"Failed to load {path.name}: {exc}")
+                raise
+
+    return stats
+
+
+def _dedup_alpha_cases(rows: list[dict]) -> list[dict]:
+    """Deduplicate case rows by case_number within a batch."""
+    seen: dict[str, dict] = {}
+    for row in rows:
+        key = row["case_number"]
+        seen[key] = row
+    return list(seen.values())
+
+
+def _upsert_alpha_cases_batch(session: Session, rows: list[dict]) -> None:
+    """Upsert alpha index case rows into clerk_civil_cases.
+
+    Uses COALESCE(existing, new) so that richer bulk CSV data (style,
+    judgment_*, cause_of_action) is never overwritten by the alpha index.
+    """
+    if not rows:
+        return
+    rows = _dedup_alpha_cases(rows)
+    stmt = pg_insert(ClerkCivilCase).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[ClerkCivilCase.case_number],
+        set_={
+            "ucn": stmt.excluded.ucn,
+            "case_type": sa_text("COALESCE(clerk_civil_cases.case_type, EXCLUDED.case_type)"),
+            "division": sa_text("COALESCE(clerk_civil_cases.division, EXCLUDED.division)"),
+            "judge": sa_text("COALESCE(clerk_civil_cases.judge, EXCLUDED.judge)"),
+            "case_status": sa_text("COALESCE(clerk_civil_cases.case_status, EXCLUDED.case_status)"),
+            "filing_date": sa_text("COALESCE(clerk_civil_cases.filing_date, EXCLUDED.filing_date)"),
+            "is_foreclosure": sa_text("COALESCE(clerk_civil_cases.is_foreclosure, EXCLUDED.is_foreclosure)"),
+            "court_type": sa_text("COALESCE(clerk_civil_cases.court_type, EXCLUDED.court_type)"),
+            "status_date": sa_text("COALESCE(clerk_civil_cases.status_date, EXCLUDED.status_date)"),
+            "loaded_at": stmt.excluded.loaded_at,
+        },
+    )
+    session.execute(stmt)
+
+
+def _dedup_alpha_parties(rows: list[dict]) -> list[dict]:
+    """Deduplicate party rows by (case_number, party_type, name) within a batch."""
+    seen: dict[tuple, dict] = {}
+    for row in rows:
+        key = (row.get("case_number"), row.get("party_type") or "", row.get("name") or "")
+        seen[key] = row
+    return list(seen.values())
+
+
+def _upsert_alpha_parties_batch(session: Session, rows: list[dict]) -> None:
+    """Upsert alpha index party rows into clerk_civil_parties.
+
+    Fills in disposition/akas/address fields via COALESCE on conflict.
+    """
+    if not rows:
+        return
+    rows = _dedup_alpha_parties(rows)
+    stmt = pg_insert(ClerkCivilParty).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_clerk_parties_case_type_name",
+        set_={
+            "first_name": sa_text("COALESCE(clerk_civil_parties.first_name, EXCLUDED.first_name)"),
+            "middle_name": sa_text("COALESCE(clerk_civil_parties.middle_name, EXCLUDED.middle_name)"),
+            "last_name": sa_text("COALESCE(clerk_civil_parties.last_name, EXCLUDED.last_name)"),
+            "suffix": sa_text("COALESCE(clerk_civil_parties.suffix, EXCLUDED.suffix)"),
+            "business_name": sa_text("COALESCE(clerk_civil_parties.business_name, EXCLUDED.business_name)"),
+            "address1": sa_text("COALESCE(clerk_civil_parties.address1, EXCLUDED.address1)"),
+            "address2": sa_text("COALESCE(clerk_civil_parties.address2, EXCLUDED.address2)"),
+            "city": sa_text("COALESCE(clerk_civil_parties.city, EXCLUDED.city)"),
+            "state": sa_text("COALESCE(clerk_civil_parties.state, EXCLUDED.state)"),
+            "zip": sa_text("COALESCE(clerk_civil_parties.zip, EXCLUDED.zip)"),
+            "disposition_code": sa_text("COALESCE(clerk_civil_parties.disposition_code, EXCLUDED.disposition_code)"),
+            "disposition_desc": sa_text("COALESCE(clerk_civil_parties.disposition_desc, EXCLUDED.disposition_desc)"),
+            "disposition_date": sa_text("COALESCE(clerk_civil_parties.disposition_date, EXCLUDED.disposition_date)"),
+            "amount_paid": sa_text("COALESCE(clerk_civil_parties.amount_paid, EXCLUDED.amount_paid)"),
+            "date_paid": sa_text("COALESCE(clerk_civil_parties.date_paid, EXCLUDED.date_paid)"),
+            "akas": sa_text("COALESCE(clerk_civil_parties.akas, EXCLUDED.akas)"),
+            "loaded_at": stmt.excluded.loaded_at,
+        },
+    )
+    session.execute(stmt)
+
+
+# ---------------------------------------------------------------------------
 # Criminal name index loader
 # ---------------------------------------------------------------------------
 
@@ -2240,6 +2641,28 @@ def _build_parser() -> argparse.ArgumentParser:
     crim_ni_cmd.add_argument("--no-skip-unchanged", action="store_true")
     crim_ni_cmd.add_argument("--limit-files", type=int, default=None)
 
+    dl_civil_alpha_cmd = sub.add_parser(
+        "download-civil-alpha-index",
+        help="Download civil alpha index TXT files from Circuit and County directories.",
+    )
+    dl_civil_alpha_cmd.add_argument(
+        "--output-dir", type=Path, default=DEFAULT_CIVIL_ALPHA_DIR,
+        help="Directory to save downloaded TXT files.",
+    )
+    dl_civil_alpha_cmd.add_argument("--force", action="store_true", help="Re-download existing files.")
+
+    civil_alpha_cmd = sub.add_parser(
+        "load-civil-alpha-index",
+        help="Load civil alpha index into clerk_civil_cases + clerk_civil_parties.",
+    )
+    civil_alpha_cmd.add_argument(
+        "--root", type=Path, default=DEFAULT_CIVIL_ALPHA_DIR,
+        help="Directory containing *CivilNameIndex*.txt files.",
+    )
+    civil_alpha_cmd.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    civil_alpha_cmd.add_argument("--no-skip-unchanged", action="store_true")
+    civil_alpha_cmd.add_argument("--limit-files", type=int, default=None)
+
     all_cmd = sub.add_parser("load-all", help="Run all loaders (download + load).")
     all_cmd.add_argument("--root", type=Path, default=DEFAULT_CLERK_DIR)
     all_cmd.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
@@ -2366,6 +2789,25 @@ def main() -> int:
             limit_files=args.limit_files,
         )
         logger.info(f"Criminal name index loader stats: {stats}")
+        return 0
+
+    if args.command == "download-civil-alpha-index":
+        stats = download_clerk_civil_alpha_index(
+            output_dir=args.output_dir,
+            force=args.force,
+        )
+        logger.info(f"Civil alpha index download stats: {stats}")
+        return 0
+
+    if args.command == "load-civil-alpha-index":
+        stats = load_civil_alpha_index(
+            dsn=dsn,
+            root=args.root,
+            batch_size=args.batch_size,
+            skip_unchanged=not args.no_skip_unchanged,
+            limit_files=args.limit_files,
+        )
+        logger.info(f"Civil alpha index loader stats: {stats}")
         return 0
 
     if args.command == "load-all":

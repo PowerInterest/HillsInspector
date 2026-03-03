@@ -31,9 +31,12 @@ Usage:
 
 from __future__ import annotations
 
+import datetime as dt
 import json
+import os
 import sys
 from dataclasses import asdict
+from pathlib import Path
 
 from sqlalchemy import text
 from sunbiz.db import get_engine, resolve_pg_dsn
@@ -42,30 +45,47 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from src.services.pg_pipeline_controller import PgPipelineController, parse_args
+from src.utils.logging_config import configure_logger
 
 load_dotenv()
 
 
+def _build_controller_run_id() -> str:
+    started_at = dt.datetime.now(dt.UTC)
+    return f"{started_at.strftime('%Y%m%dT%H%M%SZ')}-pid{os.getpid()}"
+
+
+def _configure_controller_run_logging(run_id: str) -> Path:
+    run_log = Path("controller_runs") / f"controller-{run_id}.log"
+    configure_logger(extra_log_files=[run_log])
+    return Path("logs") / run_log
+
+
 def main() -> None:
     settings = parse_args()
-    logger.info(f"PG controller start: {asdict(settings)}")
+    run_id = _build_controller_run_id()
+    run_log_path = _configure_controller_run_logging(run_id)
 
-    # Check PostgreSQL connection before starting
-    try:
-        dsn = resolve_pg_dsn(settings.dsn)
-        engine = get_engine(dsn)
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-    except Exception as e:
-        logger.error(f"PostgreSQL connection failed: {e}")
-        logger.error("Please ensure the PostgreSQL server is running and accepting TCP/IP connections.")
-        sys.exit(1)
+    with logger.contextualize(run_id=run_id):
+        logger.info("PG controller run log: {}", run_log_path)
+        logger.info("PG controller start: {}", asdict(settings))
 
-    controller = PgPipelineController(settings)
-    result = controller.run()
+        # Check PostgreSQL connection before starting
+        try:
+            dsn = resolve_pg_dsn(settings.dsn)
+            engine = get_engine(dsn)
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+        except Exception as e:
+            logger.error(f"PostgreSQL connection failed: {e}")
+            logger.error("Please ensure the PostgreSQL server is running and accepting TCP/IP connections.")
+            sys.exit(1)
 
-    logger.info("PG controller complete")
-    print(json.dumps(result, indent=2, default=str))
+        controller = PgPipelineController(settings)
+        result = controller.run()
+
+        logger.info("PG controller complete")
+        print(json.dumps(result, indent=2, default=str))
 
 
 if __name__ == "__main__":

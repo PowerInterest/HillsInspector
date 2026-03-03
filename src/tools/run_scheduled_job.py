@@ -18,6 +18,7 @@ from src.services.pg_auction_results_service import PgAuctionResultsService
 from src.services.pg_job_control_service import JobDefinition, PgJobControlService
 
 from src.services.pg_clerk_bulk_service import PgClerkBulkService
+from src.services.pg_clerk_civil_alpha_service import PgClerkCivilAlphaService
 from src.services.pg_clerk_criminal_service import PgClerkCriminalService
 from sunbiz.sync import SunbizMirror
 from sunbiz.sync import (
@@ -99,6 +100,13 @@ def _run_clerk_bulk_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]:
 
 def _run_clerk_criminal_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]:
     service = PgClerkCriminalService(dsn=dsn)
+    return service.update(
+        force_download=_bool_or_default(args_json.get("force_download"), default=False),
+    )
+
+
+def _run_clerk_civil_alpha_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]:
+    service = PgClerkCivilAlphaService(dsn=dsn)
     return service.update(
         force_download=_bool_or_default(args_json.get("force_download"), default=False),
     )
@@ -246,6 +254,13 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
     "clerk_criminal": JobDefinition(
         name="clerk_criminal",
         handler=_run_clerk_criminal_job,
+        default_min_interval_sec=604800,  # Weekly
+        default_max_runtime_sec=7200,  # 2 hours
+        singleton=True,
+    ),
+    "clerk_civil_alpha": JobDefinition(
+        name="clerk_civil_alpha",
+        handler=_run_clerk_civil_alpha_job,
         default_min_interval_sec=604800,  # Weekly
         default_max_runtime_sec=7200,  # 2 hours
         singleton=True,

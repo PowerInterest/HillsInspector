@@ -19,6 +19,8 @@ Do not report success based only on step execution without validation.
 | Final Judgment PDFs | >= 90% of active foreclosures |
 | Extracted judgment data | >= 90% of active foreclosures with PDFs |
 | Chain coverage | >= 80% of active foreclosures with judgment data |
+| Complete chain | >= 90% of chained foreclosures (terminal link, no gaps) |
+| Lis pendens coverage | >= 90% of judged foreclosures have LP (ori_encumbrances or title events) |
 | Encumbrance coverage | >= 80% of active foreclosures with judgment data + strap |
 | Survival coverage | >= 80% of active foreclosures with judgment data + strap |
 
@@ -33,6 +35,8 @@ metrics AS (
         (SELECT COUNT(*) FROM active_scope) as active_count,
         (SELECT COUNT(*) FROM active_scope WHERE judgment_data IS NOT NULL) as judg_count,
         (SELECT COUNT(DISTINCT c.foreclosure_id) FROM foreclosure_title_chain c JOIN active_scope s ON c.foreclosure_id = s.foreclosure_id WHERE s.judgment_data IS NOT NULL) as chain_count,
+        (SELECT COUNT(DISTINCT c.foreclosure_id) FROM foreclosure_title_chain c JOIN active_scope s ON c.foreclosure_id = s.foreclosure_id WHERE s.judgment_data IS NOT NULL AND c.is_terminal = true AND c.foreclosure_id NOT IN (SELECT DISTINCT foreclosure_id FROM foreclosure_title_chain WHERE is_gap = true)) as complete_chain_count,
+        (SELECT COUNT(DISTINCT s.foreclosure_id) FROM active_scope s WHERE s.judgment_data IS NOT NULL AND (EXISTS (SELECT 1 FROM ori_encumbrances oe WHERE oe.strap = s.strap AND oe.encumbrance_type = 'lis_pendens') OR EXISTS (SELECT 1 FROM foreclosure_title_events fte WHERE fte.foreclosure_id = s.foreclosure_id AND fte.event_subtype IN ('LP', 'LPR')))) as lp_count,
         (SELECT COUNT(DISTINCT s.foreclosure_id) FROM active_scope s JOIN ori_encumbrances oe ON oe.strap = s.strap WHERE s.judgment_data IS NOT NULL AND oe.id IS NOT NULL) as enc_count,
         (SELECT COUNT(DISTINCT s.foreclosure_id) FROM active_scope s JOIN ori_encumbrances oe ON oe.strap = s.strap WHERE s.judgment_data IS NOT NULL AND oe.survival_status IS NOT NULL) as surv_count
 )
@@ -40,6 +44,8 @@ SELECT
     active_count AS "Active Auctions",
     ROUND(100.0 * judg_count / NULLIF(active_count, 0), 2) || '%' AS "Judgment Data (Target: >=90%)",
     ROUND(100.0 * chain_count / NULLIF(judg_count, 0), 2) || '%' AS "Title Chain (Target: >=80%)",
+    ROUND(100.0 * complete_chain_count / NULLIF(chain_count, 0), 2) || '%' AS "Complete Chain (Target: >=90%)",
+    ROUND(100.0 * lp_count / NULLIF(judg_count, 0), 2) || '%' AS "Lis Pendens (Target: >=90%)",
     ROUND(100.0 * enc_count / NULLIF(judg_count, 0), 2) || '%' AS "Encumbrances Scope (Target: >=80%)",
     ROUND(100.0 * surv_count / NULLIF(judg_count, 0), 2) || '%' AS "Survival Analyzed (Target: >=80%)"
 FROM metrics;

@@ -291,20 +291,22 @@ async def person_search(request: Request, name: str = Form("")):
 
     engine = _pg_engine()
     with engine.connect() as conn:
-        # 1. Civil Cases — clerk_name_index (trigram index on last_name)
+        # 1. Civil Cases — clerk_civil_parties (trigram indexes on last_name)
         rows = _safe_query(conn, "Civil Cases", """
-            SELECT DISTINCT ON (ucn)
-                   court_type, last_name, first_name, middle_name,
-                   case_number, ucn, case_type, date_filed, current_status,
-                   status_date, party_type, akas,
-                   address1, city, state, zip_code,
-                   disposition_code, disposition_desc, disposition_date,
-                   similarity(last_name, :last) AS score
-            FROM clerk_name_index
-            WHERE last_name % :last
-              AND similarity(last_name, :last) > 0.4
-              AND (:first = '' OR first_name IS NULL OR similarity(first_name, :first) > 0.25)
-            ORDER BY ucn, score DESC
+            SELECT DISTINCT ON (p.case_number, p.party_type, p.name)
+                   cc.court_type, p.last_name, p.first_name, p.middle_name,
+                   p.case_number, cc.ucn, cc.case_type, cc.filing_date AS date_filed,
+                   cc.case_status AS current_status,
+                   cc.status_date, p.party_type, p.akas,
+                   p.address1, p.city, p.state, p.zip AS zip_code,
+                   p.disposition_code, p.disposition_desc, p.disposition_date,
+                   similarity(p.last_name, :last) AS score
+            FROM clerk_civil_parties p
+            JOIN clerk_civil_cases cc ON cc.case_number = p.case_number
+            WHERE p.last_name % :last
+              AND similarity(p.last_name, :last) > 0.4
+              AND (:first = '' OR p.first_name IS NULL OR similarity(p.first_name, :first) > 0.25)
+            ORDER BY p.case_number, p.party_type, p.name, score DESC
             LIMIT 200
         """, {"last": last, "first": first})
         sections["Civil Cases"] = rows

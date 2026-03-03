@@ -1,16 +1,26 @@
+"""Vision extraction helpers for deeds, mortgages, and judgment documents.
+
+This module wraps multiple OpenAI-compatible vision endpoints behind a single
+service so the pipeline can extract OCR and structured JSON from clerk PDFs and
+rendered images. The service is used in high-volume enrichment flows, so response
+parsing needs to tolerate provider-specific edge cases such as content-filtered
+responses that omit ``message.content`` entirely.
+"""
+
+import asyncio
 import base64
+import functools
+import io
 import json
 import os
 import re
 import time
+from typing import Any, Dict, Optional
+
 import requests
-import io
-import asyncio
-import functools
-from typing import Dict, Optional, Any
+from json_repair import repair_json
 from loguru import logger
 from PIL import Image
-from json_repair import repair_json
 
 
 def _extract_json_candidate(text: str) -> Optional[str]:
@@ -183,6 +193,59 @@ def robust_json_parse(text: str, context: str = "") -> Optional[Dict[str, Any]]:
             snippet,
         )
         return None
+
+
+def _content_to_text(content: Any) -> Optional[str]:
+    if isinstance(content, str):
+        stripped = content.strip()
+        return stripped or None
+    if isinstance(content, list):
+        text_blocks: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            text = block.get("text")
+            if isinstance(text, str) and text.strip():
+                text_blocks.append(text.strip())
+        if text_blocks:
+            return "\n".join(text_blocks)
+    return None
+
+
+def _extract_response_text(result: dict[str, Any], *, context: str) -> Optional[str]:
+    choices = result.get("choices")
+    if not isinstance(choices, list) or not choices:
+        logger.warning(
+            "Vision response for {} did not include usable choices; keys={}",
+            context,
+            sorted(result.keys()),
+        )
+        return None
+
+    first_choice = choices[0] if isinstance(choices[0], dict) else {}
+    finish_reason = str(first_choice.get("finish_reason") or "").strip()
+    message = first_choice.get("message")
+    if not isinstance(message, dict):
+        message = {}
+
+    content = _content_to_text(message.get("content"))
+    if content:
+        return content
+
+    if finish_reason:
+        logger.warning(
+            "Vision response for {} returned no content (finish_reason={}, message_keys={})",
+            context,
+            finish_reason,
+            sorted(message.keys()),
+        )
+    else:
+        logger.warning(
+            "Vision response for {} returned no content (message_keys={})",
+            context,
+            sorted(message.keys()),
+        )
+    return None
 
 
 # Document extraction prompts
@@ -1594,7 +1657,7 @@ class VisionService:
                         ],
                     }
                 ],
-                "max_tokens": 2000,
+                "max_tokens": max_tokens,
                 "temperature": 0.1,
             }
 
@@ -1604,8 +1667,7 @@ class VisionService:
                 return None
 
             result = response.json()
-            content = result["choices"][0]["message"]["content"]
-            return content.strip() if content else None
+            return _extract_response_text(result, context=image_path)
 
         except Exception as e:
             logger.exception("Vision API error while analyzing {}: {}", image_path, e)
@@ -1652,8 +1714,10 @@ class VisionService:
                 return None
 
             result = response.json()
-            content = result["choices"][0]["message"]["content"]
-            return content.strip() if content else None
+            return _extract_response_text(
+                result,
+                context=f"{len(image_paths)}-image request",
+            )
 
         except Exception as e:
             logger.exception("Vision API Error (multi-image): {}", e)

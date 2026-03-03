@@ -29,6 +29,19 @@ from sqlalchemy import text  # noqa: E402
 from sunbiz.db import get_engine, resolve_pg_dsn  # noqa: E402
 
 
+def _path_exists(path_value: str | None) -> bool:
+    if not path_value:
+        return False
+    try:
+        return Path(path_value).exists()
+    except OSError:
+        return False
+
+
+def _count_existing_paths(path_values: list[str | None]) -> int:
+    return sum(1 for path_value in path_values if _path_exists(path_value))
+
+
 def _val(conn, query: str, params: dict | None = None, default: int = 0) -> int:
     try:
         result = conn.execute(text(query), params or {}).scalar()
@@ -145,8 +158,28 @@ def audit_database(dsn: str | None = None) -> None:
         if active == 0:
             logger.warning("No active foreclosures — skipping step rates")
         else:
+            pdf_paths = _rows(
+                conn,
+                """
+                SELECT pdf_path
+                FROM foreclosures
+                WHERE archived_at IS NULL
+                """,
+            )
+            pdf_on_disk = _count_existing_paths([r.get("pdf_path") for r in pdf_paths])
+            logger.info(f"  Judgment PDF on disk: {pdf_on_disk}/{active} ({_pct(pdf_on_disk, active)})")
+
+            pdf_flagged = _val(
+                conn,
+                """
+                SELECT COUNT(*)
+                FROM foreclosures
+                WHERE archived_at IS NULL AND step_pdf_downloaded IS NOT NULL
+                """,
+            )
+            logger.info(f"  PDF step flag:       {pdf_flagged}/{active} ({_pct(pdf_flagged, active)})")
+
             steps = [
-                ("step_pdf_downloaded", "PDF downloaded"),
                 ("step_judgment_extracted", "Judgment extracted"),
                 ("step_ori_searched", "ORI searched"),
                 ("step_survival_analyzed", "Survival analyzed"),

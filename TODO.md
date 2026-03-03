@@ -120,6 +120,10 @@ foreclosure, there should be LP evidence in the official records.
 4. Re-run or repair the affected ORI flow until active foreclosure LP coverage
    is effectively 100%, because foreclosure without lis pendens is not a valid
    steady-state outcome for this dataset.
+5. Investigate foreclosure `21007` / `24-CA-003727` specifically: live
+   case-based LP recovery finds LP instruments, but `ori_encumbrances` cannot
+   persist case-only LP rows when `folio` is null. Decide how to persist that
+   case within the existing schema or another already-existing PG store.
 
 ### Why This Matters
 
@@ -185,3 +189,72 @@ The file claims `Controller.py` is an "Old SQLite pipeline controller, replaced 
 ### `sunbiz_entity_cordata` Table Missing
 
 The `db_audit` report shows this table doesn't exist. Either the Sunbiz entity quarterly job hasn't been run yet, or the table name is different. Verify against `sunbiz/pg_loader.py` and run the job if needed.
+
+### Drop `clerk_name_index` Table
+
+The `clerk_name_index` table (and its corresponding SQLAlchemy model) is slated for deletion. Its historical data is being merged directly into `clerk_civil_cases` and `clerk_civil_parties` to fix the UCN join bug and simplify the schema. Once the data backfill migration is complete, `clerk_name_index` should be dropped entirely.
+
+---
+
+## Permit Expansion: Plant City & Temple Terrace
+
+**Goal:** Expand building permit coverage beyond Tampa and Unincorporated Hillsborough County to achieve 100% municipal geographic coverage.
+
+### What Needs to Happen
+We must discover, reverse engineer, and integrate the permitting platforms for the remaining incorporated jurisdictions. The complete blueprint for how to execute this is documented in `docs/plans/2026-03-02-permit-expansion-plan.md`.
+
+1. Identify the public portal software used by **Plant City** and trace its API.
+2. Identify the public portal software used by **Temple Terrace** and trace its API.
+3. Build `src/services/PlantCityPermit.py` and `src/services/TempleTerracePermit.py`.
+4. Implement dynamic jurisdiction routing inside the pipeline so addresses automatically hit the correct city/county scraper.
+
+---
+
+## New Pipeline Ingestion Targets
+
+**Goal:** Build data ingestion pipelines for the newly discovered bulk data endpoints to improve pre-foreclosure tracking and auction intelligence.
+
+### 1. Weekly Undisposed Case Snapshots (Pre-Foreclosure)
+- **URL**: `https://publicrec.hillsclerk.com/Civil/undisposed/`
+- **Value**: 8 weekly CSVs that provide a direct feed of the "active foreclosure universe" (cases that are open but have not yet reached final judgment or auction).
+- **Action**: Build a CSV ingestion service to populate a pre-foreclosure tracking table, generating leads before they hit the auction site.
+
+### 3. Tax Deed Sales Excess Proceeds
+- **URL**: `https://hillsborough.realtaxdeed.com`
+- **Value**: Excel spreadsheet detailing surplus funds after tax deed sales. Highly valuable for title chain updates (tax deeds extinguish subordinate liens) and surplus recovery lead generation.
+- **Action**: Build a spreadsheet parser to ingest excess proceeds into a tracking table.
+
+### 4. Daily New Civil Case Filings
+- **URL**: `https://publicrec.hillsclerk.com/Civil/dailyfilings/`
+- **Value**: 30 daily CSV files. Can provide ultra low-latency alerts for newly filed foreclosures (CA cases) and HOA liens (CC cases).
+- **Action**: Evaluate schema overlap with the root `DailyNewCaseFilings/` directory and build a daily ingestion job.
+
+---
+
+## "Auction Today" Dashboard Tab (For Claude)
+
+**Goal:** Build a highly focused, tactical dashboard tab that strictly shows properties scheduled for auction *today*. It must merge live auction data with the `TrustAccount` (RealAuction escrow) data to predict who is bidding and what their maximum bid cap is.
+
+### How to Build the Prediction Logic
+
+1. **The Join:** Join the `auctions` table (where `auction_date = CURRENT_DATE`) to the `TrustAccount` table on `case_number` (filtering for `source = 'real'` and the most recent `report_date`).
+2. **Predicting the Max Bid:**
+   - Third-party bidders are required to post a 5% deposit of their intended maximum bid in good funds.
+   - If `TrustAccount.amount` = $10,000, then the predicted `Max Bid Capacity` = $200,000 ($10,000 * 20).
+   - Display this predicted max bid directly on the dashboard card.
+3. **Predicting the Bidder (Counterparty Identification):**
+   - The `TrustAccount` table already has a `plaintiff_name` and a `counterparty_type` column (calculated by `trust_accounts.py`).
+   - If the counterparty is the Plaintiff/Bank, it means the bank has wired money (likely for fees, not for a third-party bid).
+   - If the counterparty is categorized as `third_party_bidder` or `unknown`, and the string does *not* match the auction's plaintiff, flag this row as **"ACTIVE 3RD PARTY INTEREST"**.
+4. **Multi-Variable Bidder Intelligence:**
+   Instead of just showing the escrow balance, combine the trust account data with the rest of the PG pipeline to build a true predictive model:
+   - **The Bidding War Indicator (`multiple_recipients`):** The `TrustAccount` table tracks `multiple_recipients=1`. If multiple third parties have wired funds into the identical case number, the dashboard must flag this property with a **HIGH COMPETITION** banner. A bidding war is guaranteed.
+   - **The Toxic Asset Alert (Escrow vs. Lien Survival):** Cross-reference the highly capitalized auction target against our `Lien Survival Analysis`. If a third-party bidder has deposited $20k (implying a $400k bid) on a property where our pipeline identified $150k in surviving IRS/Code Enforcement liens, flag it as **TOXIC BID**. This means the bidder is likely unaware of the hidden liens and is about to make a fatal mistake, OR they already own the subordinate liens.
+   - **The Whale Tracker (Counterparty Win Rate):** Don't just show their average balance from `TrustAccountSummary`. Compute their **Conversion Rate**. Divide the number of times they parked capital (`case_count`) by the number of times they actually *won* the auction (`winning_bid_match_count`).
+     - 80%+ Win Rate = **WHALE / RUTHLESS BIDDER**. They bid to win. Do not bid against them.
+     - <10% Win Rate = **BOTTOM FEEDER**. They drop hundreds of 5% deposits but only throw out lowball max bids hoping to steal a property. They are easy to outbid.
+   - **The Overpay Ratio (Max Bid vs. Assessed Value):** Calculate `(Predicted Max Bid) / (HCPA Assessed Value)`. If a bidder's 5% deposit implies they are willing to pay 140% of the HCPA assessed market value, they either know the property is massively undervalued by the county, or they are desperately trying to acquire it. Flag this as an **ANOMALOUS VALUATION**.
+
+### UI/UX Requirements
+- Sort the tab by **"Predicted Bidding Intensity"** (properties with `multiple_recipients=1` and highest escrow balances float to the top).
+- Visually map the four intelligence flags above (High Competition, Toxic Bid, Whale, Anomalous Valuation) as colored pill tags on the property card.

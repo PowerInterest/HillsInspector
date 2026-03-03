@@ -1469,31 +1469,32 @@ def _pg_personal_dossier(
         return result
 
     with _pg_engine().connect() as conn:
-        # ── 1. Civil cases via clerk_name_index (has trgm index on last_name) ──
+        # ── 1. Civil cases via clerk_civil_parties (trgm indexes on last_name) ──
         try:
             civil_rows = (
                 conn.execute(
                     sa_text("""
-                        SELECT DISTINCT ON (ni.case_number)
-                            ni.case_number,
-                            ni.case_type,
-                            ni.current_status AS case_status,
-                            ni.date_filed AS filing_date,
-                            ni.party_type,
-                            COALESCE(cc.style, ni.business_name) AS style,
-                            ni.akas,
-                            ni.address1, ni.address2, ni.city, ni.state, ni.zip_code,
-                            similarity(ni.last_name, :last_name) AS match_score
-                        FROM clerk_name_index ni
-                        LEFT JOIN clerk_civil_cases cc ON cc.case_number = ni.case_number
-                        WHERE ni.last_name % :last_name
-                          AND similarity(ni.last_name, :last_name) > 0.4
+                        SELECT DISTINCT ON (p.case_number)
+                            p.case_number,
+                            cc.case_type,
+                            cc.case_status,
+                            cc.filing_date,
+                            p.party_type,
+                            COALESCE(cc.style, p.business_name) AS style,
+                            p.akas,
+                            p.address1, p.address2, p.city, p.state,
+                            p.zip AS zip_code,
+                            similarity(p.last_name, :last_name) AS match_score
+                        FROM clerk_civil_parties p
+                        JOIN clerk_civil_cases cc ON cc.case_number = p.case_number
+                        WHERE p.last_name % :last_name
+                          AND similarity(p.last_name, :last_name) > 0.4
                           AND (
                               :first_name = ''
-                              OR ni.first_name IS NULL
-                              OR similarity(ni.first_name, :first_name) > 0.3
+                              OR p.first_name IS NULL
+                              OR similarity(p.first_name, :first_name) > 0.3
                           )
-                        ORDER BY ni.case_number, match_score DESC
+                        ORDER BY p.case_number, match_score DESC
                         LIMIT 100
                     """),
                     {"last_name": last_name, "first_name": first_name},

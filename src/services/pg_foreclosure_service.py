@@ -261,6 +261,10 @@ class PgForeclosureService:
                         "UPDATE foreclosures "
                         "SET judgment_data = :jd::jsonb, "
                         "    pdf_path = COALESCE(:pp, pdf_path), "
+                        "    step_pdf_downloaded = COALESCE("
+                        "        step_pdf_downloaded, "
+                        "        CASE WHEN COALESCE(:pp, pdf_path, '') <> '' THEN now() END"
+                        "    ), "
                         "    step_judgment_extracted = now() "
                         "WHERE case_number_raw = :cn AND auction_date = :ad"
                     ),

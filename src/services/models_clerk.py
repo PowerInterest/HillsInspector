@@ -61,6 +61,8 @@ class ClerkCivilCase(Base):
     judgment_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     judgment_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     is_foreclosure: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    court_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     source_file: Mapped[str | None] = mapped_column(Text, nullable=True)
     loaded_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
@@ -127,6 +129,14 @@ class ClerkCivilParty(Base):
     bar_number: Mapped[str | None] = mapped_column(Text, nullable=True)
     phone: Mapped[str | None] = mapped_column(Text, nullable=True)
     email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suffix: Mapped[str | None] = mapped_column(Text, nullable=True)
+    business_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    disposition_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    disposition_desc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    disposition_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    amount_paid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    date_paid: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    akas: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_file: Mapped[str | None] = mapped_column(Text, nullable=True)
     loaded_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: dt.datetime.now(dt.UTC)
@@ -148,6 +158,25 @@ class ClerkCivilParty(Base):
             postgresql_using="gin",
             postgresql_ops={"name": "gin_trgm_ops"},
         ),
+        Index(
+            "idx_clerk_parties_last_name_trgm",
+            "last_name",
+            postgresql_using="gin",
+            postgresql_ops={"last_name": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_clerk_parties_first_name_trgm",
+            "first_name",
+            postgresql_using="gin",
+            postgresql_ops={"first_name": "gin_trgm_ops"},
+        ),
+        Index(
+            "idx_clerk_parties_business_name_trgm",
+            "business_name",
+            postgresql_using="gin",
+            postgresql_ops={"business_name": "gin_trgm_ops"},
+        ),
+        Index("idx_clerk_parties_disposition_code", "disposition_code"),
     )
 
 
@@ -214,7 +243,11 @@ class ClerkGarnishmentCase(Base):
 
 
 class ClerkNameIndex(Base):
-    """Complete alphabetical party index — all civil cases, 20+ years of history.
+    """DEPRECATED: Use clerk_civil_cases + clerk_civil_parties instead.
+
+    Alpha index data is now merged into the normalised tables by
+    ``PgClerkCivilAlphaService``.  This model is retained only for
+    backward compatibility during the transition period.
 
     Source: https://publicrec.hillsclerk.com/Civil/alpha_index/{Circuit,County}/
     Format: Pipe-delimited TXT, 27 files per court type (A-Z + NonAlpha).

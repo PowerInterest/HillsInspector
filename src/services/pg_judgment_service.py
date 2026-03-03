@@ -152,6 +152,10 @@ class PgJudgmentService:
                         "  judgment_data = CAST(:jd AS jsonb), "
                         "  pdf_path = COALESCE(:pp, pdf_path), "
                         "  final_judgment_amount = COALESCE(:fja, final_judgment_amount), "
+                        "  step_pdf_downloaded = COALESCE("
+                        "      step_pdf_downloaded, "
+                        "      CASE WHEN COALESCE(:pp, pdf_path, '') <> '' THEN now() END"
+                        "  ), "
                         "  step_judgment_extracted = COALESCE(step_judgment_extracted, now()) "
                         "WHERE foreclosure_id = :fid"
                     ),

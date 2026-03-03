@@ -170,10 +170,12 @@ The `docs/` folder contains comprehensive guides and technical design artifacts,
 
 ### 📖 Guides
 - [Operations Runbook](docs/guides/RUNBOOK.md) - Standard operational procedures and recurring scripts.
+- [ORI Lis Pendens Recovery](docs/guides/ORI_LIS_PENDENS_RECOVERY.md) - How active foreclosure LP gaps are retried without adding new PostgreSQL schema.
 - [Foreclosure Identifier Repair](docs/guides/FORECLOSURE_IDENTIFIER_REPAIR.md) - How the pipeline repairs non-null but invalid HCPA straps from folio-backed parcel data.
 - [Tampa Permit Value And Enforcement](docs/guides/TAMPA_PERMIT_VALUE_AND_ENFORCEMENT.md) - Why enforcement rows stay stored, but are excluded from permit-gap scoring, and how Tampa valuation parsing works.
 - [Scheduled Jobs](docs/guides/SCHEDULED_JOBS.md) - PG-controlled job config/run tracking with cron-triggered Python workers.
 - [Scheduled Jobs Walkthrough](docs/guides/WALKTHROUGH_SCHEDULED_JOBS.md) - Notes captured from the initial bulk-job scheduler integration pass.
+- [Clerk Civil Alpha Merge](docs/CLERK_CIVIL_ALPHA_MERGE.md) - Merging 1958-present civil alpha index into normalised clerk tables with automated download.
 
 ## Roadmap / TODO
 *   **System Identification**: The backend is **Hyland OnBase**.

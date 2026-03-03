@@ -21,6 +21,7 @@ from src.services.CountyPermit import CountyPermitService
 from src.services.TampaPermit import TampaPermitService
 from src.services.pg_permit_single_pin_service import PgPermitSinglePinService
 from src.services.pg_clerk_bulk_service import PgClerkBulkService
+from src.services.pg_clerk_civil_alpha_service import PgClerkCivilAlphaService
 from src.services.pg_clerk_criminal_service import PgClerkCriminalService
 from src.services.pg_flr_service import PgFlrService
 from src.services.pg_foreclosure_service import PgForeclosureService
@@ -50,6 +51,7 @@ class ControllerSettings:
     skip_hcpa: bool = False
     skip_clerk_bulk: bool = False
     skip_clerk_criminal: bool = False
+    skip_clerk_civil_alpha: bool = False
     skip_nal: bool = False
     skip_flr: bool = False
     skip_sunbiz_entity: bool = False
@@ -75,6 +77,7 @@ class ControllerSettings:
     hcpa_stale_days: int = 7
     clerk_stale_days: int = 7
     clerk_criminal_stale_days: int = 7
+    clerk_civil_alpha_stale_days: int = 7
     nal_stale_days: int = 60
     flr_stale_days: int = 7
     sunbiz_entity_stale_days: int = 90
@@ -120,6 +123,7 @@ class PgPipelineController:
         "hcpa_suite",
         "clerk_bulk",
         "clerk_criminal",
+        "clerk_civil_alpha",
         "dor_nal",
         "sunbiz_flr",
         "sunbiz_entity",
@@ -144,6 +148,7 @@ class PgPipelineController:
             ("hcpa_suite", self.settings.skip_hcpa, self._run_hcpa_suite),
             ("clerk_bulk", self.settings.skip_clerk_bulk, self._run_clerk_bulk),
             ("clerk_criminal", self.settings.skip_clerk_criminal, self._run_clerk_criminal),
+            ("clerk_civil_alpha", self.settings.skip_clerk_civil_alpha, self._run_clerk_civil_alpha),
             ("dor_nal", self.settings.skip_nal, self._run_nal),
             ("sunbiz_flr", self.settings.skip_flr, self._run_flr),
             ("sunbiz_entity", self.settings.skip_sunbiz_entity, self._run_sunbiz_entity),
@@ -399,6 +404,45 @@ class PgPipelineController:
             count=count,
             latest=latest,
             stale_days=self.settings.clerk_criminal_stale_days,
+        ):
+            return {"skipped": True, "reason": "fresh", "count": count}
+        stats = svc.update(force_download=self.settings.force_all)
+        return {"update": stats}
+
+    def _run_clerk_civil_alpha(self) -> dict[str, Any]:
+        svc = PgClerkCivilAlphaService(dsn=self.dsn)
+        if not svc.available:
+            return {"skipped": True, "reason": "service_unavailable"}
+
+        # Quick staleness check: latest ingest timestamp for civil alpha files
+        count = 0
+        latest = None
+        try:
+            with self.engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM clerk_civil_parties "
+                        "WHERE source_file LIKE 'alpha:%'"
+                    )
+                ).scalar()
+                count = row or 0
+                ts = conn.execute(
+                    text(
+                        "SELECT MAX(loaded_at) FROM ingest_files "
+                        "WHERE source_system = 'clerk_civil_alpha'"
+                    )
+                ).scalar()
+                latest = ts
+        except Exception:
+            logger.opt(exception=True).debug(
+                "Clerk civil alpha staleness check failed; forcing refresh"
+            )
+
+        if not self._should_run(
+            force=self.settings.force_all,
+            count=count,
+            latest=latest,
+            stale_days=self.settings.clerk_civil_alpha_stale_days,
         ):
             return {"skipped": True, "reason": "fresh", "count": count}
         stats = svc.update(force_download=self.settings.force_all)
@@ -1152,6 +1196,7 @@ def parse_args() -> ControllerSettings:
     parser.add_argument("--skip-hcpa", action="store_true")
     parser.add_argument("--skip-clerk-bulk", action="store_true")
     parser.add_argument("--skip-clerk-criminal", action="store_true")
+    parser.add_argument("--skip-clerk-civil-alpha", action="store_true")
     parser.add_argument("--skip-nal", action="store_true")
     parser.add_argument("--skip-flr", action="store_true")
     parser.add_argument("--skip-sunbiz-entity", action="store_true")
@@ -1253,6 +1298,7 @@ def parse_args() -> ControllerSettings:
         skip_hcpa=bool(args.skip_hcpa),
         skip_clerk_bulk=bool(args.skip_clerk_bulk),
         skip_clerk_criminal=bool(args.skip_clerk_criminal),
+        skip_clerk_civil_alpha=bool(args.skip_clerk_civil_alpha),
         skip_nal=bool(args.skip_nal),
         skip_flr=bool(args.skip_flr),
         skip_sunbiz_entity=bool(args.skip_sunbiz_entity),

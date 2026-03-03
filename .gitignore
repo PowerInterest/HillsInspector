@@ -157,3 +157,4 @@ docs/archive/legacy_sqlite/
 backups/
 logs/
 .claude/
+tmp_research/

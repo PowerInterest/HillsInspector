@@ -38,6 +38,7 @@
             <nav class="nav">
                 <a href="/" class="nav-link{% if request.url.path == '/' %} is-active{% endif %}">Dashboard</a>
                 <a href="/auctions" class="nav-link{% if request.url.path.startswith('/auctions') %} is-active{% endif %}">Auctions</a>
+                <a href="/auction-intel" class="nav-link{% if request.url.path.startswith('/auction-intel') %} is-active{% endif %}">Intel</a>
                 <a href="/review/hcpa-failures" class="nav-link{% if request.url.path.startswith('/review') %} is-active{% endif %}">Review Queue</a>
                 <a href="/history" class="nav-link{% if request.url.path.startswith('/history') %} is-active{% endif %}">History</a>
                 <a href="/database" class="nav-link{% if request.url.path.startswith('/database') %} is-active{% endif %}">Database</a>

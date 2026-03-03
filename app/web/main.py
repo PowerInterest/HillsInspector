@@ -30,7 +30,7 @@ from contextlib import asynccontextmanager
 from loguru import logger
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.web.routers import dashboard, properties, api, review, history, database_view
+from app.web.routers import dashboard, properties, api, review, history, database_view, auction_intel
 from app.web.exceptions import DatabaseLockedError, DatabaseUnavailableError
 
 
@@ -50,10 +50,7 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title="HillsInspector",
-    description="Hillsborough County Property Auction Analysis",
-    version="0.1.0",
-    lifespan=lifespan
+    title="HillsInspector", description="Hillsborough County Property Auction Analysis", version="0.1.0", lifespan=lifespan
 )
 
 # Paths
@@ -66,6 +63,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Setup templates (shared instance with custom filters)
 from app.web.template_filters import get_templates  # noqa: E402
+
 templates = get_templates()
 
 # Include routers
@@ -75,11 +73,13 @@ app.include_router(api.router, prefix="/api")
 app.include_router(review.router, prefix="/review")
 app.include_router(history.router)
 app.include_router(database_view.router)
+app.include_router(auction_intel.router)
 
 
 # =============================================================================
 # Error Handlers
 # =============================================================================
+
 
 def _generate_error_id() -> str:
     """Generate a short error ID for tracking."""
@@ -97,12 +97,7 @@ def _is_api_request(request: Request) -> bool:
 
 
 def _error_html(
-    request: Request,
-    status_code: int,
-    title: str,
-    message: str,
-    details: str | None = None,
-    error_id: str | None = None
+    request: Request, status_code: int, title: str, message: str, details: str | None = None, error_id: str | None = None
 ) -> HTMLResponse:
     """Generate error HTML response."""
     # For HTMX requests, return a small error fragment
@@ -111,7 +106,7 @@ def _error_html(
         <div class="alert alert-danger" role="alert">
             <h5>{title}</h5>
             <p>{message}</p>
-            {f'<small class="text-muted">Error ID: {error_id}</small>' if error_id else ''}
+            {f'<small class="text-muted">Error ID: {error_id}</small>' if error_id else ""}
         </div>
         """
         return HTMLResponse(content=html, status_code=status_code)
@@ -139,8 +134,8 @@ def _error_html(
                 <div class="error-code">{status_code}</div>
                 <h1 class="mb-3">{title}</h1>
                 <p class="lead text-muted">{message}</p>
-                {f'<p class="text-muted"><small>Error ID: <code>{error_id}</code></small></p>' if error_id else ''}
-                {f'<div class="error-details text-start"><strong>Details:</strong><pre>{details}</pre></div>' if details else ''}
+                {f'<p class="text-muted"><small>Error ID: <code>{error_id}</code></small></p>' if error_id else ""}
+                {f'<div class="error-details text-start"><strong>Details:</strong><pre>{details}</pre></div>' if details else ""}
                 <div class="mt-4">
                     <a href="/" class="btn btn-primary">Back to Dashboard</a>
                     <button onclick="location.reload()" class="btn btn-outline-secondary ms-2">Retry</button>
@@ -166,9 +161,9 @@ async def database_locked_handler(request: Request, exc: DatabaseLockedError):
                 "error": "database_locked",
                 "message": "Database is temporarily unavailable. The pipeline may be running.",
                 "error_id": error_id,
-                "retry_after": 30
+                "retry_after": 30,
             },
-            headers={"Retry-After": "30"}
+            headers={"Retry-After": "30"},
         )
 
     return _error_html(
@@ -176,7 +171,7 @@ async def database_locked_handler(request: Request, exc: DatabaseLockedError):
         status_code=503,
         title="Database Busy",
         message="The database is currently locked by another process (likely the data pipeline). Please try again in a few moments.",
-        error_id=error_id
+        error_id=error_id,
     )
 
 
@@ -187,22 +182,9 @@ async def database_unavailable_handler(request: Request, exc: DatabaseUnavailabl
     logger.error(f"Database unavailable [ID: {error_id}]: {exc} - {request.url}")
 
     if _is_api_request(request):
-        return JSONResponse(
-            status_code=503,
-            content={
-                "error": "database_unavailable",
-                "message": str(exc),
-                "error_id": error_id
-            }
-        )
+        return JSONResponse(status_code=503, content={"error": "database_unavailable", "message": str(exc), "error_id": error_id})
 
-    return _error_html(
-        request,
-        status_code=503,
-        title="Database Unavailable",
-        message=str(exc),
-        error_id=error_id
-    )
+    return _error_html(request, status_code=503, title="Database Unavailable", message=str(exc), error_id=error_id)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -223,8 +205,8 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
                 "status_code": exc.status_code,
                 "message": exc.detail,
                 "error_id": error_id,
-                "path": str(request.url.path)
-            }
+                "path": str(request.url.path),
+            },
         )
 
     # Map status codes to user-friendly titles
@@ -246,7 +228,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         status_code=exc.status_code,
         title=titles.get(exc.status_code, "Error"),
         message=exc.detail or "An error occurred",
-        error_id=error_id
+        error_id=error_id,
     )
 
 
@@ -272,8 +254,8 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
                 "message": f"An unexpected error occurred: {type(exc).__name__}",
                 "error_id": error_id,
                 "details": str(exc),
-                "path": str(request.url.path)
-            }
+                "path": str(request.url.path),
+            },
         )
 
     # For web requests, show error details (useful for debugging)
@@ -286,7 +268,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
         title="Internal Server Error",
         message="An unexpected error occurred while processing your request.",
         details=details,
-        error_id=error_id
+        error_id=error_id,
     )
 
 
@@ -294,15 +276,13 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 async def health_check():
     """Health check endpoint."""
     from app.web.pg_web import check_database_health
+
     db_status = check_database_health()
-    return {
-        "status": "ok" if db_status["available"] else "degraded",
-        "service": "HillsInspector",
-        "database": db_status
-    }
+    return {"status": "ok" if db_status["available"] else "degraded", "service": "HillsInspector", "database": db_status}
 
 
 if __name__ == "__main__":
+
     def _build_parser() -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(description="Run the HillsInspector web dashboard")
         parser.add_argument(
@@ -329,7 +309,6 @@ if __name__ == "__main__":
         )
         return parser
 
-
     def _get_local_ip() -> str:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -340,7 +319,6 @@ if __name__ == "__main__":
             return "127.0.0.1"
         finally:
             sock.close()
-
 
     def _start_ngrok_tunnel(port: int) -> str | None:
         try:
@@ -364,7 +342,6 @@ if __name__ == "__main__":
         print()
         return public_url
 
-
     def _stop_ngrok_tunnel(public_url: str | None) -> None:
         if not public_url:
             return
@@ -373,7 +350,6 @@ if __name__ == "__main__":
 
         logger.info("Closing ngrok tunnel: {}", public_url)
         ngrok.disconnect(public_url)
-
 
     def main() -> None:
         args = _build_parser().parse_args()
@@ -390,11 +366,8 @@ if __name__ == "__main__":
             try:
                 public_url = _start_ngrok_tunnel(args.port)
             except Exception as exc:
-                logger.error("Failed to start ngrok: {}", exc)
-                logger.info(
-                    "Configure ngrok with `ngrok config add-authtoken <token>` "
-                    "or set NGROK_AUTHTOKEN"
-                )
+                logger.exception("Failed to start ngrok on port {}: {}", args.port, exc)
+                logger.info("Configure ngrok with `ngrok config add-authtoken <token>` or set NGROK_AUTHTOKEN")
 
         try:
             uvicorn.run(
@@ -405,6 +378,5 @@ if __name__ == "__main__":
             )
         finally:
             _stop_ngrok_tunnel(public_url)
-
 
     main()
