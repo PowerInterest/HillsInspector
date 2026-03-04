@@ -1,17 +1,8 @@
-#!/usr/bin/env python3
-# ruff: noqa: E402
 """Compatibility wrapper for Sunbiz SFTP sync service.
 
-Primary implementation now lives at `src/scripts/sunbiz_sync_service.py`.
+The implementation moved to ``src.scripts.sunbiz_sync_service``. Keep this
+module so existing imports (tests, scripts, and operators) continue to work.
 """
-
-from pathlib import Path
-import sys
-
-# Ensure repository root is importable when this file is executed directly.
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 from src.scripts.sunbiz_sync_service import DEFAULT_DATA_DIR
 from src.scripts.sunbiz_sync_service import DEFAULT_DAILY_DIR
@@ -38,7 +29,3 @@ __all__ = [
     "build_parser",
     "main",
 ]
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

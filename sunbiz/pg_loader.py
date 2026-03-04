@@ -80,9 +80,7 @@ HCPA_DATASET_PATTERNS = {
     "parcel": re.compile(r"^parcel_\d{2}_\d{2}_\d{4}\.zip$", re.IGNORECASE),
     "allsales": re.compile(r"^allsales_\d{2}_\d{2}_\d{4}\.zip$", re.IGNORECASE),
     "subdivisions": re.compile(r"^subdivisions_\d{2}_\d{2}_\d{4}\.zip$", re.IGNORECASE),
-    "special_districts": re.compile(
-        r"^special_districts_\d{2}_\d{2}_\d{4}\.zip$", re.IGNORECASE
-    ),
+    "special_districts": re.compile(r"^special_districts_\d{2}_\d{2}_\d{4}\.zip$", re.IGNORECASE),
     "latlon": re.compile(r"^LatLon_Table_\d{2}_\d{2}_\d{4}\.zip$", re.IGNORECASE),
 }
 
@@ -96,10 +94,7 @@ DOR_NAL_HILLSBOROUGH_CO_NO = "39"
 
 # DOR NAL download URL pattern — final NAL for a given year.
 # The data portal lists files as "Hillsborough 39 Final NAL {year}.zip".
-DOR_NAL_BASE_URL = (
-    "https://floridarevenue.com/property/dataportal/Documents/"
-    "PTO%20Data%20Portal/Tax%20Roll%20Data%20Files/NAL"
-)
+DOR_NAL_BASE_URL = "https://floridarevenue.com/property/dataportal/Documents/PTO%20Data%20Portal/Tax%20Roll%20Data%20Files/NAL"
 
 # Mapping of DOR NAL CSV column headers to our model fields.
 # The NAL CSV has ~200 columns; we only extract the subset needed
@@ -154,7 +149,7 @@ HILLSBOROUGH_MILLAGE_2025: dict[str, dict[str, float]] = {
     "TA": {"total_millage": 19.8428, "county_millage": 6.0795, "school_millage": 6.3400, "city_millage": 6.2076},
     "TT": {"total_millage": 19.5319, "county_millage": 5.5212, "school_millage": 6.3400, "city_millage": 6.4550},
     "PC": {"total_millage": 18.2926, "county_millage": 5.5212, "school_millage": 6.3400, "city_millage": 5.7157},
-    "U":  {"total_millage": 18.2515, "county_millage": 10.6958, "school_millage": 6.3400, "city_millage": 0.0},
+    "U": {"total_millage": 18.2515, "county_millage": 10.6958, "school_millage": 6.3400, "city_millage": 0.0},
 }
 
 DOR_EXEMPTION_FIELDS: dict[str, tuple[str, str]] = {
@@ -182,16 +177,14 @@ class HcpaDownloadItem:
 
 def _require_dbfread() -> None:
     if DBF is None:
-        raise ImportError(
-            "dbfread is required for HCPA DBF ingestion. Install with: uv add dbfread"
-        )
+        raise ImportError("dbfread is required for HCPA DBF ingestion. Install with: uv add dbfread")
 
 
 def _as_text(value: object | None) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
-    return text if text else None
+    return text or None
 
 
 def _parse_float_value(value: object | None) -> float | None:
@@ -395,7 +388,7 @@ def _utc_now() -> dt.datetime:
 
 def _clean_text(value: str) -> str | None:
     text = value.strip()
-    return text if text else None
+    return text or None
 
 
 def _parse_int(value: str) -> int | None:
@@ -487,29 +480,25 @@ def _collect_input_files(
 def _iter_text_records(path: Path):
     if path.suffix.lower() == ".zip":
         with zipfile.ZipFile(path) as zf:
-            members = sorted(
-                name for name in zf.namelist() if not name.endswith("/") and "." in name
-            )
+            members = sorted(name for name in zf.namelist() if not name.endswith("/") and "." in name)
             for member in members:
                 lower = member.lower()
                 if not lower.endswith(".txt") and not lower.endswith(".dat"):
                     continue
+
+                info = zf.getinfo(member)
+                if info.compress_type == 9:  # DEFLATE64
+                    logger.error(f"Cannot extract DEFLATE64 file {member} in {path.name} without C extensions. Skipping.")
+                    continue
+
                 with zf.open(member) as fp:
                     for line_no, raw_line in enumerate(fp, start=1):
-                        text = (
-                            raw_line.decode("latin-1", errors="replace")
-                            .replace("\x00", "")
-                            .rstrip("\r\n")
-                        )
+                        text = raw_line.decode("latin-1", errors="replace").replace("\x00", "").rstrip("\r\n")
                         yield member, line_no, text
     else:
         with path.open("rb") as fp:
             for line_no, raw_line in enumerate(fp, start=1):
-                text = (
-                    raw_line.decode("latin-1", errors="replace")
-                    .replace("\x00", "")
-                    .rstrip("\r\n")
-                )
+                text = raw_line.decode("latin-1", errors="replace").replace("\x00", "").rstrip("\r\n")
                 yield path.name, line_no, text
 
 
@@ -645,9 +634,7 @@ def load_sunbiz_raw(
             session.commit()
 
             try:
-                session.execute(
-                    delete(SunbizRawRecord).where(SunbizRawRecord.file_id == file_id)
-                )
+                session.execute(delete(SunbizRawRecord).where(SunbizRawRecord.file_id == file_id))
                 session.commit()
 
                 loaded_rows = 0
@@ -694,9 +681,7 @@ def load_sunbiz_raw(
     return stats
 
 
-def _parse_flrf_line(
-    line: str, file_id: int, source_member: str, line_no: int
-) -> dict | None:
+def _parse_flrf_line(line: str, file_id: int, source_member: str, line_no: int) -> dict | None:
     doc_number = _clean_text(_slice(line, 0, 12))
     if not doc_number:
         return None
@@ -858,85 +843,89 @@ def load_sunbiz_flr(
             )
             session.commit()
 
-            filings: list[dict] = []
-            parties: list[dict] = []
-            events: list[dict] = []
+            try:
+                filings: list[dict] = []
+                parties: list[dict] = []
+                events: list[dict] = []
 
-            for source_member, line_no, line in _iter_text_records(path):
-                member = Path(source_member).name.lower()
-                if limit_lines is not None and (
-                    len(filings) + len(parties) + len(events) >= limit_lines
-                ):
-                    break
+                for source_member, line_no, line in _iter_text_records(path):
+                    member = Path(source_member).name.lower()
+                    if limit_lines is not None and (len(filings) + len(parties) + len(events) >= limit_lines):
+                        break
 
-                if member == "flrf.txt":
-                    parsed = _parse_flrf_line(line, file_id, source_member, line_no)
-                    if parsed:
-                        filings.append(parsed)
-                elif member == "flrd.txt":
-                    parsed = _parse_flr_party_line(
-                        line, file_id, source_member, line_no, party_role="debtor"
-                    )
-                    if parsed:
-                        parties.append(parsed)
-                elif member == "flrs.txt":
-                    parsed = _parse_flr_party_line(
-                        line, file_id, source_member, line_no, party_role="secured"
-                    )
-                    if parsed:
-                        parties.append(parsed)
-                elif member == "flre.txt":
-                    parsed = _parse_flre_line(line, file_id, source_member, line_no)
-                    if parsed:
-                        events.append(parsed)
+                    if member == "flrf.txt":
+                        parsed = _parse_flrf_line(line, file_id, source_member, line_no)
+                        if parsed:
+                            filings.append(parsed)
+                    elif member == "flrd.txt":
+                        parsed = _parse_flr_party_line(line, file_id, source_member, line_no, party_role="debtor")
+                        if parsed:
+                            parties.append(parsed)
+                    elif member == "flrs.txt":
+                        parsed = _parse_flr_party_line(line, file_id, source_member, line_no, party_role="secured")
+                        if parsed:
+                            parties.append(parsed)
+                    elif member == "flre.txt":
+                        parsed = _parse_flre_line(line, file_id, source_member, line_no)
+                        if parsed:
+                            events.append(parsed)
 
-            if filings:
-                for chunk in _chunked(filings, batch_size):
-                    stmt = pg_insert(SunbizFlrFiling).values(chunk)
-                    update_cols = {
-                        col.name: getattr(stmt.excluded, col.name)
-                        for col in SunbizFlrFiling.__table__.columns
-                        if col.name != "doc_number"
-                    }
-                    stmt = stmt.on_conflict_do_update(
-                        index_elements=[SunbizFlrFiling.doc_number],
-                        set_=update_cols,
-                    )
-                    session.execute(stmt)
-                stats["filings_upserted"] += len(filings)
+                row_count = len(filings) + len(parties) + len(events)
+                if row_count <= 0:
+                    raise RuntimeError(f"No FLR records parsed from {rel}; refusing to mark empty load as current")
 
-            if parties:
-                for chunk in _chunked(parties, batch_size):
-                    stmt = pg_insert(SunbizFlrParty).values(chunk)
-                    stmt = stmt.on_conflict_do_nothing(
-                        constraint="uq_sunbiz_flr_parties_doc_role_seq_name"
-                    )
-                    session.execute(stmt)
-                stats["parties_inserted"] += len(parties)
+                if filings:
+                    for chunk in _chunked(filings, batch_size):
+                        stmt = pg_insert(SunbizFlrFiling).values(chunk)
+                        update_cols = {
+                            col.name: getattr(stmt.excluded, col.name)
+                            for col in SunbizFlrFiling.__table__.columns
+                            if col.name != "doc_number"
+                        }
+                        stmt = stmt.on_conflict_do_update(
+                            index_elements=[SunbizFlrFiling.doc_number],
+                            set_=update_cols,
+                        )
+                        session.execute(stmt)
+                    stats["filings_upserted"] += len(filings)
 
-            if events:
-                for chunk in _chunked(events, batch_size):
-                    stmt = pg_insert(SunbizFlrEvent).values(chunk)
-                    stmt = stmt.on_conflict_do_nothing(
-                        constraint="uq_sunbiz_flr_events_identity"
-                    )
-                    session.execute(stmt)
-                stats["events_inserted"] += len(events)
+                if parties:
+                    for chunk in _chunked(parties, batch_size):
+                        stmt = pg_insert(SunbizFlrParty).values(chunk)
+                        stmt = stmt.on_conflict_do_nothing(constraint="uq_sunbiz_flr_parties_doc_role_seq_name")
+                        session.execute(stmt)
+                    stats["parties_inserted"] += len(parties)
 
-            _mark_ingest_file(
-                session=session,
-                file_id=file_id,
-                status="loaded",
-                row_count=len(filings) + len(parties) + len(events),
-            )
-            session.commit()
+                if events:
+                    for chunk in _chunked(events, batch_size):
+                        stmt = pg_insert(SunbizFlrEvent).values(chunk)
+                        stmt = stmt.on_conflict_do_nothing(constraint="uq_sunbiz_flr_events_identity")
+                        session.execute(stmt)
+                    stats["events_inserted"] += len(events)
+
+                _mark_ingest_file(
+                    session=session,
+                    file_id=file_id,
+                    status="loaded",
+                    row_count=row_count,
+                )
+                session.commit()
+            except Exception as exc:
+                session.rollback()
+                _mark_ingest_file(
+                    session=session,
+                    file_id=file_id,
+                    status="failed",
+                    row_count=None,
+                    error_message=str(exc)[:4000],
+                )
+                session.commit()
+                raise
 
     return stats
 
 
-def _parse_cor_data_line(
-    line: str, file_id: int, source_member: str, line_no: int
-) -> tuple[dict | None, list[dict]]:
+def _parse_cor_data_line(line: str, file_id: int, source_member: str, line_no: int) -> tuple[dict | None, list[dict]]:
     doc_number = _clean_text(_slice_pos(line, 1, 12))
     if not doc_number:
         return None, []
@@ -984,28 +973,26 @@ def _parse_cor_data_line(
         name = _clean_text(_slice_pos(line, base + 5, 42))
         if not title and not name:
             continue
-        parties.append(
-            {
-                "dataset_type": "cor",
-                "doc_number": doc_number,
-                "party_role": "officer",
-                "party_title": title,
-                "party_name": name,
-                "party_name_format": _clean_text(_slice_pos(line, base + 4, 1)),
-                "party_corp_number": None,
-                "party_sequence": idx + 1,
-                "address1": _clean_text(_slice_pos(line, base + 47, 42)),
-                "address2": None,
-                "city": _clean_text(_slice_pos(line, base + 89, 28)),
-                "state": _clean_text(_slice_pos(line, base + 117, 2)),
-                "zip_code": _clean_text(_slice_pos(line, base + 119, 9)),
-                "country": None,
-                "source_file_id": file_id,
-                "source_member": source_member,
-                "source_line_number": line_no,
-                "loaded_at": _utc_now(),
-            }
-        )
+        parties.append({
+            "dataset_type": "cor",
+            "doc_number": doc_number,
+            "party_role": "officer",
+            "party_title": title,
+            "party_name": name,
+            "party_name_format": _clean_text(_slice_pos(line, base + 4, 1)),
+            "party_corp_number": None,
+            "party_sequence": idx + 1,
+            "address1": _clean_text(_slice_pos(line, base + 47, 42)),
+            "address2": None,
+            "city": _clean_text(_slice_pos(line, base + 89, 28)),
+            "state": _clean_text(_slice_pos(line, base + 117, 2)),
+            "zip_code": _clean_text(_slice_pos(line, base + 119, 9)),
+            "country": None,
+            "source_file_id": file_id,
+            "source_member": source_member,
+            "source_line_number": line_no,
+            "loaded_at": _utc_now(),
+        })
 
     return filing, parties
 
@@ -1033,9 +1020,7 @@ def _parse_cor_event_line(line: str, file_id: int, source_member: str, line_no: 
     }
 
 
-def _parse_gen_data_line(
-    line: str, file_id: int, source_member: str, line_no: int
-) -> tuple[dict | None, list[dict]]:
+def _parse_gen_data_line(line: str, file_id: int, source_member: str, line_no: int) -> tuple[dict | None, list[dict]]:
     doc_number = _clean_text(_slice_pos(line, 1, 12))
     if not doc_number:
         return None, []
@@ -1077,28 +1062,26 @@ def _parse_gen_data_line(
     partner_name = _clean_text(_slice_pos(line, 515, 55))
     parties: list[dict] = []
     if partner_name:
-        parties.append(
-            {
-                "dataset_type": "gen",
-                "doc_number": doc_number,
-                "party_role": "partner",
-                "party_title": _clean_text(_slice_pos(line, 501, 1)),
-                "party_name": partner_name,
-                "party_name_format": _clean_text(_slice_pos(line, 502, 1)),
-                "party_corp_number": _clean_text(_slice_pos(line, 503, 12)),
-                "party_sequence": _parse_int(_slice_pos(line, 570, 5)),
-                "address1": _clean_text(_slice_pos(line, 575, 44)),
-                "address2": _clean_text(_slice_pos(line, 619, 44)),
-                "city": _clean_text(_slice_pos(line, 663, 28)),
-                "state": _clean_text(_slice_pos(line, 691, 2)),
-                "zip_code": _clean_text(_slice_pos(line, 693, 9)),
-                "country": _clean_text(_slice_pos(line, 702, 2)),
-                "source_file_id": file_id,
-                "source_member": source_member,
-                "source_line_number": line_no,
-                "loaded_at": _utc_now(),
-            }
-        )
+        parties.append({
+            "dataset_type": "gen",
+            "doc_number": doc_number,
+            "party_role": "partner",
+            "party_title": _clean_text(_slice_pos(line, 501, 1)),
+            "party_name": partner_name,
+            "party_name_format": _clean_text(_slice_pos(line, 502, 1)),
+            "party_corp_number": _clean_text(_slice_pos(line, 503, 12)),
+            "party_sequence": _parse_int(_slice_pos(line, 570, 5)),
+            "address1": _clean_text(_slice_pos(line, 575, 44)),
+            "address2": _clean_text(_slice_pos(line, 619, 44)),
+            "city": _clean_text(_slice_pos(line, 663, 28)),
+            "state": _clean_text(_slice_pos(line, 691, 2)),
+            "zip_code": _clean_text(_slice_pos(line, 693, 9)),
+            "country": _clean_text(_slice_pos(line, 702, 2)),
+            "source_file_id": file_id,
+            "source_member": source_member,
+            "source_line_number": line_no,
+            "loaded_at": _utc_now(),
+        })
 
     return filing, parties
 
@@ -1186,16 +1169,12 @@ def load_sunbiz_entity(
                 events: list[dict] = []
 
                 for source_member, line_no, line in _iter_text_records(path):
-                    if limit_lines is not None and (
-                        len(filings) + len(parties) + len(events) >= limit_lines
-                    ):
+                    if limit_lines is not None and (len(filings) + len(parties) + len(events) >= limit_lines):
                         break
 
                     kind = _classify_entity_member(source_member)
                     if kind == "cor_data":
-                        filing, parsed_parties = _parse_cor_data_line(
-                            line, file_id, source_member, line_no
-                        )
+                        filing, parsed_parties = _parse_cor_data_line(line, file_id, source_member, line_no)
                         if filing:
                             filings.append(filing)
                         parties.extend(parsed_parties)
@@ -1204,9 +1183,7 @@ def load_sunbiz_entity(
                         if event:
                             events.append(event)
                     elif kind == "gen_data":
-                        filing, parsed_parties = _parse_gen_data_line(
-                            line, file_id, source_member, line_no
-                        )
+                        filing, parsed_parties = _parse_gen_data_line(line, file_id, source_member, line_no)
                         if filing:
                             filings.append(filing)
                         parties.extend(parsed_parties)
@@ -1217,9 +1194,7 @@ def load_sunbiz_entity(
 
                 row_count = len(filings) + len(parties) + len(events)
                 if row_count <= 0:
-                    raise RuntimeError(
-                        f"No entity records parsed from {rel}; refusing to mark empty load as current"
-                    )
+                    raise RuntimeError(f"No entity records parsed from {rel}; refusing to mark empty load as current")
 
                 if filings:
                     for chunk in _chunked(filings, batch_size):
@@ -1239,18 +1214,14 @@ def load_sunbiz_entity(
                 if parties:
                     for chunk in _chunked(parties, batch_size):
                         stmt = pg_insert(SunbizEntityParty).values(chunk)
-                        stmt = stmt.on_conflict_do_nothing(
-                            constraint="uq_sunbiz_entity_parties_identity"
-                        )
+                        stmt = stmt.on_conflict_do_nothing(constraint="uq_sunbiz_entity_parties_identity")
                         session.execute(stmt)
                     stats["parties_inserted"] += len(parties)
 
                 if events:
                     for chunk in _chunked(events, batch_size):
                         stmt = pg_insert(SunbizEntityEvent).values(chunk)
-                        stmt = stmt.on_conflict_do_nothing(
-                            constraint="uq_sunbiz_entity_events_identity"
-                        )
+                        stmt = stmt.on_conflict_do_nothing(constraint="uq_sunbiz_entity_events_identity")
                         session.execute(stmt)
                     stats["events_inserted"] += len(events)
 
@@ -1786,11 +1757,7 @@ def _find_latest_dataset_file(downloads_dir: Path, dataset: str) -> Path | None:
     pattern = HCPA_DATASET_PATTERNS.get(dataset)
     if pattern is None:
         raise ValueError(f"Unsupported dataset: {dataset}")
-    candidates = [
-        path
-        for path in downloads_dir.glob("*.zip")
-        if pattern.match(path.name)
-    ]
+    candidates = [path for path in downloads_dir.glob("*.zip") if pattern.match(path.name)]
     if not candidates:
         return None
     candidates.sort(
@@ -1857,9 +1824,7 @@ def _load_latlon_dataframe(latlon_file: Path) -> pl.DataFrame:
     lat_col = next((c for c in ("latitude", "lat") if c in df.columns), None)
     lon_col = next((c for c in ("longitude", "long", "lon") if c in df.columns), None)
     if not folio_col or not lat_col or not lon_col:
-        raise ValueError(
-            "LatLon file must include folio/strap and latitude/longitude columns."
-        )
+        raise ValueError("LatLon file must include folio/strap and latitude/longitude columns.")
 
     normalized = (
         df.select(
@@ -1920,9 +1885,7 @@ def _normalize_hcpa_parcels(df: pl.DataFrame) -> pl.DataFrame:
         "legal3": "raw_legal3",
         "legal4": "raw_legal4",
     }
-    rename_map = {
-        src: dest for src, dest in aliases.items() if src in df.columns and dest not in df.columns
-    }
+    rename_map = {src: dest for src, dest in aliases.items() if src in df.columns and dest not in df.columns}
     if rename_map:
         df = df.rename(rename_map)
 
@@ -1933,9 +1896,7 @@ def _normalize_hcpa_parcels(df: pl.DataFrame) -> pl.DataFrame:
             raise ValueError("Parcel data must include folio or strap column.")
 
     if "last_sale_date" in df.columns:
-        df = df.with_columns(
-            pl.col("last_sale_date").cast(pl.Utf8).str.to_date(strict=False)
-        )
+        df = df.with_columns(pl.col("last_sale_date").cast(pl.Utf8).str.to_date(strict=False))
 
     numeric_cols = [
         "year_built",
@@ -1991,11 +1952,7 @@ def _upsert_hcpa_parcels(session: Session, rows: list[dict]) -> None:
     if not rows:
         return
     stmt = pg_insert(HcpaBulkParcel).values(rows)
-    update_cols = {
-        col.name: getattr(stmt.excluded, col.name)
-        for col in HcpaBulkParcel.__table__.columns
-        if col.name != "folio"
-    }
+    update_cols = {col.name: getattr(stmt.excluded, col.name) for col in HcpaBulkParcel.__table__.columns if col.name != "folio"}
     stmt = stmt.on_conflict_do_update(
         index_elements=[HcpaBulkParcel.folio],
         set_=update_cols,
@@ -2052,9 +2009,7 @@ def load_hcpa_bulk(
                     relative_path=latlon_file.as_posix(),
                     file_sha256=_compute_sha256(latlon_file),
                     file_size_bytes=latlon_file.stat().st_size,
-                    file_modified_at=dt.datetime.fromtimestamp(
-                        latlon_file.stat().st_mtime, tz=dt.UTC
-                    ),
+                    file_modified_at=dt.datetime.fromtimestamp(latlon_file.stat().st_mtime, tz=dt.UTC),
                     status="loading",
                 )
                 session.commit()
@@ -2201,12 +2156,8 @@ def load_hcpa_suite(
         resolved_parcel = _find_latest_dataset_file(downloads_dir, "parcel")
 
     resolved_allsales = allsales_file or _find_latest_dataset_file(downloads_dir, "allsales")
-    resolved_subdivisions = subdivisions_file or _find_latest_dataset_file(
-        downloads_dir, "subdivisions"
-    )
-    resolved_special = special_districts_file or _find_latest_dataset_file(
-        downloads_dir, "special_districts"
-    )
+    resolved_subdivisions = subdivisions_file or _find_latest_dataset_file(downloads_dir, "subdivisions")
+    resolved_special = special_districts_file or _find_latest_dataset_file(downloads_dir, "special_districts")
     resolved_latlon = latlon_file
     if include_latlon and resolved_latlon is None:
         resolved_latlon = _find_latest_dataset_file(downloads_dir, "latlon")
@@ -2221,9 +2172,7 @@ def load_hcpa_suite(
     if resolved_special is None:
         missing.append("special_districts")
     if missing:
-        raise FileNotFoundError(
-            f"Missing required HCPA files in {downloads_dir}: {', '.join(missing)}"
-        )
+        raise FileNotFoundError(f"Missing required HCPA files in {downloads_dir}: {', '.join(missing)}")
 
     assert resolved_parcel is not None
     assert resolved_allsales is not None
@@ -2284,13 +2233,15 @@ def load_hcpa_suite(
     # Cross-fill lat/lon from hcpa_latlon into hcpa_bulk_parcels
     engine = get_engine(dsn)
     with engine.begin() as conn:
-        r = conn.execute(sa_text("""
+        r = conn.execute(
+            sa_text("""
             UPDATE hcpa_bulk_parcels bp
             SET latitude = ll.latitude, longitude = ll.longitude
             FROM hcpa_latlon ll
             WHERE bp.folio = ll.folio
               AND bp.latitude IS NULL
-        """))
+        """)
+        )
         stats["latlon_crossfill"] = r.rowcount
         logger.info(f"Cross-filled lat/lon for {r.rowcount} parcels from hcpa_latlon")
 
@@ -2355,9 +2306,7 @@ def download_dor_nal(
                         break
                     fp.write(chunk)
     except Exception as exc:
-        logger.exception(
-            f"DOR NAL download failed (url={url}, target={target}): {exc}"
-        )
+        logger.exception(f"DOR NAL download failed (url={url}, target={target}): {exc}")
         if target.exists():
             target.unlink()
         raise
@@ -2433,10 +2382,15 @@ def _parse_nal_csv_row(
 
     # Parse numeric value fields
     numeric_fields = [
-        "just_value", "just_value_homestead",
-        "assessed_value_school", "assessed_value_nonschool", "assessed_value_homestead",
-        "taxable_value_school", "taxable_value_nonschool",
-        "homestead_exempt_value", "widow_exempt_value",
+        "just_value",
+        "just_value_homestead",
+        "assessed_value_school",
+        "assessed_value_nonschool",
+        "assessed_value_homestead",
+        "taxable_value_school",
+        "taxable_value_nonschool",
+        "homestead_exempt_value",
+        "widow_exempt_value",
     ]
     for field in numeric_fields:
         mapped[field] = _parse_float_value(mapped.get(field))
@@ -2453,7 +2407,7 @@ def _parse_nal_csv_row(
             mapped[bool_field] = total_hmstd > 0
             mapped[value_field] = total_hmstd if total_hmstd > 0 else None
         else:
-            mapped[bool_field] = (val is not None and val > 0)
+            mapped[bool_field] = val is not None and val > 0
             if value_field not in mapped or mapped[value_field] is None:
                 mapped[value_field] = val
 
@@ -2497,7 +2451,7 @@ def _parse_nal_csv_row(
         if part:
             legal_parts.append(part)
     full_legal = " ".join(p for p in legal_parts if p).strip()
-    mapped["legal_description"] = full_legal if full_legal else None
+    mapped["legal_description"] = full_legal or None
 
     # Map DOR parcel_id to our folio/strap for joins
     lookup = folio_lookup.get(parcel_id)
@@ -2518,9 +2472,7 @@ def _build_folio_lookup(session: Session) -> dict[str, tuple[str, str]]:
     """
     from sqlalchemy import text as sa_text
 
-    result = session.execute(
-        sa_text("SELECT folio, strap FROM hcpa_bulk_parcels WHERE strap IS NOT NULL")
-    ).fetchall()
+    result = session.execute(sa_text("SELECT folio, strap FROM hcpa_bulk_parcels WHERE strap IS NOT NULL")).fetchall()
     lookup: dict[str, tuple[str, str]] = {}
     for row in result:
         folio, strap = row[0], row[1]
@@ -2534,11 +2486,7 @@ def _upsert_dor_nal_parcels(session: Session, rows: list[dict]) -> None:
     if not rows:
         return
     stmt = pg_insert(DorNalParcel).values(rows)
-    update_cols = {
-        col.name: getattr(stmt.excluded, col.name)
-        for col in DorNalParcel.__table__.columns
-        if col.name != "id"
-    }
+    update_cols = {col.name: getattr(stmt.excluded, col.name) for col in DorNalParcel.__table__.columns if col.name != "id"}
     stmt = stmt.on_conflict_do_update(
         constraint="uq_dor_nal_parcels_county_parcel_year",
         set_=update_cols,
@@ -2587,10 +2535,7 @@ def load_dor_nal(
     if tax_year is None:
         tax_year = _infer_tax_year_from_path(nal_zip)
     if tax_year is None:
-        raise ValueError(
-            f"Cannot infer tax year from filename {nal_zip.name}. "
-            "Pass --tax-year explicitly."
-        )
+        raise ValueError(f"Cannot infer tax year from filename {nal_zip.name}. Pass --tax-year explicitly.")
 
     member = _find_nal_csv_member(nal_zip)
     print(f"Parsing NAL member: {member} (tax year {tax_year}, county filter {county_filter})")
@@ -2624,9 +2569,7 @@ def load_dor_nal(
 
                     # Normalize header names to lowercase
                     if reader.fieldnames:
-                        reader.fieldnames = [
-                            f.strip().lower() for f in reader.fieldnames
-                        ]
+                        reader.fieldnames = [f.strip().lower() for f in reader.fieldnames]
                         print(f"  CSV has {len(reader.fieldnames)} columns")
 
                     batch: list[dict] = []
@@ -2654,9 +2597,7 @@ def load_dor_nal(
                             continue
 
                         if inserted == 0:
-                            effective_batch = _effective_batch_size(
-                                batch_size, len(parsed)
-                            )
+                            effective_batch = _effective_batch_size(batch_size, len(parsed))
 
                         batch.append(parsed)
                         inserted += 1
@@ -2709,10 +2650,7 @@ def load_dor_nal(
         from sqlalchemy import text as sa_text
 
         row = session.execute(
-            sa_text(
-                "SELECT COUNT(*) FROM dor_nal_parcels "
-                "WHERE tax_year = :yr AND county_code = :co AND folio IS NOT NULL"
-            ),
+            sa_text("SELECT COUNT(*) FROM dor_nal_parcels WHERE tax_year = :yr AND county_code = :co AND folio IS NOT NULL"),
             {"yr": tax_year, "co": county_filter},
         ).scalar()
         stats["folio_mapped"] = row or 0
@@ -2745,9 +2683,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Force reload even when file hash and size are unchanged.",
     )
 
-    flr_cmd = sub.add_parser(
-        "load-sunbiz-flr", help="Parse FLR (flrf/flrd/flrs/flre) into structured tables."
-    )
+    flr_cmd = sub.add_parser("load-sunbiz-flr", help="Parse FLR (flrf/flrd/flrs/flre) into structured tables.")
     flr_cmd.add_argument("--root", type=Path, default=DEFAULT_SUNBIZ_ROOT)
     flr_cmd.add_argument("--pattern", default=None)
     flr_cmd.add_argument("--limit-files", type=int, default=None)
