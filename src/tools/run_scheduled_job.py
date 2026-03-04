@@ -236,7 +236,7 @@ def _run_county_permits_job(dsn: str, args_json: dict[str, Any]) -> dict[str, An
         with engine.connect() as conn:
             max_oid = conn.execute(text("SELECT MAX(source_object_id) FROM county_permits WHERE source_layer_id = 0")).scalar()
     except Exception as exc:
-        logger.debug("county_permits: unable to read max source_object_id: {}", exc)
+        logger.warning("county_permits: unable to read max source_object_id: {}", exc)
 
     where = f"OBJECTID > {int(max_oid)}" if max_oid is not None else "1=1"
     return svc.sync_postgres(where=where, clear_existing=False, page_size=page_size)
@@ -264,7 +264,7 @@ def _run_tampa_permits_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any
         with engine.connect() as conn:
             latest_record = conn.execute(text("SELECT MAX(record_date) FROM tampa_accela_records")).scalar()
     except Exception as exc:
-        logger.debug("tampa_permits: unable to read max record_date: {}", exc)
+        logger.warning("tampa_permits: unable to read max record_date: {}", exc)
 
     if latest_record is not None:
         start_date = max(latest_record - dt.timedelta(days=1), fallback_start)

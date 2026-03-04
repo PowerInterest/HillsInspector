@@ -872,6 +872,9 @@ class PgPipelineController:
         )
 
         report = self._encumbrance_audit_report
+        if report is None:
+            logger.warning("Encumbrance recovery skipped: no audit report available (was audit step skipped?)")
+            return {"skipped": True, "reason": "no_audit_report"}
         try:
             svc = EncumbranceRecoveryService(dsn=self.dsn)
             return svc.run(report=report)
