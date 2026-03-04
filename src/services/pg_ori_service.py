@@ -69,7 +69,7 @@ _PAREN_RE = re.compile(r"\(([^)]+)\)\s*(.*)")
 # Loaded lazily from config/generic_names.txt in _load_generic_names().
 _GENERIC_NAMES: set[str] | None = None
 
-# Instrument reference patterns (same as step4v2/discovery.py)
+# Instrument reference patterns for cross-document reference chasing.
 _INST_REF_PATTERNS = [
     re.compile(r"CLK\s*#?\s*(\d{7,10})", re.IGNORECASE),
     re.compile(r"INST(?:RUMENT)?\s*(?:#|NO\.?)?\s*(\d{7,10})", re.IGNORECASE),
@@ -234,8 +234,6 @@ def _get_parties(doc: dict) -> tuple[list[str], list[str]]:
 
 def _extract_instrument_references(doc: dict) -> list[str]:
     """Extract instrument number references from document fields.
-
-    Mirrors step4v2/discovery.py::_extract_instrument_references.
     """
     refs: set[str] = set()
 

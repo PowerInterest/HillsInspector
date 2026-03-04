@@ -190,19 +190,12 @@ The instrument number is sufficient to:
 
 #### Implementation
 
-**File:** `src/services/step4v2/search_queue.py`
-- New method `queue_plat_search()` uses search_type="plat" with format "P:BOOK/PAGE"
-- Priority: `PRIORITY_PLAT = 5` (highest - searched before all other types)
-
-**File:** `src/services/step4v2/discovery.py`
-- Plat searches pass `book_type="P"` to `search_by_book_page_sync()`
-
-**File:** `config/step4v2.py`
-- Added `BOOK_TYPE_PLAT = "P"` constant
+**File:** `src/services/pg_ori_service.py`
+- Plat book/page anchors are searched with `book_type="P"` and high queue priority.
 
 ### Implementation (Completed 2025-12-26)
 
-**File:** `src/services/step4v2/search_queue.py` - `initialize_for_folio()`
+**File:** `src/services/pg_ori_service.py` - discovery queue initialization
 
 The search queue now follows this priority order:
 
@@ -1087,9 +1080,9 @@ if len(words1 - words2) == 1 and len(words2 - words1) == 1:
 
 ### Implementation Location
 
-- `src/services/step4v2/discovery.py:_link_party_variations()` - Post-discovery scan
-- `src/services/step4v2/name_matcher.py:NameMatcher` - Matching logic
-- `src/db/migrations/create_v2_database.py` - Schema (`linked_identities`, `property_parties.linked_identity_id`)
+- `src/services/pg_ori_service.py` - Post-discovery scan + identity linking flow
+- `src/utils/name_matcher.py:NameMatcher` - Matching logic
+- `src/db/migrations/create_foreclosures.py` - Current PG schema definitions
 
 ---
 
@@ -1256,7 +1249,7 @@ This is NOT a gap - it's the same beneficial owner. The `trust_transfer` link ty
 ### Configuration
 
 ```python
-# config/step4v2.py
+# Discovery thresholds (implemented in `src/services/pg_ori_service.py`)
 
 # Maximum days between plat and first deed
 MAX_ANCHOR_GAP_DAYS = 730  # 2 years (builders may hold lots)
@@ -1290,9 +1283,7 @@ def _is_chain_complete(self, folio: str) -> bool:
 
 ### Implementation Location
 
-- `src/services/step4v2/discovery.py:_is_chain_complete()` - Main check
-- `src/services/step4v2/discovery.py:_get_anchor_date()` - Find root of title
-- `config/step4v2.py` - Gap thresholds
+- `src/services/pg_ori_service.py` - Main chain completeness and anchor checks
 
 ---
 
@@ -1436,9 +1427,8 @@ These should be linked via the name matcher as spelling variations.
 
 ### Implementation Location
 
-- `src/services/step4v2/discovery.py:_extract_instrument_references()` - Parse references
-- `src/services/step4v2/discovery.py:_queue_adjacent_instruments()` - Search nearby instruments
-- `config/step4v2.py:ADJACENT_INSTRUMENT_RANGE` - How many to check (default: 5)
+- `src/services/pg_ori_service.py:_extract_instrument_references()` - Parse references
+- `src/services/pg_ori_service.py` adjacent-instrument pass - Search nearby instruments
 
 ---
 
@@ -1619,11 +1609,6 @@ if stopped_reason == "exhausted" and not self._is_chain_complete(folio):
 
 ### Implementation Location
 
-- `src/services/step4v2/discovery.py:ChainGap` - Dataclass for gap representation
-- `src/services/step4v2/discovery.py:_get_chain_gaps()` - Detect chain gaps
-- `src/services/step4v2/discovery.py:_get_developer_from_plat()` - Get developer name
-- `src/services/step4v2/discovery.py:_queue_gap_bounded_searches()` - Queue bounded searches
-- `config/step4v2.py:MAX_ANCHOR_GAP_DAYS` - Threshold for anchor-to-first-deed gap (730 days)
-- `config/step4v2.py:MAX_OWNERSHIP_GAP_DAYS` - Warning threshold for large gaps (3650 days)
+- `src/services/pg_ori_service.py` chain-gap analysis - Detect chain gaps and queue bounded searches
 
 ---
