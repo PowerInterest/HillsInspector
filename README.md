@@ -57,11 +57,8 @@ uv run python -m app.web.main --ngrok
 
 Database tab (CloudBeaver):
 - `CLOUDBEAVER_PG_URL` (or fallback `CLOUDBEAVER_URL`, default `http://localhost:8978`) controls PostgreSQL embed.
-- `CLOUDBEAVER_SQLITE_URL` (optional) can point to a CloudBeaver SQLite connection.
 - `CLOUDBEAVER_EMBED=0` disables iframe embed and leaves only the "Open In New Tab" link.
-The `/database` page includes both backends:
-- `PostgreSQL` tab (default, primary workflow)
-- `SQLite` tab (read-only local query/table preview)
+The `/database` page targets PostgreSQL (primary workflow).
 
 ### 6. Reset/Initialize PG Schema
 ```powershell
@@ -78,13 +75,10 @@ uv run python -m src.db.migrations.create_foreclosures --dsn <postgres-dsn>
 - **ONLY use `Polars`** for DataFrames. Never use `pandas`.
 - **Store bulk data as Parquet files** for efficient columnar storage.
 
-### Database: SQLite & PostgreSQL
+### Database: PostgreSQL
 
-**SQLite** is used for local operational data, pipeline state, and the active auction window.
-**PostgreSQL** is used for bulk data, historical analysis, and cross-source linking (Clerk, Sales, Sunbiz).
-
-**STRICT RULE:** All local pipeline state must be stored in **SQLite** (`data/property_master_sqlite.db`).
-**STRICT RULE:** All bulk datasets and complex historical analytics must be stored in **PostgreSQL**.
+**PostgreSQL** is the single runtime database for pipeline state, bulk data, and analytics.
+Raw artifacts (PDF/JSON/Parquet) are still stored on disk under `data/`.
 
 #### PostgreSQL Extensions (Installed)
 - `pg_search`: Full-text/hybrid search extension for fast property and party search workflows.
@@ -94,16 +88,6 @@ uv run python -m src.db.migrations.create_foreclosures --dsn <postgres-dsn>
   Columns now using `citext`: `foreclosures.sold_to`, `foreclosures_history.sold_to`, `sunbiz_flr_parties.name`, `sunbiz_entity_parties.party_name`.
 - `unaccent`: Accent/diacritic normalization support (useful with `lower(...)` + `pg_trgm`).
 - `pgcrypto`: Hashing and crypto-safe random/UUID helper functions for IDs/dedup workflows.
-
-#### SQLite Best Practices (WAL Mode)
-The pipeline uses SQLite in Write-Ahead Logging (WAL) mode to handle concurrent reads and writes.
-
-**ALWAYS DO THIS:**
-```python
-# GOOD - Use the provided PropertyDB or DatabaseWriter
-with PropertyDB() as db:
-    db.upsert_auction(data)
-```
 
 ### Tooling Requirements
 
@@ -206,7 +190,7 @@ We exclusively use **[uv](https://github.com/astral-sh/uv)** for all Python pack
     * *exception:* `HTMX` is permitted **only** if strictly necessary to avoid full page reloads for minor updates, but standard HTML is the priority.
 
 ## 3. Data Storage & Processing
-**STRICT RULE:** Use **SQLite** for local operational state and **PostgreSQL** for bulk/analytical data.
+**STRICT RULE:** Use **PostgreSQL** for operational + analytical database state.
 **STRICT RULE:** Do **NOT** use `pandas`. Use `polars`.
 
 ### **Dataframes: Polars**
@@ -214,12 +198,10 @@ We exclusively use **[uv](https://github.com/astral-sh/uv)** for all Python pack
 * **Why:** Multithreaded, lazy evaluation, and handles larger-than-memory datasets efficiently.
 
 ### **Databases**
-* **Operational:** SQLite (Version 3.40+) with WAL mode enabled.
-* **Analytical:** PostgreSQL (Version 15+) for high-volume historical and clerk data.
+* **Operational + Analytical:** PostgreSQL (Version 15+) for pipeline state and high-volume historical data.
 * **Storage Pattern:**
     * Raw scrapes -> Saved as `Parquet` or `JSON` (structured).
-    * Active Pipeline -> `property_master_sqlite.db`.
-    * Historical/Bulk -> PostgreSQL.
+    * Active Pipeline + Historical/Bulk -> PostgreSQL.
 
 ## 4. Quality Assurance (Linting & Typing)
 We enforce strict code quality using the [Astral](https://astral.sh) suite.
@@ -258,7 +240,7 @@ We enforce strict code quality using the [Astral](https://astral.sh) suite.
 ## 3. Technical Stack (Strict)
 * **Language:** Python 3.12
 * **Package Manager:** `uv` (No pip/poetry).
-* **Data Storage:** `SQLite` (Operational) + `PostgreSQL` (Analytical) + `Parquet` (Raw).
+* **Data Storage:** `PostgreSQL` (Operational + Analytical) + `Parquet` (Raw).
 * **Data Processing:** `Polars` (Lazyframes). **No Pandas.**
 * **Web Framework:** `FastAPI` + `Jinja2` (SSR) + `HTMX` (Interactivity). **No React/SPA.**
 * **Scraping:** `Playwright` (Browser Automation) + `playwright-stealth`.

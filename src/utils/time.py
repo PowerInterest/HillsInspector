@@ -69,5 +69,5 @@ def ensure_duckdb_utc(conn) -> None:
     """Deprecated: was used to set DuckDB session timezone. Now a no-op.
 
     Kept for backward compatibility with callers that haven't been migrated yet.
-    Safe to remove once all call-sites are converted to SQLite.
+    Safe to remove once all legacy call-sites are removed.
     """

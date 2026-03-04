@@ -1,7 +1,7 @@
 """Canonical type normalization for all DB-bound values.
 
 Every type string that enters the database MUST pass through these functions.
-SQLite triggers enforce this at the DB layer as a safety net.
+Database constraints/triggers enforce this at the DB layer as a safety net.
 
 Encumbrance types: mortgage, judgment, lis_pendens, lien, easement,
 satisfaction, release, assignment, noc, other.
@@ -13,7 +13,7 @@ See docs/NOC_PERMIT_LINKING.md for the full exclusion map.
 
 import re
 
-# --- Allowed encumbrance types (enforced by SQLite trigger) ---
+# --- Allowed encumbrance types (enforced by DB constraints/triggers) ---
 ALLOWED_ENCUMBRANCE_TYPES = frozenset({
     "mortgage", "judgment", "lis_pendens", "lien", "easement",
     "satisfaction", "release", "assignment", "noc", "other",

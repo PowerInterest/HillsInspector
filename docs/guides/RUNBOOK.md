@@ -15,7 +15,7 @@ uv run playwright install chromium
 uv run python -m src.db.migrations.create_foreclosures
 
 # Seed the foreclosures hub table
-uv run python scripts/refresh_foreclosures.py --migrate
+uv run python src/scripts/refresh_foreclosures.py --migrate
 
 # Run full pipeline (expect 4+ hours)
 uv run Controller.py
@@ -238,10 +238,10 @@ uv run python -m src.db.migrations.create_foreclosures
 uv run python -m src.db.migrations.create_foreclosures --dsn "postgresql://user:pass@host:5432/dbname"
 
 # Refresh foreclosures hub table from reference data
-uv run python scripts/refresh_foreclosures.py
+uv run python src/scripts/refresh_foreclosures.py
 
 # Create tables + refresh in one command
-uv run python scripts/refresh_foreclosures.py --migrate
+uv run python src/scripts/refresh_foreclosures.py --migrate
 ```
 
 **Key tables created by migration:**
@@ -273,14 +273,9 @@ uv run python scripts/refresh_foreclosures.py --migrate
 uv run python -m sunbiz.pg_loader
 ```
 
-### SQLite (Legacy)
+### Legacy SQLite Notes
 
-Located at `data/property_master_sqlite.db`. WAL mode. Access only through `PropertyDB` class.
-
-```bash
-# Create SQLite schema (only for legacy pipeline)
-uv run python -m src.db.migrations.create_sqlite_database
-```
+Legacy SQLite workflows are archived and not part of the active PG-first pipeline.
 
 ---
 
@@ -315,10 +310,10 @@ uv run python -m app.web.main
 
 ```bash
 # Refresh foreclosures hub table
-uv run python scripts/refresh_foreclosures.py [--migrate] [--dsn DSN]
+uv run python src/scripts/refresh_foreclosures.py [--migrate] [--dsn DSN]
 
 # Benchmark encumbrance algorithms
-uv run python scripts/benchmark_encumbrance_algorithms.py
+uv run python src/scripts/benchmark_encumbrance_algorithms.py
 
 # Lint and fix
 uv run ruff check src/ --fix
@@ -405,7 +400,7 @@ A pipeline run is measured by **data completeness**, not by steps completing wit
 2. Check `logs/` for errors on the failing step
 3. Fix the root cause
 4. Re-run the affected steps (use skip flags to target)
-5. Run `scripts/refresh_foreclosures.py` to pick up new data
+5. Run `src/scripts/refresh_foreclosures.py` to pick up new data
 6. Re-check thresholds
 
 ---
@@ -443,11 +438,10 @@ Every foreclosure has one by law. The code is at fault. Check:
 - Timed-out endpoints are suspended for 10 minutes automatically
 - Cloud fallback uses Gemini (`GEMINI_API_KEY` required)
 
-### Database lock errors (SQLite legacy)
+### Database lock errors
 
-- Check for stale `.lock` file at the SQLite path
-- Ensure only one pipeline instance is running (`ps aux | grep Controller`)
-- Never write to SQLite from `run_in_executor` threads — return data, write on main thread
+- PostgreSQL should not emit SQLite-style lock contention errors in normal operation.
+- If writes stall, check for long-running transactions and blocked sessions in PostgreSQL.
 
 ### Bot detection on county sites
 

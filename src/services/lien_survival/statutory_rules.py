@@ -59,7 +59,7 @@ def is_expired(lien_type: str, recording_date: Optional[date | str]) -> Tuple[bo
     if not recording_date:
         return False, None
 
-    # SQLite returns dates as strings — convert if needed
+    # Some callers still pass date strings — convert if needed
     if isinstance(recording_date, str):
         recording_date = parse_date(recording_date)
         if not recording_date:

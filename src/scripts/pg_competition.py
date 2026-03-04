@@ -166,7 +166,7 @@ def parse_args() -> argparse.Namespace:
         "--db-path",
         type=Path,
         default=None,
-        help="SQLite DB path for comparison (default: from .env HILLS_SQLITE_DB)",
+        help="Optional local comparison DB path (legacy option)",
     )
     parser.add_argument(
         "--max-pages",

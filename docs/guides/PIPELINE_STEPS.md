@@ -213,7 +213,7 @@ Resolve missing `auctions.parcel_id` values after judgment extraction so downstr
 Runs **after Step 2 (Final Judgment Extraction)** and **before Step 3 (Bulk Enrichment)**.
 
 ## Inputs
-From SQLite:
+From pipeline tables:
 1. `auctions` rows with empty `parcel_id` and `extracted_judgment_data` present.
 2. `auctions.property_address` for cases without judgment data but with a scraped address.
 3. `bulk_parcels` for address lookup and disambiguation.
@@ -645,7 +645,7 @@ This step enriches the `parcels` table using the comprehensive bulk data dump fr
     - The `bulk_parcel_ingest.py` script reads the `parcel.dbf` file using `dbfread`.
     - It converts the data to a Polars DataFrame for high-performance processing.
     - The data is saved to a Parquet file (`data/parquet/bulk_parcels_latest.parquet`) for fast future access.
-    - The data is bulk-inserted into the `bulk_parcels` table in `data/property_master.db`.
+    - The data is loaded into PostgreSQL `hcpa_bulk_parcels` for pipeline joins.
 
 2.  **Enrichment**:
     - The script identifies auctions in the `auctions` table that lack parcel details.
