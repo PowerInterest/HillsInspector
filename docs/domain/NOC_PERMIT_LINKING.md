@@ -5,8 +5,7 @@
 Notices of Commencement (NOCs) are public records filed with the Clerk before
 construction work begins.  They indicate that a contractor has been hired and
 that mechanic's liens may follow if the contractor is not paid.  NOCs are
-discovered incidentally by ORI (Official Records Index) searches during
-Phase B Step 3, alongside mortgages, judgments, and other encumbrances.
+Phase 2 (Orchestrator Step 13), alongside mortgages, judgments, and other encumbrances.
 
 **Before this change** NOCs were silently dropped by three cascading filters:
 
@@ -190,5 +189,5 @@ ORDER BY count(*) DESC;
 | `src/services/pg_survival_service.py` | Exclude from target selection + encumbrance loading |
 | `app/web/routers/properties.py` | Exclude from encumbrances tab + add matching function |
 | `app/web/pg_web.py` | Exclude from lateral join lien summary |
-| `scripts/refresh_foreclosures.py` | Exclude from encumbrance count update |
+| `src/scripts/refresh_foreclosures.py` | Exclude from encumbrance count update |
 | `app/web/templates/partials/permits.html` | Add linked-permit column |

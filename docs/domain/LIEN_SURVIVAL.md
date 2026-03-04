@@ -4,7 +4,7 @@ See also [Encumbrance Audit Buckets](ENCUMBRANCE_AUDIT_BUCKETS.md) for the
 active-foreclosure audit buckets that separate ORI discovery gaps from
 superpriority and identity-resolution risk.
 
-The `LienSurvivalAnalyzer` (`src/services/lien_survival_analyzer.py`) determines which liens will survive the **upcoming** foreclosure sale based on Florida law and the foreclosure type.
+The `SurvivalService` (`src/services/lien_survival/survival_service.py`) determines which liens will survive the **upcoming** foreclosure sale based on Florida law and the foreclosure type.
 
 ### Survival Status Values
 

@@ -1,5 +1,5 @@
 """
-PostgreSQL Sunbiz UCC/FLR Service -- read-only queries against hills_sunbiz.
+Sunbiz UCC/FLR read-only queries against PostgreSQL (hills_sunbiz).
 
 Provides:
 - UCC filing lookup by debtor name (exact and fuzzy via pg_trgm)
@@ -7,14 +7,10 @@ Provides:
 - Filing detail retrieval (filing + parties + events)
 - Active lien detection for a debtor
 - Owner UCC exposure summary for auction pre-screening
-
-This service supplements the live Sunbiz web scraper (src/scrapers/sunbiz_scraper.py).
-The live scraper handles entity/officer lookups (LLC/Corp status, officers, registered
-agents) which are NOT available in the bulk FLR data. This service handles UCC/FLR
-filing lookups which ARE available in bulk and don't require Playwright.
+- Entity filing lookups (LLC/Corp/Partnership from COR/GEN datasets)
 
 Data source: Florida Secretary of State SFTP bulk FLR files, loaded into PostgreSQL
-by sunbiz/pg_loader.py (load_sunbiz_flr command). The FLR dataset consists of:
+by sunbiz/pg_loader.py. The FLR dataset consists of:
   - sunbiz_flr_filings  -- Main filing records (doc_number, dates, status)
   - sunbiz_flr_parties   -- Debtor and secured party records per filing
   - sunbiz_flr_events    -- Amendment, continuation, termination events
@@ -22,31 +18,8 @@ by sunbiz/pg_loader.py (load_sunbiz_flr command). The FLR dataset consists of:
 Filing status codes: A=Active, T=Terminated, L=Lapsed
 Filing type codes: U=UCC, F=Federal Lien Registration (FLR)
 
-Integration Pattern (for orchestrator/enrichment):
------------------------------------------------------
-In _enrich_property() or the Sunbiz pipeline step, BEFORE or alongside the live
-Sunbiz web scrape:
-
-    from src.services.pg_sunbiz_service import PgSunbizService
-
-    pg_sunbiz = PgSunbizService()
-    if pg_sunbiz.available:
-        ucc_summary = pg_sunbiz.get_ucc_summary_for_auction(
-            owner_name=parcel_owner_name,
-            defendant_name=auction_defendant_name,
-        )
-        if ucc_summary["has_liens"]:
-            # Store in enrichment data / auctions table
-            # e.g. db.update_auction_ucc_data(auction_id, ucc_summary)
-            logger.info(
-                f"UCC exposure for {parcel_owner_name}: "
-                f"{ucc_summary['active_count']} active liens"
-            )
-
-The live Sunbiz scrape still runs for entity/officer lookups (PG doesn't have that
-data). The two complement each other:
-  - PG bulk data: Fast, complete UCC/FLR filing coverage for all of Florida
-  - Live scraper: Entity status, officers, registered agent for specific entities
+This module lives in src/db/ as a pure query layer. The web app and pipeline
+both import from here via the ``get_sunbiz_queries()`` singleton factory.
 """
 
 from __future__ import annotations
@@ -73,12 +46,11 @@ TYPE_UCC = "U"
 TYPE_FLR = "F"
 
 
-class PgSunbizService:
-    """Read-only service for Sunbiz UCC/FLR filing queries from PostgreSQL.
+class SunbizQueries:
+    """Read-only query service for Sunbiz UCC/FLR filings from PostgreSQL.
 
-    Follows the same graceful-degradation pattern as PgSalesService:
-    if PostgreSQL is unreachable at init time, all methods return empty
-    results rather than raising.
+    Graceful degradation: if PostgreSQL is unreachable at init time, all
+    methods return empty results rather than raising.
     """
 
     def __init__(self, dsn: str | None = None):
@@ -91,9 +63,9 @@ class PgSunbizService:
                 conn.execute(text("SELECT 1"))
             self._available = True
             self._ensure_indexes()
-            logger.info("PostgreSQL Sunbiz UCC service connected")
+            logger.info("SunbizQueries connected")
         except Exception as e:
-            logger.warning(f"PostgreSQL Sunbiz UCC service unavailable: {e}")
+            logger.warning(f"SunbizQueries unavailable: {e}")
             self._engine = None
 
     @property
@@ -101,11 +73,7 @@ class PgSunbizService:
         return self._available
 
     def _ensure_indexes(self) -> None:
-        """Create trigram GIN index on party name if it doesn't exist.
-
-        This enables fast fuzzy search via similarity() / % operator.
-        Idempotent -- safe to call on every init.
-        """
+        """Create trigram GIN indexes if they don't exist (idempotent)."""
         if not self._engine:
             return
         try:
@@ -164,8 +132,6 @@ class PgSunbizService:
         try:
             with self._engine.connect() as conn:
                 if fuzzy:
-                    # Set the similarity threshold for the % operator
-                    # Cast to real explicitly -- pg_trgm's set_limit() expects real, not double
                     conn.execute(
                         text("SELECT set_limit(:threshold ::real)"),
                         {"threshold": threshold},
@@ -226,14 +192,12 @@ class PgSunbizService:
                     }
                     results.append(filing)
 
-                # Batch-fetch secured parties for all matching filings
                 if results:
                     doc_numbers = [r["filing_number"] for r in results]
                     secured = self._get_secured_parties_batch(conn, doc_numbers)
                     for r in results:
                         r["secured_parties"] = secured.get(r["filing_number"], [])
 
-                # Sort by similarity score descending
                 results.sort(key=lambda r: r["similarity_score"], reverse=True)
                 return results
         except Exception as e:
@@ -249,16 +213,7 @@ class PgSunbizService:
         name: str,
         limit: int = 50,
     ) -> list[dict]:
-        """Search UCC/FLR filings where the secured party (lender) matches.
-
-        Args:
-            name: Secured party name to search for (case-insensitive substring).
-            limit: Maximum results to return.
-
-        Returns:
-            List of dicts with: filing_number, filing_date, filing_status,
-            filing_type, expiration_date, secured_party_name, debtors (list).
-        """
+        """Search UCC/FLR filings where the secured party (lender) matches."""
         if not self._available or not name:
             return []
         try:
@@ -297,7 +252,6 @@ class PgSunbizService:
                     }
                     results.append(filing)
 
-                # Batch-fetch debtors
                 if results:
                     doc_numbers = [r["filing_number"] for r in results]
                     debtors = self._get_debtors_batch(conn, doc_numbers)
@@ -314,20 +268,11 @@ class PgSunbizService:
     # ------------------------------------------------------------------
 
     def get_filing_details(self, filing_number: str) -> dict | None:
-        """Get full details for a specific UCC/FLR filing.
-
-        Args:
-            filing_number: The doc_number (filing number) to look up.
-
-        Returns:
-            Dict with full filing info including all parties and events,
-            or None if not found.
-        """
+        """Get full details for a specific UCC/FLR filing."""
         if not self._available or not filing_number:
             return None
         try:
             with self._engine.connect() as conn:
-                # Filing record
                 frow = conn.execute(
                     text("""
                         SELECT doc_number, filing_date, pages, total_pages,
@@ -368,7 +313,6 @@ class PgSunbizService:
                     "events": [],
                 }
 
-                # Parties
                 parties = conn.execute(
                     text("""
                         SELECT party_role, name, name_format,
@@ -398,7 +342,6 @@ class PgSunbizService:
                     else:
                         filing["secured_parties"].append(party)
 
-                # Events
                 events = conn.execute(
                     text("""
                         SELECT event_doc_number, event_orig_doc_number,
@@ -440,19 +383,7 @@ class PgSunbizService:
         fuzzy: bool = True,
         threshold: float = 0.3,
     ) -> list[dict]:
-        """Get only active (not terminated/lapsed) UCC/FLR liens for a debtor.
-
-        UCC filings lapse after 5 years unless continued. This method filters
-        by filing_status = 'A' AND expiration_date >= today (if set).
-
-        Args:
-            name: Debtor name to search.
-            fuzzy: Use trigram similarity matching.
-            threshold: Minimum similarity score for fuzzy mode.
-
-        Returns:
-            List of active filing dicts (same shape as search_filings_by_debtor).
-        """
+        """Get only active (not terminated/lapsed) UCC/FLR liens for a debtor."""
         if not self._available or not name:
             return []
         try:
@@ -537,19 +468,7 @@ class PgSunbizService:
     # ------------------------------------------------------------------
 
     def check_owner_ucc_exposure(self, owner_name: str) -> dict:
-        """Quick check: does this property owner have UCC/FLR liens?
-
-        Searches by debtor name (fuzzy) and returns a summary. This is a
-        lightweight pre-screen -- call get_active_liens_for_debtor() for
-        full details.
-
-        Args:
-            owner_name: Property owner name to check.
-
-        Returns:
-            Dict with: has_liens, active_count, total_count,
-            latest_filing_date, secured_parties (unique list).
-        """
+        """Quick check: does this property owner have UCC/FLR liens?"""
         empty_result: dict[str, Any] = {
             "has_liens": False,
             "active_count": 0,
@@ -560,7 +479,6 @@ class PgSunbizService:
         if not self._available or not owner_name:
             return empty_result
         try:
-            # Get all filings (active + inactive) for the debtor
             all_filings = self.search_filings_by_debtor(
                 owner_name, fuzzy=True, threshold=0.35, limit=100
             )
@@ -579,7 +497,6 @@ class PgSunbizService:
                 )
             ]
 
-            # Collect unique secured party names across all active filings
             secured_set: set[str] = set()
             for f in active:
                 for sp in f.get("secured_parties", []):
@@ -614,25 +531,8 @@ class PgSunbizService:
     ) -> dict:
         """Pre-screen for auction analysis: check both owner and defendant names.
 
-        Merges results from both names (if different) to catch cases where the
-        foreclosure defendant differs from the current property owner.
-
-        Args:
-            owner_name: Property owner name (from HCPA / parcels).
-            defendant_name: Foreclosure defendant name (from auction listing).
-                           If None or same as owner_name, only owner is checked.
-
-        Returns:
-            Dict suitable for display in the web dashboard:
-            {
-                "has_liens": bool,
-                "active_count": int,
-                "total_count": int,
-                "latest_filing_date": date | None,
-                "secured_parties": list[str],
-                "active_filings": list[dict],  # Summarized active filings
-                "names_checked": list[str],
-            }
+        Returns dict with: has_liens, active_count, total_count,
+        latest_filing_date, secured_parties, active_filings, names_checked.
         """
         empty: dict[str, Any] = {
             "has_liens": False,
@@ -653,19 +553,17 @@ class PgSunbizService:
         if not names_to_check:
             return empty
 
-        all_active: dict[str, dict] = {}  # keyed by filing_number to deduplicate
+        all_active: dict[str, dict] = {}
         total_count = 0
         latest_date: dt.date | None = None
         secured_set: set[str] = set()
 
         for name in names_to_check:
-            # Get all filings for exposure count
             all_filings = self.search_filings_by_debtor(
                 name, fuzzy=True, threshold=0.35, limit=100
             )
             total_count += len(all_filings)
 
-            # Get active liens
             active_filings = self.get_active_liens_for_debtor(
                 name, fuzzy=True, threshold=0.35
             )
@@ -682,7 +580,6 @@ class PgSunbizService:
                 if fd and (latest_date is None or fd > latest_date):
                     latest_date = fd
 
-        # Build summarized active filings for dashboard display
         active_summaries = []
         for f in all_active.values():
             active_summaries.append({
@@ -902,7 +799,7 @@ class PgSunbizService:
     # ------------------------------------------------------------------
 
     def get_table_stats(self) -> dict:
-        """Get row counts for the FLR tables -- useful for diagnostics."""
+        """Get row counts for the FLR tables."""
         if not self._available:
             return {"filings": 0, "parties": 0, "events": 0}
         try:
@@ -932,13 +829,9 @@ class PgSunbizService:
     def _get_secured_parties_batch(
         self, conn: Any, doc_numbers: list[str]
     ) -> dict[str, list[str]]:
-        """Fetch secured party names for a batch of filing numbers.
-
-        Returns: {doc_number: [party_name, ...]}
-        """
+        """Fetch secured party names for a batch of filing numbers."""
         if not doc_numbers:
             return {}
-        # Use ANY(array) for batch lookup
         rows = conn.execute(
             text("""
                 SELECT doc_number, name
@@ -958,10 +851,7 @@ class PgSunbizService:
     def _get_debtors_batch(
         self, conn: Any, doc_numbers: list[str]
     ) -> dict[str, list[str]]:
-        """Fetch debtor names for a batch of filing numbers.
-
-        Returns: {doc_number: [debtor_name, ...]}
-        """
+        """Fetch debtor names for a batch of filing numbers."""
         if not doc_numbers:
             return {}
         rows = conn.execute(
@@ -1031,3 +921,18 @@ def _format_address(
     if country and country.strip() and country.strip().upper() not in ("US", "USA", ""):
         parts.append(country.strip())
     return ", ".join(parts) if parts else None
+
+
+# ------------------------------------------------------------------
+# Module-level singleton
+# ------------------------------------------------------------------
+
+_instance: SunbizQueries | None = None
+
+
+def get_sunbiz_queries() -> SunbizQueries:
+    """Get or create the module-level SunbizQueries singleton."""
+    global _instance
+    if _instance is None:
+        _instance = SunbizQueries()
+    return _instance

@@ -112,6 +112,7 @@ class MarketDataService:
         need_zillow: list[dict] = []
         need_realtor: list[dict] = []
         need_hh: list[dict] = []
+        need_photos: list[dict] = []
         already_complete = 0
         selected_redfin = "redfin" in sources
         selected_zillow = "zillow" in sources
@@ -138,7 +139,9 @@ class MarketDataService:
             if selected_hh:
                 complete_for_selected_sources = complete_for_selected_sources and bool(state and state["has_hh"])
 
-            if complete_for_selected_sources:
+            needs_photos = state and state.get("needs_photo_backfill")
+
+            if complete_for_selected_sources and not needs_photos:
                 already_complete += 1
                 continue
 
@@ -150,18 +153,20 @@ class MarketDataService:
                 need_realtor.append(prop)
             if selected_hh and (not state or not state["has_hh"]):
                 need_hh.append(prop)
+            if needs_photos:
+                need_photos.append(prop)
 
-        total_need = len({p["strap"] for p in need_redfin + need_zillow + need_realtor + need_hh})
+        total_need = len({p["strap"] for p in need_redfin + need_zillow + need_realtor + need_hh + need_photos})
         logger.info(
             f"MarketDataService: {total_need} properties need data "
             f"({already_complete} already complete across all sources), "
-            f"redfin={len(need_redfin)}, zillow={len(need_zillow)}, realtor={len(need_realtor)}, hh={len(need_hh)}"
+            f"redfin={len(need_redfin)}, zillow={len(need_zillow)}, realtor={len(need_realtor)}, hh={len(need_hh)}, photos={len(need_photos)}"
         )
         if not total_need:
             return summary
 
         # Track straps that got new data this run (for photo download scope)
-        all_need = {p["strap"]: p for p in need_redfin + need_zillow + need_realtor + need_hh}
+        all_need = {p["strap"]: p for p in need_redfin + need_zillow + need_realtor + need_hh + need_photos}
         need_market = list(all_need.values())
 
         # --- Browser-based sources (Redfin + Zillow + Realtor) ---
@@ -310,7 +315,10 @@ class MarketDataService:
                             "SELECT redfin_json IS NOT NULL AS has_redfin, "
                             "       zillow_json IS NOT NULL AS has_zillow, "
                             "       realtor_json IS NOT NULL AS has_realtor, "
-                            "       homeharvest_json IS NOT NULL AS has_hh "
+                            "       homeharvest_json IS NOT NULL AS has_hh, "
+                            "       (CASE WHEN photo_cdn_urls IS NOT NULL AND jsonb_array_length(photo_cdn_urls) > 0 THEN "
+                            "           (photo_local_paths IS NULL OR jsonb_array_length(photo_local_paths) = 0 OR (jsonb_array_length(photo_local_paths) < 15 AND jsonb_array_length(photo_local_paths) < jsonb_array_length(photo_cdn_urls))) "
+                            "        ELSE FALSE END) AS needs_photo_backfill "
                             "FROM property_market WHERE strap = :strap"
                         ),
                         {"strap": strap},
@@ -320,7 +328,10 @@ class MarketDataService:
                         text(
                             "SELECT redfin_json IS NOT NULL AS has_redfin, "
                             "       zillow_json IS NOT NULL AS has_zillow, "
-                            "       homeharvest_json IS NOT NULL AS has_hh "
+                            "       homeharvest_json IS NOT NULL AS has_hh, "
+                            "       (CASE WHEN photo_cdn_urls IS NOT NULL AND jsonb_array_length(photo_cdn_urls) > 0 THEN "
+                            "           (photo_local_paths IS NULL OR jsonb_array_length(photo_local_paths) = 0 OR (jsonb_array_length(photo_local_paths) < 15 AND jsonb_array_length(photo_local_paths) < jsonb_array_length(photo_cdn_urls))) "
+                            "        ELSE FALSE END) AS needs_photo_backfill "
                             "FROM property_market WHERE strap = :strap"
                         ),
                         {"strap": strap},
@@ -332,6 +343,7 @@ class MarketDataService:
                     "has_zillow": row.has_zillow,
                     "has_hh": row.has_hh,
                     "has_realtor": row.has_realtor if self._has_realtor_column else False,
+                    "needs_photo_backfill": row.needs_photo_backfill,
                 }
         except Exception as exc:
             msg = str(exc).lower()
@@ -728,7 +740,11 @@ class MarketDataService:
                         local_paths.append(rel)
                         continue
 
-                    resp = session.get(url, timeout=DOWNLOAD_TIMEOUT, stream=True)
+                    headers = {}
+                    if "zillowstatic.com" in url:
+                        headers["Referer"] = "https://www.zillow.com/"
+
+                    resp = session.get(url, headers=headers, timeout=DOWNLOAD_TIMEOUT, stream=True)
                     if resp.status_code != 200:
                         continue
 
@@ -1314,6 +1330,20 @@ def _query_properties_needing_market(dsn: str | None = None, limit: int = 0) -> 
               OR pm.zestimate IS NULL
               OR pm.zillow_json IS NULL
               OR pm.redfin_json IS NULL
+              OR (
+                  pm.photo_cdn_urls IS NOT NULL
+                  AND jsonb_typeof(pm.photo_cdn_urls) = 'array'
+                  AND jsonb_array_length(pm.photo_cdn_urls) > 0
+                  AND (
+                      pm.photo_local_paths IS NULL
+                      OR jsonb_typeof(pm.photo_local_paths) != 'array'
+                      OR jsonb_array_length(pm.photo_local_paths) = 0
+                      OR (
+                          jsonb_array_length(pm.photo_local_paths) < 15
+                          AND jsonb_array_length(pm.photo_local_paths) < jsonb_array_length(pm.photo_cdn_urls)
+                      )
+                  )
+              )
           )
         ORDER BY f.auction_date DESC
     """

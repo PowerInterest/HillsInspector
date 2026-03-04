@@ -28,6 +28,7 @@ from src.services.encumbrance_audit_signals import (
 # Name normalisation helpers
 # -----------------------------------------------------------------------
 
+
 class TestNormalizeName:
     def test_strips_punctuation_and_uppercases(self) -> None:
         assert normalize_name("Wells Fargo, N.A.") == "WELLS FARGO N A"
@@ -45,10 +46,13 @@ class TestNamesMatch:
 
     def test_suffix_variation(self) -> None:
         # LLC vs Inc is stripped as noise; core tokens still overlap
-        assert names_match(
-            "NATIONSTAR MORTGAGE LLC",
-            "NATIONSTAR MORTGAGE INC",
-        ) is True
+        assert (
+            names_match(
+                "NATIONSTAR MORTGAGE LLC",
+                "NATIONSTAR MORTGAGE INC",
+            )
+            is True
+        )
 
     def test_completely_different(self) -> None:
         assert names_match("WELLS FARGO BANK NA", "JAMES SMITH") is False
@@ -60,21 +64,28 @@ class TestNamesMatch:
 
     def test_partial_overlap_accepted(self) -> None:
         # "BANK" + "AMERICA" overlap out of "BANK OF AMERICA NA" tokens
-        assert names_match(
-            "BANK OF AMERICA NA",
-            "BANK OF AMERICA NATIONAL ASSOCIATION",
-        ) is True
+        assert (
+            names_match(
+                "BANK OF AMERICA NA",
+                "BANK OF AMERICA NATIONAL ASSOCIATION",
+            )
+            is True
+        )
 
     def test_trustee_variation(self) -> None:
-        assert names_match(
-            "US BANK NATIONAL ASSOCIATION AS TRUSTEE",
-            "US BANK NA TRUSTEE FOR XYZ TRUST",
-        ) is True
+        assert (
+            names_match(
+                "US BANK NATIONAL ASSOCIATION AS TRUSTEE",
+                "US BANK NA TRUSTEE FOR XYZ TRUST",
+            )
+            is True
+        )
 
 
 # -----------------------------------------------------------------------
 # Signal 1: judgment_joined_party_gap
 # -----------------------------------------------------------------------
+
 
 class TestJudgmentJoinedPartyGap:
     def test_no_defendants(self) -> None:
@@ -155,10 +166,63 @@ class TestJudgmentJoinedPartyGap:
         assert len(signals) == 1
         assert signals[0].detail["party_type"] == "hoa"
 
+    def test_unknown_party_type_still_signals_when_missing(self) -> None:
+        jd = {
+            "defendants": [
+                {
+                    "name": "CITY OF TAMPA",
+                    "party_type": "unknown",
+                },
+            ],
+        }
+        signals = extract_judgment_joined_party_gap(1, jd, ["WELLS FARGO"])
+        assert len(signals) == 1
+        assert signals[0].severity == "medium"
+        assert signals[0].detail["party_name"] == "CITY OF TAMPA"
+
+    def test_boilerplate_unknown_parties_skipped(self) -> None:
+        jd = {
+            "defendants": [
+                {
+                    "name": (
+                        "Any and all unknown parties claiming by, through, under, and "
+                        "against the herein named individual defendant(s) who are not known "
+                        "to be dead or alive, whether said unknown parties may claim an "
+                        "interest as spouses, heirs, devisees, grantees, or other claimants"
+                    ),
+                    "party_type": "unknown",
+                },
+            ],
+        }
+        assert extract_judgment_joined_party_gap(1, jd, ["WELLS FARGO"]) == []
+
+    def test_plain_any_and_all_unknown_parties_skipped(self) -> None:
+        jd = {
+            "defendants": [
+                {
+                    "name": "ANY AND ALL UNKNOWN PARTIES",
+                    "party_type": "unknown",
+                },
+            ],
+        }
+        assert extract_judgment_joined_party_gap(1, jd, ["WELLS FARGO"]) == []
+
+    def test_composite_non_lien_party_type_skipped(self) -> None:
+        jd = {
+            "defendants": [
+                {
+                    "name": "RONALD ZWEIG, TRUSTEE OF THE ZWEIG REVOCABLE TRUST; AND UNKNOWN TENANT(S)",
+                    "party_type": "borrower|tenant",
+                },
+            ],
+        }
+        assert extract_judgment_joined_party_gap(1, jd, []) == []
+
 
 # -----------------------------------------------------------------------
 # Signal 2: judgment_instrument_gap
 # -----------------------------------------------------------------------
+
 
 class TestJudgmentInstrumentGap:
     def test_no_instrument_in_judgment(self) -> None:
@@ -219,10 +283,23 @@ class TestJudgmentInstrumentGap:
         assert signals[0].severity == "medium"
         assert signals[0].detail["reference_source"] == "lis_pendens_recording"
 
+    def test_normalized_instrument_and_book_page_match(self) -> None:
+        jd = {
+            "foreclosed_mortgage": {
+                "instrument_number": "2019-123456",
+                "recording_book": "00123",
+                "recording_page": "00045",
+            },
+        }
+        enc = [{"instrument_number": "2019123456", "book": "123", "page": "45"}]
+        signals = extract_judgment_instrument_gap(1, jd, enc)
+        assert signals == []
+
 
 # -----------------------------------------------------------------------
 # Signal 3: lp_to_judgment_plaintiff_change
 # -----------------------------------------------------------------------
+
 
 class TestLpToJudgmentPlaintiffChange:
     def test_same_plaintiff(self) -> None:
@@ -252,7 +329,9 @@ class TestLpToJudgmentPlaintiffChange:
         """Suffix differences should not trigger a change signal."""
         jd = {"plaintiff": "US BANK NATIONAL ASSOCIATION"}
         signals = extract_lp_to_judgment_plaintiff_change(
-            1, jd, "US BANK NA AS TRUSTEE",
+            1,
+            jd,
+            "US BANK NA AS TRUSTEE",
         )
         assert signals == []
 
@@ -260,6 +339,7 @@ class TestLpToJudgmentPlaintiffChange:
 # -----------------------------------------------------------------------
 # Signal 4: lp_to_judgment_party_expansion
 # -----------------------------------------------------------------------
+
 
 class TestLpToJudgmentPartyExpansion:
     def test_no_new_parties(self) -> None:
@@ -301,16 +381,43 @@ class TestLpToJudgmentPartyExpansion:
         assert len(signals) == 1
         assert signals[0].severity == "high"
 
+    def test_boilerplate_unknown_expansion_skipped(self) -> None:
+        jd = {
+            "defendants": [
+                {
+                    "name": "ANY AND ALL UNKNOWN PARTIES CLAIMING BY, THROUGH, UNDER, AND AGAINST THE HEREIN NAMED INDIVIDUAL DEFENDANT(S)",
+                    "party_type": "unknown",
+                },
+            ],
+        }
+        signals = extract_lp_to_judgment_party_expansion(1, jd, ["JOHN DOE"])
+        assert signals == []
+
+    def test_named_party_with_unknown_suffix_keeps_named_prefix(self) -> None:
+        jd = {
+            "defendants": [
+                {
+                    "name": "LISA CHAMBERS and THE UNKNOWN HEIRS, DEVISEES, GRANTEES, ASSIGNEES, LIENORS, CREDITORS, TRUSTEES, OR OTHER CLAIMANTS",
+                    "party_type": "unknown",
+                },
+            ],
+        }
+        signals = extract_lp_to_judgment_party_expansion(1, jd, ["JOHN DOE"])
+        assert len(signals) == 1
+        assert signals[0].detail["new_parties"][0]["name"] == "LISA CHAMBERS"
+
 
 # -----------------------------------------------------------------------
 # Signal 5: lp_to_judgment_property_change
 # -----------------------------------------------------------------------
 
+
 class TestLpToJudgmentPropertyChange:
     def test_same_legal(self) -> None:
         jd = {"legal_description": "LOT 5 BLOCK 2 SUNSET LAKES UNIT 3"}
         signals = extract_lp_to_judgment_property_change(
-            1, jd,
+            1,
+            jd,
             lp_legal_description="LOT 5 BLOCK 2 SUNSET LAKES UNIT 3",
             lp_property_address=None,
         )
@@ -319,7 +426,8 @@ class TestLpToJudgmentPropertyChange:
     def test_materially_different_legal(self) -> None:
         jd = {"legal_description": "LOT 99 BLOCK 7 PALM HARBOR ESTATES"}
         signals = extract_lp_to_judgment_property_change(
-            1, jd,
+            1,
+            jd,
             lp_legal_description="LOT 5 BLOCK 2 SUNSET LAKES UNIT 3",
             lp_property_address=None,
         )
@@ -334,7 +442,8 @@ class TestLpToJudgmentPropertyChange:
             "property_address": "5678 OAK STREET",
         }
         signals = extract_lp_to_judgment_property_change(
-            1, jd,
+            1,
+            jd,
             lp_legal_description=None,
             lp_property_address="1234 PINE AVENUE",
         )
@@ -344,16 +453,32 @@ class TestLpToJudgmentPropertyChange:
 
     def test_missing_data_no_signal(self) -> None:
         signals = extract_lp_to_judgment_property_change(
-            1, {},
+            1,
+            {},
             lp_legal_description=None,
             lp_property_address=None,
         )
         assert signals == []
 
+    def test_single_digit_lot_change_detected(self) -> None:
+        jd = {"legal_description": "LOT 6 BLOCK 2 SUNSET LAKES UNIT 3"}
+        signals = extract_lp_to_judgment_property_change(
+            1,
+            jd,
+            lp_legal_description="LOT 5 BLOCK 2 SUNSET LAKES UNIT 3",
+            lp_property_address=None,
+        )
+        assert len(signals) == 1
+        change = next(
+            c for c in signals[0].detail["changes"] if c["field"] == "legal_description"
+        )
+        assert change["comparison_reason"] == "Lot mismatch: {'5'} vs {'6'}"
+
 
 # -----------------------------------------------------------------------
 # Signal 6: long_case_interim_risk
 # -----------------------------------------------------------------------
+
 
 class TestLongCaseInterimRisk:
     def test_short_gap_no_signal(self) -> None:
@@ -416,6 +541,7 @@ class TestLongCaseInterimRisk:
 # AuditSignal dataclass
 # -----------------------------------------------------------------------
 
+
 class TestAuditSignal:
     def test_to_dict(self) -> None:
         s = AuditSignal(
@@ -433,6 +559,7 @@ class TestAuditSignal:
 # -----------------------------------------------------------------------
 # AuditSignalExtractor (with mocked DB)
 # -----------------------------------------------------------------------
+
 
 class _FakeResult:
     def __init__(self, rows: list[tuple[Any, ...]] | None = None) -> None:
@@ -507,16 +634,33 @@ class TestAuditSignalExtractorIntegration:
         results = {
             # _load_foreclosure query
             "FROM foreclosures": [
-                (1, "292020CA001234A001HC", "20-CA-001234", "STRAP123", "FOLIO123",
-                 judgment_data, date(2018, 3, 15), date(2025, 6, 1)),
+                (
+                    1,
+                    "292020CA001234A001HC",
+                    "20-CA-001234",
+                    "STRAP123",
+                    "FOLIO123",
+                    judgment_data,
+                    date(2018, 3, 15),
+                    date(2025, 6, 1),
+                ),
             ],
             # _load_encumbrances query
             "FROM ori_encumbrances": [
                 # LP row
-                (100, "lis_pendens", "WELLS FARGO BANK NA", "JOHN DOE",
-                 "2018111111", "11111", "222", date(2018, 3, 15),
-                 "292020CA001234A001HC",
-                 "LOT 5 BLOCK 2 SUNSET LAKES", "(LP) LIS PENDENS"),
+                (
+                    100,
+                    "lis_pendens",
+                    "WELLS FARGO BANK NA",
+                    "JOHN DOE",
+                    "2018111111",
+                    "11111",
+                    "222",
+                    date(2018, 3, 15),
+                    "292020CA001234A001HC",
+                    "LOT 5 BLOCK 2 SUNSET LAKES",
+                    "(LP) LIS PENDENS",
+                ),
             ],
             # clerk_civil_parties plaintiff query
             "party_type ILIKE 'Plaintiff%'": [
@@ -561,14 +705,31 @@ class TestAuditSignalExtractorIntegration:
 
         results = {
             "FROM foreclosures": [
-                (1, "292020CA001234A001HC", "20-CA-001234", "STRAP123", "FOLIO123",
-                 judgment_data, date(2018, 3, 15), date(2025, 6, 1)),
+                (
+                    1,
+                    "292020CA001234A001HC",
+                    "20-CA-001234",
+                    "STRAP123",
+                    "FOLIO123",
+                    judgment_data,
+                    date(2018, 3, 15),
+                    date(2025, 6, 1),
+                ),
             ],
             "FROM ori_encumbrances": [
-                (100, "lis_pendens", "WELLS FARGO BANK NA", "JOHN DOE",
-                 "2018111111", "11111", "222", date(2024, 3, 15),
-                 "292020CA001234A001HC",
-                 "LOT 5 BLOCK 2 SUNSET LAKES", "(LP) LIS PENDENS"),
+                (
+                    100,
+                    "lis_pendens",
+                    "WELLS FARGO BANK NA",
+                    "JOHN DOE",
+                    "2018111111",
+                    "11111",
+                    "222",
+                    date(2024, 3, 15),
+                    "292020CA001234A001HC",
+                    "LOT 5 BLOCK 2 SUNSET LAKES",
+                    "(LP) LIS PENDENS",
+                ),
             ],
             "party_type ILIKE 'Plaintiff%'": [
                 ("WELLS FARGO BANK NA",),
@@ -583,6 +744,114 @@ class TestAuditSignalExtractorIntegration:
         signals = extractor.extract_signals_for(1)
         signal_types = {s.signal_type for s in signals}
         assert "long_case_interim_risk" not in signal_types
+
+    def test_filing_date_fallback_drives_long_case_signal(self) -> None:
+        import json
+
+        judgment_data = json.dumps({
+            "plaintiff": "WELLS FARGO BANK NA",
+            "defendants": [],
+            "judgment_date": "2025-06-01",
+        })
+
+        results = {
+            "FROM foreclosures": [
+                (
+                    1,
+                    "292020CA001234A001HC",
+                    "20-CA-001234",
+                    "STRAP123",
+                    "FOLIO123",
+                    judgment_data,
+                    date(2018, 3, 15),
+                    date(2025, 6, 1),
+                    "123 TEST ST",
+                ),
+            ],
+            "FROM ori_encumbrances": [
+                (
+                    100,
+                    "lis_pendens",
+                    "WELLS FARGO BANK NA",
+                    "JOHN DOE",
+                    "2018111111",
+                    "11111",
+                    "222",
+                    None,
+                    "292020CA001234A001HC",
+                    "LOT 5 BLOCK 2 SUNSET LAKES",
+                    "(LP) LIS PENDENS",
+                    None,
+                    None,
+                ),
+            ],
+            "party_type ILIKE 'Plaintiff%'": [
+                ("WELLS FARGO BANK NA",),
+            ],
+            "COALESCE(NULLIF(name, ''), NULLIF(business_name, ''))": [
+                ("WELLS FARGO BANK NA",),
+                ("JOHN DOE",),
+            ],
+        }
+
+        extractor = self._build_extractor(results)
+        signals = extractor.extract_signals_for(1)
+        signal_types = {s.signal_type for s in signals}
+        assert "long_case_interim_risk" in signal_types
+
+    def test_property_address_fallback_surfaces_property_change_signal(self) -> None:
+        import json
+
+        judgment_data = json.dumps({
+            "plaintiff": "WELLS FARGO BANK NA",
+            "defendants": [],
+            "property_address": "999 CHANGED AVE",
+            "judgment_date": "2025-06-01",
+        })
+
+        results = {
+            "FROM foreclosures": [
+                (
+                    1,
+                    "292020CA001234A001HC",
+                    "20-CA-001234",
+                    "STRAP123",
+                    "FOLIO123",
+                    judgment_data,
+                    date(2023, 3, 15),
+                    date(2025, 6, 1),
+                    "123 ORIGINAL ST",
+                ),
+            ],
+            "FROM ori_encumbrances": [
+                (
+                    100,
+                    "lis_pendens",
+                    "WELLS FARGO BANK NA",
+                    "JOHN DOE",
+                    "2018111111",
+                    "11111",
+                    "222",
+                    date(2023, 3, 15),
+                    "292020CA001234A001HC",
+                    "LOT 5 BLOCK 2 SUNSET LAKES",
+                    "(LP) LIS PENDENS",
+                    None,
+                    None,
+                ),
+            ],
+        }
+
+        extractor = self._build_extractor(results)
+        signals = extractor.extract_signals_for(1)
+        property_signals = [
+            signal for signal in signals if signal.signal_type == "lp_to_judgment_property_change"
+        ]
+        assert len(property_signals) == 1
+        assert any(
+            change["field"] == "property_address"
+            for change in property_signals[0].detail["changes"]
+        )
 
     def test_static_helpers(self) -> None:
         """Test the static helper methods of AuditSignalExtractor."""
@@ -646,3 +915,62 @@ class TestAuditSignalExtractorIntegration:
             judgment_date=None,
         )
         assert count_none == 0
+
+    def test_structured_party_json_preserves_trustee_name(self) -> None:
+        enc_rows = [
+            {
+                "id": 1,
+                "encumbrance_type": "lis_pendens",
+                "party1": "US BANK NATIONAL ASSOCIATION, AS TRUSTEE FOR XYZ TRUST",
+                "party2": "",
+                "instrument_number": "123",
+                "book": "456",
+                "page": "789",
+                "recording_date": date(2020, 1, 1),
+                "case_number": "CA001",
+                "legal_description": "LOT 5",
+                "raw_document_type": "LP",
+                "parties_one_json": [
+                    {"Name": "US BANK NATIONAL ASSOCIATION, AS TRUSTEE FOR XYZ TRUST"},
+                ],
+                "parties_two_json": None,
+            },
+        ]
+        parties = AuditSignalExtractor._collect_encumbrance_parties(enc_rows)  # noqa: SLF001
+        assert parties == ["US BANK NATIONAL ASSOCIATION, AS TRUSTEE FOR XYZ TRUST"]
+
+    def test_release_does_not_count_as_lifecycle_evidence(self) -> None:
+        enc_rows = [
+            {
+                "id": 1,
+                "encumbrance_type": "release",
+                "party1": "BANK A",
+                "party2": "BANK B",
+                "instrument_number": "123",
+                "book": "456",
+                "page": "789",
+                "recording_date": date(2022, 1, 1),
+                "case_number": "CA001",
+                "legal_description": "LOT 5",
+                "raw_document_type": "RELEASE OF MORTGAGE",
+            },
+            {
+                "id": 2,
+                "encumbrance_type": "satisfaction",
+                "party1": "BANK A",
+                "party2": "BANK B",
+                "instrument_number": "124",
+                "book": "456",
+                "page": "790",
+                "recording_date": date(2023, 1, 1),
+                "case_number": "CA001",
+                "legal_description": "LOT 5",
+                "raw_document_type": "SATISFACTION OF MORTGAGE",
+            },
+        ]
+        count = AuditSignalExtractor._count_lifecycle_encumbrances(  # noqa: SLF001
+            enc_rows,
+            lp_date=date(2020, 1, 1),
+            judgment_date=date(2025, 1, 1),
+        )
+        assert count == 0

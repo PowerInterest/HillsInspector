@@ -1,5 +1,8 @@
 # Hillsborough Bulk Data Reference
 
+> [!NOTE]
+> This shapefile data is automatically downloaded and ingested weekly by the `hcpa_bulk` scheduled job in PostgreSQL. See [Scheduled Jobs](../guides/SCHEDULED_JOBS.md) for execution details.
+
 ## Data Fields
 
 The parcel shapefile contains polygons. A shapefile is a series of files used to draw geographic data in GIS software. One component, `parcel_mm_dd_yyyy.dbf`, is a table of values.

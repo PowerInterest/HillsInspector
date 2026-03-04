@@ -1,4 +1,80 @@
 # TODO
+https://github.com/D4Vinci/Scrapling?tab=readme-ov-file
+## Market Photo Storage Investigation
+
+**Note:** This has been looked at 3 times, and we still have issues; seems difficult to solve.
+
+**Discovered:** 2026-03-04
+**Impact:** `property_market` can report that source scraping is complete while local property photos are still missing or incomplete, which makes "how many properties have pictures?" produce inconsistent answers depending on whether the query looks at remote photo URLs or local cached files.
+
+### What I Believed Was Wrong
+
+During the market-photo investigation, the evidence pointed to three separate issues:
+
+1. **Source completion was being treated as photo completion**
+   - A row could have `redfin_json`, `zillow_json`, and `homeharvest_json` populated, but still have missing or incomplete `photo_local_paths`.
+   - Once the row was considered "done" for market data, the worker would stop revisiting it, so missing photos stayed missing.
+
+2. **Zillow image downloads likely required a proper `Referer` header**
+   - The downloader fetches CDN image URLs outside the browser.
+   - Zillow photo URLs (`photos.zillowstatic.com`) appeared valid in-browser, but local caching was failing for some rows.
+   - My working theory was that Zillow was rejecting or degrading those direct requests unless they looked like they came from Zillow pages.
+
+3. **The count definitions were being mixed together**
+   - `photo_cdn_urls` means remote image URLs were discovered.
+   - `photo_local_paths` means files were actually saved under `data/Foreclosure/{case_number}/photos/`.
+   - Those are not the same state, so one question can produce multiple answers unless the definition is explicit.
+
+### Evidence
+
+At the time of investigation, the PostgreSQL `property_market` snapshot looked like this:
+
+```
+Total property_market rows:         1280
+Rows with remote photo URLs:        1147
+Rows with any local photo files:    1103
+Rows with remote URLs but no local:   44
+Rows with local cache below target:   90
+```
+
+That snapshot suggested the main storage gap was not "no photos found anywhere". The gap was specifically "photos found remotely, but not fully saved locally".
+
+I also verified one concrete example during the investigation:
+
+- Strap: `182936509000044000130A`
+- Before the check:
+  - `photo_cdn_urls` count: `30`
+  - `photo_local_paths` count: `0`
+- After a one-off downloader test using source-aware request behavior:
+  - local files saved: `15`
+
+That result is why I believed the problem was at least partly in the photo download/storage path, not only in upstream scraping.
+
+### Why Claude Could Report Different Counts
+
+The evidence suggests these are different questions:
+
+1. "How many properties have remote photos available?"
+   - Count rows where `photo_cdn_urls` has at least one URL.
+2. "How many properties have saved local pictures on disk?"
+   - Count rows where `photo_local_paths` has at least one saved file.
+3. "How many properties are missing all pictures?"
+   - Count rows where both arrays are empty.
+4. "How many properties still need local photo backfill?"
+   - Count rows where remote URLs exist but local saved files are below the cache target.
+
+If those are not kept separate, the same dataset will appear to have multiple contradictory answers.
+
+### What Needs To Be Verified Next
+
+1. Re-check whether market rows with complete source JSON but incomplete local photos are still being skipped by selection logic.
+2. Re-check whether Zillow CDN image downloads fail without source-aware headers.
+3. Define one canonical photo metric for operator questions:
+   - remote-photo coverage
+   - local-photo coverage
+   - fully missing
+   - incomplete local cache
+4. Add a durable audit query/report so picture counts are computed the same way every time.
 
 ## Critical: PG Pipeline Has No PDF Download Step
 
@@ -180,30 +256,6 @@ The ORI discovery needs an alternative seed strategy for properties with no sale
 
 ---
 
-## Housekeeping
-
-### `FILE_RESTRUCTURING.md` Has Incorrect Claim About `Controller.py`
-
-The file claims `Controller.py` is an "Old SQLite pipeline controller, replaced by `pg_pipeline_controller.py`". This is **wrong**. `Controller.py` is the canonical active pipeline entry point per `MASTERPLAN.md`. It imports and runs `PgPipelineController`. Do not delete it.
-
-### `sunbiz_entity_cordata` Table Missing
-
-The `db_audit` report shows this table doesn't exist. Either the Sunbiz entity quarterly job hasn't been run yet, or the table name is different. Verify against `sunbiz/pg_loader.py` and run the job if needed.
-
-### `clerk_name_index` Removal
-
-Completed via Alembic migration `005_drop_clerk_name_index`. The redundant
-denormalised table and ORM model were removed after alpha index coverage was
-merged into `clerk_civil_cases` and `clerk_civil_parties`.
-
-Remaining follow-up:
-1. Keep validating that web/person search and dossier queries continue to use
-   only the normalised clerk tables.
-2. Keep the new civil alpha load path (`download-civil-alpha-index`,
-   `load-civil-alpha-index`, controller step, and `load_all`) in sync with the
-   active ingest workflow.
-
----
 
 ## Permit Expansion: Plant City & Temple Terrace
 

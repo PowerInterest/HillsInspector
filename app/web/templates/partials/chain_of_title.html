@@ -48,6 +48,16 @@
                         <div class="transfer-header">
                             <div class="transfer-date">{{ transfer.acquisition_date or 'Date Unknown' }}</div>
                             <div class="transfer-type">
+                                {% set adt = (transfer.acquisition_doc_type or '')|upper %}
+                                {% if 'DEED' in adt or adt in ('D','WD','QCD','SWD','SD','PRD') %}
+                                <img class="dtype-icon" src="/static/icons/deeds.png" alt="">
+                                {% elif adt in ('MTG','MORTGAGE','DOT','HELOC') %}
+                                <img class="dtype-icon" src="/static/icons/mortgages.png" alt="">
+                                {% elif 'JUD' in adt %}
+                                <img class="dtype-icon" src="/static/icons/judgments.png" alt="">
+                                {% elif adt in ('LP','LIS PENDENS') %}
+                                <img class="dtype-icon" src="/static/icons/lis_pendens.png" alt="">
+                                {% endif %}
                                 <span class="badge badge-secondary">{{ transfer.acquisition_doc_type or 'DOC' }}</span>
                                 {% if st %}
                                     {% set badge_class = (

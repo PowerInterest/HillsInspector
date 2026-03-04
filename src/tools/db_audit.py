@@ -27,6 +27,11 @@ if str(project_root) not in sys.path:
 
 from sqlalchemy import text  # noqa: E402
 from sunbiz.db import get_engine, resolve_pg_dsn  # noqa: E402
+from src.services.audit.encumbrance_recovery import (  # noqa: E402
+    RECOVERABLE_BUCKETS,
+    REVIEW_ONLY_BUCKETS,
+)
+from src.services.audit.pg_audit_encumbrance import run_audit  # noqa: E402
 
 
 def _path_exists(path_value: str | None) -> bool:
@@ -69,6 +74,91 @@ def _rows(conn, query: str, params: dict | None = None) -> list[dict]:
         conn.rollback()
         logger.error(f"Query error: {e}")
         return []
+
+
+def _market_photo_metrics(conn) -> dict[str, int]:
+    metrics = _row(
+        conn,
+        """
+        WITH stats AS (
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE photo_cdn_urls IS NOT NULL
+                      AND jsonb_typeof(photo_cdn_urls) = 'array'
+                      AND jsonb_array_length(photo_cdn_urls) > 0
+                ) AS has_remote,
+                COUNT(*) FILTER (
+                    WHERE photo_local_paths IS NOT NULL
+                      AND jsonb_typeof(photo_local_paths) = 'array'
+                      AND jsonb_array_length(photo_local_paths) > 0
+                ) AS has_local,
+                COUNT(*) FILTER (
+                    WHERE (
+                        photo_cdn_urls IS NULL
+                        OR jsonb_typeof(photo_cdn_urls) != 'array'
+                        OR jsonb_array_length(photo_cdn_urls) = 0
+                    )
+                      AND (
+                        photo_local_paths IS NULL
+                        OR jsonb_typeof(photo_local_paths) != 'array'
+                        OR jsonb_array_length(photo_local_paths) = 0
+                    )
+                ) AS fully_missing,
+                COUNT(*) FILTER (
+                    WHERE photo_cdn_urls IS NOT NULL
+                      AND jsonb_typeof(photo_cdn_urls) = 'array'
+                      AND jsonb_array_length(photo_cdn_urls) > 0
+                      AND (
+                        photo_local_paths IS NULL
+                        OR jsonb_typeof(photo_local_paths) != 'array'
+                        OR jsonb_array_length(photo_local_paths) = 0
+                        OR (
+                            jsonb_array_length(photo_local_paths) < 15
+                            AND jsonb_array_length(photo_local_paths) < jsonb_array_length(photo_cdn_urls)
+                        )
+                    )
+                ) AS needs_backfill,
+                COUNT(*) AS total_market_rows
+            FROM property_market
+        )
+        SELECT * FROM stats
+        """,
+    )
+    return {
+        "has_remote": int(metrics.get("has_remote", 0)) if metrics else 0,
+        "has_local": int(metrics.get("has_local", 0)) if metrics else 0,
+        "fully_missing": int(metrics.get("fully_missing", 0)) if metrics else 0,
+        "needs_backfill": int(metrics.get("needs_backfill", 0)) if metrics else 0,
+        "total_market_rows": int(metrics.get("total_market_rows", 0)) if metrics else 0,
+    }
+
+
+def _encumbrance_audit_reporting(conn) -> dict[str, int | float | None]:
+    report = run_audit(conn=conn)
+    recoverable_open_issues = sum(
+        1 for hit in report.hits if hit.bucket in RECOVERABLE_BUCKETS
+    )
+    review_only_open_issues = sum(
+        1 for hit in report.hits if hit.bucket in REVIEW_ONLY_BUCKETS
+    )
+    with_strap = int(report.with_strap_count)
+    with_encumbrances = int(report.with_encumbrances_count)
+    with_survival = int(report.with_survival_count)
+    enc_cov = (100.0 * with_encumbrances / with_strap) if with_strap > 0 else None
+    survival_cov = (100.0 * with_survival / with_strap) if with_strap > 0 else None
+    return {
+        "open_issues": len(report.hits),
+        "recoverable_open_issues": recoverable_open_issues,
+        "review_only_open_issues": review_only_open_issues,
+        "affected_foreclosures": len({int(hit.foreclosure_id) for hit in report.hits}),
+        "with_strap_count": with_strap,
+        "with_encumbrances_count": with_encumbrances,
+        "with_survival_count": with_survival,
+        "encumbrance_coverage_pct": round(enc_cov, 2) if enc_cov is not None else None,
+        "survival_coverage_pct": round(survival_cov, 2) if survival_cov is not None else None,
+        "encumbrance_target_met": bool(enc_cov is not None and enc_cov >= 80.0),
+        "survival_target_met": bool(survival_cov is not None and survival_cov >= 80.0),
+    }
 
 
 def _has_table(conn, name: str) -> bool:
@@ -279,14 +369,15 @@ def audit_database(dsn: str | None = None) -> None:
         _section("MARKET DATA")
 
         if _has_table(conn, "property_market"):
-            mkt_total = _val(conn, "SELECT COUNT(*) FROM property_market")
+            photo_metrics = _market_photo_metrics(conn)
+            mkt_total = photo_metrics["total_market_rows"]
             mkt_zest = _val(conn, "SELECT COUNT(*) FROM property_market WHERE zestimate IS NOT NULL")
-            mkt_photos = _val(
-                conn, "SELECT COUNT(*) FROM property_market WHERE photo_cdn_urls IS NOT NULL AND photo_cdn_urls != '[]'::jsonb"
-            )
             logger.info(f"  Property market rows: {mkt_total:,}")
             logger.info(f"  With zestimate: {mkt_zest:,}")
-            logger.info(f"  With photos: {mkt_photos:,}")
+            logger.info(f"  Remote photos available: {photo_metrics['has_remote']:,}")
+            logger.info(f"  Local photos cached:    {photo_metrics['has_local']:,}")
+            logger.info(f"  Fully missing photos:   {photo_metrics['fully_missing']:,}")
+            logger.info(f"  Needs photo backfill:   {photo_metrics['needs_backfill']:,}")
         else:
             logger.info("  property_market: TABLE MISSING")
 
@@ -310,6 +401,41 @@ def audit_database(dsn: str | None = None) -> None:
 
             distinct_straps = _val(conn, "SELECT COUNT(DISTINCT strap) FROM ori_encumbrances")
             logger.info(f"  Distinct straps: {distinct_straps:,}")
+
+            try:
+                audit_metrics = _encumbrance_audit_reporting(conn)
+                logger.info(
+                    "  Open audit issues: {} (recoverable: {}, review-only: {}, affected foreclosures: {})",
+                    audit_metrics["open_issues"],
+                    audit_metrics["recoverable_open_issues"],
+                    audit_metrics["review_only_open_issues"],
+                    audit_metrics["affected_foreclosures"],
+                )
+                logger.info(
+                    "  Encumbrance coverage: {}/{} ({} ) — target ≥80% [{}]",
+                    audit_metrics["with_encumbrances_count"],
+                    audit_metrics["with_strap_count"],
+                    (
+                        f"{audit_metrics['encumbrance_coverage_pct']:.2f}%"
+                        if audit_metrics["encumbrance_coverage_pct"] is not None
+                        else "N/A"
+                    ),
+                    "met" if audit_metrics["encumbrance_target_met"] else "below",
+                )
+                logger.info(
+                    "  Survival coverage:    {}/{} ({} ) — target ≥80% [{}]",
+                    audit_metrics["with_survival_count"],
+                    audit_metrics["with_strap_count"],
+                    (
+                        f"{audit_metrics['survival_coverage_pct']:.2f}%"
+                        if audit_metrics["survival_coverage_pct"] is not None
+                        else "N/A"
+                    ),
+                    "met" if audit_metrics["survival_target_met"] else "below",
+                )
+            except Exception as e:
+                conn.rollback()
+                logger.warning(f"  Encumbrance audit reporting checks failed: {e}")
         else:
             logger.info("  ori_encumbrances: TABLE MISSING")
 

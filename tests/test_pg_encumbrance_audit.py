@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import src.services.audit.pg_audit_encumbrance as audit_service
+from src.services.encumbrance_audit_signals import AuditSignal
 from src.tools.pg_encumbrance_audit import (
     AuditReport,
     BucketHit,
@@ -267,6 +269,40 @@ class TestBucketSatParentGap:
         h = next(h for h in report.hits if h.bucket == "sat_parent_gap")
         assert "satisfaction" in h.reason
 
+    def test_multiple_unresolved_sat_docs_roll_up_to_one_case(self) -> None:
+        saw_grouped_query = False
+
+        def dispatch(sql: str, _params: dict[str, Any] | None) -> _FakeResult:
+            nonlocal saw_grouped_query
+            sql_upper = sql.upper().strip()
+            if "INFORMATION_SCHEMA" in sql_upper:
+                return _FakeResult(scalar_value=1)
+            if "COUNT(DISTINCT" in sql_upper:
+                return _FakeResult(scalar_value=5)
+            if "GROUP BY" not in sql_upper and sql_upper.startswith("SELECT COUNT(*)"):
+                return _FakeResult(scalar_value=5)
+            if "STRING_AGG" in sql_upper and "SAT_COUNT" in sql_upper:
+                saw_grouped_query = True
+                return _FakeResult(rows=[{
+                    "foreclosure_id": 7,
+                    "case_number": "24-CA-000007",
+                    "strap": "STRAP007",
+                    "property_address": "7 St",
+                    "sat_count": 2,
+                    "sat_refs": "satisfaction (instrument=111); release (instrument=222)",
+                }])
+            return _FakeResult(rows=[])
+
+        report = run_audit(conn=_FakeConnection(dispatch))
+        summary = next(s for s in report.summaries if s.bucket == "sat_parent_gap")
+        sat_hits = [h for h in report.hits if h.bucket == "sat_parent_gap"]
+        assert saw_grouped_query is True
+        assert summary.count == 1
+        assert len(sat_hits) == 1
+        assert "2 unresolved SAT/REL doc(s)" in sat_hits[0].reason
+        assert "instrument=111" in sat_hits[0].reason
+        assert "instrument=222" in sat_hits[0].reason
+
 
 class TestBucketSuperpriority:
     def test_with_hit(self) -> None:
@@ -303,6 +339,79 @@ class TestBucketLifecycleBaseGap:
         assert s.count == 1
         h = next(h for h in report.hits if h.bucket == "lifecycle_base_gap")
         assert "assignment" in h.reason
+
+
+class TestSignalBuckets:
+    def test_collect_signal_bucket_hits_collapses_to_reason(self, monkeypatch: Any) -> None:
+        signal = AuditSignal(
+            foreclosure_id=7,
+            signal_type="lp_to_judgment_plaintiff_change",
+            severity="high",
+            detail={
+                "lp_plaintiff": "WELLS FARGO BANK NA",
+                "judgment_plaintiff": "NATIONSTAR MORTGAGE LLC",
+            },
+        )
+
+        class _FakeExtractor:
+            def extract_all_signals(self, *, limit: int | None = None, conn: Any | None = None) -> list[AuditSignal]:
+                assert limit is None
+                assert conn is not None
+                return [signal]
+
+        def dispatch(sql: str, _params: dict[str, Any] | None) -> _FakeResult:
+            if "case_number_raw AS case_number" in sql:
+                return _FakeResult(rows=[{
+                    "foreclosure_id": 7,
+                    "case_number": "24-CA-000007",
+                    "strap": "STRAP007",
+                    "property_address": "7 Signal St",
+                }])
+            return _FakeResult(rows=[])
+
+        monkeypatch.setattr(audit_service, "AuditSignalExtractor", lambda: _FakeExtractor())
+        hits_by_bucket = audit_service._collect_signal_bucket_hits(  # noqa: SLF001
+            _FakeConnection(dispatch)
+        )
+        hits = hits_by_bucket["lp_to_judgment_plaintiff_change"]
+        assert len(hits) == 1
+        assert hits[0].reason == (
+            "LP plaintiff 'WELLS FARGO BANK NA' differs from judgment plaintiff "
+            "'NATIONSTAR MORTGAGE LLC'"
+        )
+
+    def test_run_audit_includes_signal_bucket_hits(self, monkeypatch: Any) -> None:
+        signal_hits = {name: [] for name in audit_service.SIGNAL_BUCKET_DESCRIPTIONS}
+        signal_hits["judgment_instrument_gap"] = [
+            BucketHit(
+                bucket="judgment_instrument_gap",
+                foreclosure_id=5,
+                case_number="24-CA-000005",
+                strap="STRAP005",
+                property_address="5 Signal St",
+                reason="Judgment foreclosed_mortgage reference missing from encumbrance set",
+            )
+        ]
+
+        monkeypatch.setattr(audit_service, "_collect_signal_bucket_hits", lambda _conn: signal_hits)
+        report = run_audit(conn=_FakeConnection(_scope_dispatch()))
+        summary = next(s for s in report.summaries if s.bucket == "judgment_instrument_gap")
+        assert summary.deferred is False
+        assert summary.count == 1
+        hit = next(h for h in report.hits if h.bucket == "judgment_instrument_gap")
+        assert hit.case_number == "24-CA-000005"
+
+    def test_signal_extraction_error_marks_signal_buckets_deferred(self, monkeypatch: Any) -> None:
+        monkeypatch.setattr(
+            audit_service,
+            "_collect_signal_bucket_hits",
+            lambda _conn: (_ for _ in ()).throw(RuntimeError("signal boom")),
+        )
+        report = run_audit(conn=_FakeConnection(_scope_dispatch()))
+        for bucket_name in audit_service.SIGNAL_BUCKET_DESCRIPTIONS:
+            summary = next(s for s in report.summaries if s.bucket == bucket_name)
+            assert summary.deferred is True
+            assert summary.deferred_reason == "Signal extraction error: signal boom"
 
 
 # ---------------------------------------------------------------------------

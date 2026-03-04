@@ -26,60 +26,55 @@ This document is a consolidated reference composed of the step-by-step pipeline 
 
 ## Architecture
 
-HillsInspector runs a single PG-first pipeline:
+HillsInspector runs a split PostgreSQL-first architecture:
 
-- Entry point: `Controller.py`
-- Orchestrator: `src/services/pg_pipeline_controller.py`
+1. **Scheduled Bulk Data Refresh** (cron/background)
+2. **Per-Auction Enrichment Pipeline** (`Controller.py`)
+
 - Database: PostgreSQL (pipeline + analytics)
 
-The controller executes 16 ordered steps across two phases.
+The pipeline executes ordered steps across these two routines.
 
 Important runtime behavior:
 
-- Bulk ingestion steps run inline by default.
-- Market data runs inline by default.
-- Background workers are opt-in with:
-  - `--background-bulk-steps`
-  - `--background-market-data`
-- When background mode is enabled, controller summary can return before workers finish.
+- Bulk ingestion steps are primarily configured via `pipeline_job_config` and run via `python -m src.tools.run_scheduled_job`.
+- The per-auction enrichment pipeline is orchestrated by `Controller.py`.
+- If `Controller.py` is invoked with bulk steps enabled, it will run them inline, but will check the `pipeline_job_runs` table to skip them if they are still "fresh" based on the staleness windows.
 
 ## Entry Point
 
 ```bash
-# Full run (Phase A + Phase B)
+# Full run (Bulk Refresh + Enrichment)
 uv run Controller.py
 
 # Force stale checks off and run all loaders
 uv run Controller.py --force-all
 
-# Quick bounded sanity run
+# Quick bounded sanity run for testing
 uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --survival-limit 5 --limit 5
 
-# Phase A only
-uv run Controller.py --skip-auction-scrape --skip-judgment-extract --skip-ori-search --skip-survival --skip-final-refresh
-
-# Phase B core only
+# Enrichment Core Only
 uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain --skip-market-data
 ```
 
 ## Pipeline Stages
 
-### Phase A: Bulk Refresh
+### Scheduled Bulk Refresh
 
 | Step | Name | Service | Primary PG Outputs | Mode |
 |------|------|---------|--------------------|------|
-| 1 | `hcpa_suite` | `load_hcpa_suite` | `hcpa_bulk_parcels`, `hcpa_allsales` | inline (background optional) |
-| 2 | `clerk_bulk` | `PgClerkBulkService` | `clerk_civil_cases`, `clerk_civil_parties`, related clerk tables | inline (background optional) |
-| 3 | `dor_nal` | `PgNalService` | `dor_nal_parcels` | inline (background optional) |
-| 4 | `sunbiz_flr` | `PgFlrService` | `sunbiz_flr_*` | inline (background optional) |
-| 5 | `sunbiz_entity` | `load_sunbiz_entity` | `sunbiz_entity_*` | inline (background optional) |
-| 6 | `county_permits` | `CountyPermitService` | `county_permits` | inline (background optional) |
-| 7 | `tampa_permits` | `TampaPermitService` | `tampa_accela_records` | inline (background optional) |
+| 1 | `hcpa_suite` | `load_hcpa_suite` | `hcpa_bulk_parcels`, `hcpa_allsales` | scheduled |
+| 2 | `clerk_bulk` | `PgClerkBulkService` | `clerk_civil_cases`, `clerk_civil_parties`, related clerk tables | scheduled |
+| 3 | `dor_nal` | `PgNalService` | `dor_nal_parcels` | scheduled |
+| 4 | `sunbiz_flr` | `PgFlrService` | `sunbiz_flr_*` | scheduled |
+| 5 | `sunbiz_entity` | `load_sunbiz_entity` | `sunbiz_entity_*` | scheduled |
+| 6 | `county_permits` | `CountyPermitService` | `county_permits` | inline / scheduled |
+| 7 | `tampa_permits` | `TampaPermitService` | `tampa_accela_records` | inline / scheduled |
 | 8 | `foreclosure_refresh` | `PgForeclosureService` | `foreclosures` (hub refresh) | inline |
 | 9 | `trust_accounts` | `PgTrustAccountsService` | `TrustAccount`, `TrustAccountSummary` | inline |
 | 10 | `title_chain` | `TitleChainController` | `foreclosure_title_events`, `foreclosure_title_chain`, `foreclosure_title_summary` | inline |
 
-### Phase B: Per-Auction Enrichment
+### Per-Auction Enrichment Pipeline
 
 | Step | Name | Service | Primary PG Outputs | Mode |
 |------|------|---------|--------------------|------|
@@ -88,7 +83,7 @@ uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr --skip-
 | 13 | `ori_search` | `PgOriService` | `ori_encumbrances`, `step_ori_searched` | inline |
 | 14 | `survival_analysis` | `PgSurvivalService` | `ori_encumbrances.survival_status`, `step_survival_analyzed` | inline |
 | 15 | `final_refresh` | `scripts.refresh_foreclosures.refresh` | recomputed foreclosure metrics | inline |
-| 16 | `market_data` | `run_market_data_update` (or dispatcher in background mode) | `property_market` (+ post-market refresh) | inline (background optional) |
+| 16 | `market_data` | `run_market_data_update` | `property_market` (+ post-market refresh) | scheduled worker |
 
 ## Key Data Domains
 
@@ -205,7 +200,7 @@ Resolve missing `auctions.parcel_id` values after judgment extraction so downstr
 Runs **after Step 2 (Final Judgment Extraction)** and **before Step 3 (Bulk Enrichment)**.
 
 ## Inputs
-From SQLite:
+From PostgreSQL:
 1. `auctions` rows with empty `parcel_id` and `extracted_judgment_data` present.
 2. `auctions.property_address` for cases without judgment data but with a scraped address.
 3. `bulk_parcels` for address lookup and disambiguation.

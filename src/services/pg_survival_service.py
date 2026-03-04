@@ -28,11 +28,27 @@ class PgSurvivalService:
         self.dsn = resolve_pg_dsn(dsn)
         self.engine = get_engine(self.dsn)
 
-    def run(self, *, limit: int | None = None) -> dict[str, Any]:
-        """Analyze survival for foreclosures with unanalyzed encumbrances."""
-        targets = self._find_targets(limit)
+    def run(
+        self,
+        *,
+        limit: int | None = None,
+        foreclosure_ids: list[int] | None = None,
+        force_reanalysis: bool = False,
+    ) -> dict[str, Any]:
+        """Analyze survival for foreclosures that need it or were explicitly selected."""
+        target_ids = sorted({int(fid) for fid in (foreclosure_ids or []) if fid})
+        targets = self._find_targets(
+            limit,
+            foreclosure_ids=target_ids or None,
+            force_reanalysis=force_reanalysis,
+        )
         if not targets:
-            return {"skipped": True, "reason": "no_foreclosures_need_survival"}
+            reason = (
+                "no_targeted_foreclosures_need_survival"
+                if target_ids
+                else "no_foreclosures_need_survival"
+            )
+            return {"skipped": True, "reason": reason}
 
         logger.info(f"Survival analysis: {len(targets)} foreclosures")
 
@@ -90,34 +106,74 @@ class PgSurvivalService:
             "targets": len(targets),
             "analyzed": analyzed,
             "errors": errors,
+            "targeted_foreclosure_ids": target_ids,
+            "force_reanalysis": force_reanalysis,
         }
 
     # ------------------------------------------------------------------
     # Target selection
     # ------------------------------------------------------------------
 
-    def _find_targets(self, limit: int | None) -> list[dict[str, Any]]:
+    def _find_targets(
+        self,
+        limit: int | None,
+        *,
+        foreclosure_ids: list[int] | None = None,
+        force_reanalysis: bool = False,
+    ) -> list[dict[str, Any]]:
         """Find foreclosures needing survival analysis."""
+        where_clauses = [
+            "f.step_ori_searched IS NOT NULL",
+            "f.archived_at IS NULL",
+            "f.strap IS NOT NULL",
+        ]
+        params: dict[str, Any] = {"limit": limit or 1000}
+        if foreclosure_ids:
+            where_clauses.append("f.foreclosure_id = ANY(:foreclosure_ids)")
+            params["foreclosure_ids"] = foreclosure_ids
+        if force_reanalysis:
+            where_clauses.append(
+                """
+                EXISTS (
+                    SELECT 1 FROM ori_encumbrances oe
+                    WHERE oe.strap = f.strap
+                      AND oe.encumbrance_type != 'noc'
+                )
+                """
+            )
+        else:
+            where_clauses.append("f.step_survival_analyzed IS NULL")
+            where_clauses.append(
+                """
+                EXISTS (
+                    SELECT 1 FROM ori_encumbrances oe
+                    WHERE oe.strap = f.strap
+                      AND oe.survival_status IS NULL
+                      AND oe.encumbrance_type != 'noc'
+                )
+                """
+            )
+
         with self.engine.connect() as conn:
             rows = conn.execute(
-                text("""
+                text(f"""
                     SELECT f.foreclosure_id, f.case_number_raw, f.strap,
-                           f.judgment_data, f.homestead_exempt
+                           f.judgment_data,
+                           COALESCE(dn.homestead_exempt, f.homestead_exempt)
+                              AS homestead_exempt
                     FROM foreclosures f
-                    WHERE f.step_survival_analyzed IS NULL
-                      AND f.step_ori_searched IS NOT NULL
-                      AND f.archived_at IS NULL
-                      AND f.strap IS NOT NULL
-                      AND EXISTS (
-                          SELECT 1 FROM ori_encumbrances oe
-                          WHERE oe.strap = f.strap
-                            AND oe.survival_status IS NULL
-                            AND oe.encumbrance_type != 'noc'
-                      )
+                    LEFT JOIN LATERAL (
+                        SELECT dn2.homestead_exempt
+                        FROM dor_nal_parcels dn2
+                        WHERE dn2.strap = f.strap
+                        ORDER BY dn2.tax_year DESC
+                        LIMIT 1
+                    ) dn ON true
+                    WHERE {" AND ".join(where_clauses)}
                     ORDER BY f.auction_date
                     LIMIT :limit
                 """),
-                {"limit": limit or 1000},
+                params,
             ).fetchall()
 
         targets = []
@@ -134,7 +190,7 @@ class PgSurvivalService:
                 "case_number": r[1],
                 "strap": r[2],
                 "judgment_data": jdata,
-                "homestead_exempt": bool(r[4]),
+                "homestead_exempt": bool(r[4]) if r[4] is not None else False,
             })
 
         return targets

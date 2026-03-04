@@ -9,7 +9,7 @@ non-null `foreclosures.strap` that is not a valid HCPA strap for the same
 - Auction ingestion stores the auction site's `Parcel ID` text directly into
   `foreclosures.strap`.
 - Historical reuse can also copy an older strap into a new foreclosure row.
-- Before this fix, both the normalize trigger and `scripts/refresh_foreclosures.py`
+- Before this fix, both the normalize trigger and `src/scripts/refresh_foreclosures.py`
   treated any non-null strap as authoritative.
 - If the stored strap was wrong, HCPA-dependent joins silently missed:
   `hcpa_bulk_parcels`, single-pin permits, ORI, market data, and any downstream
@@ -36,7 +36,7 @@ This rule is now applied in two places:
 
 - `normalize_foreclosure()` in
   `src/db/migrations/create_foreclosures.py`
-- `ENRICH_BASE_SQL` in `scripts/refresh_foreclosures.py`
+- `ENRICH_BASE_SQL` in `src/scripts/refresh_foreclosures.py`
 
 ## Operational consequence
 

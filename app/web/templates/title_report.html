@@ -155,7 +155,7 @@
         <div class="report-header">
             <h1 class="report-title">Property Title Report</h1>
             <div class="report-meta">Generated on {{ generated_date }}</div>
-            <div class="report-meta">HillsInspector Analysis</div>
+            <div class="report-meta">Truck's List Analysis</div>
         </div>
 
         <div class="section">
@@ -279,6 +279,42 @@
         </div>
 
         <div class="section">
+            <div class="section-title">UCC / Secured Filings</div>
+            {% set ucc = property.ucc_summary or {} %}
+            {% if ucc.get('active_filings') %}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Filing #</th>
+                        <th>Filing Date</th>
+                        <th>Expiration</th>
+                        <th>Secured Party</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for f in ucc.active_filings %}
+                    <tr>
+                        <td>{{ f.filing_number }}</td>
+                        <td>{{ f.filing_date or 'N/A' }}</td>
+                        <td>{{ f.expiration_date or 'N/A' }}</td>
+                        <td>{{ f.secured_parties|join(', ') if f.secured_parties else '-' }}</td>
+                        <td><span class="status-badge status-open">Active</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if ucc.names_checked %}
+            <p style="font-size: 12px; color: #7f8c8d; margin-top: 8px;">
+                Names checked: {{ ucc.names_checked|join(', ') }}
+            </p>
+            {% endif %}
+            {% else %}
+            <p>No UCC filings found.</p>
+            {% endif %}
+        </div>
+
+        <div class="section">
             <div class="section-title">Notices of Commencement (NOCs)</div>
             {% if property.nocs %}
             <table>
@@ -398,7 +434,7 @@
         <div class="section">
             <div class="section-title">Disclaimer</div>
             <p style="font-size: 12px; color: #7f8c8d;">
-                This report is generated automatically by HillsInspector based on public records. 
+                This report is generated automatically by Truck's List based on public records. 
                 It is NOT a certified title search or title insurance policy. 
                 Information may be incomplete or inaccurate. Verify all data with official county records.
             </p>

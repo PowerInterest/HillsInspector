@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+
+{% block title %}Encumbrance Audit Queue - Truck's List{% endblock %}
+
+{% block content %}
+<div class="review-queue">
+    <div class="page-header">
+        <h1>Encumbrance Audit Queue</h1>
+        <p class="subtitle">Open encumbrance coverage and identity issues across active foreclosures.</p>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-danger" style="background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 8px; padding: 15px 20px; margin-bottom: 20px; color: #721c24;">
+        {{ error }}
+        <button type="button" style="float:right;background:none;border:none;font-size:1.2em;cursor:pointer;color:#721c24;" onclick="this.parentElement.remove()">&times;</button>
+    </div>
+    {% endif %}
+
+    <!-- Summary Cards -->
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px;">
+        <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; text-align: center;">
+            <div style="font-size: 2rem; font-weight: 700; color: #e74c3c;">{{ summary_cards.open_issues }}</div>
+            <div style="font-size: 0.85rem; color: #6b7280;">Open Issues</div>
+        </div>
+        <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; text-align: center;">
+            <div style="font-size: 2rem; font-weight: 700; color: #3498db;">{{ summary_cards.affected_foreclosures }}</div>
+            <div style="font-size: 0.85rem; color: #6b7280;">Affected Foreclosures</div>
+        </div>
+        <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; text-align: center;">
+            <div style="font-size: 1.1rem; font-weight: 600; color: #374151; margin-top: 8px;">{{ summary_cards.top_bucket or '-' }}</div>
+            <div style="font-size: 0.85rem; color: #6b7280;">Top Bucket</div>
+        </div>
+        <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; text-align: center;">
+            <div style="font-size: 2rem; font-weight: 700; color: #e67e22;">{{ summary_cards.data_coverage_count }}</div>
+            <div style="font-size: 0.85rem; color: #6b7280;">Data Coverage Issues</div>
+        </div>
+    </div>
+
+    <!-- Bucket Breakdown -->
+    {% if bucket_summaries %}
+    <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px 20px; margin-bottom: 24px;">
+        <h3 style="margin: 0 0 12px 0; font-size: 1rem;">Issues by Bucket</h3>
+        <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+            {% for bs in bucket_summaries %}
+            {% if not bs.deferred %}
+            <a href="/review/encumbrance-audit?bucket={{ bs.bucket }}"
+                style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 6px; text-decoration: none; font-size: 0.85em; border: 1px solid #e5e7eb;
+                {% if active_bucket == bs.bucket %}background: #3498db; color: #fff; border-color: #3498db;{% else %}background: #f9fafb; color: #374151;{% endif %}">
+                <span style="font-weight: 600;">{{ bs.count }}</span>
+                {{ bs.label }}
+            </a>
+            {% endif %}
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Filters -->
+    <form method="get" action="/review/encumbrance-audit" style="display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; align-items: center;">
+        <select name="family" style="padding: 6px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9em;">
+            <option value="">All Families</option>
+            {% for f in all_families %}
+            <option value="{{ f }}" {% if active_family == f %}selected{% endif %}>{{ f }}</option>
+            {% endfor %}
+        </select>
+        <select name="bucket" style="padding: 6px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9em;">
+            <option value="">All Buckets</option>
+            {% for b in all_buckets %}
+            <option value="{{ b }}" {% if active_bucket == b %}selected{% endif %}>{{ b }}</option>
+            {% endfor %}
+        </select>
+        <input type="text" name="q" value="{{ active_q }}" placeholder="Search address, case, reason..."
+            style="padding: 6px 12px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9em; min-width: 220px;">
+        <button type="submit" style="padding: 6px 16px; background: #3498db; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9em;">Filter</button>
+        {% if active_bucket or active_family or active_q %}
+        <a href="/review/encumbrance-audit" style="padding: 6px 12px; color: #6b7280; text-decoration: none; font-size: 0.9em;">Clear</a>
+        {% endif %}
+    </form>
+
+    <!-- Results Table -->
+    <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+        <div style="padding: 12px 20px; border-bottom: 1px solid #e5e7eb; color: #6b7280; font-size: 0.85em;">
+            Showing {{ rows|length }} issue{{ 's' if rows|length != 1 }}
+        </div>
+        {% if rows %}
+        <div class="table-container">
+            <table class="auction-table" style="width: 100%;">
+                <thead>
+                    <tr>
+                        <th>Property</th>
+                        <th>Case</th>
+                        <th>Family</th>
+                        <th>Bucket</th>
+                        <th>Reason</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr class="auction-row">
+                        <td>
+                            {% if row.strap %}
+                            <a href="/property/{{ row.strap }}">{{ row.property_address or row.strap }}</a>
+                            {% else %}
+                            {{ row.property_address or '-' }}
+                            {% endif %}
+                        </td>
+                        <td style="white-space: nowrap;">{{ row.case_number }}</td>
+                        <td>
+                            <span style="font-size: 0.82em; color: #6b7280;">{{ row.family }}</span>
+                        </td>
+                        <td>
+                            <span style="padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600;
+                                {% if row.badge_class == 'badge-danger' %}background: #f8d7da; color: #721c24;
+                                {% elif row.badge_class == 'badge-warning' %}background: #fff3cd; color: #856404;
+                                {% elif row.badge_class == 'badge-info' %}background: #d1ecf1; color: #0c5460;
+                                {% else %}background: #e2e3e5; color: #383d41;{% endif %}">
+                                {{ row.label }}
+                            </span>
+                        </td>
+                        <td style="font-size: 0.88em; color: #4b5563; max-width: 400px;">{{ row.reason[:150] }}{% if row.reason|length > 150 %}...{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div style="padding: 40px 20px; text-align: center; color: #6b7280;">
+            {% if active_bucket or active_family or active_q %}
+            No issues match current filters.
+            {% else %}
+            No open audit issues found.
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

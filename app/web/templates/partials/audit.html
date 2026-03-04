@@ -1,0 +1,44 @@
+{% if error %}
+<div style="background: #f8d7da; border: 1px solid #f5c6cb; border-radius: 8px; padding: 15px 20px; color: #721c24;">
+    <strong>{{ error }}</strong>
+</div>
+
+{% elif snapshot and snapshot.has_issues %}
+<div style="margin-bottom: 20px;">
+    <h2 style="margin: 0 0 8px 0; font-size: 1.3rem;">Encumbrance Audit</h2>
+    <p style="color: #6b7280; margin: 0;">{{ snapshot.total_open_issues }} open issue{{ 's' if snapshot.total_open_issues != 1 }} found</p>
+</div>
+
+{% for group in grouped_issues %}
+<div style="margin-bottom: 24px;">
+    <h3 style="font-size: 1.05rem; color: #374151; border-bottom: 2px solid #e5e7eb; padding-bottom: 6px; margin-bottom: 12px;">
+        {{ group.family }}
+        <span style="font-size: 0.85em; color: #9ca3af; font-weight: 400;">({{ group.issues|length }})</span>
+    </h3>
+
+    {% for issue in group.issues %}
+    <div style="background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 12px 16px; margin-bottom: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+            <span class="badge {{ issue.badge_class }}"
+                style="padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600;
+                {% if issue.badge_class == 'badge-danger' %}background: #f8d7da; color: #721c24;
+                {% elif issue.badge_class == 'badge-warning' %}background: #fff3cd; color: #856404;
+                {% elif issue.badge_class == 'badge-info' %}background: #d1ecf1; color: #0c5460;
+                {% else %}background: #e2e3e5; color: #383d41;{% endif %}">
+                {{ issue.label }}
+            </span>
+        </div>
+        <div style="font-size: 0.9em; color: #374151; margin-bottom: 4px;">{{ issue.reason }}</div>
+        <div style="font-size: 0.82em; color: #9ca3af; font-style: italic;">{{ issue.why_it_matters }}</div>
+    </div>
+    {% endfor %}
+</div>
+{% endfor %}
+
+{% else %}
+<div style="text-align: center; padding: 40px 20px; color: #6b7280;">
+    <div style="font-size: 2rem; margin-bottom: 8px;">&#10003;</div>
+    <h3 style="color: #059669; margin: 0 0 4px 0;">No Open Audit Issues</h3>
+    <p style="margin: 0;">All encumbrance audit checks passed for this property.</p>
+</div>
+{% endif %}

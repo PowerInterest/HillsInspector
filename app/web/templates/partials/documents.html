@@ -3,10 +3,28 @@
     {% for doc in documents %}
     <li class="document-item">
         <span class="doc-icon">
-            {% if 'JUDGMENT' in (doc.document_type or '')|upper or 'JUD' in (doc.document_type or '')|upper %}PDF
-            {% elif 'LIS_PENDENS' in (doc.document_type or '')|upper or 'LP' in (doc.document_type or '')|upper %}LP
-            {% elif 'MORTGAGE' in (doc.document_type or '')|upper or 'MTG' in (doc.document_type or '')|upper %}MTG
-            {% else %}DOC{% endif %}
+            {% set dt = (doc.document_type or '')|upper %}
+            {% if 'JUDGMENT' in dt or 'JUD' in dt %}
+            <img src="/static/icons/judgments.png" alt="Judgment">
+            {% elif 'LIS_PENDENS' in dt or 'LP' in dt %}
+            <img src="/static/icons/lis_pendens.png" alt="Lis Pendens">
+            {% elif 'MORTGAGE' in dt or 'MTG' in dt or 'HELOC' in dt or 'DOT' in dt %}
+            <img src="/static/icons/mortgages.png" alt="Mortgage">
+            {% elif 'DEED' in dt or dt in ('D', 'WD', 'QCD', 'SWD', 'SD') %}
+            <img src="/static/icons/deeds.png" alt="Deed">
+            {% elif 'LIEN' in dt or 'LN' in dt or 'HOA' in dt or 'MECH' in dt %}
+            <img src="/static/icons/liens.png" alt="Lien">
+            {% elif 'SAT' in dt %}
+            <img src="/static/icons/satisfactions.png" alt="Satisfaction">
+            {% elif 'REL' in dt or 'TER' in dt %}
+            <img src="/static/icons/releases.png" alt="Release">
+            {% elif 'ASG' in dt or 'ASSIGN' in dt %}
+            <img src="/static/icons/assignments.png" alt="Assignment">
+            {% elif 'CP' in dt or 'ORD' in dt or 'BND' in dt %}
+            <img src="/static/icons/court_papers.png" alt="Court Paper">
+            {% else %}
+            <img src="/static/icons/deeds.png" alt="Document">
+            {% endif %}
         </span>
         <div class="doc-info">
             <span class="doc-type">{{ doc.document_type or 'Document' }}</span>

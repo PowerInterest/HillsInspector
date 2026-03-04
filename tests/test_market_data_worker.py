@@ -1,10 +1,54 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import Self
 
 import pytest
 
 from src.services import market_data_worker
+
+
+class _FakeRow:
+    def __init__(self, mapping: dict[str, Any]) -> None:
+        self._mapping = mapping
+
+
+class _FakeResult:
+    def __init__(self, rows: list[_FakeRow]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[_FakeRow]:
+        return self._rows
+
+
+class _FakeConnection:
+    def __init__(self, captured: dict[str, Any], rows: list[_FakeRow]) -> None:
+        self._captured = captured
+        self._rows = rows
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(
+        self,
+        sql: Any,
+        params: dict[str, Any] | None = None,
+    ) -> _FakeResult:
+        self._captured["sql"] = str(sql)
+        self._captured["params"] = params or {}
+        return _FakeResult(self._rows)
+
+
+class _FakeEngine:
+    def __init__(self, captured: dict[str, Any], rows: list[_FakeRow]) -> None:
+        self._captured = captured
+        self._rows = rows
+
+    def connect(self) -> _FakeConnection:
+        return _FakeConnection(self._captured, self._rows)
 
 
 def test_run_market_data_update_skips_when_no_properties(monkeypatch: Any) -> None:
@@ -34,7 +78,7 @@ def test_run_market_data_update_runs_batch_and_refresh(monkeypatch: Any) -> None
     ]
 
     class _FakeService:
-        def __init__(self, dsn: str) -> None:
+        def __init__(self, dsn: str, **_kwargs: Any) -> None:
             self.dsn = dsn
 
         async def run_batch(
@@ -82,7 +126,7 @@ def test_run_market_data_update_tolerates_refresh_failure(monkeypatch: Any) -> N
     ]
 
     class _FakeService:
-        def __init__(self, dsn: str) -> None:
+        def __init__(self, dsn: str, **_kwargs: Any) -> None:
             self.dsn = dsn
 
         async def run_batch(
@@ -123,7 +167,7 @@ def test_run_market_data_update_propagates_batch_error(monkeypatch: Any) -> None
     ]
 
     class _FakeService:
-        def __init__(self, dsn: str) -> None:
+        def __init__(self, dsn: str, **_kwargs: Any) -> None:
             self.dsn = dsn
 
         async def run_batch(
@@ -163,10 +207,42 @@ def test_main_exits_nonzero_when_nested_update_fails(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         market_data_worker,
         "run_market_data_update",
-        lambda: {"properties_queried": 1, "update": {"success": False}},
+        lambda **_kwargs: {"properties_queried": 1, "update": {"success": False}},
     )
+    monkeypatch.setattr("sys.argv", ["market_data_worker.py"])
 
     with pytest.raises(SystemExit) as exc:
         market_data_worker.main()
 
     assert exc.value.code == 1
+
+
+def test_query_properties_needing_market_includes_photo_backfill_clause(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    expected = {
+        "strap": "A",
+        "folio": "F-A",
+        "case_number": "C-A",
+        "property_address": "1 Main St",
+    }
+    rows = [_FakeRow(expected)]
+
+    monkeypatch.setattr(
+        market_data_worker,
+        "get_engine",
+        lambda _dsn: _FakeEngine(captured, rows),
+    )
+
+    result = market_data_worker._query_properties_needing_market(  # noqa: SLF001
+        dsn="postgresql://x",
+        limit=5,
+    )
+
+    assert result == [expected]
+    sql_text = captured["sql"].lower()
+    assert "photo_cdn_urls" in sql_text
+    assert "photo_local_paths" in sql_text
+    assert "jsonb_array_length(pm.photo_local_paths) < 15" in sql_text
+    assert captured["params"]["limit"] == 5

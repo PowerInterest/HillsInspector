@@ -1,11 +1,15 @@
 """
-PostgreSQL Sales Service — read-only queries against hills_sunbiz.
+Sales read-only queries against PostgreSQL (hills_sunbiz).
 
 Provides:
-- Sales chain lookup (hcpa_allsales)
+- Sales chain lookup (hcpa_allsales) — sorted newest-first
 - Strap-to-folio resolution (hcpa_bulk_parcels)
 - Fuzzy defendant name resolution (resolve_property_by_name PG function)
 - Instrument references for ORI search seeding
+
+This module lives in src/db/ as a pure query layer. The web app delegates
+its ``get_sales_history()`` here, and the pipeline uses it for ORI seeding.
+Import via the ``get_sales_queries()`` singleton factory.
 """
 
 from __future__ import annotations
@@ -15,37 +19,37 @@ from sqlalchemy import text
 
 from sunbiz.db import get_engine, resolve_pg_dsn
 
-# Sale type code → human-readable deed type (for OwnershipPeriod.acquisition_doc_type)
-SALE_TYPE_MAP = {
-    "WD": "WARRANTY DEED",
-    "QC": "QUIT CLAIM DEED",
-    "FD": "FORECLOSURE DEED",
-    "TD": "TAX DEED",
-    "CT": "CERTIFICATE OF TITLE",
-    "DD": "DEED",
-    "TR": "TRUSTEES DEED",
-    "PR": "PERSONAL REPRESENTATIVES DEED",
-    "GD": "GUARDIAN DEED",
-    "CD": "COMMITTEE DEED",
-    "SD": "SHERIFFS DEED",
+# Sale type code -> human-readable deed type (single source of truth)
+SALE_TYPE_MAP: dict[str, str] = {
+    "WD": "Warranty Deed",
+    "QC": "Quit Claim",
+    "FD": "Foreclosure Deed",
+    "TD": "Tax Deed",
+    "CT": "Certificate of Title",
+    "DD": "Deed",
+    "TR": "Trustees Deed",
+    "PR": "Personal Rep Deed",
+    "GD": "Guardian Deed",
+    "CD": "Committee Deed",
+    "SD": "Sheriffs Deed",
 }
 
 
-class PgSalesService:
-    """Read-only service for PostgreSQL hills_sunbiz queries."""
+class SalesQueries:
+    """Read-only query service for PostgreSQL sales data."""
 
     def __init__(self, dsn: str | None = None):
         self._available = False
+        self._engine = None
         try:
             resolved = resolve_pg_dsn(dsn)
             self._engine = get_engine(resolved)
-            # Quick connectivity test
             with self._engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
             self._available = True
-            logger.info("PostgreSQL sales service connected")
+            logger.info("SalesQueries connected")
         except Exception as e:
-            logger.warning(f"PostgreSQL sales service unavailable: {e}")
+            logger.warning(f"SalesQueries unavailable: {e}")
             self._engine = None
 
     @property
@@ -76,7 +80,11 @@ class PgSalesService:
     # ------------------------------------------------------------------
 
     def get_sales_chain(self, pg_folio: str) -> list[dict]:
-        """Get all sales for a 10-digit PG folio, ordered by date."""
+        """Get all sales for a 10-digit PG folio, newest first.
+
+        Each dict includes a ``sale_type_desc`` field with the
+        human-readable deed type from SALE_TYPE_MAP.
+        """
         if not self._available or not pg_folio:
             return []
         try:
@@ -89,7 +97,7 @@ class PgSalesService:
                                qualification_code
                         FROM hcpa_allsales
                         WHERE folio = :folio
-                        ORDER BY sale_date
+                        ORDER BY sale_date DESC
                     """),
                     {"folio": pg_folio},
                 ).fetchall()
@@ -98,6 +106,7 @@ class PgSalesService:
                         "sale_date": row[0],
                         "sale_type": row[1],
                         "sale_amount": float(row[2]) if row[2] else 0.0,
+                        "sale_type_desc": SALE_TYPE_MAP.get(row[1] or "", row[1] or ""),
                         "grantor": row[3] or "",
                         "grantee": row[4] or "",
                         "or_book": row[5] or "",
@@ -153,12 +162,7 @@ class PgSalesService:
         plaintiff_hint: str | None = None,
         threshold: float = 0.3,
     ) -> list[dict]:
-        """
-        Resolve a defendant name to property folio(s) via PG fuzzy matching.
-
-        Returns list of dicts with: folio, strap, property_address, owner_name,
-        match_method, match_score — sorted by match_score DESC.
-        """
+        """Resolve a defendant name to property folio(s) via PG fuzzy matching."""
         if not self._available or not defendant_name:
             return []
         try:
@@ -238,3 +242,18 @@ class PgSalesService:
         except Exception as e:
             logger.debug(f"get_bulk_parcel({strap}) failed: {e}")
             return None
+
+
+# ------------------------------------------------------------------
+# Module-level singleton
+# ------------------------------------------------------------------
+
+_instance: SalesQueries | None = None
+
+
+def get_sales_queries() -> SalesQueries:
+    """Get or create the module-level SalesQueries singleton."""
+    global _instance
+    if _instance is None:
+        _instance = SalesQueries()
+    return _instance

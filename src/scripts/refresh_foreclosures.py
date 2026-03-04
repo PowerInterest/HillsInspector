@@ -280,7 +280,7 @@ FROM (
     FROM foreclosures f2
     JOIN hcpa_bulk_parcels bp ON f2.strap = bp.strap
     LEFT JOIN sunbiz_flr_parties p
-        ON p.party_role = 'D'
+        ON p.party_role = 'debtor'
         AND p.name % bp.owner_name
         AND similarity(p.name, bp.owner_name) > 0.4
     LEFT JOIN sunbiz_flr_filings fl
