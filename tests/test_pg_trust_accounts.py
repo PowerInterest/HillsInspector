@@ -199,8 +199,8 @@ def test_upcoming_context_keeps_earliest_date_per_case(monkeypatch: Any) -> None
 
     result = svc.load_upcoming_auction_context_for_test(conn)
 
-    assert result["20-CA-000001"]["auction_date"] == "2026-02-20"
-    assert result["20-CA-000001"]["plaintiff"] == "EARLY BANK"
+    assert result["26-CA-000001"]["auction_date"] == "2026-02-20"
+    assert result["26-CA-000001"]["plaintiff"] == "EARLY BANK"
     assert result["26-CA-000002"]["plaintiff"] == ""
     sql = conn.execute_calls[0][0]
     assert "judgment_data->>'plaintiff_name'" in sql

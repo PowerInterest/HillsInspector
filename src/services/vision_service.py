@@ -275,11 +275,11 @@ Return ONLY valid JSON:
   "document_type": "WARRANTY_DEED|QUIT_CLAIM|SPECIAL_WARRANTY|PERSONAL_REP|TRUSTEE|TAX_DEED|CERTIFICATE_OF_TITLE|CORRECTIVE|OTHER",
   "deed_subtype": "more specific description if applicable",
 
-  "grantor": "Full name(s) of seller/transferor exactly as written",
+  "grantor": "Full name(s) of seller/transferor exactly as written. DO NOT include grantee names here.",
   "grantor_capacity": "individual|married_couple|trustee|personal_rep|corporation|llc|other",
   "grantor_marital_status": "single|married|joined_by_spouse|divorced|widowed|null",
 
-  "grantee": "Full name(s) of buyer/transferee exactly as written",
+  "grantee": "Full name(s) of buyer/transferee exactly as written. DO NOT include grantor names here.",
   "grantee_capacity": "individual|married_couple|trustee|tenants_in_common|joint_tenants|corporation|llc|other",
   "grantee_vesting": "how title is held (e.g., 'as tenants by the entirety')",
 
@@ -696,7 +696,7 @@ Return ONLY valid JSON:
 
   "defendants": [
     {
-      "name": "defendant name",
+      "name": "defendant name or any other party being notified",
       "party_type": "borrower|spouse|junior_lienholder|tenant|unknown",
       "is_federal_entity": false
     }
@@ -713,8 +713,8 @@ Return ONLY valid JSON:
 
   "mortgage_reference": {
     "instrument_number": "mortgage being foreclosed",
-    "book": "book",
-    "page": "page",
+    "book": "Official Records Book of the mortgage being foreclosed. WARNING: Do NOT use Plat Book (PB) references from the legal description here.",
+    "page": "Official Records Page of the mortgage being foreclosed. WARNING: Do NOT use Plat Page references from the legal description here.",
     "recording_date": "YYYY-MM-DD",
     "original_amount": 250000.00
   },
@@ -1481,7 +1481,9 @@ class VisionService:
                                 wait = 10 * _single_ep_retries  # 10s, 20s, 30s
                                 logger.info(
                                     "Single-endpoint backoff: sleeping {}s before retry {}/3 (HTTP {})",
-                                    wait, _single_ep_retries, response.status_code,
+                                    wait,
+                                    _single_ep_retries,
+                                    response.status_code,
                                 )
                                 time.sleep(wait)
                                 tried_endpoints.discard(endpoint_key)

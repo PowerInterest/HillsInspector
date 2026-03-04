@@ -214,6 +214,131 @@ def _run_dor_nal_annual_job(dsn: str, args_json: dict[str, Any]) -> dict[str, An
     return service.update()
 
 
+def _run_trust_accounts_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]:
+    from src.services.pg_trust_accounts import PgTrustAccountsService
+
+    service = PgTrustAccountsService(dsn=dsn)
+    if not service.available:
+        raise RuntimeError(f"TrustAccountsService unavailable: {service.unavailable_reason}")
+    return service.run(
+        force_reprocess=_bool_or_default(args_json.get("force_reprocess"), default=False),
+    )
+
+
+def _run_county_permits_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]:
+    from src.services.CountyPermit import CountyPermitService
+    from src.db.pg_connection import get_engine, resolve_pg_dsn
+    from sqlalchemy import text
+
+    page_size = _int_or_default(args_json.get("page_size"), 2000)
+    force_full = _bool_or_default(args_json.get("force_full"), default=False)
+
+    svc = CountyPermitService(page_size=page_size, pg_dsn=dsn)
+
+    if force_full:
+        return svc.sync_postgres(where="1=1", clear_existing=True, page_size=page_size)
+
+    # Incremental: only fetch ArcGIS records newer than max existing OBJECTID.
+    max_oid: int | None = None
+    try:
+        engine = get_engine(resolve_pg_dsn(dsn))
+        with engine.connect() as conn:
+            max_oid = conn.execute(
+                text("SELECT MAX(source_object_id) FROM county_permits WHERE source_layer_id = 0")
+            ).scalar()
+    except Exception as exc:
+        logger.debug("county_permits: unable to read max source_object_id: {}", exc)
+
+    where = f"OBJECTID > {int(max_oid)}" if max_oid is not None else "1=1"
+    return svc.sync_postgres(where=where, clear_existing=False, page_size=page_size)
+
+
+def _run_tampa_permits_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]:
+    import datetime as dt
+    from src.services.TampaPermit import TampaPermitService
+    from src.db.pg_connection import get_engine, resolve_pg_dsn
+    from sqlalchemy import text
+
+    lookback_days = _int_or_default(args_json.get("lookback_days"), 30)
+    keep_csv = _bool_or_default(args_json.get("keep_csv"), default=False)
+    enrich_limit = _int_or_default(args_json.get("enrich_limit"), 250)
+
+    svc = TampaPermitService(pg_dsn=dsn, headless=True)
+
+    today = dt.datetime.now(dt.UTC).date()
+    fallback_start = today - dt.timedelta(days=lookback_days)
+
+    # Incremental: start from last record_date in DB (1-day overlap).
+    latest_record = None
+    try:
+        engine = get_engine(resolve_pg_dsn(dsn))
+        with engine.connect() as conn:
+            latest_record = conn.execute(
+                text("SELECT MAX(record_date) FROM tampa_accela_records")
+            ).scalar()
+    except Exception as exc:
+        logger.debug("tampa_permits: unable to read max record_date: {}", exc)
+
+    if latest_record is not None:
+        start_date = max(latest_record - dt.timedelta(days=1), fallback_start)
+    else:
+        start_date = fallback_start
+
+    sync_stats = svc.sync_date_range(
+        start_date=start_date,
+        end_date=today,
+        keep_csv=keep_csv,
+    )
+
+    # Guardrail: multi-day window must have non-zero rows.
+    if (
+        (today - start_date).days >= 7
+        and int(sync_stats.get("csv_rows_total") or 0) == 0
+        and int(sync_stats.get("written_total") or 0) == 0
+    ):
+        raise RuntimeError(
+            "Tampa permit sync produced zero rows for a 7+ day window"
+        )
+
+    result: dict[str, Any] = {
+        "window": {"start_date": str(start_date), "end_date": str(today)},
+        "sync": sync_stats,
+    }
+
+    if enrich_limit > 0:
+        enrich_stats = svc.enrich_missing_details(limit=enrich_limit)
+        result["enrich"] = enrich_stats
+
+    return result
+
+
+def _run_market_data_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]:
+    from src.services.market_data_worker import run_market_data_update
+
+    return run_market_data_update(
+        dsn=dsn,
+        limit=_int_or_none(args_json.get("limit")),
+        use_windows_chrome=_bool_or_default(
+            args_json.get("use_windows_chrome"), default=False
+        ),
+    )
+
+
+def _run_single_pin_permits_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]:
+    from src.services.pg_pipeline_controller import ControllerSettings, PgPipelineController
+
+    settings = ControllerSettings(dsn=dsn)
+    settings.single_pin_permit_limit = _int_or_default(args_json.get("limit"), 25)
+    settings.single_pin_permit_max_permits = _int_or_default(
+        args_json.get("max_permits_per_pin"), 0
+    )
+    settings.single_pin_permit_timeout_seconds = _int_or_default(
+        args_json.get("timeout_seconds"), 45
+    )
+    controller = PgPipelineController(settings)
+    return controller.run_single_pin_permits_job()
+
+
 def _run_hcpa_bulk_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]:
     stats = load_hcpa_suite(
         dsn=dsn,
@@ -299,6 +424,46 @@ JOB_DEFINITIONS: dict[str, JobDefinition] = {
         default_min_interval_sec=604800,  # Weekly
         default_max_runtime_sec=3600,  # 1 hour
         singleton=True,
+    ),
+    "trust_accounts": JobDefinition(
+        name="trust_accounts",
+        handler=_run_trust_accounts_job,
+        default_min_interval_sec=86400,  # Daily
+        default_max_runtime_sec=1800,  # 30 min
+        singleton=True,
+        default_args_json={"force_reprocess": False},
+    ),
+    "county_permits": JobDefinition(
+        name="county_permits",
+        handler=_run_county_permits_job,
+        default_min_interval_sec=86400,  # Daily
+        default_max_runtime_sec=3600,  # 1 hour
+        singleton=True,
+        default_args_json={"page_size": 2000, "force_full": False},
+    ),
+    "tampa_permits": JobDefinition(
+        name="tampa_permits",
+        handler=_run_tampa_permits_job,
+        default_min_interval_sec=86400,  # Daily
+        default_max_runtime_sec=7200,  # 2 hours (Playwright scraping is slow)
+        singleton=True,
+        default_args_json={"lookback_days": 30, "keep_csv": False, "enrich_limit": 250},
+    ),
+    "market_data": JobDefinition(
+        name="market_data",
+        handler=_run_market_data_job,
+        default_min_interval_sec=86400,  # Daily
+        default_max_runtime_sec=14400,  # 4 hours (browser scraping many properties)
+        singleton=True,
+        default_args_json={"use_windows_chrome": False},
+    ),
+    "single_pin_permits": JobDefinition(
+        name="single_pin_permits",
+        handler=_run_single_pin_permits_job,
+        default_min_interval_sec=86400,  # Daily
+        default_max_runtime_sec=3600,  # 1 hour
+        singleton=True,
+        default_args_json={"limit": 25, "max_permits_per_pin": 0, "timeout_seconds": 45},
     ),
 }
 

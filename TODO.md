@@ -233,6 +233,13 @@ We must discover, reverse engineer, and integrate the permitting platforms for t
 - **Value**: Excel spreadsheet detailing surplus funds after tax deed sales. Highly valuable for title chain updates (tax deeds extinguish subordinate liens) and surplus recovery lead generation.
 - **Action**: Build a spreadsheet parser to ingest excess proceeds into a tracking table.
 
+### 4. Cross-Agency Intelligence Scrapers
+- **Value**: Encumbrance interactions are highly predictive of property status. When the ORI parser finds a specific lien type, it should trigger a secondary scrape of a different county site.
+- **Action**: 
+  - Build a Hillsborough County Permit scraper triggered by `Notice of Commencement` encumbrances. Look for open permits and expired NOCs.
+  - Build a Hillsborough County Code Enforcement / Special Magistrate scraper triggered by `Code Enforcement Lien` encumbrances. Super-priority liens flag extreme property distress.
+  - Build a structural linkage indicating potential vacancy when `Utility Liens (Ch 159)` are discovered.
+
 ### 4. Daily New Civil Case Filings
 - **URL**: `https://publicrec.hillsclerk.com/Civil/dailyfilings/`
 - **Value**: 30 daily CSV files. Can provide ultra low-latency alerts for newly filed foreclosures (CA cases) and HOA liens (CC cases).
@@ -267,3 +274,68 @@ We must discover, reverse engineer, and integrate the permitting platforms for t
 ### UI/UX Requirements
 - Sort the tab by **"Predicted Bidding Intensity"** (properties with `multiple_recipients=1` and highest escrow balances float to the top).
 - Visually map the four intelligence flags above (High Competition, Toxic Bid, Whale, Anomalous Valuation) as colored pill tags on the property card.
+
+---
+
+## Encumbrance Coverage Gaps (Remaining Work)
+
+**Context:** A 2026-03-03 encumbrance gap analysis identified systemic issues in ORI
+document discovery. Seven fixes were implemented:
+1. Category-aware Phase 3 — runs legal/party fallback whenever superpriority lien
+   categories or mortgages are absent, regardless of total doc count.
+2. Phase 1B+ lifecycle chain following from all encumbrance instruments.
+3. Type normalizer preserves MOD/SUB/NCL/CTF as `other` instead of dropping them.
+4. Inferred encumbrance date backfill (45/48 fixed).
+5. Adjacent instrument offset widening (7 → 10 positions).
+6. PG-only satisfaction/release cross-reference linking.
+7. SA/CEL/SPECASMT correctly mapped to `lien`.
+
+### 1. Phase 0 PG Seed Expansion
+
+**Priority:** Medium
+**Why it matters:** We have `official_records_daily_instruments` in PG with
+thousands of rows that could seed ORI discovery without hitting the PAV API. The
+current Phase 0 seeding is narrow — expanding it to pre-filter by doc_type for
+LIEN, JUD, SAT, REL, MOD, SUB, NCL, CODE, ASSESS, TAX would let us find
+encumbrances from local data before making expensive live searches.
+
+**What to change:**
+Extend `_seed_from_official_records()` to query a broader set of
+`official_records_daily_instruments` doc types beyond the current scope.
+Cross-reference with `clerk_civil_cases` to prioritize CC Enforce Lien and real
+property foreclosure buckets.
+
+### 2. Satisfaction Linking: Party/Date/Amount Heuristic
+
+**Priority:** Low
+**Why it matters:** The instrument-reference and book/page linking strategies
+covered 30 of ~200 SAT/REL docs. The remaining unlinked satisfaction docs
+mostly reference encumbrances outside our active foreclosure set, but some may be
+linkable via party name + recording date proximity + amount matching.
+
+**What to change:**
+Add a `party_date_heuristic` strategy to `_link_satisfactions()`:
+1. Match SAT party1 to MTG party1 (fuzzy, >85% token_set_ratio).
+2. SAT recording_date must be after MTG recording_date.
+3. If amounts match (within 5%), prefer that match.
+4. Only link when exactly one candidate matches (ambiguous = skip).
+
+Risk: False positives when the same servicer (Wells Fargo, JPMorgan) appears on
+multiple mortgages for the same strap. The unambiguous-match-only guard mitigates
+this. Mark with `satisfaction_method = 'party_date_heuristic'` for auditability.
+
+### 3. Lifecycle Doc Reference Linking
+
+**Priority:** Low
+**Why it matters:** MOD/SUB/NCL docs are now persisted as `encumbrance_type='other'`
+with their raw type in `raw_document_type`. But they're orphaned — not linked to the
+parent mortgage or lien they modify. Survival analysis and the property page can't
+reason about them without that link.
+
+**What to change:**
+A post-save pass (similar to satisfaction linking) that:
+1. Parses MOD/SUB `legal_description` for instrument/book-page references.
+2. Links to the parent encumbrance via a new `modifies_encumbrance_id` column or by
+   reusing `satisfies_encumbrance_id` with appropriate semantics.
+3. Updates the property page to show lifecycle docs nested under their parent
+   encumbrance rather than as standalone rows.

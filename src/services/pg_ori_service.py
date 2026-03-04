@@ -41,6 +41,7 @@ from src.services.pav_cache import pav_cache_get, pav_cache_put
 
 from src.db.type_normalizer import (
     CANONICAL_ENCUMBRANCE_TYPES,
+    CANONICAL_LIFECYCLE_TYPES,
     CANONICAL_NOC_TYPES,
     CANONICAL_SATISFACTION_TYPES,
     normalize_encumbrance_type,
@@ -1021,6 +1022,7 @@ class PgOriService:
 
         saved = 0
         inferred = 0
+        linked = 0
         if persist:
             saved = self._save_documents(strap, folio, docs)
             if saved == 0 and not bool(target.get("skip_inferred_fallback")):
@@ -1032,6 +1034,8 @@ class PgOriService:
                         case_number,
                         strap or "",
                     )
+            if strap and saved > 0:
+                linked = self._link_satisfactions(strap)
             if bool(target.get("mark_ori_searched", True)):
                 self._mark_searched(foreclosure_id)
 
@@ -1043,6 +1047,7 @@ class PgOriService:
             "docs_found": len(docs),
             "saved": saved,
             "inferred": inferred,
+            "satisfactions_linked": linked,
             "api_calls": metrics["api_calls"],
             "retries": metrics["retries"],
             "truncated": metrics["truncated"],
@@ -1144,13 +1149,64 @@ class PgOriService:
             except (TypeError, ValueError):
                 continue
 
-            for offset in (-2, -1, 1, 2, 3, 4, 5):
+            for offset in (-3, -2, -1, 1, 2, 3, 4, 5, 6, 7):
                 if adjacent_searches >= _MAX_ADJACENT_SEARCHES:
                     break
                 adjacent_searches += 1
                 candidate = str(base + offset)
                 candidate_docs = self._search_instrument_pav(candidate, stats)
-                filtered = [d for d in candidate_docs if self._matches_property(d, property_tokens)]
+                known_instruments, known_book_pages = self._reference_anchor_sets(
+                    docs_by_inst.values()
+                )
+                filtered = [
+                    d
+                    for d in candidate_docs
+                    if self._matches_property_or_reference(
+                        d,
+                        property_tokens,
+                        anchor_instruments=known_instruments,
+                        anchor_book_pages=known_book_pages,
+                    )
+                ]
+                self._merge_docs(docs_by_inst, filtered)
+
+        # Phase 1B+: Mortgage/lien chain — search adjacent to discovered
+        # encumbrance instruments (catches 2nd/3rd mortgages, ASG, SAT recorded
+        # near the original mortgage but not adjacent to any deed).
+        searched_deed_insts = {d.get("doc_num") or "" for d in deeds}
+        enc_instruments = []
+        for doc in docs_by_inst.values():
+            inst = _get_instrument(doc)
+            if inst and inst not in searched_deed_insts:
+                canonical = normalize_document_type(doc.get("DocType") or "")
+                if canonical in CANONICAL_ENCUMBRANCE_TYPES or canonical in CANONICAL_SATISFACTION_TYPES:
+                    enc_instruments.append(inst)
+        for enc_inst in enc_instruments:
+            try:
+                base = int(enc_inst)
+            except (TypeError, ValueError):
+                continue
+            for offset in (-3, -2, -1, 1, 2, 3, 4, 5, 6, 7):
+                if adjacent_searches >= _MAX_ADJACENT_SEARCHES:
+                    break
+                adjacent_searches += 1
+                candidate = str(base + offset)
+                if candidate in docs_by_inst:
+                    continue
+                candidate_docs = self._search_instrument_pav(candidate, stats)
+                known_instruments, known_book_pages = self._reference_anchor_sets(
+                    docs_by_inst.values()
+                )
+                filtered = [
+                    d
+                    for d in candidate_docs
+                    if self._matches_property_or_reference(
+                        d,
+                        property_tokens,
+                        anchor_instruments=known_instruments,
+                        anchor_book_pages=known_book_pages,
+                    )
+                ]
                 self._merge_docs(docs_by_inst, filtered)
 
         # Phase 1C: Related foreclosure cases from CT/CD transfer docs.
@@ -1168,7 +1224,13 @@ class PgOriService:
             inst = _get_instrument(doc)
             if not inst:
                 continue
-            if _is_encumbrance_type(doc) or _is_assignment_type(doc):
+            canonical = normalize_document_type(doc.get("DocType") or "")
+            if (
+                _is_encumbrance_type(doc)
+                or _is_assignment_type(doc)
+                or canonical in CANONICAL_SATISFACTION_TYPES
+                or canonical in CANONICAL_LIFECYCLE_TYPES
+            ):
                 queued_instruments.append(inst)
 
             inst_refs, bkpg_refs = self._extract_references_from_doc(doc)
@@ -1205,7 +1267,19 @@ class PgOriService:
                     split_on_truncated=True,
                 )
 
-            filtered = [d for d in ref_docs if self._matches_property(d, property_tokens)]
+            known_instruments, known_book_pages = self._reference_anchor_sets(
+                docs_by_inst.values()
+            )
+            filtered = [
+                d
+                for d in ref_docs
+                if self._matches_property_or_reference(
+                    d,
+                    property_tokens,
+                    anchor_instruments=known_instruments | {instrument},
+                    anchor_book_pages=known_book_pages,
+                )
+            ]
             self._merge_docs(docs_by_inst, filtered)
 
             for doc in filtered:
@@ -1222,17 +1296,51 @@ class PgOriService:
         # Optional book/page chase using PAV API (not browser).
         for book, page in queued_book_pages[:30]:
             docs = self._search_book_page_pav(book, page, stats)
-            filtered = [d for d in docs if self._matches_property(d, property_tokens)]
+            filtered = [
+                d
+                for d in docs
+                if self._matches_property_or_reference(
+                    d,
+                    property_tokens,
+                    anchor_book_pages={(book, page)},
+                )
+            ]
             self._merge_docs(docs_by_inst, filtered)
 
         # Phase 3: guarded fallback (clerk cases + legal/address + party).
-        if len(docs_by_inst) < _MIN_DOCS_FOR_NO_FALLBACK:
+        # Run Phase 3 when doc count is low OR when there's a specific
+        # coverage gap (zero mortgages, no lien for CC cases, etc.).
+        _has_mortgage = any(
+            normalize_document_type(d.get("DocType") or "") == "mortgage"
+            for d in docs_by_inst.values()
+        )
+        _has_lien = any(
+            normalize_document_type(d.get("DocType") or "") == "lien"
+            for d in docs_by_inst.values()
+        )
+        _is_cc_case = len(case_number) >= 8 and "CC" in case_number[6:8]
+        _needs_targeted_fallback = (
+            not _has_mortgage  # every foreclosure must have a mortgage
+            or not _has_lien  # superpriority liens (code enforcement, utility, tax) are never adjacent to deeds
+            or _is_cc_case  # CC cases (enforce lien, real property) need broader search
+        )
+        _run_phase3 = len(docs_by_inst) < _MIN_DOCS_FOR_NO_FALLBACK or _needs_targeted_fallback
+        if _run_phase3:
+            _reason = "low_docs" if len(docs_by_inst) < _MIN_DOCS_FOR_NO_FALLBACK else "coverage_gap"
+            _gaps = []
+            if not _has_mortgage:
+                _gaps.append("no_mortgage")
+            if not _has_lien:
+                _gaps.append("no_lien")
+            if _is_cc_case:
+                _gaps.append("cc_case")
             logger.info(
-                "Fallback discovery enabled for case={} strap={} docs={} threshold={}",
+                "Fallback discovery enabled for case={} strap={} docs={} reason={} gaps={}",
                 case_number,
                 strap,
                 len(docs_by_inst),
-                _MIN_DOCS_FOR_NO_FALLBACK,
+                _reason,
+                ",".join(_gaps) if _gaps else "low_docs",
             )
             clerk_cases = self._get_clerk_case_seeds(target, ownership_chain)
             stats["clerk_case_count"] = len(clerk_cases)
@@ -1307,6 +1415,7 @@ class PgOriService:
             or _is_assignment_type(d)
             or _is_noc_type(d)
             or normalize_document_type(d.get("DocType") or "") in CANONICAL_SATISFACTION_TYPES
+            or normalize_document_type(d.get("DocType") or "") in CANONICAL_LIFECYCLE_TYPES
         ]
         return discovered, stats
 
@@ -2093,6 +2202,54 @@ class PgOriService:
     def matches_property(doc: dict[str, Any], tokens: dict[str, Any]) -> bool:
         """Public wrapper for property-level document matching."""
         return PgOriService._matches_property(doc, tokens)
+
+    @staticmethod
+    def _reference_anchor_sets(
+        docs: Any,
+    ) -> tuple[set[str], set[tuple[str, str]]]:
+        instruments: set[str] = set()
+        book_pages: set[tuple[str, str]] = set()
+        for doc in docs:
+            instrument = _get_instrument(doc)
+            if instrument:
+                instruments.add(instrument)
+            book = str(doc.get("Book") or doc.get("book") or "").strip()
+            page = str(doc.get("Page") or doc.get("page") or "").strip()
+            if book and page:
+                book_pages.add((book, page))
+        return instruments, book_pages
+
+    def _matches_property_or_reference(
+        self,
+        doc: dict[str, Any],
+        property_tokens: dict[str, Any],
+        *,
+        anchor_instruments: set[str] | None = None,
+        anchor_book_pages: set[tuple[str, str]] | None = None,
+    ) -> bool:
+        if self._matches_property(doc, property_tokens):
+            return True
+        if _is_noc_type(doc):
+            return False
+
+        raw_type = doc.get("DocType") or doc.get("document_type") or doc.get("doc_type") or ""
+        canonical = normalize_document_type(raw_type)
+        enc_type = normalize_encumbrance_type(canonical or raw_type)
+        if not (
+            canonical in CANONICAL_ENCUMBRANCE_TYPES
+            or canonical in CANONICAL_SATISFACTION_TYPES
+            or canonical in CANONICAL_LIFECYCLE_TYPES
+            or enc_type == "assignment"
+        ):
+            return False
+
+        instrument_refs, book_page_refs = self._extract_references_from_doc(doc)
+        if anchor_instruments and any(ref in anchor_instruments for ref in instrument_refs):
+            return True
+        return bool(
+            anchor_book_pages
+            and any(ref in anchor_book_pages for ref in book_page_refs)
+        )
 
     def _extract_references_from_doc(
         self,
@@ -2948,7 +3105,8 @@ class PgOriService:
                 is_satisfaction = canonical in CANONICAL_SATISFACTION_TYPES
                 is_assignment = enc_type == "assignment"
                 is_noc = canonical in CANONICAL_NOC_TYPES or enc_type == "noc"
-                if not (is_encumbrance or is_satisfaction or is_assignment or is_noc):
+                is_lifecycle = canonical in CANONICAL_LIFECYCLE_TYPES
+                if not (is_encumbrance or is_satisfaction or is_assignment or is_noc or is_lifecycle):
                     continue
 
                 if enc_type not in _PG_ENCUMBRANCE_TYPES:
@@ -3009,7 +3167,8 @@ class PgOriService:
                     "rec_date": recording_date or "",
                     "case_number": case_number,
                     "legal": legal,
-                    "is_sat": is_sat,
+                    "is_sat_insert": is_sat,
+                    "is_sat_update": True if is_sat else None,
                 }
 
                 conn.execute(text("SAVEPOINT ori_doc"))
@@ -3040,7 +3199,7 @@ class PgOriService:
                                 ),
                                 case_number = COALESCE(:case_number, case_number),
                                 legal_description = COALESCE(:legal, legal_description),
-                                is_satisfied = COALESCE(:is_sat, is_satisfied),
+                                is_satisfied = COALESCE(:is_sat_update, is_satisfied),
                                 updated_at = now()
                             WHERE instrument_number = :instrument
                         """),
@@ -3073,7 +3232,7 @@ class PgOriService:
                                 :amount,
                                 CAST(NULLIF(:rec_date, '') AS DATE),
                                 :case_number, :legal,
-                                :is_sat,
+                                :is_sat_insert,
                                 now(), now()
                             )
                             ON CONFLICT (folio, COALESCE(instrument_number, ''),
@@ -3111,7 +3270,13 @@ class PgOriService:
                                     EXCLUDED.legal_description,
                                     ori_encumbrances.legal_description
                                 ),
-                                is_satisfied = COALESCE(EXCLUDED.is_satisfied, ori_encumbrances.is_satisfied),
+                                is_satisfied = COALESCE(
+                                    CASE
+                                        WHEN EXCLUDED.is_satisfied IS TRUE THEN TRUE
+                                        ELSE NULL
+                                    END,
+                                    ori_encumbrances.is_satisfied
+                                ),
                                 updated_at = now()
                         """),
                             params,
@@ -3159,7 +3324,13 @@ class PgOriService:
             except (ValueError, TypeError):
                 amount = None
 
-        recording_date = foreclosed.get("recording_date") or foreclosed.get("original_date")
+        recording_date = (
+            foreclosed.get("recording_date")
+            or foreclosed.get("original_date")
+            or jdata.get("filing_date")
+            or jdata.get("judgment_date")
+            or target.get("filing_date")
+        )
         instrument = f"INFERRED-{case_number}"
 
         with self.engine.begin() as conn:
@@ -3204,6 +3375,178 @@ class PgOriService:
 
         logger.info(f"Inferred {enc_type} encumbrance for {case_number}: plaintiff={plaintiff}")
         return 1
+
+    def _link_satisfactions(self, strap: str) -> int:
+        """Link SAT/REL documents to their parent mortgages using PG data only.
+
+        Matching strategies (in priority order):
+        1. Instrument reference — SAT legal_description contains 'CLK #NNNN' or 'INST #NNNN'
+        2. Book/page reference — SAT legal_description contains 'OR BK NNN PG NNN'
+        3. Case number match — SAT and MTG share the same case_number
+
+        Returns the number of mortgages newly marked as satisfied.
+        """
+        linked = 0
+        with self.engine.begin() as conn:
+            if not self._ori_satisfaction_link_columns_available(conn):
+                logger.warning(
+                    "Skipping satisfaction linking for strap={} because ori_encumbrances "
+                    "is missing satisfaction link columns",
+                    strap,
+                )
+                return 0
+
+            # Get all SAT/REL docs for this strap. Reruns can repair parent rows
+            # that were overwritten by a later generic upsert.
+            sat_rows = conn.execute(
+                text("""
+                    SELECT id, instrument_number, legal_description, party1,
+                           recording_date, case_number
+                    FROM ori_encumbrances
+                    WHERE strap = :strap
+                      AND encumbrance_type IN ('satisfaction', 'release')
+                """),
+                {"strap": strap},
+            ).fetchall()
+
+            if not sat_rows:
+                return 0
+
+            # Get all parent encumbrances for this strap.
+            enc_rows = conn.execute(
+                text("""
+                    SELECT id, instrument_number, book, page, case_number,
+                           party1, amount, recording_date
+                    FROM ori_encumbrances
+                    WHERE strap = :strap
+                      AND encumbrance_type IN ('mortgage', 'lien', 'judgment')
+                """),
+                {"strap": strap},
+            ).fetchall()
+
+            if not enc_rows:
+                return 0
+
+            # Build lookup structures for encumbrances
+            enc_by_inst: dict[str, Any] = {}
+            enc_by_bkpg: dict[str, Any] = {}
+            enc_by_case: dict[str, list] = {}
+            for enc in enc_rows:
+                inst = (enc[1] or "").strip()
+                if inst:
+                    enc_by_inst[inst] = enc
+                bk = (enc[2] or "").strip()
+                pg = (enc[3] or "").strip()
+                if bk and pg:
+                    enc_by_bkpg[f"{bk}/{pg}"] = enc
+                cn = (enc[4] or "").strip()
+                if cn:
+                    enc_by_case.setdefault(cn, []).append(enc)
+
+            for sat in sat_rows:
+                sat_id = sat[0]
+                sat_inst = sat[1] or ""
+                legal = (sat[2] or "").upper()
+                sat_case = (sat[5] or "").strip()
+
+                matched_enc = None
+                method = None
+
+                # Strategy 1: Instrument reference in legal description
+                inst_patterns = re.findall(r"(?:CLK\s*#|INST\s*#|INSTRUMENT\s*(?:NO\.?\s*)?#?)\s*(\d{7,})", legal)
+                for ref_inst in inst_patterns:
+                    if ref_inst in enc_by_inst:
+                        matched_enc = enc_by_inst[ref_inst]
+                        method = "instrument_reference"
+                        break
+
+                # Strategy 2: Book/page reference in legal description
+                if not matched_enc:
+                    bkpg_matches = re.findall(r"OR\s+BK\s+(\d+)\s+PG\s+(\d+)", legal)
+                    for bk, pg in bkpg_matches:
+                        key = f"{bk}/{pg}"
+                        if key in enc_by_bkpg:
+                            matched_enc = enc_by_bkpg[key]
+                            method = "book_page_reference"
+                            break
+
+                # Strategy 3: Case number match (only if SAT has a case number)
+                if not matched_enc and sat_case and sat_case in enc_by_case:
+                    candidates = enc_by_case[sat_case]
+                    if len(candidates) == 1:
+                        matched_enc = candidates[0]
+                        method = "case_number_match"
+
+                if matched_enc:
+                    enc_id = matched_enc[0]
+                    # Mark the encumbrance as satisfied
+                    parent_update = conn.execute(
+                        text("""
+                            UPDATE ori_encumbrances
+                            SET is_satisfied = true,
+                                satisfaction_date = :sat_date,
+                                satisfaction_instrument = :sat_inst,
+                                satisfaction_method = CAST(:method AS satisfaction_link_method),
+                                updated_at = now()
+                            WHERE id = :enc_id
+                              AND (
+                                  is_satisfied IS DISTINCT FROM TRUE
+                                  OR satisfaction_date IS DISTINCT FROM :sat_date
+                                  OR satisfaction_instrument IS DISTINCT FROM :sat_inst
+                                  OR satisfaction_method IS DISTINCT FROM CAST(:method AS satisfaction_link_method)
+                              )
+                        """),
+                        {
+                            "sat_date": sat[4],
+                            "sat_inst": sat_inst,
+                            "method": method,
+                            "enc_id": enc_id,
+                        },
+                    )
+                    # Also link the satisfaction row back to the encumbrance
+                    conn.execute(
+                        text("""
+                            UPDATE ori_encumbrances
+                            SET satisfies_encumbrance_id = :enc_id,
+                                satisfaction_method = CAST(:method AS satisfaction_link_method),
+                                updated_at = now()
+                            WHERE id = :sat_id
+                              AND (
+                                  satisfies_encumbrance_id IS DISTINCT FROM :enc_id
+                                  OR satisfaction_method IS DISTINCT FROM CAST(:method AS satisfaction_link_method)
+                              )
+                        """),
+                        {"enc_id": enc_id, "method": method, "sat_id": sat_id},
+                    )
+                    linked += parent_update.rowcount
+                    logger.debug(
+                        "Linked satisfaction {} → encumbrance {} via {} for strap={}",
+                        sat_inst, matched_enc[1], method, strap,
+                    )
+
+        if linked:
+            logger.info("Linked {} satisfaction(s) for strap={}", linked, strap)
+        return linked
+
+    def _ori_satisfaction_link_columns_available(self, conn: Any) -> bool:
+        required = {
+            "satisfies_encumbrance_id",
+            "satisfaction_method",
+            "satisfaction_date",
+            "satisfaction_instrument",
+        }
+        rows = conn.execute(
+            text("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'ori_encumbrances'
+                  AND column_name = ANY(:required)
+            """),
+            {"required": list(required)},
+        ).fetchall()
+        present = {str(row[0]) for row in rows}
+        return required.issubset(present)
 
     # ------------------------------------------------------------------
     # Helpers

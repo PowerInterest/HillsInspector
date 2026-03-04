@@ -24,6 +24,12 @@ CANONICAL_ENCUMBRANCE_TYPES = frozenset({"mortgage", "judgment", "lis_pendens", 
 CANONICAL_DEED_TYPES = frozenset({"deed"})
 CANONICAL_SATISFACTION_TYPES = frozenset({"satisfaction", "release", "partial_release"})
 CANONICAL_NOC_TYPES = frozenset({"noc"})
+# Lifecycle docs: not standalone encumbrances, but affect priority/status of a
+# parent mortgage or lien.  Persisted as encumbrance_type='other' with the raw
+# document type preserved in raw_document_type for downstream analysis.
+CANONICAL_LIFECYCLE_TYPES = frozenset({
+    "modification", "subordination", "notice_contest_lien", "certified_judgment",
+})
 
 
 def normalize_encumbrance_type(raw: str) -> str:
@@ -35,13 +41,26 @@ def normalize_encumbrance_type(raw: str) -> str:
     t = (raw or "").upper().strip()
     if not t:
         return "other"
+    if (
+        "NOTICE_CONTEST_LIEN" in t
+        or "NOTICE OF CONTEST OF LIEN" in t
+        or t == "NCL"
+        or "CERTIFIED_JUDGMENT" in t
+        or "CERTIFIED COPY OF COURT JUDGMENT" in t
+        or t == "CTF"
+    ):
+        return "other"
     if "MORTGAGE" in t or "MTG" in t or "DOT" in t or "HELOC" in t:
         return "mortgage"
     if "JUDGMENT" in t or "JUD" in t or "CCJ" in t:
         return "judgment"
     if "LIS PENDENS" in t or "LIS_PENDENS" in t or "(LP)" in t or t == "LP":
         return "lis_pendens"
-    if "LIEN" in t or "(LN)" in t or t == "LN" or "MEDLN" in t or "FINANCING" in t or "(FIN)" in t or t == "FIN":
+    if "SUBORDINAT" in t or "(SUB)" in t or t == "SUB":
+        return "other"
+    if "MODIFICATION" in t or t == "MOD":
+        return "other"
+    if "LIEN" in t or "(LN)" in t or t == "LN" or "MEDLN" in t or "FINANCING" in t or "(FIN)" in t or t == "FIN" or "SPECIAL ASSESS" in t or "CODE ENFORCE" in t:
         return "lien"
     if "EASEMENT" in t or "(EAS)" in t or t == "EAS":
         return "easement"
@@ -88,6 +107,14 @@ _DOC_TYPE_MAP = {
     "DRJUD": "judgment",
     # UCC / financing
     "FIN": "lien", "AGD": "mortgage",
+    # Subordination (lifecycle doc — changes lien priority, persisted as 'other')
+    "SUB": "subordination", "SUBAGR": "subordination",
+    # Special assessments / code enforcement (municipal liens survive foreclosure)
+    "SA": "lien", "SPECASMT": "lien", "CEL": "lien",
+    # Notice of contest of lien (lifecycle doc)
+    "NCL": "notice_contest_lien",
+    # Certified copy of court judgment (lifecycle doc)
+    "CTF": "certified_judgment",
     # Easements (encumbrances that survive foreclosure)
     "EAS": "easement",
     # Other

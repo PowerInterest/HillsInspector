@@ -56,7 +56,7 @@
     /* Stats bar */
     .intel-stats {
         display: flex;
-        gap: 20px;
+        gap: 16px;
         margin-top: 16px;
         flex-wrap: wrap;
     }
@@ -67,7 +67,7 @@
         padding: 10px 18px;
         display: flex;
         flex-direction: column;
-        min-width: 130px;
+        min-width: 110px;
     }
 
     .intel-stat .stat-value {
@@ -75,6 +75,9 @@
         font-weight: 700;
         color: #f1f5f9;
     }
+
+    .intel-stat .stat-value.positive { color: #4ade80; }
+    .intel-stat .stat-value.negative { color: #f87171; }
 
     .intel-stat .stat-label {
         font-size: 0.75rem;
@@ -214,51 +217,49 @@
         border: 1px solid #e2e8f0;
     }
 
-    /* Numbers row */
-    .intel-numbers {
-        display: flex;
-        gap: 20px;
-        flex-wrap: wrap;
+    /* Numbers grid */
+    .intel-numbers-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 2px;
+        background: #f1f5f9;
+        border-radius: 8px;
+        overflow: hidden;
         font-size: 0.85rem;
     }
 
-    .intel-number {
+    .intel-num-cell {
+        background: #fff;
+        padding: 8px 12px;
         display: flex;
         flex-direction: column;
     }
 
-    .intel-number .label {
-        font-size: 0.7rem;
+    .intel-num-cell .label {
+        font-size: 0.65rem;
         color: #94a3b8;
         text-transform: uppercase;
         letter-spacing: 0.04em;
+        line-height: 1.2;
     }
 
-    .intel-number .value {
+    .intel-num-cell .value {
         font-weight: 600;
         color: #0f172a;
     }
 
-    .intel-number .value.positive {
-        color: #16a34a;
-    }
-
-    .intel-number .value.negative {
-        color: #dc2626;
-    }
-
-    .intel-number .value.highlight {
-        color: #2563eb;
-        font-size: 1rem;
-    }
+    .intel-num-cell .value.positive { color: #16a34a; }
+    .intel-num-cell .value.negative { color: #dc2626; }
+    .intel-num-cell .value.highlight { color: #2563eb; }
 
     /* Property basics */
     .intel-basics {
         display: flex;
-        gap: 16px;
+        gap: 12px;
         font-size: 0.8rem;
         color: #64748b;
         flex-wrap: wrap;
+        align-items: center;
     }
 
     .intel-basics span {
@@ -267,13 +268,115 @@
         gap: 4px;
     }
 
-    /* Escrow detail */
-    .intel-escrow-detail {
+    .intel-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        font-size: 0.7rem;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 4px;
+    }
+
+    .intel-badge.homestead {
+        background: #eff6ff;
+        color: #2563eb;
+        border: 1px solid #bfdbfe;
+    }
+
+    /* Detail row */
+    .intel-detail {
         font-size: 0.8rem;
         color: #64748b;
         padding-top: 4px;
         border-top: 1px solid #f1f5f9;
     }
+
+    /* Active Market Bidders panel */
+    .bidder-panel {
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        margin-bottom: 24px;
+        overflow: hidden;
+    }
+
+    .bidder-panel summary {
+        padding: 14px 20px;
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: #0f172a;
+        cursor: pointer;
+        list-style: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        user-select: none;
+    }
+
+    .bidder-panel summary::-webkit-details-marker { display: none; }
+
+    .bidder-panel summary::before {
+        content: '▶';
+        font-size: 0.7rem;
+        transition: transform 0.2s;
+    }
+
+    .bidder-panel[open] summary::before {
+        transform: rotate(90deg);
+    }
+
+    .bidder-panel .badge-count {
+        background: #fef2f2;
+        color: #dc2626;
+        font-size: 0.7rem;
+        font-weight: 700;
+        padding: 2px 8px;
+        border-radius: 999px;
+    }
+
+    .bidder-table {
+        width: 100%;
+        font-size: 0.8rem;
+        border-collapse: collapse;
+    }
+
+    .bidder-table th {
+        text-align: left;
+        padding: 8px 16px;
+        background: #f8fafc;
+        color: #64748b;
+        font-weight: 600;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        border-bottom: 1px solid #e2e8f0;
+    }
+
+    .bidder-table td {
+        padding: 8px 16px;
+        border-bottom: 1px solid #f1f5f9;
+        color: #334155;
+    }
+
+    .bidder-table tr:last-child td { border-bottom: none; }
+
+    .bidder-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .bidder-table .highlight { font-weight: 600; color: #dc2626; }
+
+    /* Third-party bidder rows on cards */
+    .tp-bidder-row {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        font-size: 0.78rem;
+        color: #334155;
+        padding: 2px 0;
+    }
+
+    .tp-bidder-row .tp-name { font-weight: 600; }
+    .tp-bidder-row .tp-amount { color: #dc2626; font-weight: 600; }
+    .tp-bidder-row .tp-meta { color: #94a3b8; }
 
     /* Empty state */
     .intel-empty {
@@ -299,12 +402,16 @@
             height: 140px;
         }
 
+        .intel-numbers-grid {
+            grid-template-columns: repeat(2, 1fr);
+        }
+
         .intel-stats {
             gap: 10px;
         }
 
         .intel-stat {
-            min-width: 100px;
+            min-width: 90px;
             padding: 8px 12px;
         }
     }
@@ -313,13 +420,13 @@
 
 {% block content %}
 <div class="intel-header">
-    <h1>🎯 Auction Intelligence</h1>
-    <p class="subtitle">Predictive bidder analysis for upcoming foreclosure auctions</p>
+    <h1>Auction Intelligence</h1>
+    <p class="subtitle">Property analysis for upcoming foreclosure auctions</p>
 
     <div class="intel-date-nav">
-        <a href="#" id="intel-prev-btn" onclick="navigateDate(-1); return false;">← Previous</a>
+        <a href="#" id="intel-prev-btn" onclick="navigateDate(-1); return false;">&larr; Previous</a>
         <span class="current-date">{{ target_date.strftime('%A, %B %d, %Y') if target_date else 'No date' }}</span>
-        <a href="#" id="intel-next-btn" onclick="navigateDate(1); return false;">Next →</a>
+        <a href="#" id="intel-next-btn" onclick="navigateDate(1); return false;">Next &rarr;</a>
     </div>
 
     <div class="intel-stats">
@@ -328,19 +435,74 @@
             <span class="stat-label">Properties</span>
         </div>
         <div class="intel-stat">
+            <span class="stat-value {{ 'positive' if stats.median_equity > 0 else 'negative' if stats.median_equity < 0 else '' }}">${{ '{:,.0f}'.format(stats.median_equity) }}</span>
+            <span class="stat-label">Median Equity</span>
+        </div>
+        <div class="intel-stat">
+            <span class="stat-value" style="color: #4ade80;">{{ stats.no_known_surviving_liens }}</span>
+            <span class="stat-label">No Known Surviving Liens</span>
+        </div>
+        <div class="intel-stat">
+            <span class="stat-value" style="color: #f87171;">{{ stats.title_issues }}</span>
+            <span class="stat-label">Title Issues</span>
+        </div>
+        <div class="intel-stat">
             <span class="stat-value">{{ stats.with_escrow }}</span>
             <span class="stat-label">With Escrow</span>
         </div>
+        {% if stats.with_third_party_bidders %}
         <div class="intel-stat">
-            <span class="stat-value">{{ stats.high_competition }}</span>
-            <span class="stat-label">High Competition</span>
+            <span class="stat-value" style="color: #f87171;">{{ stats.with_third_party_bidders }}</span>
+            <span class="stat-label">3rd Party Bidders</span>
         </div>
+        {% endif %}
         <div class="intel-stat">
-            <span class="stat-value">${{ '{:,.0f}'.format(stats.total_escrow) }}</span>
-            <span class="stat-label">Total Escrow Capital</span>
+            <span class="stat-value">${{ '{:,.0f}'.format(stats.total_judgment) }}</span>
+            <span class="stat-label">Total Judgment</span>
         </div>
     </div>
 </div>
+
+{% if stats.active_bidders %}
+<details class="bidder-panel">
+    <summary>
+        Active Market Bidders
+        <span class="badge-count">{{ stats.active_bidders|length }}</span>
+    </summary>
+    <table class="bidder-table">
+        <thead>
+            <tr>
+                <th>Bidder</th>
+                <th class="num">Active Cases</th>
+                <th class="num">Total Deposits</th>
+                <th class="num">Max Bid Capacity</th>
+                <th class="num">Win Rate</th>
+                <th>First Seen</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for b in stats.active_bidders %}
+            <tr>
+                <td>{{ b.display_name }}</td>
+                <td class="num">{{ b.cases_pending }}</td>
+                <td class="num">${{ '{:,.0f}'.format(b.total_deposits) }}</td>
+                <td class="num highlight">${{ '{:,.0f}'.format(b.max_bid_capacity) }}</td>
+                <td class="num">
+                    {%- if b.total_cases > 1 -%}
+                        {{ b.cases_won }}/{{ b.total_cases }}
+                    {%- elif b.total_cases == 1 -%}
+                        1st time
+                    {%- else -%}
+                        -
+                    {%- endif -%}
+                </td>
+                <td>{{ b.oldest_deposit or '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</details>
+{% endif %}
 
 {% if auctions %}
 <div class="intel-grid">
@@ -350,7 +512,7 @@
             {% if a.photo_url %}
             <img src="{{ a.photo_url }}" alt="Property photo" loading="lazy">
             {% else %}
-            <span class="no-photo">📷 No Photo</span>
+            <span class="no-photo">No Photo</span>
             {% endif %}
         </div>
         <div class="intel-card-body">
@@ -361,7 +523,7 @@
                     </a>
                     <div class="case-number">
                         {{ a.case_number_norm or a.case_number_raw }}
-                        {% if a.owner_name %} · {{ a.owner_name }}{% endif %}
+                        {% if a.owner_name %} &middot; {{ a.owner_name }}{% endif %}
                     </div>
                 </div>
             </div>
@@ -375,70 +537,154 @@
             </div>
             {% endif %}
 
-            {# ── Key Numbers ── #}
-            <div class="intel-numbers">
-                <div class="intel-number">
-                    <span class="label">Final Judgment</span>
-                    <span class="value">${{ '{:,.0f}'.format(a.final_judgment_amount) if a.final_judgment_amount else
-                        '—' }}</span>
+            {# ── Numbers Grid: Row 1 — Primary Economics ── #}
+            <div class="intel-numbers-grid">
+                <div class="intel-num-cell">
+                    <span class="label">Market Value</span>
+                    <span class="value">${{ '{:,.0f}'.format(a.hcpa_market_value) if a.hcpa_market_value else '-' }}</span>
                 </div>
-                <div class="intel-number">
-                    <span class="label">Escrow Balance</span>
-                    <span class="value {% if a.escrow_amount and a.escrow_amount > 0 %}highlight{% endif %}">
-                        ${{ '{:,.0f}'.format(a.escrow_amount) if a.escrow_amount else '—' }}
-                    </span>
+                <div class="intel-num-cell">
+                    <span class="label">Judgment</span>
+                    <span class="value">${{ '{:,.0f}'.format(a.final_judgment_amount) if a.final_judgment_amount else '-' }}</span>
                 </div>
-                <div class="intel-number">
-                    <span class="label">Predicted Max Bid</span>
-                    <span class="value {% if a.predicted_max_bid %}positive{% endif %}">
-                        ${{ '{:,.0f}'.format(a.predicted_max_bid) if a.predicted_max_bid else '—' }}
-                    </span>
-                </div>
-                <div class="intel-number">
-                    <span class="label">HCPA Value</span>
-                    <span class="value">${{ '{:,.0f}'.format(a.hcpa_market_value) if a.hcpa_market_value else '—'
-                        }}</span>
-                </div>
-                <div class="intel-number">
-                    <span class="label">Net Equity</span>
-                    <span
-                        class="value {% if a.net_equity and a.net_equity > 0 %}positive{% elif a.net_equity and a.net_equity < 0 %}negative{% endif %}">
-                        ${{ '{:,.0f}'.format(a.net_equity) if a.net_equity else '—' }}
-                    </span>
-                </div>
-                {% if a.liens_surviving and a.liens_surviving > 0 %}
-                <div class="intel-number">
+                <div class="intel-num-cell">
                     <span class="label">Surviving Liens</span>
-                    <span class="value negative">{{ a.liens_surviving }} (${{ '{:,.0f}'.format(a.est_surviving_debt)
-                        }})</span>
+                    <span class="value {% if a.liens_surviving and a.liens_surviving > 0 %}negative{% endif %}">
+                        {%- if a.liens_surviving and a.liens_surviving > 0 -%}
+                            {{ a.liens_surviving }} (${{ '{:,.0f}'.format(a.est_surviving_debt) }})
+                        {%- else -%}
+                            0
+                        {%- endif -%}
+                    </span>
                 </div>
-                {% endif %}
+                <div class="intel-num-cell">
+                    <span class="label">Net Equity</span>
+                    <span class="value {% if a.net_equity is not none and a.net_equity > 0 %}positive{% elif a.net_equity is not none and a.net_equity < 0 %}negative{% endif %}">
+                        {%- if a.net_equity is not none -%}
+                            ${{ '{:,.0f}'.format(a.net_equity) }}
+                        {%- else -%}
+                            -
+                        {%- endif -%}
+                    </span>
+                </div>
+                {# ── Row 2 — Context ── #}
+                <div class="intel-num-cell">
+                    <span class="label">Last Sale</span>
+                    <span class="value">
+                        {%- if a.last_sale_price -%}
+                            ${{ '{:,.0f}'.format(a.last_sale_price) }}
+                            {%- if a.last_sale_date %} <small style="color:#94a3b8;">{{ a.last_sale_date }}</small>{% endif -%}
+                        {%- else -%}
+                            -
+                        {%- endif -%}
+                    </span>
+                </div>
+                <div class="intel-num-cell">
+                    <span class="label">Annual Tax</span>
+                    <span class="value">${{ '{:,.0f}'.format(a.estimated_annual_tax) if a.estimated_annual_tax else '-' }}</span>
+                </div>
+                <div class="intel-num-cell">
+                    <span class="label">
+                        {%- if a.is_third_party_deposit -%}
+                            3rd Party Max Bid
+                        {%- elif a.is_plaintiff_deposit -%}
+                            Bank Bid (escrow)
+                        {%- elif a.bank_median_deposit -%}
+                            Bank Est. Bid
+                        {%- else -%}
+                            Bank Bid
+                        {%- endif -%}
+                    </span>
+                    <span class="value {% if a.is_third_party_deposit %}negative{% elif a.is_plaintiff_deposit %}highlight{% endif %}">
+                        {%- if a.is_third_party_deposit -%}
+                            ${{ '{:,.0f}'.format(a.third_party_max_bid) }}
+                        {%- elif a.is_plaintiff_deposit -%}
+                            ${{ '{:,.0f}'.format(a.bank_bid) }}
+                        {%- elif a.bank_median_deposit -%}
+                            ~${{ '{:,.0f}'.format(a.bank_median_deposit) }}
+                        {%- else -%}
+                            -
+                        {%- endif -%}
+                    </span>
+                </div>
+                <div class="intel-num-cell">
+                    <span class="label">In Foreclosure</span>
+                    <span class="value">
+                        {%- if a.days_in_foreclosure -%}
+                            {{ a.days_in_foreclosure }} days
+                        {%- elif a.days_since_filing -%}
+                            {{ a.days_since_filing }} days
+                        {%- else -%}
+                            -
+                        {%- endif -%}
+                    </span>
+                </div>
             </div>
 
             {# ── Property Basics ── #}
             <div class="intel-basics">
-                {% if a.beds %}<span>🛏️ {{ a.beds }} bd</span>{% endif %}
-                {% if a.baths %}<span>🚿 {{ a.baths }} ba</span>{% endif %}
-                {% if a.heated_area %}<span>📐 {{ '{:,.0f}'.format(a.heated_area) }} sqft</span>{% endif %}
-                {% if a.year_built %}<span>🏠 {{ a.year_built }}</span>{% endif %}
+                {% if a.beds %}<span>{{ a.beds }} bd</span>{% endif %}
+                {% if a.baths %}<span>{{ a.baths }} ba</span>{% endif %}
+                {% if a.heated_area %}<span>{{ '{:,.0f}'.format(a.heated_area) }} sqft</span>{% endif %}
+                {% if a.year_built %}<span>{{ a.year_built }}</span>{% endif %}
+                {% if a.land_use_desc %}<span>{{ a.land_use_desc }}</span>{% endif %}
+                {% if a.lot_size %}<span>{{ '{:,.0f}'.format(a.lot_size) }} lot sqft</span>{% endif %}
+                {% if a.tax_homestead %}
+                <span class="intel-badge homestead">HOMESTEAD</span>
+                {% endif %}
             </div>
 
             {# ── Escrow Detail ── #}
             {% if a.escrow_amount and a.escrow_amount > 0 %}
-            <div class="intel-escrow-detail">
+            <div class="intel-detail">
                 <strong>Escrow:</strong>
                 {% if a.escrow_plaintiff %}{{ a.escrow_plaintiff }}{% endif %}
-                {% if a.in_escrow_since %} · In escrow since {{ a.in_escrow_since }}{% endif %}
-                {% if a.escrow_delta %} · Δ ${{ '{:,.0f}'.format(a.escrow_delta) }}{% endif %}
-                {% if a.escrow_report_date %} · Report {{ a.escrow_report_date }}{% endif %}
+                {% if a.in_escrow_since %} &middot; Since {{ a.in_escrow_since }}{% endif %}
+                {% if a.escrow_delta %} &middot; &Delta; ${{ '{:,.0f}'.format(a.escrow_delta) }}{% endif %}
+                {% if a.escrow_report_date %} &middot; Report {{ a.escrow_report_date }}{% endif %}
+            </div>
+            {% endif %}
+
+            {# ── Third-Party Bidders ── #}
+            {% if a.third_party_bidders %}
+            <div class="intel-detail">
+                <strong>Third-Party Bidders:</strong>
+                {% for b in a.third_party_bidders %}
+                <div class="tp-bidder-row">
+                    <span class="tp-name">{{ b.name }}</span> —
+                    <span class="tp-amount">${{ '{:,.0f}'.format(b.amount) }} deposit</span>
+                    <span class="tp-meta">
+                        (max bid ${{ '{:,.0f}'.format(b.max_bid) }})
+                        {%- if b.in_escrow_since %} · Since {{ b.in_escrow_since }}{% endif -%}
+                        {%- if b.total_cases is defined and b.total_cases is not none -%}
+                            {%- if b.total_cases <= 1 %} · 1st time bidder
+                            {%- else %} · {{ b.total_cases }} prior cases, won {{ b.cases_won }}
+                            {%- endif -%}
+                        {%- endif -%}
+                    </span>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {# ── Bank Profile ── #}
+            {% if a.bank_name %}
+            <div class="intel-detail">
+                <strong>Bank Profile:</strong> {{ a.bank_name }}
+                &mdash; {{ a.bank_total_cases }} trust acct case{{ 's' if a.bank_total_cases != 1 else '' }}
+                {%- if a.bank_completed_sold %}, {{ a.bank_completed_sold }} sold
+                    (bank won {{ a.bank_wins }}, outbid {{ a.bank_third_party_wins }})
+                {%- endif %}
+                {%- if a.bank_median_deposit %} &middot; median deposit ${{ '{:,.0f}'.format(a.bank_median_deposit) }}{% endif %}
+                {%- if a.bank_active_other > 0 %} &middot; <strong>{{ a.bank_active_other }} other active deposit{{ 's' if a.bank_active_other != 1 else '' }}</strong> (${{ '{:,.0f}'.format(a.bank_active_other_total) }}){% endif %}
             </div>
             {% endif %}
 
             {# ── Plaintiff/Defendant ── #}
             {% if a.jd_plaintiff %}
-            <div class="intel-escrow-detail">
+            <div class="intel-detail">
                 <strong>Plaintiff:</strong> {{ a.jd_plaintiff }}
-                {% if a.jd_defendant %} · <strong>Defendant:</strong> {{ a.jd_defendant }}{% endif %}
+                {% if a.jd_defendant %} &middot; <strong>Def:</strong> {{ a.jd_defendant }}{% endif %}
             </div>
             {% endif %}
         </div>
@@ -456,7 +702,6 @@
 
 <script>
     function navigateDate(direction) {
-        // Parse current target date and move forward/backward
         var currentDate = new Date('{{ target_date.isoformat() if target_date else "" }}');
         currentDate.setDate(currentDate.getDate() + direction);
 

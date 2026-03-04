@@ -162,3 +162,43 @@ Downloads criminal name index from Circuit + County courts and loads into Postgr
 # Every Monday at 3:00 AM
 0 3 * * 1 cd /opt/HillsInspector && /usr/local/bin/uv run python -m src.tools.run_scheduled_job --job clerk_criminal --triggered-by cron >> logs/cron_clerk_criminal.log 2>&1
 ```
+
+**8. Trust Accounts / Escrow Balances (Daily)**
+Scrapes Hillsborough Clerk real-auction and registry trust balance PDFs, computes
+movement deltas, classifies counterparties, and upserts into `TrustAccount`.
+```cron
+# Every night at 1:00 AM
+0 1 * * * cd /opt/HillsInspector && /usr/local/bin/uv run python -m src.tools.run_scheduled_job --job trust_accounts --triggered-by cron >> logs/cron_trust_accounts.log 2>&1
+```
+
+**9. County Permits / ArcGIS (Daily)**
+Incrementally syncs Hillsborough County permits from the ArcGIS FeatureServer.
+Only fetches records newer than the last OBJECTID in the database.
+```cron
+# Every night at 4:00 AM
+0 4 * * * cd /opt/HillsInspector && /usr/local/bin/uv run python -m src.tools.run_scheduled_job --job county_permits --triggered-by cron >> logs/cron_county_permits.log 2>&1
+```
+
+**10. Tampa Accela Permits (Daily)**
+Scrapes City of Tampa Building permits via Playwright. Uses incremental date
+windowing from the last `record_date` in the database.
+```cron
+# Every night at 4:30 AM
+30 4 * * * cd /opt/HillsInspector && /usr/local/bin/uv run python -m src.tools.run_scheduled_job --job tampa_permits --triggered-by cron >> logs/cron_tampa_permits.log 2>&1
+```
+
+**11. Market Data (Daily)**
+Fetches Redfin, Zillow, and HomeHarvest data for foreclosure properties missing
+market valuations.
+```cron
+# Every night at 5:00 AM
+0 5 * * * cd /opt/HillsInspector && /usr/local/bin/uv run python -m src.tools.run_scheduled_job --job market_data --triggered-by cron >> logs/cron_market_data.log 2>&1
+```
+
+**12. Single-Pin Permit Gap Fill (Daily)**
+Targets foreclosure properties with no permits from bulk sources and fetches
+per-PIN data from HCPA, Accela, and ArcGIS as a fallback.
+```cron
+# Every night at 5:30 AM
+30 5 * * * cd /opt/HillsInspector && /usr/local/bin/uv run python -m src.tools.run_scheduled_job --job single_pin_permits --triggered-by cron >> logs/cron_single_pin_permits.log 2>&1
+```

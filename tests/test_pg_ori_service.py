@@ -60,6 +60,33 @@ class _CaptureEngine:
         return _CaptureConnection(self._captured, self._rows)
 
 
+class _ExecuteFnConnection:
+    def __init__(self, execute_fn: Any, captured: list[tuple[str, dict[str, Any]]]) -> None:
+        self._execute_fn = execute_fn
+        self._captured = captured
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, sql: Any, params: dict[str, Any] | None = None) -> _CaptureResult:
+        sql_text = str(sql)
+        payload = params or {}
+        self._captured.append((sql_text, payload))
+        return self._execute_fn(sql_text, payload)
+
+
+class _ExecuteFnEngine:
+    def __init__(self, execute_fn: Any, captured: list[tuple[str, dict[str, Any]]]) -> None:
+        self._execute_fn = execute_fn
+        self._captured = captured
+
+    def begin(self) -> _ExecuteFnConnection:
+        return _ExecuteFnConnection(self._execute_fn, self._captured)
+
+
 def test_matches_property_rejects_owner_only_noc() -> None:
     tokens = {
         "legal_tokens": {"QUEENSWAY", "DRIVE"},
@@ -593,6 +620,227 @@ def test_parse_pav_full_text_rows_extracts_noc_fields(monkeypatch: Any) -> None:
             "ID": "abc123",
         }
     ]
+
+
+def test_matches_property_or_reference_accepts_reference_only_lifecycle_doc(
+    monkeypatch: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+
+    doc = {
+        "DocType": "(MOD) MODIFICATION",
+        "Legal": "THIS MODIFICATION RELATES TO CLK #2024000123",
+        "party1": "",
+        "party2": "",
+        "PartiesOne": [],
+        "PartiesTwo": [],
+    }
+
+    assert service._matches_property_or_reference(  # noqa: SLF001
+        doc,
+        property_tokens={
+            "legal_tokens": set(),
+            "owner_names": [],
+            "street_tokens": set(),
+            "case_number": "292025CA000123A001HC",
+        },
+        anchor_instruments={"2024000123"},
+        anchor_book_pages=set(),
+    ) is True
+
+
+def test_discover_property_keeps_adjacent_reference_only_lifecycle_doc(
+    monkeypatch: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+    mortgage_doc = {
+        "Instrument": "2024000123",
+        "DocType": "(MTG) MORTGAGE",
+        "RecordDate": "2024-01-10",
+        "BookType": "OR",
+        "Book": "12345",
+        "Page": "678",
+        "Legal": "123 MAIN ST TAMPA FL",
+        "party1": "BANK",
+        "party2": "OWNER",
+        "PartiesOne": [],
+        "PartiesTwo": [],
+    }
+    mod_doc = {
+        "Instrument": "2024000124",
+        "DocType": "(MOD) MODIFICATION",
+        "RecordDate": "2024-02-10",
+        "BookType": "OR",
+        "Book": "12345",
+        "Page": "679",
+        "Legal": "MODIFICATION OF CLK #2024000123",
+        "party1": "",
+        "party2": "",
+        "PartiesOne": [],
+        "PartiesTwo": [],
+    }
+
+    monkeypatch.setattr(service, "_get_ownership_chain", lambda _strap: [])
+    monkeypatch.setattr(service, "_seed_from_official_records", lambda **_kwargs: [mortgage_doc])
+    monkeypatch.setattr(service, "_case_variants", lambda _case: [])
+    monkeypatch.setattr(service, "_search_case_pav", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        service,
+        "_search_instrument_pav",
+        lambda instrument, *_args, **_kwargs: [mod_doc] if str(instrument) == "2024000124" else [],
+    )
+    monkeypatch.setattr(service, "_search_legal_pav", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(service, "_search_book_page_pav", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(service, "_search_party_pav", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(service, "_get_clerk_case_seeds", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(service, "_build_search_terms", lambda _target: [])
+    monkeypatch.setattr(service, "_extract_primary_legal_line", lambda _target: "")
+
+    documents, _stats = service._discover_property(  # noqa: SLF001
+        {
+            "case_number": "292025CA000123A001HC",
+            "strap": "123",
+            "judgment_data": {},
+            "filing_date": None,
+            "owner_name": "OWNER",
+            "property_address": "123 MAIN ST",
+            "legal1": "",
+            "legal2": "",
+            "legal3": "",
+            "legal4": "",
+            "skip_live_noc_fallback": True,
+        }
+    )
+
+    assert [doc["Instrument"] for doc in documents] == ["2024000123", "2024000124"]
+
+
+def test_save_documents_does_not_reset_is_satisfied_for_non_satisfaction_docs(
+    monkeypatch: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    def _execute(sql_text: str, _params: dict[str, Any]) -> _CaptureResult:
+        if "UPDATE ori_encumbrances" in sql_text and "WHERE instrument_number = :instrument" in sql_text:
+            return _CaptureResult(rowcount=1)
+        return _CaptureResult()
+
+    service.engine = _ExecuteFnEngine(_execute, captured)  # type: ignore[assignment]
+
+    saved = service._save_documents(  # noqa: SLF001
+        "strap",
+        "folio",
+        [
+            {
+                "Instrument": "2024000123",
+                "DocType": "(MTG) MORTGAGE",
+                "RecordDate": "2024-01-10",
+                "BookType": "OR",
+                "Book": "12345",
+                "Page": "678",
+                "Legal": "123 MAIN ST TAMPA FL",
+            }
+        ],
+    )
+
+    assert saved == 1
+    update_calls = [
+        params
+        for sql_text, params in captured
+        if "UPDATE ori_encumbrances" in sql_text and "WHERE instrument_number = :instrument" in sql_text
+    ]
+    assert update_calls[0]["is_sat_insert"] is False
+    assert update_calls[0]["is_sat_update"] is None
+
+
+def test_link_satisfactions_updates_parent_without_self_reference(
+    monkeypatch: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    def _execute(sql_text: str, _params: dict[str, Any]) -> _CaptureResult:
+        if "FROM information_schema.columns" in sql_text:
+            return _CaptureResult(
+                rows=[
+                    ("satisfies_encumbrance_id",),
+                    ("satisfaction_method",),
+                    ("satisfaction_date",),
+                    ("satisfaction_instrument",),
+                ]
+            )
+        if "encumbrance_type IN ('satisfaction', 'release')" in sql_text:
+            return _CaptureResult(
+                rows=[
+                    (
+                        11,
+                        "2024000999",
+                        "SATISFACTION OF CLK #2024000123",
+                        "",
+                        date(2025, 1, 5),
+                        "25-CA-000123",
+                    )
+                ]
+            )
+        if "encumbrance_type IN ('mortgage', 'lien', 'judgment')" in sql_text:
+            return _CaptureResult(
+                rows=[
+                    (
+                        22,
+                        "2024000123",
+                        "12345",
+                        "678",
+                        "25-CA-000123",
+                        "",
+                        100000.0,
+                        date(2024, 1, 10),
+                    )
+                ]
+            )
+        return _CaptureResult(rowcount=1)
+
+    service.engine = _ExecuteFnEngine(_execute, captured)  # type: ignore[assignment]
+
+    linked = service._link_satisfactions("strap")  # noqa: SLF001
+
+    assert linked == 1
+    sat_select_sql = next(
+        sql_text
+        for sql_text, _params in captured
+        if "encumbrance_type IN ('satisfaction', 'release')" in sql_text
+    )
+    assert "satisfies_encumbrance_id IS NULL" not in sat_select_sql
+    parent_update_sql = next(
+        sql_text
+        for sql_text, _params in captured
+        if "WHERE id = :enc_id" in sql_text
+    )
+    assert "satisfies_encumbrance_id" not in parent_update_sql
+    sat_update_params = next(
+        params
+        for sql_text, params in captured
+        if "WHERE id = :sat_id" in sql_text
+    )
+    assert sat_update_params["enc_id"] == 22
+
+
+def test_link_satisfactions_skips_when_link_columns_missing(
+    monkeypatch: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    def _execute(sql_text: str, _params: dict[str, Any]) -> _CaptureResult:
+        if "FROM information_schema.columns" in sql_text:
+            return _CaptureResult(rows=[("satisfaction_date",), ("satisfaction_instrument",)])
+        raise AssertionError(f"unexpected SQL after column check: {sql_text}")
+
+    service.engine = _ExecuteFnEngine(_execute, captured)  # type: ignore[assignment]
+
+    linked = service._link_satisfactions("strap")  # noqa: SLF001
+
+    assert linked == 0
 
 
 def test_run_recent_permit_noc_backfill_summarizes_results(monkeypatch: Any) -> None:

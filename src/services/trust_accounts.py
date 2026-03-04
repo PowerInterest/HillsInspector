@@ -1275,7 +1275,8 @@ class TrustAccountsService:
             and case_number[6:8].isalpha()
             and case_number[8:14].isdigit()
         ):
-            return f"{case_number[2:4]}-{case_number[6:8]}-{case_number[8:14]}"
+            # Raw format: CCYYYYttDDDDDD… (CC=county, YYYY=year, tt=type, D=seq)
+            return f"{case_number[4:6]}-{case_number[6:8]}-{case_number[8:14]}"
         return case_number
 
     def _normalize_party_name(self, value: str | None) -> str:

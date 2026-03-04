@@ -705,6 +705,10 @@ class PgPipelineController:
             result["reason"] = "partial_pin_failures"
         return result
 
+    def run_single_pin_permits_job(self) -> dict[str, Any]:
+        """Public scheduled-job entrypoint for the single-pin permit step."""
+        return self._run_single_pin_permits()
+
     def _run_foreclosure_refresh(self) -> dict[str, Any]:
         svc = PgForeclosureService(dsn=self.dsn)
         if not svc.available:
