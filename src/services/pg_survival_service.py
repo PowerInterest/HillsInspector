@@ -13,12 +13,15 @@ See docs/NOC_PERMIT_LINKING.md for the full exclusion map.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from sqlalchemy import text
 
 from sunbiz.db import get_engine, resolve_pg_dsn
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 class PgSurvivalService:
@@ -28,9 +31,31 @@ class PgSurvivalService:
         self.dsn = resolve_pg_dsn(dsn)
         self.engine = get_engine(self.dsn)
 
-    def run(self, *, limit: int | None = None) -> dict[str, Any]:
+    def run(
+        self,
+        *,
+        limit: int | None = None,
+        foreclosure_ids: Sequence[int] | None = None,
+        force_reanalysis: bool = False,
+    ) -> dict[str, Any]:
         """Analyze survival for foreclosures with unanalyzed encumbrances."""
-        targets = self._find_targets(limit)
+        parsed_ids: set[int] = set()
+        for foreclosure_id in foreclosure_ids or []:
+            try:
+                fid = int(foreclosure_id)
+            except (TypeError, ValueError):
+                continue
+            if fid > 0:
+                parsed_ids.add(fid)
+        target_ids = sorted(parsed_ids)
+        if foreclosure_ids is not None and not target_ids:
+            return {"skipped": True, "reason": "no_target_foreclosures"}
+
+        targets = self._find_targets(
+            limit,
+            foreclosure_ids=target_ids or None,
+            force_reanalysis=force_reanalysis,
+        )
         if not targets:
             return {"skipped": True, "reason": "no_foreclosures_need_survival"}
 
@@ -96,28 +121,51 @@ class PgSurvivalService:
     # Target selection
     # ------------------------------------------------------------------
 
-    def _find_targets(self, limit: int | None) -> list[dict[str, Any]]:
+    def _find_targets(
+        self,
+        limit: int | None,
+        *,
+        foreclosure_ids: Sequence[int] | None = None,
+        force_reanalysis: bool = False,
+    ) -> list[dict[str, Any]]:
         """Find foreclosures needing survival analysis."""
+        where_clauses = [
+            "f.step_ori_searched IS NOT NULL",
+            "f.archived_at IS NULL",
+            "f.strap IS NOT NULL",
+        ]
+        if not force_reanalysis:
+            where_clauses.insert(0, "f.step_survival_analyzed IS NULL")
+        if foreclosure_ids:
+            where_clauses.append("f.foreclosure_id = ANY(:foreclosure_ids)")
+
+        exists_clauses = [
+            "oe.strap = f.strap",
+            "oe.encumbrance_type != 'noc'",
+        ]
+        if not force_reanalysis:
+            exists_clauses.insert(1, "oe.survival_status IS NULL")
+
+        query = f"""
+            SELECT f.foreclosure_id, f.case_number_raw, f.strap,
+                   f.judgment_data, f.homestead_exempt
+            FROM foreclosures f
+            WHERE {" AND ".join(where_clauses)}
+              AND EXISTS (
+                  SELECT 1 FROM ori_encumbrances oe
+                  WHERE {" AND ".join(exists_clauses)}
+              )
+            ORDER BY f.auction_date
+            LIMIT :limit
+        """
+        params: dict[str, Any] = {"limit": limit or 1000}
+        if foreclosure_ids:
+            params["foreclosure_ids"] = list(foreclosure_ids)
+
         with self.engine.connect() as conn:
             rows = conn.execute(
-                text("""
-                    SELECT f.foreclosure_id, f.case_number_raw, f.strap,
-                           f.judgment_data, f.homestead_exempt
-                    FROM foreclosures f
-                    WHERE f.step_survival_analyzed IS NULL
-                      AND f.step_ori_searched IS NOT NULL
-                      AND f.archived_at IS NULL
-                      AND f.strap IS NOT NULL
-                      AND EXISTS (
-                          SELECT 1 FROM ori_encumbrances oe
-                          WHERE oe.strap = f.strap
-                            AND oe.survival_status IS NULL
-                            AND oe.encumbrance_type != 'noc'
-                      )
-                    ORDER BY f.auction_date
-                    LIMIT :limit
-                """),
-                {"limit": limit or 1000},
+                text(query),
+                params,
             ).fetchall()
 
         targets = []

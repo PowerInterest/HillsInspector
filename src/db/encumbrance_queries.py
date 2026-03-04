@@ -14,14 +14,16 @@ both import from here via the ``get_encumbrance_queries()`` singleton factory.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from sqlalchemy import Text, case, cast, func, or_, select
-from sqlalchemy.sql import ColumnElement
 
 from sunbiz.db import get_engine, resolve_pg_dsn
 from sunbiz.models import OriEncumbrance
+
+if TYPE_CHECKING:
+    from sqlalchemy.sql import ColumnElement
 
 # Alias for brevity
 OE = OriEncumbrance
