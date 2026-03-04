@@ -54,14 +54,18 @@ uv run Controller.py [OPTIONS]
 |------|-------|
 | `--skip-hcpa` | HCPA parcels, sales, subdivisions |
 | `--skip-clerk-bulk` | Clerk civil cases & events |
+| `--skip-clerk-criminal` | Clerk criminal index ingestion |
+| `--skip-clerk-civil-alpha` | Clerk civil alpha index ingestion |
 | `--skip-nal` | DOR NAL tax data |
 | `--skip-flr` | Sunbiz FLR (UCC filings) |
 | `--skip-sunbiz-entity` | Sunbiz entity lookup |
 | `--skip-county-permits` | County permit API sync |
 | `--skip-tampa-permits` | Tampa permit Accela scrape |
+| `--skip-single-pin-permits` | Targeted single-pin permit fallback |
 | `--skip-foreclosure-refresh` | Foreclosures hub table refresh |
 | `--skip-trust-accounts` | Trust account ledger sync |
 | `--skip-title-chain` | PG chain of title builder |
+| `--skip-title-breaks` | Title-break reconciliation pass |
 | `--skip-market-data` | Market data (Zillow/Realtor) |
 | `--skip-final-refresh` | Phase B data pickup refresh |
 
@@ -71,8 +75,12 @@ uv run Controller.py [OPTIONS]
 |------|-------|
 | `--skip-auction-scrape` | Scraping upcoming auctions |
 | `--skip-judgment-extract` | Judgment PDF extraction (Vision OCR) |
+| `--skip-identifier-recovery` | Strap/folio identifier recovery from judgment data |
 | `--skip-ori-search` | ORI document search |
+| `--skip-mortgage-extract` | Mortgage PDF extraction from ORI matches |
 | `--skip-survival` | Lien survival analysis |
+| `--skip-encumbrance-audit` | Encumbrance audit metrics and issue buckets |
+| `--skip-encumbrance-recovery` | Targeted audit-driven recovery loop |
 
 ### Per-Auction Limits
 
@@ -80,7 +88,9 @@ uv run Controller.py [OPTIONS]
 |------|------|---------|-------------|
 | `--auction-limit` | int | unlimited | Max auctions to scrape per date |
 | `--judgment-limit` | int | unlimited | Max PDFs to extract |
+| `--identifier-recovery-limit` | int | unlimited | Max foreclosures for identifier recovery |
 | `--ori-limit` | int | unlimited | Max foreclosures for ORI search |
+| `--mortgage-limit` | int | unlimited | Max mortgage PDFs to extract |
 | `--survival-limit` | int | unlimited | Max foreclosures for survival |
 | `--limit` | int | unlimited | Total row limit for chain builder |
 
@@ -144,15 +154,17 @@ uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --surviv
 
 # Phase A only (bulk refresh)
 uv run Controller.py \
-  --skip-auction-scrape --skip-judgment-extract --skip-ori-search \
-  --skip-survival --skip-final-refresh
+  --skip-auction-scrape --skip-judgment-extract --skip-identifier-recovery \
+  --skip-ori-search --skip-mortgage-extract --skip-survival \
+  --skip-encumbrance-audit --skip-encumbrance-recovery \
+  --skip-final-refresh --skip-market-data
 
 # Phase B only (per-auction enrichment)
 uv run Controller.py \
-  --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr \
-  --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits \
-  --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain \
-  --skip-market-data
+  --skip-hcpa --skip-clerk-bulk --skip-clerk-criminal --skip-clerk-civil-alpha \
+  --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits \
+  --skip-tampa-permits --skip-single-pin-permits --skip-foreclosure-refresh \
+  --skip-trust-accounts --skip-title-chain --skip-title-breaks --skip-market-data
 
 # Single case analysis
 uv run Controller.py --case-number 292024CA012345 \
@@ -161,7 +173,9 @@ uv run Controller.py --case-number 292024CA012345 \
 
 # Force all bulk loaders (ignore freshness)
 uv run Controller.py --force-all --skip-auction-scrape --skip-judgment-extract \
-  --skip-ori-search --skip-survival
+  --skip-identifier-recovery --skip-ori-search --skip-mortgage-extract \
+  --skip-survival --skip-encumbrance-audit --skip-encumbrance-recovery \
+  --skip-final-refresh --skip-market-data
 ```
 
 ---
@@ -176,14 +190,18 @@ Idempotent. Skips if data is fresh (within stale-days). Override with `--force-a
 |---|------|-----------|------------|---------|
 | 1 | HCPA suite (parcels, sales, subdivisions) | `--skip-hcpa` | 7 | Background |
 | 2 | Clerk civil cases & events | `--skip-clerk-bulk` | 7 | Background |
-| 3 | DOR NAL tax data | `--skip-nal` | 60 | Inline |
-| 4 | Sunbiz FLR (UCC filings) | `--skip-flr` | 7 | Background |
-| 5 | Sunbiz entity lookup | `--skip-sunbiz-entity` | 90 | Background |
-| 6 | County permits (Accela API) | `--skip-county-permits` | 7 | Background |
-| 7 | Tampa permits (Accela scrape) | `--skip-tampa-permits` | 3 | Background |
-| 8 | Foreclosures hub table refresh | `--skip-foreclosure-refresh` | — | Inline |
-| 9 | Trust account ledger sync | `--skip-trust-accounts` | — | Inline |
-| 10 | PG chain of title builder | `--skip-title-chain` | — | Inline |
+| 3 | Clerk criminal index | `--skip-clerk-criminal` | 7 | Background |
+| 4 | Clerk civil alpha index | `--skip-clerk-civil-alpha` | 7 | Background |
+| 5 | DOR NAL tax data | `--skip-nal` | 60 | Inline |
+| 6 | Sunbiz FLR (UCC filings) | `--skip-flr` | 7 | Background |
+| 7 | Sunbiz entity lookup | `--skip-sunbiz-entity` | 90 | Background |
+| 8 | County permits (Accela API) | `--skip-county-permits` | 7 | Background |
+| 9 | Tampa permits (Accela scrape) | `--skip-tampa-permits` | 3 | Background |
+| 10 | Single-pin permit fallback | `--skip-single-pin-permits` | — | Inline |
+| 11 | Foreclosures hub table refresh | `--skip-foreclosure-refresh` | — | Inline |
+| 12 | Trust account ledger sync | `--skip-trust-accounts` | — | Inline |
+| 13 | PG chain of title builder | `--skip-title-chain` | — | Inline |
+| 14 | Title-break reconciliation | `--skip-title-breaks` | — | Inline |
 
 Background steps are dispatched via `controller_step_dispatcher.py` and don't block the main thread.
 
@@ -193,12 +211,16 @@ Sequential. Processes **all incomplete auctions** (no date filter, no staleness 
 
 | # | Step | Skip Flag | Limit Flag | Description |
 |---|------|-----------|------------|-------------|
-| 11 | Auction scrape | `--skip-auction-scrape` | `--auction-limit` | Scrape upcoming auctions from clerk site |
-| 12 | Judgment extract | `--skip-judgment-extract` | `--judgment-limit` | Download PDFs, extract via Vision OCR |
-| 13 | ORI search | `--skip-ori-search` | `--ori-limit` | Search Official Records, ingest documents |
-| 14 | Survival analysis | `--skip-survival` | `--survival-limit` | Lien survival determination |
-| 15 | Final refresh | `--skip-final-refresh` | — | Re-run foreclosure refresh (pick up Phase B data) |
-| 16 | Market data | `--skip-market-data` | — | Zillow/Realtor (background, non-blocking) |
+| 15 | Auction scrape | `--skip-auction-scrape` | `--auction-limit` | Scrape upcoming auctions from clerk site |
+| 16 | Judgment extract | `--skip-judgment-extract` | `--judgment-limit` | Download PDFs, extract via Vision OCR |
+| 17 | Identifier recovery | `--skip-identifier-recovery` | `--identifier-recovery-limit` | Recover missing parcel identifiers from judgment data |
+| 18 | ORI search | `--skip-ori-search` | `--ori-limit` | Search Official Records, ingest documents |
+| 19 | Mortgage extract | `--skip-mortgage-extract` | `--mortgage-limit` | Extract mortgage docs from ORI references |
+| 20 | Survival analysis | `--skip-survival` | `--survival-limit` | Lien survival determination |
+| 21 | Encumbrance audit | `--skip-encumbrance-audit` | — | Read-only encumbrance coverage/issues report |
+| 22 | Encumbrance recovery | `--skip-encumbrance-recovery` | — | Targeted recovery from audit buckets |
+| 23 | Final refresh | `--skip-final-refresh` | — | Re-run foreclosure refresh (pick up Phase B data) |
+| 24 | Market data | `--skip-market-data` | — | Zillow/Realtor (background, non-blocking) |
 
 ---
 

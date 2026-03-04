@@ -260,7 +260,7 @@ class PgFlrService:
         }
 
         try:
-            from sunbiz.sync import (
+            from src.scripts.sunbiz_sync_service import (
                 DEFAULT_HOST,
                 DEFAULT_MANIFEST,
                 DEFAULT_PASSWORD,

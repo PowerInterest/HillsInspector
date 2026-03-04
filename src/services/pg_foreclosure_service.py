@@ -286,6 +286,6 @@ class PgForeclosureService:
 
     def refresh(self) -> dict[str, int]:
         """Run the full idempotent refresh. Returns rowcounts per step."""
-        from scripts.refresh_foreclosures import refresh as _refresh
+        from src.scripts.refresh_foreclosures import refresh as _refresh
 
         return _refresh(dsn=self._dsn)

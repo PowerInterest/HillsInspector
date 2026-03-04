@@ -40,7 +40,7 @@ The chain of title and encumbrance data are the core deliverable. Without them, 
 - `uv sync` installs locked dependencies; avoid pip/poetry.
 - Quick sanity run: `uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --survival-limit 5 --limit 5`.
 - `uv run Controller.py` runs the full PG-first pipeline; `uv run python -m app.web.main` launches the dashboard.
-- **When developing/testing**: Use controller skip flags and per-step limits (for example `--skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain --skip-market-data` for Phase B only). Only run the full pipeline when explicitly requested by the user.
+- **When developing/testing**: Use controller skip flags and per-step limits (for example `--skip-hcpa --skip-clerk-bulk --skip-clerk-criminal --skip-clerk-civil-alpha --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits --skip-single-pin-permits --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain --skip-title-breaks --skip-market-data` for Phase B only). Only run the full pipeline when explicitly requested by the user.
 - `uv run ruff check .` (add `--fix` when safe) for linting; `uv run ty check` for typing; `uv run pytest` for unit tests.
 - One-time scraper setup: `uv run playwright install chromium`.
 

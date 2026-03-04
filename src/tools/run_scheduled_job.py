@@ -20,14 +20,14 @@ from src.services.pg_job_control_service import JobDefinition, PgJobControlServi
 from src.services.pg_clerk_bulk_service import PgClerkBulkService
 from src.services.pg_clerk_civil_alpha_service import PgClerkCivilAlphaService
 from src.services.pg_clerk_criminal_service import PgClerkCriminalService
-from sunbiz.sync import SunbizMirror
-from sunbiz.sync import (
+from src.scripts.sunbiz_sync_service import (
     DEFAULT_DATA_DIR,
     DEFAULT_HOST,
     DEFAULT_MANIFEST,
     DEFAULT_PASSWORD,
     DEFAULT_PORT,
     DEFAULT_USER,
+    SunbizMirror,
 )
 from sunbiz.pg_loader import load_hcpa_suite
 from sunbiz.pg_loader import load_sunbiz_entity
@@ -39,9 +39,7 @@ _DEFAULT_BATCH_SIZE = 5000
 _SUNBIZ_DAILY_ROOT = DEFAULT_DATA_DIR / "public/doc"
 _SUNBIZ_DAILY_PATTERN = r"^(?!quarterly/).+"
 _SUNBIZ_ENTITY_ROOT = DEFAULT_DATA_DIR / "public/doc/quarterly"
-_SUNBIZ_ENTITY_PATTERN = (
-    r"(?i)^(cor|gen)/(cordata|corevt|genfile|genevt)\.zip$"
-)
+_SUNBIZ_ENTITY_PATTERN = r"(?i)^(cor|gen)/(cordata|corevt|genfile|genevt)\.zip$"
 _HCPA_DOWNLOAD_DIR = Path("data/bulk_data/hcpa")
 
 
@@ -80,9 +78,7 @@ def _bool_or_default(value: Any, default: bool = False) -> bool:
 def _require_sync_candidates(job_name: str, sync_stats: dict[str, Any]) -> None:
     if int(sync_stats.get("candidate_files") or 0) > 0:
         return
-    raise RuntimeError(
-        f"{job_name} matched no remote files; refusing to report success for a no-op"
-    )
+    raise RuntimeError(f"{job_name} matched no remote files; refusing to report success for a no-op")
 
 
 def _run_auction_results_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]:
@@ -149,10 +145,7 @@ def _run_sunbiz_daily_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]
     )
     if int(load_stats.get("files_discovered") or 0) <= 0:
         raise RuntimeError("sunbiz_daily discovered no daily files to load into PG")
-    if (
-        int(load_stats.get("files_loaded") or 0) <= 0
-        and int(load_stats.get("files_skipped") or 0) <= 0
-    ):
+    if int(load_stats.get("files_loaded") or 0) <= 0 and int(load_stats.get("files_skipped") or 0) <= 0:
         raise RuntimeError("sunbiz_daily completed without loading or skipping any files")
 
     logger.info("sunbiz_daily sync={} load={}", sync_stats, load_stats)
@@ -196,9 +189,7 @@ def _run_sunbiz_entity_quarterly_job(dsn: str, args_json: dict[str, Any]) -> dic
         batch_size=max(1, _int_or_default(args_json.get("batch_size"), _DEFAULT_BATCH_SIZE)),
     )
     if int(load_stats.get("files_scanned") or 0) <= 0:
-        raise RuntimeError(
-            "sunbiz_entity_quarterly scanned no entity files after the quarterly sync"
-        )
+        raise RuntimeError("sunbiz_entity_quarterly scanned no entity files after the quarterly sync")
 
     logger.info("sunbiz_entity_quarterly sync={} load={}", sync_stats, load_stats)
     return {
@@ -227,7 +218,7 @@ def _run_trust_accounts_job(dsn: str, args_json: dict[str, Any]) -> dict[str, An
 
 def _run_county_permits_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]:
     from src.services.CountyPermit import CountyPermitService
-    from src.db.pg_connection import get_engine, resolve_pg_dsn
+    from sunbiz.db import get_engine, resolve_pg_dsn
     from sqlalchemy import text
 
     page_size = _int_or_default(args_json.get("page_size"), 2000)
@@ -243,9 +234,7 @@ def _run_county_permits_job(dsn: str, args_json: dict[str, Any]) -> dict[str, An
     try:
         engine = get_engine(resolve_pg_dsn(dsn))
         with engine.connect() as conn:
-            max_oid = conn.execute(
-                text("SELECT MAX(source_object_id) FROM county_permits WHERE source_layer_id = 0")
-            ).scalar()
+            max_oid = conn.execute(text("SELECT MAX(source_object_id) FROM county_permits WHERE source_layer_id = 0")).scalar()
     except Exception as exc:
         logger.debug("county_permits: unable to read max source_object_id: {}", exc)
 
@@ -256,7 +245,7 @@ def _run_county_permits_job(dsn: str, args_json: dict[str, Any]) -> dict[str, An
 def _run_tampa_permits_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]:
     import datetime as dt
     from src.services.TampaPermit import TampaPermitService
-    from src.db.pg_connection import get_engine, resolve_pg_dsn
+    from sunbiz.db import get_engine, resolve_pg_dsn
     from sqlalchemy import text
 
     lookback_days = _int_or_default(args_json.get("lookback_days"), 30)
@@ -273,9 +262,7 @@ def _run_tampa_permits_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any
     try:
         engine = get_engine(resolve_pg_dsn(dsn))
         with engine.connect() as conn:
-            latest_record = conn.execute(
-                text("SELECT MAX(record_date) FROM tampa_accela_records")
-            ).scalar()
+            latest_record = conn.execute(text("SELECT MAX(record_date) FROM tampa_accela_records")).scalar()
     except Exception as exc:
         logger.debug("tampa_permits: unable to read max record_date: {}", exc)
 
@@ -296,9 +283,7 @@ def _run_tampa_permits_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any
         and int(sync_stats.get("csv_rows_total") or 0) == 0
         and int(sync_stats.get("written_total") or 0) == 0
     ):
-        raise RuntimeError(
-            "Tampa permit sync produced zero rows for a 7+ day window"
-        )
+        raise RuntimeError("Tampa permit sync produced zero rows for a 7+ day window")
 
     result: dict[str, Any] = {
         "window": {"start_date": str(start_date), "end_date": str(today)},
@@ -318,9 +303,7 @@ def _run_market_data_job(dsn: str, args_json: dict[str, Any]) -> dict[str, Any]:
     return run_market_data_update(
         dsn=dsn,
         limit=_int_or_none(args_json.get("limit")),
-        use_windows_chrome=_bool_or_default(
-            args_json.get("use_windows_chrome"), default=False
-        ),
+        use_windows_chrome=_bool_or_default(args_json.get("use_windows_chrome"), default=False),
     )
 
 
@@ -329,12 +312,8 @@ def _run_single_pin_permits_job(dsn: str, args_json: dict[str, Any]) -> dict[str
 
     settings = ControllerSettings(dsn=dsn)
     settings.single_pin_permit_limit = _int_or_default(args_json.get("limit"), 25)
-    settings.single_pin_permit_max_permits = _int_or_default(
-        args_json.get("max_permits_per_pin"), 0
-    )
-    settings.single_pin_permit_timeout_seconds = _int_or_default(
-        args_json.get("timeout_seconds"), 45
-    )
+    settings.single_pin_permit_max_permits = _int_or_default(args_json.get("max_permits_per_pin"), 0)
+    settings.single_pin_permit_timeout_seconds = _int_or_default(args_json.get("timeout_seconds"), 45)
     controller = PgPipelineController(settings)
     return controller.run_single_pin_permits_job()
 

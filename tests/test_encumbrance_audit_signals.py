@@ -1,8 +1,9 @@
 """Tests for LP-to-judgment delta signal extraction.
 
-Tests the pure extraction functions in ``src.services.encumbrance_audit_signals``
-as well as the ``AuditSignalExtractor`` class with mocked PG access.  No real
-database connection is required.
+Tests the pure extraction functions in
+``src.services.audit.encumbrance_audit_signals`` as well as the
+``AuditSignalExtractor`` class with mocked PG access. No real database
+connection is required.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Self
 
-from src.services.encumbrance_audit_signals import (
+from src.services.audit.encumbrance_audit_signals import (
     AuditSignal,
     AuditSignalExtractor,
     extract_judgment_instrument_gap,

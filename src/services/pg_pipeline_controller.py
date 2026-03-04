@@ -71,6 +71,8 @@ class ControllerSettings:
     skip_ori_search: bool = False
     skip_mortgage_extract: bool = False
     skip_survival: bool = False
+    skip_encumbrance_audit: bool = False
+    skip_encumbrance_recovery: bool = False
     # Market Data specific
     use_windows_chrome: bool = False
     # Staleness windows
@@ -133,6 +135,7 @@ class PgPipelineController:
         self.settings = settings
         self.dsn = resolve_pg_dsn(settings.dsn)
         self.engine = get_engine(self.dsn)
+        self._encumbrance_audit_report: Any | None = None
 
     def run(self) -> dict[str, Any]:
         started = time.monotonic()
@@ -205,6 +208,16 @@ class PgPipelineController:
                 "survival_analysis",
                 self.settings.skip_survival,
                 self._run_survival_analysis,
+            ),
+            (
+                "encumbrance_audit",
+                self.settings.skip_encumbrance_audit,
+                self._run_encumbrance_audit,
+            ),
+            (
+                "encumbrance_recovery",
+                self.settings.skip_encumbrance_recovery,
+                self._run_encumbrance_recovery,
             ),
             # Final refresh: pick up all new Phase B data
             (
@@ -505,7 +518,7 @@ class PgPipelineController:
             return {"skipped": True, "reason": "fresh", "state": state}
 
         from sunbiz.pg_loader import load_sunbiz_entity
-        from sunbiz.sync import (
+        from src.scripts.sunbiz_sync_service import (
             DEFAULT_HOST,
             DEFAULT_PASSWORD,
             DEFAULT_PORT,
@@ -805,9 +818,69 @@ class PgPipelineController:
         svc = PgSurvivalService(dsn=self.dsn)
         return svc.run(limit=self.settings.survival_limit)
 
+    def _run_encumbrance_audit(self) -> dict[str, Any]:
+        from src.services.audit.pg_audit_encumbrance import run_audit
+
+        report = run_audit(dsn=self.dsn)
+        self._encumbrance_audit_report = report
+
+        bucket_counts = {
+            summary.bucket: int(summary.count)
+            for summary in report.summaries
+        }
+        open_issues = len(report.hits)
+        affected_foreclosures = len({
+            int(hit.foreclosure_id)
+            for hit in report.hits
+        })
+        with_strap = int(report.with_strap_count)
+        with_encumbrances = int(report.with_encumbrances_count)
+        with_survival = int(report.with_survival_count)
+        encumbrance_coverage_pct = self._coverage_pct(
+            with_encumbrances,
+            with_strap,
+        )
+        survival_coverage_pct = self._coverage_pct(
+            with_survival,
+            with_strap,
+        )
+
+        return {
+            "active_count": int(report.active_count),
+            "judged_count": int(report.judged_count),
+            "with_strap_count": with_strap,
+            "with_encumbrances_count": with_encumbrances,
+            "with_survival_count": with_survival,
+            "open_issues": open_issues,
+            "affected_foreclosures": affected_foreclosures,
+            "bucket_counts": bucket_counts,
+            "encumbrance_coverage_pct": encumbrance_coverage_pct,
+            "survival_coverage_pct": survival_coverage_pct,
+            "encumbrance_coverage_target_met": bool(
+                encumbrance_coverage_pct is not None
+                and encumbrance_coverage_pct >= 80.0
+            ),
+            "survival_coverage_target_met": bool(
+                survival_coverage_pct is not None
+                and survival_coverage_pct >= 80.0
+            ),
+        }
+
+    def _run_encumbrance_recovery(self) -> dict[str, Any]:
+        from src.services.audit.encumbrance_recovery import (
+            EncumbranceRecoveryService,
+        )
+
+        report = self._encumbrance_audit_report
+        try:
+            svc = EncumbranceRecoveryService(dsn=self.dsn)
+            return svc.run(report=report)
+        finally:
+            self._encumbrance_audit_report = None
+
     def _run_final_refresh(self) -> dict[str, Any]:
         """Re-run foreclosure refresh to pick up Phase B data."""
-        from scripts.refresh_foreclosures import refresh as _refresh
+        from src.scripts.refresh_foreclosures import refresh as _refresh
 
         counts = _refresh(dsn=self.dsn)
         return {"update": counts}
@@ -1152,6 +1225,12 @@ class PgPipelineController:
         return now.year if now.month >= 10 else now.year - 1
 
     @staticmethod
+    def _coverage_pct(num: int, den: int) -> float | None:
+        if den <= 0:
+            return None
+        return round((100.0 * num) / den, 2)
+
+    @staticmethod
     def _json_safe(value: Any) -> Any:
         if isinstance(value, dict):
             return {k: PgPipelineController._json_safe(v) for k, v in value.items()}
@@ -1223,6 +1302,8 @@ def parse_args() -> ControllerSettings:
     parser.add_argument("--skip-ori-search", action="store_true")
     parser.add_argument("--skip-mortgage-extract", action="store_true")
     parser.add_argument("--skip-survival", action="store_true")
+    parser.add_argument("--skip-encumbrance-audit", action="store_true")
+    parser.add_argument("--skip-encumbrance-recovery", action="store_true")
 
     parser.add_argument("--hcpa-download-dir", default=str(DEFAULT_HCPA_DOWNLOAD_DIR))
     parser.add_argument(
@@ -1322,6 +1403,8 @@ def parse_args() -> ControllerSettings:
         skip_ori_search=bool(args.skip_ori_search),
         skip_mortgage_extract=bool(args.skip_mortgage_extract),
         skip_survival=bool(args.skip_survival),
+        skip_encumbrance_audit=bool(args.skip_encumbrance_audit),
+        skip_encumbrance_recovery=bool(args.skip_encumbrance_recovery),
         hcpa_download_dir=Path(args.hcpa_download_dir),
         include_hcpa_latlon=args.include_hcpa_latlon,
         sunbiz_data_dir=Path(args.sunbiz_data_dir),
@@ -1345,6 +1428,7 @@ def parse_args() -> ControllerSettings:
         judgment_limit=args.judgment_limit,
         identifier_recovery_limit=args.identifier_recovery_limit,
         ori_limit=args.ori_limit,
+        mortgage_limit=args.mortgage_limit,
         survival_limit=args.survival_limit,
         title_breaks_limit=args.title_breaks_limit,
     )

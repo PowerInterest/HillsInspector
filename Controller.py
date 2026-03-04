@@ -3,24 +3,30 @@
 Phase A (bulk data refresh — idempotent, no per-property scraping):
   1. HCPA suite (parcels, sales, subdivisions)
   2. Clerk bulk (cases, events)
-  3. DOR NAL (tax data)
-  4. Sunbiz UCC (SFTP filings)
-  5. Sunbiz entities
-  6. County permits (API)
-  7. Tampa permits (Accela scrape)
-  8. Single-pin permit gap fill (targeted HCPA/Accela/ArcGIS pull)
-  9. Foreclosure refresh (join all bulk → hub table)
-  10. Trust accounts
-  11. Title chain (PG chain builder)
+  3. Clerk criminal index
+  4. Clerk civil alpha index
+  5. DOR NAL (tax data)
+  6. Sunbiz UCC (SFTP filings)
+  7. Sunbiz entities
+  8. County permits (API)
+  9. Tampa permits (Accela scrape)
+  10. Single-pin permit gap fill (targeted HCPA/Accela/ArcGIS pull)
+  11. Foreclosure refresh (join all bulk → hub table)
+  12. Trust accounts
+  13. Title chain (PG chain builder)
+  14. Title breaks (targeted reconciliation)
 
 Phase B (per-auction enrichment — scraping + analysis):
-  12. Scrape upcoming auctions (Playwright → clerk website → PG)
-  13. Extract judgment PDFs (VisionService → disk JSON → PG)
-  14. Recover missing strap/folio from final-judgment data
-  15. ORI document search (Playwright → ORI website → PG ori_encumbrances)
-  16. Lien survival analysis (pure computation → PG ori_encumbrances)
-  17. Final refresh (pick up Phase B data)
-  18. Market data (Redfin/Zillow/HomeHarvest; optional background worker)
+  15. Scrape upcoming auctions (Playwright → clerk website → PG)
+  16. Extract judgment PDFs (VisionService → disk JSON → PG)
+  17. Recover missing strap/folio from final-judgment data
+  18. ORI document search (Playwright → ORI website → PG ori_encumbrances)
+  19. Mortgage extraction from ORI-backed docs
+  20. Lien survival analysis (pure computation → PG ori_encumbrances)
+  21. Encumbrance audit (read-only issue and coverage metrics)
+  22. Encumbrance recovery (targeted backfill through existing writers)
+  23. Final refresh (pick up Phase B data)
+  24. Market data (Redfin/Zillow/HomeHarvest; optional background worker)
 
 Usage:
   uv run Controller.py                           # Full pipeline

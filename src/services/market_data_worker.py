@@ -9,7 +9,7 @@ from typing import Any
 from loguru import logger
 from sqlalchemy import text
 
-from scripts.refresh_foreclosures import refresh as refresh_foreclosures
+from src.scripts.refresh_foreclosures import refresh as refresh_foreclosures
 from src.services.market_data_service import MarketDataService
 from sunbiz.db import get_engine, resolve_pg_dsn
 

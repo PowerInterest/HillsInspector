@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.services.sunbiz_sync_service import SunbizMirror
+from src.scripts.sunbiz_sync_service import SunbizMirror
 
 
 def test_entity_quarterly_profile_excludes_nonprofit_archives() -> None:

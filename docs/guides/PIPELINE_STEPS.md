@@ -32,7 +32,7 @@ HillsInspector runs a single PG-first pipeline:
 - Orchestrator: `src/services/pg_pipeline_controller.py`
 - Database: PostgreSQL (pipeline + analytics)
 
-The controller executes 16 ordered steps across two phases.
+The controller executes 24 ordered steps across two phases.
 
 Important runtime behavior:
 
@@ -56,10 +56,10 @@ uv run Controller.py --force-all
 uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --survival-limit 5 --limit 5
 
 # Phase A only
-uv run Controller.py --skip-auction-scrape --skip-judgment-extract --skip-ori-search --skip-survival --skip-final-refresh
+uv run Controller.py --skip-auction-scrape --skip-judgment-extract --skip-identifier-recovery --skip-ori-search --skip-mortgage-extract --skip-survival --skip-encumbrance-audit --skip-encumbrance-recovery --skip-final-refresh --skip-market-data
 
 # Phase B core only
-uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain --skip-market-data
+uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-clerk-criminal --skip-clerk-civil-alpha --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits --skip-single-pin-permits --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain --skip-title-breaks --skip-market-data
 ```
 
 ## Pipeline Stages
@@ -70,25 +70,33 @@ uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr --skip-
 |------|------|---------|--------------------|------|
 | 1 | `hcpa_suite` | `load_hcpa_suite` | `hcpa_bulk_parcels`, `hcpa_allsales` | inline (background optional) |
 | 2 | `clerk_bulk` | `PgClerkBulkService` | `clerk_civil_cases`, `clerk_civil_parties`, related clerk tables | inline (background optional) |
-| 3 | `dor_nal` | `PgNalService` | `dor_nal_parcels` | inline (background optional) |
-| 4 | `sunbiz_flr` | `PgFlrService` | `sunbiz_flr_*` | inline (background optional) |
-| 5 | `sunbiz_entity` | `load_sunbiz_entity` | `sunbiz_entity_*` | inline (background optional) |
-| 6 | `county_permits` | `CountyPermitService` | `county_permits` | inline (background optional) |
-| 7 | `tampa_permits` | `TampaPermitService` | `tampa_accela_records` | inline (background optional) |
-| 8 | `foreclosure_refresh` | `PgForeclosureService` | `foreclosures` (hub refresh) | inline |
-| 9 | `trust_accounts` | `PgTrustAccountsService` | `TrustAccount`, `TrustAccountSummary` | inline |
-| 10 | `title_chain` | `TitleChainController` | `foreclosure_title_events`, `foreclosure_title_chain`, `foreclosure_title_summary` | inline |
+| 3 | `clerk_criminal` | `PgClerkCriminalService` | `clerk_criminal_name_index` | inline (background optional) |
+| 4 | `clerk_civil_alpha` | `PgClerkCivilAlphaService` | alpha-index rows in `clerk_civil_parties` | inline (background optional) |
+| 5 | `dor_nal` | `PgNalService` | `dor_nal_parcels` | inline (background optional) |
+| 6 | `sunbiz_flr` | `PgFlrService` | `sunbiz_flr_*` | inline (background optional) |
+| 7 | `sunbiz_entity` | `load_sunbiz_entity` | `sunbiz_entity_*` | inline (background optional) |
+| 8 | `county_permits` | `CountyPermitService` | `county_permits` | inline (background optional) |
+| 9 | `tampa_permits` | `TampaPermitService` | `tampa_accela_records` | inline (background optional) |
+| 10 | `single_pin_permits` | `PgPermitSinglePinService` | targeted permit backfills by pin | inline |
+| 11 | `foreclosure_refresh` | `PgForeclosureService` | `foreclosures` (hub refresh) | inline |
+| 12 | `trust_accounts` | `PgTrustAccountsService` | `TrustAccount`, `TrustAccountSummary` | inline |
+| 13 | `title_chain` | `TitleChainController` | `foreclosure_title_events`, `foreclosure_title_chain`, `foreclosure_title_summary` | inline |
+| 14 | `title_breaks` | `PgTitleBreakService` | title-break repair actions | inline |
 
 ### Phase B: Per-Auction Enrichment
 
 | Step | Name | Service | Primary PG Outputs | Mode |
 |------|------|---------|--------------------|------|
-| 11 | `auction_scrape` | `PgAuctionService` | refreshed `foreclosures` auction rows | inline |
-| 12 | `judgment_extract` | `PgJudgmentService` | `foreclosures.judgment_data`, `step_judgment_extracted` | inline |
-| 13 | `ori_search` | `PgOriService` | `ori_encumbrances`, `step_ori_searched` | inline |
-| 14 | `survival_analysis` | `PgSurvivalService` | `ori_encumbrances.survival_status`, `step_survival_analyzed` | inline |
-| 15 | `final_refresh` | `scripts.refresh_foreclosures.refresh` | recomputed foreclosure metrics | inline |
-| 16 | `market_data` | `run_market_data_update` (or dispatcher in background mode) | `property_market` (+ post-market refresh) | inline (background optional) |
+| 15 | `auction_scrape` | `PgAuctionService` | refreshed `foreclosures` auction rows | inline |
+| 16 | `judgment_extract` | `PgJudgmentService` | `foreclosures.judgment_data`, `step_judgment_extracted` | inline |
+| 17 | `identifier_recovery` | `PgForeclosureIdentifierRecoveryService` | `foreclosures.strap`, `foreclosures.folio` repairs | inline |
+| 18 | `ori_search` | `PgOriService` | `ori_encumbrances`, `step_ori_searched` | inline |
+| 19 | `mortgage_extract` | `PgMortgageExtractionService` | `foreclosures.mortgage_data` enrichment | inline |
+| 20 | `survival_analysis` | `PgSurvivalService` | `ori_encumbrances.survival_status`, `step_survival_analyzed` | inline |
+| 21 | `encumbrance_audit` | `run_audit` | read-only audit report payload (no writes) | inline |
+| 22 | `encumbrance_recovery` | `EncumbranceRecoveryService` | targeted ORI/mortgage/survival backfills | inline |
+| 23 | `final_refresh` | `scripts.refresh_foreclosures.refresh` | recomputed foreclosure metrics | inline |
+| 24 | `market_data` | `run_market_data_update` (or dispatcher in background mode) | `property_market` (+ post-market refresh) | inline (background optional) |
 
 ## Key Data Domains
 
