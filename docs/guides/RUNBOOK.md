@@ -15,7 +15,7 @@ uv run playwright install chromium
 uv run python -m src.db.migrations.create_foreclosures
 
 # Seed the foreclosures hub table
-uv run python src/scripts/refresh_foreclosures.py --migrate
+uv run python scripts/refresh_foreclosures.py --migrate
 
 # Run full pipeline (expect 4+ hours)
 uv run Controller.py
@@ -48,7 +48,7 @@ uv run Controller.py [OPTIONS]
 | `--force-all` | flag | off | Force all loaders (ignore staleness) |
 | `--fail-fast` | flag | off | Stop after first step failure |
 
-### Scheduled Bulk Refresh Skip Flags
+### Phase A Skip Flags (Bulk Data Refresh)
 
 | Flag | Skips |
 |------|-------|
@@ -63,9 +63,9 @@ uv run Controller.py [OPTIONS]
 | `--skip-trust-accounts` | Trust account ledger sync |
 | `--skip-title-chain` | PG chain of title builder |
 | `--skip-market-data` | Market data (Zillow/Realtor) |
-| `--skip-final-refresh` | Final data pickup refresh |
+| `--skip-final-refresh` | Phase B data pickup refresh |
 
-### Enrichment Routine Skip Flags
+### Phase B Skip Flags (Per-Auction Enrichment)
 
 | Flag | Skips |
 |------|-------|
@@ -142,13 +142,12 @@ uv run Controller.py [OPTIONS]
 # Quick sanity check (5 per step)
 uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --survival-limit 5 --limit 5
 
-# Controller Bulk Refresh Follow-Up
-# (Used when run outside the scheduled jobs)
+# Phase A only (bulk refresh)
 uv run Controller.py \
   --skip-auction-scrape --skip-judgment-extract --skip-ori-search \
   --skip-survival --skip-final-refresh
 
-# Controller Enrichment Only
+# Phase B only (per-auction enrichment)
 uv run Controller.py \
   --skip-hcpa --skip-clerk-bulk --skip-nal --skip-flr \
   --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits \
@@ -169,9 +168,9 @@ uv run Controller.py --force-all --skip-auction-scrape --skip-judgment-extract \
 
 ## 3. Pipeline Steps
 
-### Scheduled Bulk Refresh Updates
+### Phase A — Bulk Data Refresh
 
-The bulk refresh steps are generally handled by `cron` and background jobs. If forced inline via `Controller.py`, they are idempotent and skip if data is fresh (within stale-days).
+Idempotent. Skips if data is fresh (within stale-days). Override with `--force-all`.
 
 | # | Step | Skip Flag | Stale Days | Runs As |
 |---|------|-----------|------------|---------|
@@ -188,9 +187,9 @@ The bulk refresh steps are generally handled by `cron` and background jobs. If f
 
 Background steps are dispatched via `controller_step_dispatcher.py` and don't block the main thread.
 
-### Per-Auction Enrichment Pipeline
+### Phase B — Per-Auction Enrichment
 
-Sequential. Processes **all incomplete auctions** (no date filter, no staleness check). Managed primarily by running the `Controller.py` workflow.
+Sequential. Processes **all incomplete auctions** (no date filter, no staleness check).
 
 | # | Step | Skip Flag | Limit Flag | Description |
 |---|------|-----------|------------|-------------|
@@ -198,7 +197,7 @@ Sequential. Processes **all incomplete auctions** (no date filter, no staleness 
 | 12 | Judgment extract | `--skip-judgment-extract` | `--judgment-limit` | Download PDFs, extract via Vision OCR |
 | 13 | ORI search | `--skip-ori-search` | `--ori-limit` | Search Official Records, ingest documents |
 | 14 | Survival analysis | `--skip-survival` | `--survival-limit` | Lien survival determination |
-| 15 | Final refresh | `--skip-final-refresh` | — | Re-run foreclosure refresh (pick up latest enrichment data) |
+| 15 | Final refresh | `--skip-final-refresh` | — | Re-run foreclosure refresh (pick up Phase B data) |
 | 16 | Market data | `--skip-market-data` | — | Zillow/Realtor (background, non-blocking) |
 
 ---
@@ -217,10 +216,10 @@ uv run python -m src.db.migrations.create_foreclosures
 uv run python -m src.db.migrations.create_foreclosures --dsn "postgresql://user:pass@host:5432/dbname"
 
 # Refresh foreclosures hub table from reference data
-uv run python src/scripts/refresh_foreclosures.py
+uv run python scripts/refresh_foreclosures.py
 
 # Create tables + refresh in one command
-uv run python src/scripts/refresh_foreclosures.py --migrate
+uv run python scripts/refresh_foreclosures.py --migrate
 ```
 
 **Key tables created by migration:**
@@ -252,6 +251,16 @@ uv run python src/scripts/refresh_foreclosures.py --migrate
 uv run python -m sunbiz.pg_loader
 ```
 
+### SQLite (Legacy)
+
+Located at `data/property_master_sqlite.db`. WAL mode. Access only through `PropertyDB` class.
+
+```bash
+# Create SQLite schema (only for legacy pipeline)
+uv run python -m src.db.migrations.create_sqlite_database
+```
+
+---
 
 ## 5. Web Interface
 
@@ -284,10 +293,10 @@ uv run python -m app.web.main
 
 ```bash
 # Refresh foreclosures hub table
-uv run python src/scripts/refresh_foreclosures.py [--migrate] [--dsn DSN]
+uv run python scripts/refresh_foreclosures.py [--migrate] [--dsn DSN]
 
 # Benchmark encumbrance algorithms
-uv run python src/scripts/benchmark_encumbrance_algorithms.py
+uv run python scripts/benchmark_encumbrance_algorithms.py
 
 # Lint and fix
 uv run ruff check src/ --fix
@@ -312,7 +321,7 @@ uv run playwright install chromium
 
 | Service | Default Address | Purpose |
 |---------|----------------|---------|
-| PostgreSQL | `localhost:5433` | Primary database (`hills_sunbiz`) |
+| PostgreSQL | `localhost:5432` | Primary database (`hills_sunbiz`) |
 | Vision API | `http://10.10.1.5:8002` | GLM-4.6V-Flash (judgment OCR) |
 | Vision fallback | `http://192.168.86.26:6969` | Secondary local Vision endpoint |
 
@@ -374,7 +383,7 @@ A pipeline run is measured by **data completeness**, not by steps completing wit
 2. Check `logs/` for errors on the failing step
 3. Fix the root cause
 4. Re-run the affected steps (use skip flags to target)
-5. Run `src/scripts/refresh_foreclosures.py` to pick up new data
+5. Run `scripts/refresh_foreclosures.py` to pick up new data
 6. Re-check thresholds
 
 ---
@@ -412,7 +421,11 @@ Every foreclosure has one by law. The code is at fault. Check:
 - Timed-out endpoints are suspended for 10 minutes automatically
 - Cloud fallback uses Gemini (`GEMINI_API_KEY` required)
 
+### Database lock errors (SQLite legacy)
 
+- Check for stale `.lock` file at the SQLite path
+- Ensure only one pipeline instance is running (`ps aux | grep Controller`)
+- Never write to SQLite from `run_in_executor` threads — return data, write on main thread
 
 ### Bot detection on county sites
 

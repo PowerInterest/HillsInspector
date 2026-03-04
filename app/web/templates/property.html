@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{{ auction.property_address or 'Property' }} - Truck's List{% endblock %}
+{% block title %}{{ auction.property_address or 'Property' }} - HillsInspector{% endblock %}
 
 {% block content %}
 <div class="property-detail">
@@ -36,32 +36,6 @@
         </div>
     </div>
     {% endif %}
-
-    <!-- Audit Summary Banner -->
-    {% if audit_summary and audit_summary.has_issues %}
-    <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 15px 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 12px;">
-        <span style="font-size: 24px; flex-shrink: 0;">&#9888;</span>
-        <div style="flex: 1;">
-            <strong style="color: #856404;">{{ audit_summary.total_open_issues }} Audit Issue{{ 's' if audit_summary.total_open_issues != 1 }}</strong>
-            <span style="color: #856404; margin-left: 4px;">across {{ audit_summary.family_counts|length }} categor{{ 'y' if audit_summary.family_counts|length == 1 else 'ies' }}</span>
-            {% if audit_summary.top_buckets %}
-            <p style="margin: 4px 0 0 0; color: #856404; font-size: 0.9em;">
-                Top issues: {{ audit_summary.top_buckets|join(', ') }}
-            </p>
-            {% endif %}
-        </div>
-        <button class="tab-link" onclick="openTab(event, 'audit')"
-            style="background: #856404; color: #fff; border: none; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-weight: 600; white-space: nowrap;">
-            View Audit
-        </button>
-    </div>
-    {% elif audit_summary and not audit_summary.has_issues and audit_summary.total_open_issues is defined %}
-    <div style="background: #d4edda; border: 1px solid #c3e6cb; border-radius: 8px; padding: 10px 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
-        <span style="font-size: 18px;">&#10003;</span>
-        <span style="color: #155724; font-weight: 500;">No open audit issues</span>
-    </div>
-    {% endif %}
-
     <!-- Header -->
     <div class="property-header">
         <div class="property-title">
@@ -123,7 +97,6 @@
             <button class="tab-link" onclick="openTab(event, 'tax')">Tax</button>
             <button class="tab-link" onclick="openTab(event, 'personal')">Personal</button>
             <button class="tab-link" onclick="openTab(event, 'documents')">Documents</button>
-            <button class="tab-link" onclick="openTab(event, 'audit')">Audit{% if audit_summary and audit_summary.has_issues %} <span style="background:#e74c3c;color:#fff;border-radius:50%;padding:1px 6px;font-size:0.75em;margin-left:4px;">{{ audit_summary.total_open_issues }}</span>{% endif %}</button>
         </div>
 
         <!-- Basic Tab (rendered server-side) -->
@@ -429,12 +402,6 @@
     <div id="documents" class="tab-content" hx-get="/property/{{ property.folio }}/documents" hx-trigger="tab-show once"
         hx-swap="innerHTML" style="display:none;">
         <div class="htmx-loading">Loading documents...</div>
-    </div>
-
-    <!-- Audit Tab -->
-    <div id="audit" class="tab-content" hx-get="/property/{{ property.folio }}/audit" hx-trigger="tab-show once"
-        hx-swap="innerHTML" style="display:none;">
-        <div class="htmx-loading">Loading audit data...</div>
     </div>
 </div>
 

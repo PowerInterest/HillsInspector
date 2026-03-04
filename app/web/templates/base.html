@@ -4,9 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Truck's List{% endblock %}</title>
-    <link rel="icon" type="image/png" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=20260303-branding">
+    <title>{% block title %}HillsInspector{% endblock %}</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260227-photo-fit">
     <link rel="stylesheet" href="/static/leaflet/leaflet.css">
     <script src="/static/leaflet/leaflet.js"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
@@ -35,13 +34,12 @@
 <body>
     <header class="header">
         <div class="header-content">
-            <a href="/" class="logo"><img src="/static/logo.png" alt="Truck's List" class="logo-img"><span class="logo-text">Truck's List</span></a>
+            <a href="/" class="logo">HillsInspector</a>
             <nav class="nav">
                 <a href="/" class="nav-link{% if request.url.path == '/' %} is-active{% endif %}">Dashboard</a>
                 <a href="/auctions" class="nav-link{% if request.url.path.startswith('/auctions') %} is-active{% endif %}">Auctions</a>
                 <a href="/auction-intel" class="nav-link{% if request.url.path.startswith('/auction-intel') %} is-active{% endif %}">Intel</a>
-                <a href="/review/hcpa-failures" class="nav-link{% if request.url.path == '/review/hcpa-failures' %} is-active{% endif %}">Review Queue</a>
-                <a href="/review/encumbrance-audit" class="nav-link{% if request.url.path == '/review/encumbrance-audit' %} is-active{% endif %}">Audit Queue</a>
+                <a href="/review/hcpa-failures" class="nav-link{% if request.url.path.startswith('/review') %} is-active{% endif %}">Review Queue</a>
                 <a href="/history" class="nav-link{% if request.url.path.startswith('/history') %} is-active{% endif %}">History</a>
                 <a href="/database" class="nav-link{% if request.url.path.startswith('/database') %} is-active{% endif %}">Database</a>
             </nav>
@@ -60,7 +58,7 @@
     </main>
 
     <footer class="footer">
-        <p>Truck's List - Hillsborough County Foreclosure Research</p>
+        <p>HillsInspector - Hillsborough County Property Auction Analysis</p>
     </footer>
 
     <script>

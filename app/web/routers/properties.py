@@ -15,19 +15,11 @@ from typing import Any
 
 from loguru import logger
 from app.web.pg_database import get_pg_queries
-from src.db.encumbrance_queries import get_encumbrance_queries
-from src.db.foreclosure_queries import get_foreclosure_queries
-from src.db.sunbiz_queries import get_sunbiz_queries
-from src.db.tax_queries import get_tax_queries
 from app.web.template_filters import get_templates
 from src.utils.time import today_local
 from sqlalchemy import text as sa_text
 
 from sunbiz.db import get_engine, resolve_pg_dsn
-from src.services.audit.web_audit_service import (
-    get_property_audit_snapshot,
-    group_issues_by_family,
-)
 
 router = APIRouter()
 
@@ -40,7 +32,30 @@ def _pg_engine():
 
 
 def _pg_case_numbers_for_property(identifier: str) -> list[str]:
-    return get_foreclosure_queries().get_case_numbers(identifier)
+    if not identifier:
+        return []
+    with _pg_engine().connect() as conn:
+        rows = conn.execute(
+            sa_text("""
+                SELECT DISTINCT case_number FROM (
+                    SELECT f.case_number_raw AS case_number
+                    FROM foreclosures f
+                    WHERE f.case_number_raw = :identifier
+                       OR f.strap = :identifier
+                       OR f.folio = :identifier
+                    UNION ALL
+                    SELECT fh.case_number_raw AS case_number
+                    FROM foreclosures_history fh
+                    WHERE fh.case_number_raw = :identifier
+                       OR fh.strap = :identifier
+                       OR fh.folio = :identifier
+                ) t
+                WHERE case_number IS NOT NULL AND btrim(case_number) != ''
+                ORDER BY case_number
+            """),
+            {"identifier": identifier},
+        ).fetchall()
+        return [str(r[0]) for r in rows if r and r[0]]
 
 
 def _resolve_chain_folio(
@@ -48,7 +63,83 @@ def _resolve_chain_folio(
     identifier: str | None,
     case_number: str | None = None,
 ) -> str | None:
-    return get_foreclosure_queries().resolve_folio(identifier, case_number)
+    if case_number:
+        row = conn.execute(
+            sa_text("""
+                SELECT folio
+                FROM (
+                    SELECT folio, auction_date
+                    FROM foreclosures
+                    WHERE case_number_raw = :case_number
+                       OR case_number_norm = :case_number
+                    UNION ALL
+                    SELECT folio, auction_date
+                    FROM foreclosures_history
+                    WHERE case_number_raw = :case_number
+                       OR case_number_norm = :case_number
+                ) x
+                WHERE folio IS NOT NULL AND btrim(folio) <> ''
+                ORDER BY auction_date DESC NULLS LAST
+                LIMIT 1
+            """),
+            {"case_number": case_number},
+        ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+
+    if identifier:
+        row = conn.execute(
+            sa_text("""
+                SELECT folio
+                FROM (
+                    SELECT folio, auction_date
+                    FROM foreclosures
+                    WHERE folio = :identifier
+                       OR strap = :identifier
+                       OR case_number_raw = :identifier
+                       OR case_number_norm = :identifier
+                    UNION ALL
+                    SELECT folio, auction_date
+                    FROM foreclosures_history
+                    WHERE folio = :identifier
+                       OR strap = :identifier
+                       OR case_number_raw = :identifier
+                       OR case_number_norm = :identifier
+                ) x
+                WHERE folio IS NOT NULL AND btrim(folio) <> ''
+                ORDER BY auction_date DESC NULLS LAST
+                LIMIT 1
+            """),
+            {"identifier": identifier},
+        ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+
+        row = conn.execute(
+            sa_text("""
+                SELECT folio
+                FROM hcpa_bulk_parcels
+                WHERE strap = :identifier OR folio = :identifier
+                LIMIT 1
+            """),
+            {"identifier": identifier},
+        ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+
+        row = conn.execute(
+            sa_text("""
+                SELECT folio
+                FROM hcpa_allsales
+                WHERE folio = :identifier
+                LIMIT 1
+            """),
+            {"identifier": identifier},
+        ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+
+    return None
 
 
 def _pg_chain_for_property(identifier: str, case_number: str | None = None) -> list[dict[str, Any]]:
@@ -399,7 +490,59 @@ def _pg_tax_liens_for_property(
     folio: str | None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    return get_encumbrance_queries().get_tax_liens(strap=strap, folio=folio, limit=limit)
+    where_clauses: list[str] = []
+    params: dict[str, Any] = {"lim": max(1, min(limit, 1000))}
+    if strap:
+        where_clauses.append("oe.strap = :strap")
+        params["strap"] = strap
+    elif folio:
+        where_clauses.append("oe.folio = :folio")
+        params["folio"] = folio
+    if not where_clauses:
+        return []
+
+    rows = (
+        conn.execute(
+            sa_text(f"""
+            SELECT
+                oe.id,
+                oe.recording_date,
+                oe.encumbrance_type::text AS encumbrance_type,
+                oe.raw_document_type,
+                oe.amount,
+                oe.survival_status,
+                oe.party1,
+                oe.party2,
+                oe.instrument_number,
+                CASE
+                    WHEN oe.encumbrance_type::text = 'mortgage'
+                        THEN COALESCE(NULLIF(oe.party2, ''), NULLIF(oe.party1, ''), '')
+                    ELSE COALESCE(NULLIF(oe.party1, ''), NULLIF(oe.party2, ''), '')
+                END AS creditor
+            FROM ori_encumbrances oe
+            WHERE ({" OR ".join(where_clauses)})
+              AND (
+                    UPPER(COALESCE(oe.raw_document_type, '')) LIKE '%LNCORPTX%'
+                    OR UPPER(COALESCE(oe.raw_document_type, '')) LIKE '%TAX LIEN%'
+                    OR UPPER(COALESCE(oe.raw_document_type, '')) LIKE '%(TL)%'
+                    OR UPPER(COALESCE(oe.party1, '')) LIKE '%INTERNAL REVENUE%'
+                    OR UPPER(COALESCE(oe.party1, '')) LIKE '% IRS %'
+                    OR UPPER(COALESCE(oe.party2, '')) LIKE '%INTERNAL REVENUE%'
+                    OR UPPER(COALESCE(oe.party2, '')) LIKE '% IRS %'
+                    OR UPPER(COALESCE(oe.party1, '')) LIKE '%TAX COLLECTOR%'
+                    OR UPPER(COALESCE(oe.party2, '')) LIKE '%TAX COLLECTOR%'
+              )
+              AND UPPER(COALESCE(oe.raw_document_type, '')) NOT LIKE '%MORTGAGE%'
+              AND UPPER(COALESCE(oe.raw_document_type, '')) NOT LIKE '%ASSIGNMENT/TAXES%'
+            ORDER BY oe.recording_date DESC NULLS LAST, oe.id DESC
+            LIMIT :lim
+        """),
+            params,
+        )
+        .mappings()
+        .fetchall()
+    )
+    return [dict(r) for r in rows]
 
 
 def _pg_nocs_for_property(
@@ -409,9 +552,46 @@ def _pg_nocs_for_property(
     folio: str | None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    raw_nocs = get_encumbrance_queries().get_nocs(strap=strap, folio=folio, limit=limit)
+    where_clauses: list[str] = []
+    params: dict[str, Any] = {"lim": max(1, min(limit, 1000))}
+    if strap:
+        where_clauses.append("oe.strap = :strap")
+        params["strap"] = strap
+    elif folio:
+        where_clauses.append("oe.folio = :folio")
+        params["folio"] = folio
+    if not where_clauses:
+        return []
+
+    rows = (
+        conn.execute(
+            sa_text(f"""
+            SELECT
+                oe.id AS encumbrance_id,
+                oe.recording_date,
+                oe.instrument_number,
+                oe.party1,
+                oe.party2,
+                oe.legal_description,
+                oe.raw_document_type
+            FROM ori_encumbrances oe
+            WHERE ({" OR ".join(where_clauses)})
+              AND (
+                    UPPER(COALESCE(oe.raw_document_type, '')) LIKE '%(NOC)%'
+                    OR UPPER(COALESCE(oe.raw_document_type, '')) LIKE '%NOTICE OF COMMENCEMENT%'
+                    OR UPPER(COALESCE(oe.raw_document_type, '')) LIKE 'NOC%'
+              )
+            ORDER BY oe.recording_date DESC NULLS LAST, oe.id DESC
+            LIMIT :lim
+        """),
+            params,
+        )
+        .mappings()
+        .fetchall()
+    )
     nocs = []
-    for item in raw_nocs:
+    for row in rows:
+        item = dict(row)
         item["id"] = None
         item["instrument_url"] = _instrument_search_url(item.get("instrument_number"))
         nocs.append(item)
@@ -495,10 +675,8 @@ def _pg_tax_status_for_property(
     owner_name: str | None = None,
 ) -> dict[str, Any]:
     with _pg_engine().connect() as conn:
-        tq = get_tax_queries()
-        current_year = tq.get_current_year(strap=strap, folio=folio, identifier=identifier)
-        history_rows = tq.get_history(strap=strap, folio=folio, identifier=identifier)
-        if not current_year and not history_rows:
+        id_values = [v for v in (folio, strap, identifier) if v]
+        if not id_values:
             return {
                 "has_tax_liens": False,
                 "tax_status": None,
@@ -510,16 +688,67 @@ def _pg_tax_status_for_property(
                 "flr_liens": [],
             }
 
-        history = _compute_yoy(history_rows)
+        # Query A: current year full detail
+        row = (
+            conn.execute(
+                sa_text("""
+                SELECT tax_year, homestead_exempt, estimated_annual_tax,
+                       just_value, just_value_homestead,
+                       assessed_value_school, assessed_value_nonschool,
+                       assessed_value_homestead,
+                       taxable_value_school, taxable_value_nonschool,
+                       homestead_exempt_value, widow_exempt, widow_exempt_value,
+                       disability_exempt, disability_exempt_value,
+                       veteran_exempt, veteran_exempt_value,
+                       ag_exempt, ag_exempt_value,
+                       soh_differential, total_millage, county_millage,
+                       school_millage, city_millage, property_use_code
+                FROM dor_nal_parcels
+                WHERE folio = ANY(:ids)
+                   OR strap = ANY(:ids)
+                   OR parcel_id = ANY(:ids)
+                ORDER BY tax_year DESC
+                LIMIT 1
+            """),
+                {"ids": id_values},
+            )
+            .mappings()
+            .fetchone()
+        )
+        current_year = dict(row) if row else None
+
+        # Query B: all years for history table
+        history_rows = (
+            conn.execute(
+                sa_text("""
+                SELECT DISTINCT ON (tax_year)
+                       tax_year, just_value,
+                       GREATEST(assessed_value_school, assessed_value_nonschool)
+                           AS assessed_value,
+                       GREATEST(taxable_value_school, taxable_value_nonschool)
+                           AS taxable_value,
+                       estimated_annual_tax, homestead_exempt, total_millage
+                FROM dor_nal_parcels
+                WHERE folio = ANY(:ids)
+                   OR strap = ANY(:ids)
+                   OR parcel_id = ANY(:ids)
+                ORDER BY tax_year DESC, id DESC
+            """),
+                {"ids": id_values},
+            )
+            .mappings()
+            .fetchall()
+        )
+        history = _compute_yoy([dict(r) for r in history_rows])
 
         liens = _pg_tax_liens_for_property(conn, strap=strap, folio=folio)
         flr_liens = _pg_flr_liens_for_property(conn, owner_name=owner_name)
         liens_total = sum(_as_float(item.get("amount")) for item in liens)
-        amount = current_year.get("estimated_annual_tax") if current_year else None
+        amount = row.get("estimated_annual_tax") if row else None
         tax_warrant = any("WARRANT" in str(item.get("raw_document_type") or "").upper() for item in liens)
         return {
             "has_tax_liens": bool(liens) or bool((amount or 0) > 0),
-            "tax_status": f"Tax Year {current_year.get('tax_year')}" if current_year else None,
+            "tax_status": f"Tax Year {row.get('tax_year')}" if row else None,
             "tax_warrant": tax_warrant,
             "total_amount_due": liens_total if liens_total > 0 else _to_optional_float(amount),
             "current_year": current_year,
@@ -530,7 +759,32 @@ def _pg_tax_status_for_property(
 
 
 def _pg_permits_for_property(foreclosure_id: int) -> list[dict[str, Any]]:
-    return get_foreclosure_queries().get_permits(foreclosure_id)
+    with _pg_engine().connect() as conn:
+        rows = (
+            conn.execute(
+                sa_text("""
+                SELECT
+                    event_date AS issue_date,
+                    instrument_number AS permit_number,
+                    event_subtype AS permit_type,
+                    description,
+                    amount AS estimated_cost,
+                    CASE
+                        WHEN description ~* '(closed|complete|final|expired)'
+                            THEN 'Closed'
+                        ELSE 'Open'
+                    END AS status
+                FROM foreclosure_title_events
+                WHERE foreclosure_id = :fid
+                  AND event_source IN ('COUNTY_PERMIT', 'TAMPA_PERMIT')
+                ORDER BY event_date DESC
+            """),
+                {"fid": foreclosure_id},
+            )
+            .mappings()
+            .fetchall()
+        )
+        return [dict(r) for r in rows]
 
 
 def _as_float(value: Any) -> float:
@@ -579,9 +833,59 @@ def _pg_encumbrances_for_property(
     folio: str | None,
     limit: int = 500,
 ) -> list[dict[str, Any]]:
-    raw = get_encumbrance_queries().get_encumbrances(strap=strap, folio=folio, limit=limit)
+    if not strap and not folio:
+        return []
+    where_clauses: list[str] = []
+    params: dict[str, Any] = {"lim": max(1, min(limit, 2000))}
+    if strap:
+        where_clauses.append("oe.strap = :strap")
+        params["strap"] = strap
+    elif folio:
+        where_clauses.append("oe.folio = :folio")
+        params["folio"] = folio
+    if not where_clauses:
+        return []
+
+    rows = (
+        conn.execute(
+            sa_text(f"""
+            SELECT
+                oe.id,
+                oe.recording_date,
+                oe.encumbrance_type::text AS encumbrance_type,
+                oe.amount,
+                oe.amount_confidence,
+                oe.survival_status,
+                oe.survival_reason,
+                COALESCE(oe.is_satisfied, FALSE) AS is_satisfied,
+                oe.instrument_number AS instrument,
+                oe.instrument_number,
+                oe.book,
+                oe.page,
+                oe.case_number,
+                oe.party1,
+                oe.party2,
+                oe.raw_document_type,
+                CASE
+                    WHEN oe.encumbrance_type::text = 'mortgage'
+                        THEN COALESCE(NULLIF(oe.party2, ''), NULLIF(oe.party1, ''), '')
+                    ELSE COALESCE(NULLIF(oe.party1, ''), NULLIF(oe.party2, ''), '')
+                END AS creditor
+            FROM ori_encumbrances oe
+            WHERE ({" OR ".join(where_clauses)})
+              AND oe.encumbrance_type::text != 'noc'
+            ORDER BY oe.recording_date DESC NULLS LAST, oe.id DESC
+            LIMIT :lim
+        """),
+            params,
+        )
+        .mappings()
+        .fetchall()
+    )
+
     encumbrances: list[dict[str, Any]] = []
-    for encumbrance in raw:
+    for row in rows:
+        encumbrance = dict(row)
         reason_upper = str(encumbrance.get("survival_reason") or "").upper()
         encumbrance["is_joined"] = "JOINED AS DEFENDANT" in reason_upper
         encumbrance["is_inferred"] = "INFER" in reason_upper
@@ -590,7 +894,40 @@ def _pg_encumbrances_for_property(
 
 
 def _summarize_encumbrances(encumbrances: list[dict[str, Any]]) -> dict[str, Any]:
-    return get_encumbrance_queries().summarize(encumbrances)
+    # Treat UNCERTAIN as risk-bearing until proven extinguished.
+    risk_statuses = {"SURVIVED", "UNCERTAIN"}
+    liens_total = 0
+    liens_survived = 0
+    liens_uncertain = 0
+    liens_surviving = 0
+    liens_total_amount = 0.0
+    surviving_unknown_amount = 0
+
+    for enc in encumbrances:
+        if bool(enc.get("is_satisfied")):
+            continue
+        liens_total += 1
+        status = _normalized_survival_status(enc.get("survival_status"))
+        if status == "SURVIVED":
+            liens_survived += 1
+        elif status == "UNCERTAIN":
+            liens_uncertain += 1
+        if status in risk_statuses:
+            amount = enc.get("amount")
+            if amount is None:
+                surviving_unknown_amount += 1
+            else:
+                liens_total_amount += _as_float(amount)
+    liens_surviving = liens_survived + liens_uncertain
+
+    return {
+        "liens_total": liens_total,
+        "liens_survived": liens_survived,
+        "liens_uncertain": liens_uncertain,
+        "liens_surviving": liens_surviving,
+        "liens_total_amount": liens_total_amount,
+        "surviving_unknown_amount": surviving_unknown_amount,
+    }
 
 
 def _pg_market_snapshot(
@@ -861,20 +1198,6 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
 
         cdd_warning = get_pg_queries().get_cdd_warning(strap_or_folio)
 
-        # UCC / secured filings check
-        ucc_summary: dict = {}
-        try:
-            sq = get_sunbiz_queries()
-            if sq.available:
-                owner_name = parcel_dict.get("owner_name") or ""
-                defendant_raw = defendant or ""
-                ucc_summary = sq.get_ucc_summary_for_auction(
-                    owner_name=owner_name,
-                    defendant_name=defendant_raw or None,
-                )
-        except Exception:
-            logger.debug("UCC summary lookup failed (non-fatal)", exc_info=True)
-
         enrichments = {
             "permits_total": len(permits),
             "permits_open": sum(1 for p in permits if str(p.get("status") or "").lower() in {"open", "active", "issued"}),
@@ -927,7 +1250,6 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
             "is_toxic_title": bool((auction.get("unsatisfied_encumbrance_count") or 0) > 2 or enc_summary["liens_surviving"] > 0),
             "market": market,
             "enrichments": enrichments,
-            "ucc_summary": ucc_summary,
             "sources": _build_property_sources(
                 identifier=strap_or_folio,
                 auction=auction,
@@ -964,22 +1286,6 @@ async def property_detail(request: Request, folio: str):
         pg_data["multi_unit"] = None
         pg_data["pg_available"] = False
 
-    # Audit summary (graceful degradation)
-    audit_summary = {"total_open_issues": 0, "has_issues": False, "top_buckets": [], "family_counts": {}}
-    foreclosure_id = prop.get("_foreclosure_id")
-    if foreclosure_id:
-        try:
-            with _pg_engine().connect() as audit_conn:
-                audit_summary = get_property_audit_snapshot(
-                    foreclosure_id=foreclosure_id,
-                    folio=prop.get("_folio_raw"),
-                    strap=prop.get("_strap"),
-                    case_number=prop.get("_case_number_raw"),
-                    conn=audit_conn,
-                )
-        except Exception:
-            logger.debug("Audit summary unavailable for {}", folio, exc_info=True)
-
     return templates.TemplateResponse(
         "property.html",
         {
@@ -993,7 +1299,6 @@ async def property_detail(request: Request, folio: str):
             "market": prop.get("market", {}),
             "enrichments": prop.get("enrichments", {}),
             "pg_data": pg_data,
-            "audit_summary": audit_summary,
         },
     )
 
@@ -1046,51 +1351,6 @@ async def property_analysis(request: Request, folio: str):
             "market_value": prop.get("market_value", 0),
         },
     )
-
-
-@router.get("/{folio}/audit", response_class=HTMLResponse)
-async def property_audit(request: Request, folio: str):
-    """
-    HTMX partial - audit issues tab for a property.
-    """
-    try:
-        prop = _pg_property_detail(folio)
-        if not prop:
-            return templates.TemplateResponse(
-                "partials/audit.html",
-                {"request": request, "error": "Property not found", "grouped_issues": [], "snapshot": {}},
-            )
-
-        foreclosure_id = prop.get("_foreclosure_id")
-        if not foreclosure_id:
-            return templates.TemplateResponse(
-                "partials/audit.html",
-                {"request": request, "error": None, "grouped_issues": [], "snapshot": {
-                    "total_open_issues": 0, "has_issues": False, "issues": [],
-                }},
-            )
-
-        with _pg_engine().connect() as conn:
-            snapshot = get_property_audit_snapshot(
-                foreclosure_id=foreclosure_id,
-                folio=prop.get("_folio_raw"),
-                strap=prop.get("_strap"),
-                case_number=prop.get("_case_number_raw"),
-                conn=conn,
-            )
-
-        grouped = group_issues_by_family(snapshot.get("issues", []))
-
-        return templates.TemplateResponse(
-            "partials/audit.html",
-            {"request": request, "error": None, "grouped_issues": grouped, "snapshot": snapshot},
-        )
-    except Exception:
-        logger.exception("Audit tab failed for {}", folio)
-        return templates.TemplateResponse(
-            "partials/audit.html",
-            {"request": request, "error": "Audit temporarily unavailable", "grouped_issues": [], "snapshot": {}},
-        )
 
 
 @router.get("/{folio}/sales", response_class=HTMLResponse)

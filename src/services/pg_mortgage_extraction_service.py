@@ -24,7 +24,6 @@ from sqlalchemy import text
 from src.services.scraper_storage import ScraperStorage
 from src.services.vision_service import VisionService, MORTGAGE_PROMPT
 from sunbiz.db import get_engine, resolve_pg_dsn
-from src.utils.amount_validator import validate_mortgage_amount
 
 
 USER_AGENT_DESKTOP = (
@@ -73,17 +72,11 @@ class PgMortgageExtractionService:
     # Public API
     # ------------------------------------------------------------------
 
-    def run(
-        self,
-        *,
-        limit: int | None = None,
-        straps: list[str] | None = None,
-    ) -> dict[str, Any]:
+    def run(self, *, limit: int | None = None) -> dict[str, Any]:
         """Find unprocessed mortgages, download PDFs, extract via Vision, push to PG."""
         started = time.monotonic()
-        target_straps = sorted({str(s).strip() for s in (straps or []) if str(s).strip()})
 
-        needs_extract = self._find_unextracted_mortgages(limit, straps=target_straps or None)
+        needs_extract = self._find_unextracted_mortgages(limit)
         if not needs_extract:
             logger.info("No unextracted mortgages found.")
             return {"skipped": True, "reason": "no_mortgages"}
@@ -98,7 +91,6 @@ class PgMortgageExtractionService:
         return {
             "mortgages_found": len(needs_extract),
             "mortgages_extracted": extracted,
-            "targeted_straps": target_straps,
             "elapsed_seconds": elapsed,
         }
 
@@ -106,12 +98,7 @@ class PgMortgageExtractionService:
     # Internal
     # ------------------------------------------------------------------
 
-    def _find_unextracted_mortgages(
-        self,
-        limit: int | None,
-        *,
-        straps: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
+    def _find_unextracted_mortgages(self, limit: int | None) -> list[dict[str, Any]]:
         """Find mortgages in the DB that don't have mortgage_data extracted."""
         query = """
             SELECT
@@ -125,18 +112,13 @@ class PgMortgageExtractionService:
             WHERE encumbrance_type = 'mortgage'
               AND mortgage_data IS NULL
               AND ori_id IS NOT NULL
+            ORDER BY id DESC
         """
-        params: dict[str, Any] = {}
-        if straps:
-            query += "\n              AND strap = ANY(:straps)"
-            params["straps"] = straps
-        query += "\n            ORDER BY id DESC"
         if limit is not None:
-            query += "\nLIMIT :limit"
-            params["limit"] = limit
+            query += f"\nLIMIT {limit}"
 
         with self.engine.connect() as conn:
-            rows = conn.execute(text(query), params).mappings().fetchall()
+            rows = conn.execute(text(query)).mappings().fetchall()
 
         return [dict(r) for r in rows]
 
@@ -323,13 +305,13 @@ class PgMortgageExtractionService:
     def _save_to_pg(self, encumbrance_id: int, mortgage_data: dict[str, Any]) -> None:
         """Update the ori_encumbrances row with the JSON and amounts."""
         principal = mortgage_data.get("principal_amount")
-        v = validate_mortgage_amount(principal)
-        amount_val = v["amount"]
-        if v["flags"]:
-            logger.debug(
-                "Mortgage amount flags for encumbrance {}: {} (confidence={})",
-                encumbrance_id, ", ".join(v["flags"]), v["confidence"],
-            )
+        if isinstance(principal, str):
+            principal = principal.replace("$", "").replace(",", "").strip()
+
+        try:
+            amount_val = float(principal) if principal else None
+        except ValueError:
+            amount_val = None
 
         with self.engine.begin() as conn:
             conn.execute(

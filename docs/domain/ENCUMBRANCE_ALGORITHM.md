@@ -231,7 +231,7 @@ for every case.
 ## Execution Plan
 1. Run benchmark script:
 ```bash
-uv run python src/scripts/benchmark_encumbrance_algorithms.py --sample-size 12
+uv run python scripts/benchmark_encumbrance_algorithms.py --sample-size 12
 ```
 2. Review generated JSON + markdown summary in `logs/`.
 3. Promote winner to default ORI strategy design.

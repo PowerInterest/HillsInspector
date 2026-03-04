@@ -5,7 +5,7 @@ Provides fuzzy search, county-wide analytics, comparable sales, subdivision
 info, and multi-unit detection.  All methods degrade gracefully when PG is
 unavailable (return empty lists / dicts / None).
 
-Connection pattern mirrors src/db/sales_queries.py.
+Connection pattern mirrors src/services/pg_sales_service.py.
 """
 
 from __future__ import annotations
@@ -22,7 +22,19 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from sunbiz.db import get_engine, resolve_pg_dsn
 
-from src.db.sales_queries import SALE_TYPE_MAP, get_sales_queries
+# Sale type code -> human-readable deed type
+SALE_TYPE_MAP: dict[str, str] = {
+    "WD": "Warranty Deed",
+    "QC": "Quit Claim",
+    "FD": "Foreclosure Deed",
+    "TD": "Tax Deed",
+    "CT": "Certificate of Title",
+    "DD": "Deed",
+    "TR": "Trustees Deed",
+    "PR": "Personal Rep Deed",
+    "GD": "Guardian Deed",
+    "SD": "Sheriffs Deed",
+}
 
 
 class PgDashboardQueries:
@@ -499,8 +511,6 @@ class PgDashboardQueries:
     def get_sales_history(self, folio: str) -> list[dict[str, Any]]:
         """Complete sales chain for a property from hcpa_allsales.
 
-        Delegates to SalesQueries.get_sales_chain() (single source of truth).
-
         Args:
             folio: Pipeline strap (auctions.folio / parcel_id format)
 
@@ -511,14 +521,28 @@ class PgDashboardQueries:
         if not self._available or not folio:
             return []
         try:
-            sq = get_sales_queries()
-            if not sq.available:
-                return []
             with self._engine.connect() as conn:
                 pg_folio = self._resolve_pg_folio(conn, folio)
                 if not pg_folio:
                     return []
-            return sq.get_sales_chain(pg_folio)
+
+                rows = conn.execute(
+                    text("""
+                        SELECT sale_date, sale_type, sale_amount,
+                               grantor, grantee,
+                               or_book, or_page, doc_num,
+                               qualification_code
+                        FROM hcpa_allsales
+                        WHERE folio = :folio
+                        ORDER BY sale_date DESC
+                    """),
+                    {"folio": pg_folio},
+                ).fetchall()
+
+                results = self._rows_to_dicts(rows)
+                for r in results:
+                    r["sale_type_desc"] = SALE_TYPE_MAP.get(r.get("sale_type", ""), r.get("sale_type", ""))
+                return results
         except SQLAlchemyError:
             logger.exception(f"get_sales_history({folio}) failed")
             return []

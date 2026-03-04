@@ -1,10 +1,7 @@
 """PG-first pipeline controller.
 
 This controller orchestrates PostgreSQL ingestion and refresh steps without any
-SQLite dependency. Phase B now includes an explicit encumbrance audit/recovery
-loop: the pipeline computes read-only audit gaps after survival analysis, then
-reuses the existing ORI, mortgage, and survival writers against that narrower
-scope before the final foreclosure refresh publishes the updated state.
+SQLite dependency.
 """
 
 from __future__ import annotations
@@ -38,7 +35,9 @@ DEFAULT_HCPA_DOWNLOAD_DIR = Path("data/bulk_data/hcpa")
 DEFAULT_SUNBIZ_DATA_DIR = Path("data/sunbiz")
 DEFAULT_SUNBIZ_MANIFEST = Path("data/sunbiz/manifest.json")
 DEFAULT_SUNBIZ_ENTITY_ROOT = DEFAULT_SUNBIZ_DATA_DIR / "public/doc/quarterly"
-SUNBIZ_ENTITY_FILE_PATTERN = r"(?i)^(cor|gen)/(cordata|corevt|genfile|genevt)\.zip$"
+SUNBIZ_ENTITY_FILE_PATTERN = (
+    r"(?i)^(cor|gen)/(cordata|corevt|genfile|genevt)\.zip$"
+)
 
 
 @dataclass(slots=True)
@@ -72,8 +71,6 @@ class ControllerSettings:
     skip_ori_search: bool = False
     skip_mortgage_extract: bool = False
     skip_survival: bool = False
-    skip_encumbrance_audit: bool = False
-    skip_encumbrance_recovery: bool = False
     # Market Data specific
     use_windows_chrome: bool = False
     # Staleness windows
@@ -136,7 +133,6 @@ class PgPipelineController:
         self.settings = settings
         self.dsn = resolve_pg_dsn(settings.dsn)
         self.engine = get_engine(self.dsn)
-        self._encumbrance_audit_report: Any | None = None
 
     def run(self) -> dict[str, Any]:
         started = time.monotonic()
@@ -210,16 +206,6 @@ class PgPipelineController:
                 self.settings.skip_survival,
                 self._run_survival_analysis,
             ),
-            (
-                "encumbrance_audit",
-                self.settings.skip_encumbrance_audit,
-                self._run_encumbrance_audit,
-            ),
-            (
-                "encumbrance_recovery",
-                self.settings.skip_encumbrance_recovery,
-                self._run_encumbrance_recovery,
-            ),
             # Final refresh: pick up all new Phase B data
             (
                 "final_refresh",
@@ -270,7 +256,15 @@ class PgPipelineController:
             payload_dict = payload if isinstance(payload, dict) else {"result": payload}
             failed, failure_reason = self._is_failed_payload(payload_dict)
             degraded = self._is_degraded_payload(payload_dict)
-            status = "failed" if failed else "skipped" if payload_dict.get("skipped") else "degraded" if degraded else "ok"
+            status = (
+                "failed"
+                if failed
+                else "skipped"
+                if payload_dict.get("skipped")
+                else "degraded"
+                if degraded
+                else "ok"
+            )
             result = {
                 "name": name,
                 "status": status,
@@ -389,12 +383,21 @@ class PgPipelineController:
         latest = None
         try:
             with self.engine.connect() as conn:
-                row = conn.execute(text("SELECT COUNT(*) FROM clerk_criminal_name_index")).scalar()
+                row = conn.execute(
+                    text("SELECT COUNT(*) FROM clerk_criminal_name_index")
+                ).scalar()
                 count = row or 0
-                ts = conn.execute(text("SELECT MAX(loaded_at) FROM ingest_files WHERE source_system = 'clerk_criminal'")).scalar()
+                ts = conn.execute(
+                    text(
+                        "SELECT MAX(loaded_at) FROM ingest_files "
+                        "WHERE source_system = 'clerk_criminal'"
+                    )
+                ).scalar()
                 latest = ts
         except Exception:
-            logger.opt(exception=True).debug("Clerk criminal staleness check failed; forcing refresh")
+            logger.opt(exception=True).debug(
+                "Clerk criminal staleness check failed; forcing refresh"
+            )
 
         if not self._should_run(
             force=self.settings.force_all,
@@ -416,14 +419,24 @@ class PgPipelineController:
         latest = None
         try:
             with self.engine.connect() as conn:
-                row = conn.execute(text("SELECT COUNT(*) FROM clerk_civil_parties WHERE source_file LIKE 'alpha:%'")).scalar()
+                row = conn.execute(
+                    text(
+                        "SELECT COUNT(*) FROM clerk_civil_parties "
+                        "WHERE source_file LIKE 'alpha:%'"
+                    )
+                ).scalar()
                 count = row or 0
                 ts = conn.execute(
-                    text("SELECT MAX(loaded_at) FROM ingest_files WHERE source_system = 'clerk_civil_alpha'")
+                    text(
+                        "SELECT MAX(loaded_at) FROM ingest_files "
+                        "WHERE source_system = 'clerk_civil_alpha'"
+                    )
                 ).scalar()
                 latest = ts
         except Exception:
-            logger.opt(exception=True).debug("Clerk civil alpha staleness check failed; forcing refresh")
+            logger.opt(exception=True).debug(
+                "Clerk civil alpha staleness check failed; forcing refresh"
+            )
 
         if not self._should_run(
             force=self.settings.force_all,
@@ -530,7 +543,9 @@ class PgPipelineController:
             batch_size=5000,
         )
         if int(load_stats.get("files_scanned") or 0) <= 0:
-            raise RuntimeError(f"sunbiz_entity sync completed but no entity files were scanned under {entity_root}")
+            raise RuntimeError(
+                f"sunbiz_entity sync completed but no entity files were scanned under {entity_root}"
+            )
         return {"state_before": state, "update": load_stats}
 
     def _run_county_permits(self) -> dict[str, Any]:
@@ -790,48 +805,9 @@ class PgPipelineController:
         svc = PgSurvivalService(dsn=self.dsn)
         return svc.run(limit=self.settings.survival_limit)
 
-    def _run_encumbrance_audit(self) -> dict[str, Any]:
-        from src.services.audit.pg_audit_encumbrance import run_audit
-
-        report = run_audit(dsn=self.dsn)
-        self._encumbrance_audit_report = report
-        with_strap = int(report.with_strap_count)
-        with_enc = int(report.with_encumbrances_count)
-        with_survival = int(report.with_survival_count)
-        enc_cov = round((100.0 * with_enc) / with_strap, 2) if with_strap > 0 else None
-        survival_cov = round((100.0 * with_survival) / with_strap, 2) if with_strap > 0 else None
-        bucket_counts = {
-            summary.bucket: int(summary.count)
-            for summary in report.summaries
-            if int(summary.count) > 0 or summary.deferred
-        }
-        return {
-            "active_count": report.active_count,
-            "judged_count": report.judged_count,
-            "with_strap_count": report.with_strap_count,
-            "with_encumbrances_count": report.with_encumbrances_count,
-            "with_survival_count": report.with_survival_count,
-            "encumbrance_coverage_pct": enc_cov,
-            "survival_coverage_pct": survival_cov,
-            "encumbrance_coverage_target_met": bool(enc_cov is not None and enc_cov >= 80.0),
-            "survival_coverage_target_met": bool(survival_cov is not None and survival_cov >= 80.0),
-            "open_issues": len(report.hits),
-            "affected_foreclosures": len({hit.foreclosure_id for hit in report.hits}),
-            "bucket_counts": bucket_counts,
-        }
-
-    def _run_encumbrance_recovery(self) -> dict[str, Any]:
-        from src.services.audit.encumbrance_recovery import EncumbranceRecoveryService
-
-        svc = EncumbranceRecoveryService(dsn=self.dsn)
-        result = svc.run(report=self._encumbrance_audit_report)
-        self._encumbrance_audit_report = None
-        return result
-
     def _run_final_refresh(self) -> dict[str, Any]:
         """Re-run foreclosure refresh to pick up Phase B data."""
-        logger.info("Initializing post-market data Hub metrics refresh...")
-        from src.scripts.refresh_foreclosures import refresh as _refresh
+        from scripts.refresh_foreclosures import refresh as _refresh
 
         counts = _refresh(dsn=self.dsn)
         return {"update": counts}
@@ -1247,8 +1223,6 @@ def parse_args() -> ControllerSettings:
     parser.add_argument("--skip-ori-search", action="store_true")
     parser.add_argument("--skip-mortgage-extract", action="store_true")
     parser.add_argument("--skip-survival", action="store_true")
-    parser.add_argument("--skip-encumbrance-audit", action="store_true")
-    parser.add_argument("--skip-encumbrance-recovery", action="store_true")
 
     parser.add_argument("--hcpa-download-dir", default=str(DEFAULT_HCPA_DOWNLOAD_DIR))
     parser.add_argument(
@@ -1348,8 +1322,6 @@ def parse_args() -> ControllerSettings:
         skip_ori_search=bool(args.skip_ori_search),
         skip_mortgage_extract=bool(args.skip_mortgage_extract),
         skip_survival=bool(args.skip_survival),
-        skip_encumbrance_audit=bool(args.skip_encumbrance_audit),
-        skip_encumbrance_recovery=bool(args.skip_encumbrance_recovery),
         hcpa_download_dir=Path(args.hcpa_download_dir),
         include_hcpa_latlon=args.include_hcpa_latlon,
         sunbiz_data_dir=Path(args.sunbiz_data_dir),

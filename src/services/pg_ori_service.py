@@ -38,8 +38,6 @@ from loguru import logger
 from sqlalchemy import text
 
 from src.services.pav_cache import pav_cache_get, pav_cache_put
-from src.utils.amount_validator import validate_amount
-from src.utils.relevance_checker import verify_document_relevance
 
 from src.db.type_normalizer import (
     CANONICAL_ENCUMBRANCE_TYPES,
@@ -412,7 +410,8 @@ class PgOriService:
                 lp_docs = [
                     doc
                     for doc in discovered_docs
-                    if normalize_encumbrance_type(normalize_document_type(doc.get("DocType") or "")) == "lis_pendens"
+                    if normalize_encumbrance_type(normalize_document_type(doc.get("DocType") or ""))
+                    == "lis_pendens"
                 ]
                 saved = 0
                 persisted_lp = self._has_persisted_lis_pendens(case, strap)
@@ -430,24 +429,28 @@ class PgOriService:
                 total_unresolved_truncations += metrics["unresolved_truncations"]
                 if lp_docs:
                     targets_with_docs += 1
-                per_target.append({
-                    "foreclosure_id": fid,
-                    "case_number": case,
-                    "strap": strap,
-                    "folio": folio,
-                    "docs_found": len(lp_docs),
-                    "saved": saved,
-                    "persisted_lp": persisted_lp,
-                    "inferred": 0,
-                    "api_calls": metrics["api_calls"],
-                    "retries": metrics["retries"],
-                    "truncated": metrics["truncated"],
-                    "unresolved_truncations": metrics["unresolved_truncations"],
-                    "official_seed_docs": metrics["official_seed_docs"],
-                    "deed_count": metrics["deed_count"],
-                    "clerk_case_count": metrics["clerk_case_count"],
-                    "instruments": [_get_instrument(doc) for doc in lp_docs if _get_instrument(doc)],
-                })
+                per_target.append(
+                    {
+                        "foreclosure_id": fid,
+                        "case_number": case,
+                        "strap": strap,
+                        "folio": folio,
+                        "docs_found": len(lp_docs),
+                        "saved": saved,
+                        "persisted_lp": persisted_lp,
+                        "inferred": 0,
+                        "api_calls": metrics["api_calls"],
+                        "retries": metrics["retries"],
+                        "truncated": metrics["truncated"],
+                        "unresolved_truncations": metrics["unresolved_truncations"],
+                        "official_seed_docs": metrics["official_seed_docs"],
+                        "deed_count": metrics["deed_count"],
+                        "clerk_case_count": metrics["clerk_case_count"],
+                        "instruments": [
+                            _get_instrument(doc) for doc in lp_docs if _get_instrument(doc)
+                        ],
+                    }
+                )
             except Exception as exc:
                 logger.exception(
                     "LP backfill error for case={} foreclosure_id={}",
@@ -455,16 +458,18 @@ class PgOriService:
                     fid,
                 )
                 errors += 1
-                per_target.append({
-                    "foreclosure_id": fid,
-                    "case_number": case,
-                    "strap": target.get("strap"),
-                    "folio": target.get("folio"),
-                    "docs_found": 0,
-                    "saved": 0,
-                    "inferred": 0,
-                    "error": str(exc),
-                })
+                per_target.append(
+                    {
+                        "foreclosure_id": fid,
+                        "case_number": case,
+                        "strap": target.get("strap"),
+                        "folio": target.get("folio"),
+                        "docs_found": 0,
+                        "saved": 0,
+                        "inferred": 0,
+                        "error": str(exc),
+                    }
+                )
 
         after_remaining = len(
             self._find_lis_pendens_gap_targets(
@@ -562,17 +567,19 @@ class PgOriService:
                 if docs:
                     targets_with_docs += 1
 
-                per_target.append({
-                    "foreclosure_id": fid,
-                    "case_number": case,
-                    "strap": strap,
-                    "folio": folio,
-                    "docs_found": len(docs),
-                    "saved": saved,
-                    "api_calls": stats["api_calls"],
-                    "truncated": stats["truncated"],
-                    "instruments": [_get_instrument(doc) for doc in docs if _get_instrument(doc)],
-                })
+                per_target.append(
+                    {
+                        "foreclosure_id": fid,
+                        "case_number": case,
+                        "strap": strap,
+                        "folio": folio,
+                        "docs_found": len(docs),
+                        "saved": saved,
+                        "api_calls": stats["api_calls"],
+                        "truncated": stats["truncated"],
+                        "instruments": [_get_instrument(doc) for doc in docs if _get_instrument(doc)],
+                    }
+                )
             except Exception as exc:
                 logger.exception(
                     "Live NOC backfill error for case={} strap={} foreclosure_id={}",
@@ -581,15 +588,17 @@ class PgOriService:
                     fid,
                 )
                 errors += 1
-                per_target.append({
-                    "foreclosure_id": fid,
-                    "case_number": case,
-                    "strap": strap,
-                    "folio": folio,
-                    "docs_found": 0,
-                    "saved": 0,
-                    "error": str(exc),
-                })
+                per_target.append(
+                    {
+                        "foreclosure_id": fid,
+                        "case_number": case,
+                        "strap": strap,
+                        "folio": folio,
+                        "docs_found": 0,
+                        "saved": 0,
+                        "error": str(exc),
+                    }
+                )
 
         after_remaining = len(
             self._find_recent_permit_no_noc_targets(
@@ -610,106 +619,6 @@ class PgOriService:
             "unresolved_truncations": total_unresolved_truncations,
             "remaining_recent_permit_no_noc_before": len(before_targets),
             "remaining_recent_permit_no_noc_after": after_remaining,
-            "dry_run": dry_run,
-            "per_target": per_target,
-        }
-
-    def run_targeted_recovery(
-        self,
-        *,
-        foreclosure_ids: list[int],
-        limit: int | None = None,
-        dry_run: bool = False,
-        force_satisfaction_relink: bool = True,
-    ) -> dict[str, Any]:
-        """Re-run the full ORI discovery pipeline for a selected foreclosure scope.
-
-        This is used by the encumbrance audit recovery loop. It does not infer
-        new facts on its own; it simply reuses the existing ORI discovery and
-        persistence path for cases the audit identified as likely incomplete.
-        """
-        target_ids = sorted({int(fid) for fid in foreclosure_ids if fid})
-        if not target_ids:
-            return {"skipped": True, "reason": "no_targeted_recovery_ids"}
-
-        before_targets = self._find_targeted_recovery_targets(
-            foreclosure_ids=target_ids,
-            limit=None,
-        )
-        targets = before_targets[:limit] if limit is not None else before_targets
-        if not targets:
-            return {"skipped": True, "reason": "no_targeted_recovery_targets"}
-
-        total_docs = 0
-        total_saved = 0
-        total_inferred = 0
-        total_linked = 0
-        errors = 0
-        total_api_calls = 0
-        total_retries = 0
-        total_truncated = 0
-        total_unresolved_truncations = 0
-        total_official_seed_docs = 0
-        per_target: list[dict[str, Any]] = []
-
-        for index, base_target in enumerate(targets, start=1):
-            target = dict(base_target)
-            if force_satisfaction_relink:
-                target["force_satisfaction_relink"] = True
-
-            case = target["case_number"]
-            strap = target.get("strap")
-            logger.info(
-                "[{}/{}] Targeted ORI recovery for {} (strap={})",
-                index,
-                len(targets),
-                case,
-                strap,
-            )
-            try:
-                result = self._process_target(target, persist=not dry_run)
-                total_docs += result["docs_found"]
-                total_saved += result["saved"]
-                total_inferred += result["inferred"]
-                total_linked += result["satisfactions_linked"]
-                total_api_calls += result["api_calls"]
-                total_retries += result["retries"]
-                total_truncated += result["truncated"]
-                total_unresolved_truncations += result["unresolved_truncations"]
-                total_official_seed_docs += result["official_seed_docs"]
-                per_target.append(result)
-            except Exception as exc:
-                logger.exception(
-                    "Targeted ORI recovery error for case={} foreclosure_id={}",
-                    case,
-                    target["foreclosure_id"],
-                )
-                errors += 1
-                per_target.append({
-                    "foreclosure_id": target["foreclosure_id"],
-                    "case_number": case,
-                    "strap": strap,
-                    "folio": target.get("folio"),
-                    "docs_found": 0,
-                    "saved": 0,
-                    "inferred": 0,
-                    "satisfactions_linked": 0,
-                    "error": str(exc),
-                })
-
-        return {
-            "targets_requested": len(target_ids),
-            "targets": len(targets),
-            "total_documents_found": total_docs,
-            "encumbrances_saved": total_saved,
-            "inferred_saved": total_inferred,
-            "satisfactions_linked": total_linked,
-            "errors": errors,
-            "api_calls": total_api_calls,
-            "retries": total_retries,
-            "truncated": total_truncated,
-            "unresolved_truncations": total_unresolved_truncations,
-            "official_seed_docs": total_official_seed_docs,
             "dry_run": dry_run,
             "per_target": per_target,
         }
@@ -756,40 +665,6 @@ class PgOriService:
             require_ori_searched=None,
         )
         return self._merge_targets(standard_targets, lp_gap_targets, limit=limit)
-
-    def _find_targeted_recovery_targets(
-        self,
-        *,
-        foreclosure_ids: list[int],
-        limit: int | None,
-    ) -> list[dict[str, Any]]:
-        """Load active judged foreclosures by id for audit-driven ORI retries."""
-        if not foreclosure_ids:
-            return []
-
-        with self.engine.connect() as conn:
-            rows = conn.execute(
-                text("""
-                    SELECT f.foreclosure_id, f.case_number_raw, f.strap, f.folio,
-                           f.judgment_data, f.auction_date, f.filing_date,
-                           bp.raw_legal1, bp.raw_legal2, bp.raw_legal3, bp.raw_legal4,
-                           bp.owner_name,
-                           COALESCE(NULLIF(btrim(f.property_address), ''), bp.property_address) AS property_address
-                    FROM foreclosures f
-                    LEFT JOIN hcpa_bulk_parcels bp ON f.strap = bp.strap
-                    WHERE f.archived_at IS NULL
-                      AND f.judgment_data IS NOT NULL
-                      AND f.foreclosure_id = ANY(:foreclosure_ids)
-                    ORDER BY f.auction_date NULLS LAST, f.foreclosure_id
-                    LIMIT :limit
-                """),
-                {
-                    "foreclosure_ids": foreclosure_ids,
-                    "limit": limit or 100000,
-                },
-            ).fetchall()
-
-        return [self._row_to_target(r) for r in rows]
 
     def _find_standard_targets(self, limit: int | None) -> list[dict[str, Any]]:
         """Find foreclosures needing the normal parcel-backed ORI pass."""
@@ -910,7 +785,10 @@ class PgOriService:
         """
         with self.engine.connect() as conn:
             rows = conn.execute(text(sql), params).fetchall()
-        return [self._decorate_lis_pendens_gap_target(self._row_to_target(row)) for row in rows]
+        return [
+            self._decorate_lis_pendens_gap_target(self._row_to_target(row))
+            for row in rows
+        ]
 
     def _has_persisted_lis_pendens(
         self,
@@ -935,8 +813,8 @@ class PgOriService:
             SELECT EXISTS (
                 SELECT 1
                 FROM ori_encumbrances oe
-                WHERE {" AND ".join(clauses)}
-                  AND ({" OR ".join(match_clauses)})
+                WHERE {' AND '.join(clauses)}
+                  AND ({' OR '.join(match_clauses)})
             )
         """
         with self.engine.connect() as conn:
@@ -1127,7 +1005,6 @@ class PgOriService:
         case_number = target.get("case_number") or ""
         strap = (target.get("strap") or "").strip() or None
         folio = (target.get("folio") or "").strip() or None
-        force_satisfaction_relink = bool(target.get("force_satisfaction_relink"))
 
         docs, metrics = self._discover_property(target)
         logger.info(
@@ -1147,28 +1024,7 @@ class PgOriService:
         inferred = 0
         linked = 0
         if persist:
-            # Build property context for relevance filtering
-            prop_legal = " ".join(
-                filter(
-                    None,
-                    [
-                        target.get("legal1"),
-                        target.get("legal2"),
-                        target.get("legal3"),
-                        target.get("legal4"),
-                    ],
-                )
-            )
-            prop_info = (
-                {
-                    "legal_description": prop_legal,
-                    "property_address": target.get("property_address") or "",
-                    "folio": folio or "",
-                }
-                if prop_legal
-                else None
-            )
-            saved = self._save_documents(strap, folio, docs, property_info=prop_info)
+            saved = self._save_documents(strap, folio, docs)
             if saved == 0 and not bool(target.get("skip_inferred_fallback")):
                 inferred = self._infer_from_judgment(strap, folio, target)
                 saved += inferred
@@ -1178,7 +1034,7 @@ class PgOriService:
                         case_number,
                         strap or "",
                     )
-            if strap and (saved > 0 or force_satisfaction_relink):
+            if strap and saved > 0:
                 linked = self._link_satisfactions(strap)
             if bool(target.get("mark_ori_searched", True)):
                 self._mark_searched(foreclosure_id)
@@ -1299,7 +1155,9 @@ class PgOriService:
                 adjacent_searches += 1
                 candidate = str(base + offset)
                 candidate_docs = self._search_instrument_pav(candidate, stats)
-                known_instruments, known_book_pages = self._reference_anchor_sets(docs_by_inst.values())
+                known_instruments, known_book_pages = self._reference_anchor_sets(
+                    docs_by_inst.values()
+                )
                 filtered = [
                     d
                     for d in candidate_docs
@@ -1336,7 +1194,9 @@ class PgOriService:
                 if candidate in docs_by_inst:
                     continue
                 candidate_docs = self._search_instrument_pav(candidate, stats)
-                known_instruments, known_book_pages = self._reference_anchor_sets(docs_by_inst.values())
+                known_instruments, known_book_pages = self._reference_anchor_sets(
+                    docs_by_inst.values()
+                )
                 filtered = [
                     d
                     for d in candidate_docs
@@ -1407,7 +1267,9 @@ class PgOriService:
                     split_on_truncated=True,
                 )
 
-            known_instruments, known_book_pages = self._reference_anchor_sets(docs_by_inst.values())
+            known_instruments, known_book_pages = self._reference_anchor_sets(
+                docs_by_inst.values()
+            )
             filtered = [
                 d
                 for d in ref_docs
@@ -1448,8 +1310,14 @@ class PgOriService:
         # Phase 3: guarded fallback (clerk cases + legal/address + party).
         # Run Phase 3 when doc count is low OR when there's a specific
         # coverage gap (zero mortgages, no lien for CC cases, etc.).
-        _has_mortgage = any(normalize_document_type(d.get("DocType") or "") == "mortgage" for d in docs_by_inst.values())
-        _has_lien = any(normalize_document_type(d.get("DocType") or "") == "lien" for d in docs_by_inst.values())
+        _has_mortgage = any(
+            normalize_document_type(d.get("DocType") or "") == "mortgage"
+            for d in docs_by_inst.values()
+        )
+        _has_lien = any(
+            normalize_document_type(d.get("DocType") or "") == "lien"
+            for d in docs_by_inst.values()
+        )
         _is_cc_case = len(case_number) >= 8 and "CC" in case_number[6:8]
         _needs_targeted_fallback = (
             not _has_mortgage  # every foreclosure must have a mortgage
@@ -2183,7 +2051,8 @@ class PgOriService:
             value = (target.get(legal_field) or "").upper()
             words = [w for w in re.split(r"[^A-Z0-9]+", value) if len(w) >= 3]
             legal_tokens.update(words[:8])
-            legal_locators.update((match.group(1).upper(), match.group(2).upper()) for match in _LEGAL_LOCATOR_RE.finditer(value))
+            for match in _LEGAL_LOCATOR_RE.finditer(value):
+                legal_locators.add((match.group(1).upper(), match.group(2).upper()))
 
         owner_names: set[str] = set()
         if target.get("owner_name"):
@@ -2203,7 +2072,12 @@ class PgOriService:
             for t in re.split(r"[^A-Z0-9]+", self._extract_street_only(target.get("property_address") or "").upper())
             if len(t) >= 3
         }
-        street_name_tokens = {t for t in street_tokens if not re.fullmatch(r"\d+[A-Z]?", t) and t not in _STREET_STOP_TOKENS}
+        street_name_tokens = {
+            t
+            for t in street_tokens
+            if not re.fullmatch(r"\d+[A-Z]?", t)
+            and t not in _STREET_STOP_TOKENS
+        }
         return {
             "legal_tokens": legal_tokens,
             "legal_locators": list(legal_locators),
@@ -2238,7 +2112,10 @@ class PgOriService:
         if street_tokens:
             street_hits = sum(1 for t in street_tokens if t in legal_text)
         street_name_tokens = tokens.get("street_name_tokens") or {
-            t for t in street_tokens if not re.fullmatch(r"\d+[A-Z]?", str(t)) and str(t) not in _STREET_STOP_TOKENS
+            t
+            for t in street_tokens
+            if not re.fullmatch(r"\d+[A-Z]?", str(t))
+            and str(t) not in _STREET_STOP_TOKENS
         }
         street_name_hits = 0
         if street_name_tokens:
@@ -2250,7 +2127,9 @@ class PgOriService:
         locator_expected: dict[str, set[str]] = {}
         for label, value in legal_locators:
             locator_expected.setdefault(label, set()).add(value)
-            locator_pattern = rf"\b{re.escape(label)}\b(?:\s+NO\.?)?\s*{re.escape(value)}\b"
+            locator_pattern = (
+                rf"\b{re.escape(label)}\b(?:\s+NO\.?)?\s*{re.escape(value)}\b"
+            )
             if re.search(locator_pattern, legal_text):
                 locator_hits += 1
                 locator_matches.setdefault(label, set()).add(value)
@@ -2260,7 +2139,9 @@ class PgOriService:
             has_explicit_street_address = bool(_ADDRESS_LINE_RE.search(legal_text))
             if has_explicit_street_address:
                 if street_number:
-                    return bool(re.search(rf"\b{re.escape(street_number)}\b", legal_text)) and street_name_hits >= 1
+                    return bool(
+                        re.search(rf"\b{re.escape(street_number)}\b", legal_text)
+                    ) and street_name_hits >= 1
                 return locator_hits > 0 and street_name_hits >= 1
 
             if "LOT" in locator_expected:
@@ -2365,7 +2246,10 @@ class PgOriService:
         instrument_refs, book_page_refs = self._extract_references_from_doc(doc)
         if anchor_instruments and any(ref in anchor_instruments for ref in instrument_refs):
             return True
-        return bool(anchor_book_pages and any(ref in anchor_book_pages for ref in book_page_refs))
+        return bool(
+            anchor_book_pages
+            and any(ref in anchor_book_pages for ref in book_page_refs)
+        )
 
     def _extract_references_from_doc(
         self,
@@ -3206,34 +3090,14 @@ class PgOriService:
         strap: str | None,
         folio: str | None,
         documents: list[dict],
-        property_info: dict[str, Any] | None = None,
     ) -> int:
         """Classify ORI documents and save encumbrances to PG."""
         saved = 0
-        skipped_irrelevant = 0
         with self.engine.begin() as conn:
             for doc in documents:
                 raw_type = doc.get("DocType") or doc.get("document_type") or doc.get("doc_type") or ""
                 canonical = normalize_document_type(raw_type)
                 enc_type = normalize_encumbrance_type(canonical or raw_type)
-
-                # Relevance pre-filter: skip docs that don't match the property
-                if property_info:
-                    doc_legal = doc.get("Legal") or doc.get("legal_description") or ""
-                    if doc_legal:
-                        relevance = verify_document_relevance(
-                            {"legal_description": doc_legal, "folio": folio},
-                            property_info,
-                        )
-                        if not relevance["is_relevant"]:
-                            skipped_irrelevant += 1
-                            logger.debug(
-                                "Skipping irrelevant ORI doc {} for {}: {}",
-                                doc.get("Instrument") or doc.get("instrument"),
-                                strap,
-                                relevance["match_details"],
-                            )
-                            continue
 
                 # Only save encumbrance-type, satisfaction-type, assignment-type,
                 # and NOC documents (skip deeds, affidavits, etc.)
@@ -3270,27 +3134,14 @@ class PgOriService:
                 # PAV API returns 'O' for Official Records; normalize to 'OR'
                 if book_type == "O":
                     book_type = "OR"
-
-                ori_uuid = doc.get("UUID") or doc.get("ori_uuid")
-                raw_amount = doc.get("SalesPrice") or doc.get("sales_price")
-                amount = None
-                if raw_amount:
-                    v = validate_amount(raw_amount, context={"doc_type": enc_type})
-                    amount = v["amount"]
-                    if v["flags"]:
-                        logger.debug(
-                            "ORI amount flags for {} {}: {} (confidence={})",
-                            instrument or ori_uuid,
-                            enc_type,
-                            ", ".join(v["flags"]),
-                            v["confidence"],
-                        )
+                amount = doc.get("SalesPrice") or doc.get("sales_price")
                 case_number = doc.get("CaseNum") or doc.get("case_number")
                 if not case_number:
                     extracted_cases = sorted(self._extract_case_numbers(doc))
                     if extracted_cases:
                         case_number = extracted_cases[0]
                 legal = doc.get("Legal") or doc.get("legal_description") or doc.get("legal")
+                ori_uuid = doc.get("UUID") or doc.get("ori_uuid")
                 # Pre-truncated to 64 chars by _normalize_result()
                 ori_id = doc.get("ID") or doc.get("ori_id")
 
@@ -3312,7 +3163,7 @@ class PgOriService:
                     "party2": party2 or None,
                     "p1_json": (json.dumps(parties_one) if parties_one else None),
                     "p2_json": (json.dumps(parties_two) if parties_two else None),
-                    "amount": amount,
+                    "amount": float(amount) if amount else None,
                     "rec_date": recording_date or "",
                     "case_number": case_number,
                     "legal": legal,
@@ -3436,8 +3287,6 @@ class PgOriService:
                     conn.execute(text("ROLLBACK TO SAVEPOINT ori_doc"))
                     logger.warning(f"Skip document {instrument}: {exc}")
 
-        if skipped_irrelevant:
-            logger.info("Skipped {} irrelevant docs for {}", skipped_irrelevant, strap)
         return saved
 
     def _infer_from_judgment(
@@ -3541,7 +3390,8 @@ class PgOriService:
         with self.engine.begin() as conn:
             if not self._ori_satisfaction_link_columns_available(conn):
                 logger.warning(
-                    "Skipping satisfaction linking for strap={} because ori_encumbrances is missing satisfaction link columns",
+                    "Skipping satisfaction linking for strap={} because ori_encumbrances "
+                    "is missing satisfaction link columns",
                     strap,
                 )
                 return 0
@@ -3671,10 +3521,7 @@ class PgOriService:
                     linked += parent_update.rowcount
                     logger.debug(
                         "Linked satisfaction {} → encumbrance {} via {} for strap={}",
-                        sat_inst,
-                        matched_enc[1],
-                        method,
-                        strap,
+                        sat_inst, matched_enc[1], method, strap,
                     )
 
         if linked:

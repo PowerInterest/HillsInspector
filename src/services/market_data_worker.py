@@ -9,7 +9,7 @@ from typing import Any
 from loguru import logger
 from sqlalchemy import text
 
-from src.scripts.refresh_foreclosures import refresh as refresh_foreclosures
+from scripts.refresh_foreclosures import refresh as refresh_foreclosures
 from src.services.market_data_service import MarketDataService
 from sunbiz.db import get_engine, resolve_pg_dsn
 
@@ -28,21 +28,7 @@ def _query_properties_needing_market(
           AND (pm.strap IS NULL
                OR NOT (pm.redfin_json IS NOT NULL
                        AND pm.zillow_json IS NOT NULL
-                       AND pm.homeharvest_json IS NOT NULL)
-               OR (
-                    pm.photo_cdn_urls IS NOT NULL
-                    AND jsonb_typeof(pm.photo_cdn_urls) = 'array'
-                    AND jsonb_array_length(pm.photo_cdn_urls) > 0
-                    AND (
-                        pm.photo_local_paths IS NULL
-                        OR jsonb_typeof(pm.photo_local_paths) != 'array'
-                        OR jsonb_array_length(pm.photo_local_paths) = 0
-                        OR (
-                            jsonb_array_length(pm.photo_local_paths) < 15
-                            AND jsonb_array_length(pm.photo_local_paths) < jsonb_array_length(pm.photo_cdn_urls)
-                        )
-                    )
-               ))
+                       AND pm.homeharvest_json IS NOT NULL))
         ORDER BY f.auction_date DESC
     """
     params: dict[str, Any] = {}

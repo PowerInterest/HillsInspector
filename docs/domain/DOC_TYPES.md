@@ -13,9 +13,6 @@
 
 ## Document Intelligence & Cross-Referencing (OCR Extraction Value)
 
-> [!WARNING]
-> While `VisionService` OCR extraction is implemented, it is currently **gated** by a known pipeline issue: the PG pipeline does not yet pull new Final Judgment PDFs. The definitions below depend on having PDFs downloaded and available on disk.
-
 Merely knowing a document exists is only half the battle. Extracting the text from these instruments is the key to solving the isolation gaps identified in the [Encumbrance Audit Buckets](ENCUMBRANCE_AUDIT_BUCKETS.md). Below is an analysis of what each category typically contains and how reading it directly links to other documents or county systems:
 
 ### 1. Deeds (D, WD, QCD, CT, TAXDEED)
@@ -168,7 +165,7 @@ Merely knowing a document exists is only half the battle. Extracting the text fr
     2. property_address and legal_description
     3. civil_case_number
     4. party_1 (Plaintiff) and party_2 (List of ALL Defendants and any other parties being notified, such as spouses, heirs, or junior lienholders)
-    5. foreclosed_instrument: Extract the exact Official Records Book and Page OR Instrument Number of the Mortgage or Lien that triggered this Lis Pendens. WARNING: Do NOT extract "Plat Book" or "PB" references from the legal description here.
+    5. foreclosed_instrument: Extract the exact Official Records Book and Page of the Mortgage or Lien that triggered this Lis Pendens. WARNING: Do NOT extract "Plat Book" or "PB" references from the legal description here.
 
     Expected JSON Schema:
     {
@@ -181,7 +178,7 @@ Merely knowing a document exists is only half the battle. Extracting the text fr
         "civil_case_number": { "type": ["string", "null"] },
         "party_1": { "type": ["string", "null"], "description": "Plaintiff" },
         "party_2": { "type": ["array", "null"], "items": { "type": "string" }, "description": "List of all defendants and notified parties" },
-        "foreclosed_instrument": { "type": ["string", "null"], "description": "Exact Official Records Book and Page OR Instrument Number of Mortgage/Lien (NOT Plat Book)" }
+        "foreclosed_instrument": { "type": ["string", "null"], "description": "Exact Official Records Book and Page of Mortgage/Lien (NOT Plat Book)" }
       },
       "required": ["instrument_number", "book_page", "property_address", "legal_description", "civil_case_number", "party_1", "party_2", "foreclosed_instrument"],
       "additionalProperties": false
@@ -198,7 +195,7 @@ Merely knowing a document exists is only half the battle. Extracting the text fr
     1. instrument_number and book_page
     2. property_address (if present)
     3. party_1 (Assignor/Old Lender) and party_2 (Assignee/New Lender)
-    4. parent_instrument: Extract the exact Book and Page OR Instrument Number of the original Mortgage or Lien being assigned or modified.
+    4. parent_instrument: Extract the exact Book and Page of the original Mortgage or Lien being assigned or modified.
 
     Expected JSON Schema:
     {
@@ -209,7 +206,7 @@ Merely knowing a document exists is only half the battle. Extracting the text fr
         "property_address": { "type": ["string", "null"] },
         "party_1": { "type": ["string", "null"], "description": "Assignor/Old Lender" },
         "party_2": { "type": ["string", "null"], "description": "Assignee/New Lender" },
-        "parent_instrument": { "type": ["string", "null"], "description": "Exact Book and Page OR Instrument Number of original Mortgage/Lien assigned/modified" }
+        "parent_instrument": { "type": ["string", "null"], "description": "Exact Book and Page of original Mortgage/Lien assigned/modified" }
       },
       "required": ["instrument_number", "book_page", "property_address", "party_1", "party_2", "parent_instrument"],
       "additionalProperties": false
@@ -226,7 +223,7 @@ Merely knowing a document exists is only half the battle. Extracting the text fr
     1. instrument_number and book_page
     2. property_address (if present)
     3. party_1 (Releasor/Creditor) and party_2 (Releasee/Debtor)
-    4. parent_instrument: Extract the exact Book and Page OR Instrument Number of the Mortgage or Lien that is being satisfied or released. This is the most critical field.
+    4. parent_instrument: Extract the exact Book and Page of the Mortgage or Lien that is being satisfied or released. This is the most critical field.
     5. partial_release_flag: True if this only partially releases the property or debt, False if it is a full satisfaction.
 
     Expected JSON Schema:
@@ -238,7 +235,7 @@ Merely knowing a document exists is only half the battle. Extracting the text fr
         "property_address": { "type": ["string", "null"] },
         "party_1": { "type": ["string", "null"], "description": "Releasor/Creditor" },
         "party_2": { "type": ["string", "null"], "description": "Releasee/Debtor" },
-        "parent_instrument": { "type": ["string", "null"], "description": "Exact Book and Page OR Instrument Number of Mortgage/Lien being satisfied/released" },
+        "parent_instrument": { "type": ["string", "null"], "description": "Exact Book and Page of Mortgage/Lien being satisfied/released" },
         "partial_release_flag": { "type": "boolean", "description": "True if partial release, False if full satisfaction" }
       },
       "required": ["instrument_number", "book_page", "property_address", "party_1", "party_2", "parent_instrument", "partial_release_flag"],

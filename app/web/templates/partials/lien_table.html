@@ -31,27 +31,7 @@
         {% set st = (enc.survival_status or '')|upper %}
         <tr class="{% if st == 'FORECLOSING' %}foreclosing{% elif st == 'SURVIVED' %}surviving{% elif st in ['EXTINGUISHED','HISTORICAL','EXPIRED'] %}wiped{% endif %}">
             <td>{{ enc.recording_date|format_date if enc.recording_date else '-' }}</td>
-            <td class="dtype-cell">
-                {% set et = (enc.encumbrance_type or '')|lower %}
-                {% if et == 'mortgage' %}
-                <img class="dtype-icon" src="/static/icons/mortgages.png" alt="">
-                {% elif et == 'judgment' %}
-                <img class="dtype-icon" src="/static/icons/judgments.png" alt="">
-                {% elif et == 'lis_pendens' %}
-                <img class="dtype-icon" src="/static/icons/lis_pendens.png" alt="">
-                {% elif et == 'lien' %}
-                <img class="dtype-icon" src="/static/icons/liens.png" alt="">
-                {% elif et == 'satisfaction' %}
-                <img class="dtype-icon" src="/static/icons/satisfactions.png" alt="">
-                {% elif et == 'release' %}
-                <img class="dtype-icon" src="/static/icons/releases.png" alt="">
-                {% elif et == 'assignment' %}
-                <img class="dtype-icon" src="/static/icons/assignments.png" alt="">
-                {% elif et == 'easement' or et == 'other' %}
-                <img class="dtype-icon" src="/static/icons/deeds.png" alt="">
-                {% endif %}
-                {{ enc.encumbrance_type or '-' }}
-            </td>
+            <td>{{ enc.encumbrance_type or '-' }}</td>
             <td class="money-cell">
                 {{ "${:,.0f}".format(enc.amount) if enc.amount else '-' }}
                 {% if enc.amount_confidence and enc.amount_confidence not in ('HIGH', 'ori_api') %}

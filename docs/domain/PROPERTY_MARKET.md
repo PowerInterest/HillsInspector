@@ -9,10 +9,6 @@ Zillow, Redfin, and HomeHarvest.
 **Primary benefit**: fast single-row reads for the web UI, with locally-downloaded photos
 served from disk instead of CDN URLs that rot.
 
-> [!WARNING]
-> **Market Photo Storage Reliability Issue**
-> The local downloading of photos from Zillow/Redfin CDN URLs remains an unsolved and highly difficult problem. Properties regularly achieve complete market JSON data while completely failing to save the photos locally, meaning the system frequently relies on the unstable CDN URLs as fallbacks.
-
 ---
 
 ## Table: `property_market` (PostgreSQL)

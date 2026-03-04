@@ -1,7 +1,7 @@
 """
 Read/write service for the ``foreclosures`` hub table in PostgreSQL.
 
-Follows the same pattern as SalesQueries: graceful degradation when PG
+Follows the same pattern as PgSalesService: graceful degradation when PG
 is unavailable, raw SQL via ``engine.connect()``.
 """
 
@@ -97,43 +97,40 @@ class PgForeclosureService:
             return None
         try:
             with self._engine.connect() as conn:
-                row = (
-                    conn.execute(
-                        text("SELECT * FROM foreclosures WHERE foreclosure_id = :id"),
-                        {"id": foreclosure_id},
-                    )
-                    .mappings()
-                    .fetchone()
-                )
+                row = conn.execute(
+                    text("SELECT * FROM foreclosures WHERE foreclosure_id = :id"),
+                    {"id": foreclosure_id},
+                ).mappings().fetchone()
                 return dict(row) if row else None
         except Exception as e:
             logger.warning(f"get_foreclosure({foreclosure_id}) failed: {e}")
             return None
 
-    def get_by_case(self, case_number: str, auction_date: date | None = None) -> dict[str, Any] | None:
+    def get_by_case(
+        self, case_number: str, auction_date: date | None = None
+    ) -> dict[str, Any] | None:
         """Look up by raw case number (+ optional auction date)."""
         if not self._available or not case_number:
             return None
         try:
             with self._engine.connect() as conn:
                 if auction_date:
-                    row = (
-                        conn.execute(
-                            text("SELECT * FROM foreclosures WHERE case_number_raw = :cn AND auction_date = :ad"),
-                            {"cn": case_number, "ad": auction_date},
-                        )
-                        .mappings()
-                        .fetchone()
-                    )
+                    row = conn.execute(
+                        text(
+                            "SELECT * FROM foreclosures "
+                            "WHERE case_number_raw = :cn AND auction_date = :ad"
+                        ),
+                        {"cn": case_number, "ad": auction_date},
+                    ).mappings().fetchone()
                 else:
-                    row = (
-                        conn.execute(
-                            text("SELECT * FROM foreclosures WHERE case_number_raw = :cn ORDER BY auction_date DESC LIMIT 1"),
-                            {"cn": case_number},
-                        )
-                        .mappings()
-                        .fetchone()
-                    )
+                    row = conn.execute(
+                        text(
+                            "SELECT * FROM foreclosures "
+                            "WHERE case_number_raw = :cn "
+                            "ORDER BY auction_date DESC LIMIT 1"
+                        ),
+                        {"cn": case_number},
+                    ).mappings().fetchone()
                 return dict(row) if row else None
         except Exception as e:
             logger.warning(f"get_by_case({case_number}) failed: {e}")
@@ -145,14 +142,13 @@ class PgForeclosureService:
             return []
         try:
             with self._engine.connect() as conn:
-                rows = (
-                    conn.execute(
-                        text("SELECT * FROM property_timeline WHERE strap = :strap ORDER BY event_date"),
-                        {"strap": strap},
-                    )
-                    .mappings()
-                    .fetchall()
-                )
+                rows = conn.execute(
+                    text(
+                        "SELECT * FROM property_timeline "
+                        "WHERE strap = :strap ORDER BY event_date"
+                    ),
+                    {"strap": strap},
+                ).mappings().fetchall()
                 return [dict(r) for r in rows]
         except Exception as e:
             logger.warning(f"get_timeline({strap}) failed: {e}")
@@ -164,14 +160,13 @@ class PgForeclosureService:
             return []
         try:
             with self._engine.connect() as conn:
-                rows = (
-                    conn.execute(
-                        text("SELECT * FROM foreclosure_events WHERE foreclosure_id = :fid ORDER BY event_date"),
-                        {"fid": foreclosure_id},
-                    )
-                    .mappings()
-                    .fetchall()
-                )
+                rows = conn.execute(
+                    text(
+                        "SELECT * FROM foreclosure_events "
+                        "WHERE foreclosure_id = :fid ORDER BY event_date"
+                    ),
+                    {"fid": foreclosure_id},
+                ).mappings().fetchall()
                 return [dict(r) for r in rows]
         except Exception as e:
             logger.warning(f"get_events({foreclosure_id}) failed: {e}")
@@ -183,9 +178,8 @@ class PgForeclosureService:
             return {}
         try:
             with self._engine.connect() as conn:
-                row = (
-                    conn.execute(
-                        text("""
+                row = conn.execute(
+                    text("""
                         SELECT
                             COUNT(*)                                          AS total,
                             COUNT(*) FILTER (WHERE archived_at IS NULL)       AS active,
@@ -201,10 +195,7 @@ class PgForeclosureService:
                             (SELECT COUNT(*) FROM foreclosure_events)         AS total_events
                         FROM foreclosures
                     """)
-                    )
-                    .mappings()
-                    .fetchone()
-                )
+                ).mappings().fetchone()
                 return dict(row) if row else {}
         except Exception as e:
             logger.warning(f"get_stats failed: {e}")
@@ -295,7 +286,6 @@ class PgForeclosureService:
 
     def refresh(self) -> dict[str, int]:
         """Run the full idempotent refresh. Returns rowcounts per step."""
-        # inline importing to break potential circular dep; typically we'd structure this as a generic job/task.
-        from src.scripts.refresh_foreclosures import refresh as _refresh
+        from scripts.refresh_foreclosures import refresh as _refresh
 
         return _refresh(dsn=self._dsn)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.scripts.refresh_foreclosures import ENRICH_BASE_SQL
+from scripts.refresh_foreclosures import ENRICH_BASE_SQL
 from src.db.migrations.create_foreclosures import DDL
 
 

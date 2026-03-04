@@ -33,7 +33,7 @@ def test_run_market_data_runs_inline_by_default(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         market_data_worker,
         "run_market_data_update",
-        lambda dsn=None, **_kwargs: {"mode": "inline", "dsn": dsn},
+        lambda dsn=None: {"mode": "inline", "dsn": dsn},
     )
 
     result = controller._run_market_data()  # noqa: SLF001
@@ -48,7 +48,7 @@ def test_run_market_data_uses_background_dispatch_when_enabled(monkeypatch: Any)
     monkeypatch.setattr(
         market_data_dispatcher,
         "dispatch_market_data_worker",
-        lambda dsn, **_kwargs: {"dispatched": True, "mode": "background", "dsn": dsn},
+        lambda dsn: {"dispatched": True, "mode": "background", "dsn": dsn},
     )
 
     result = controller._run_market_data()  # noqa: SLF001

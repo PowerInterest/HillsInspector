@@ -15,7 +15,6 @@ from loguru import logger
 from sqlalchemy import text
 
 from sunbiz.db import get_engine, resolve_pg_dsn
-from src.utils.amount_validator import validate_amount
 
 FORECLOSURE_DATA_DIR = Path("data/Foreclosure")
 
@@ -145,16 +144,7 @@ class PgJudgmentService:
                     pdf_path = str(p)
                     break
 
-                raw_fja = jd.get("total_judgment_amount")
-                fja = None
-                if raw_fja is not None:
-                    v = validate_amount(raw_fja, context={"doc_type": "JUDGMENT"})
-                    fja = v["amount"]
-                    if v["flags"]:
-                        logger.debug(
-                            "Judgment amount flags for {}: {} (confidence={})",
-                            case_number, ", ".join(v["flags"]), v["confidence"],
-                        )
+                fja = jd.get("total_judgment_amount")
 
                 conn.execute(
                     text(

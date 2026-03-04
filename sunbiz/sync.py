@@ -13,17 +13,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.scripts.sunbiz_sync_service import DEFAULT_DATA_DIR
-from src.scripts.sunbiz_sync_service import DEFAULT_DAILY_DIR
-from src.scripts.sunbiz_sync_service import DEFAULT_HOST
-from src.scripts.sunbiz_sync_service import DEFAULT_MANIFEST
-from src.scripts.sunbiz_sync_service import DEFAULT_PASSWORD
-from src.scripts.sunbiz_sync_service import DEFAULT_PORT
-from src.scripts.sunbiz_sync_service import DEFAULT_QUARTERLY_DIR
-from src.scripts.sunbiz_sync_service import DEFAULT_USER
-from src.scripts.sunbiz_sync_service import SunbizMirror
-from src.scripts.sunbiz_sync_service import build_parser
-from src.scripts.sunbiz_sync_service import main
+from src.services.sunbiz_sync_service import DEFAULT_DATA_DIR
+from src.services.sunbiz_sync_service import DEFAULT_DAILY_DIR
+from src.services.sunbiz_sync_service import DEFAULT_HOST
+from src.services.sunbiz_sync_service import DEFAULT_MANIFEST
+from src.services.sunbiz_sync_service import DEFAULT_PASSWORD
+from src.services.sunbiz_sync_service import DEFAULT_PORT
+from src.services.sunbiz_sync_service import DEFAULT_QUARTERLY_DIR
+from src.services.sunbiz_sync_service import DEFAULT_USER
+from src.services.sunbiz_sync_service import SunbizMirror
+from src.services.sunbiz_sync_service import build_parser
+from src.services.sunbiz_sync_service import main
 
 __all__ = [
     "DEFAULT_DAILY_DIR",
