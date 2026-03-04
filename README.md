@@ -67,6 +67,7 @@ The `/database` page targets PostgreSQL (primary workflow).
 uv run python -m src.db.migrations.create_foreclosures --dsn <postgres-dsn>
 uv run alembic upgrade head
 ```
+Migration policy is forward-only; this project does not support `alembic downgrade`.
 
 ## Technical Stack & Rules
 

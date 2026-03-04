@@ -24,5 +24,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
-    ${downgrades if downgrades else "pass"}
+    """Downgrade schema.
+
+    Forward-only policy: downgrades are intentionally unsupported.
+    """
+    raise NotImplementedError(
+        "Forward-only migrations: downgrades are not supported in HillsInspector."
+    )

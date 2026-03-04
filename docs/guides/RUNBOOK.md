@@ -248,6 +248,8 @@ uv run python src/scripts/refresh_foreclosures.py
 uv run python src/scripts/refresh_foreclosures.py --migrate
 ```
 
+This repository uses forward-only migrations; do not run `alembic downgrade`.
+
 **Key tables created by migration:**
 
 | Table | Purpose |
