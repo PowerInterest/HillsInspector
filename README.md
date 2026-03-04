@@ -25,6 +25,8 @@ Runs Phase A (bulk refresh) + Phase B (per-auction enrichment).
 ```powershell
 uv run Controller.py
 ```
+`Controller.py` now enforces schema sync at startup by running `alembic upgrade head`
+against the active PostgreSQL DSN before any pipeline steps.
 
 ### 2. Quick Sanity Run
 Runs the controller with narrow limits for auction/judgment/ORI/survival steps.
@@ -63,6 +65,7 @@ The `/database` page targets PostgreSQL (primary workflow).
 ### 6. Reset/Initialize PG Schema
 ```powershell
 uv run python -m src.db.migrations.create_foreclosures --dsn <postgres-dsn>
+uv run alembic upgrade head
 ```
 
 ## Technical Stack & Rules

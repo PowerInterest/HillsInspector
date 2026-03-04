@@ -13,6 +13,7 @@ uv run playwright install chromium
 
 # Initialize PostgreSQL schema
 uv run python -m src.db.migrations.create_foreclosures
+uv run alembic upgrade head
 
 # Seed the foreclosures hub table
 uv run python src/scripts/refresh_foreclosures.py --migrate
@@ -233,9 +234,12 @@ Default connection: `postgresql://hills:hills_dev@localhost:5432/hills_sunbiz`
 ```bash
 # Create/migrate foreclosures schema (idempotent — IF NOT EXISTS everywhere)
 uv run python -m src.db.migrations.create_foreclosures
+uv run alembic upgrade head
 
 # With explicit DSN
 uv run python -m src.db.migrations.create_foreclosures --dsn "postgresql://user:pass@host:5432/dbname"
+# (DSN via env var for Alembic)
+SUNBIZ_PG_DSN="postgresql://user:pass@host:5432/dbname" uv run alembic upgrade head
 
 # Refresh foreclosures hub table from reference data
 uv run python src/scripts/refresh_foreclosures.py
