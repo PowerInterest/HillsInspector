@@ -3640,7 +3640,7 @@ class PgOriService:
                 sat_id = sat[0]
                 sat_inst = sat[1] or ""
                 legal = (sat[2] or "").upper()
-                sat_case = (sat[5] or "").strip()
+                sat_case = (sat[6] or "").strip()
 
                 matched_enc = None
                 method = None
@@ -3670,22 +3670,32 @@ class PgOriService:
                         matched_enc = candidates[0]
                         method = "case_number_match"
 
-                # Strategy 4: Party name + date heuristic
+                # Strategy 4: Party name + date heuristic (cross-match)
+                # ORI party roles flip between doc types:
+                #   Mortgage: party1=borrower, party2=lender
+                #   SAT/REL:  party1=lender,   party2=borrower
+                # So we cross-match: sat_party1↔enc_party2 (bank-to-bank)
+                # and sat_party2↔enc_party1 (borrower-to-borrower).
                 if not matched_enc:
-                    sat_party = (sat[3] or "").strip().upper()  # party1
-                    sat_date = sat[4]  # recording_date
-                    if sat_party and sat_date:
+                    sat_party1 = (sat[3] or "").strip().upper()  # lender on SAT
+                    sat_party2 = (sat[4] or "").strip().upper()  # borrower on SAT
+                    sat_date = sat[5]  # recording_date
+                    if (sat_party1 or sat_party2) and sat_date:
                         from rapidfuzz.fuzz import token_set_ratio
 
                         candidates = []
                         for enc in enc_rows:
-                            enc_party = (enc[5] or "").strip().upper()  # party1
-                            enc_date = enc[7]  # recording_date
-                            if not enc_party or not enc_date:
+                            enc_party1 = (enc[5] or "").strip().upper()  # borrower on MTG
+                            enc_party2 = (enc[6] or "").strip().upper()  # lender on MTG
+                            enc_date = enc[8]  # recording_date
+                            if not enc_date:
                                 continue
                             if sat_date <= enc_date:
                                 continue
-                            if token_set_ratio(sat_party, enc_party) >= 85:
+                            # Bank-to-bank OR borrower-to-borrower
+                            bank_score = token_set_ratio(sat_party1, enc_party2) if sat_party1 and enc_party2 else 0
+                            borrower_score = token_set_ratio(sat_party2, enc_party1) if sat_party2 and enc_party1 else 0
+                            if bank_score >= 85 or borrower_score >= 85:
                                 candidates.append(enc)
                         if len(candidates) == 1:
                             matched_enc = candidates[0]
