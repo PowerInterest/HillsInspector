@@ -1192,6 +1192,9 @@ class PgOriService:
             if strap and saved > 0:
                 linked = self._link_satisfactions(strap)
                 self._link_modifications(strap)
+                # Chase CLK# refs from unlinked SATs to discover parent mortgages
+                chase_linked = self._chase_unlinked_sat_parents(strap, folio)
+                linked += chase_linked
             if bool(target.get("mark_ori_searched", True)):
                 self._mark_searched(foreclosure_id)
 
@@ -3721,7 +3724,7 @@ class PgOriService:
                               )
                         """),
                         {
-                            "sat_date": sat[4],
+                            "sat_date": sat[5],
                             "sat_inst": sat_inst,
                             "method": method,
                             "enc_id": enc_id,
