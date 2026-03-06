@@ -70,27 +70,56 @@ DELAY_PROFILES: dict[str, SiteDelayProfile] = {
 def _query_properties_needing_market(
     dsn: str,
     limit: int | None = None,
+    force: bool = False,
 ) -> list[dict[str, Any]]:
-    """Return properties that do not yet have at least one required source row.
+    """Return properties that need market data — missing sources OR thin/incomplete data.
 
-    This keeps the same query shape as the existing market-data worker so this
-    module can be dropped into the same scheduling path if needed.
+    A property is considered incomplete per source if the JSON exists but lacks
+    enrichment markers that the scrapling parsers produce:
+
+    - **Zillow**: must have ``facts_and_features``
+    - **Redfin**: must have ``property_facts``
+    - **Realtor**: must have ``list_price`` (not just ``_attempted``/``_found``)
+
+    When *force* is True, returns ALL active properties regardless of existing data.
     """
-    query = """
-        SELECT f.strap, f.folio, f.case_number_raw AS case_number, f.property_address,
-               h.city AS property_city, h.zip_code AS property_zip
-        FROM foreclosures f
-        LEFT JOIN property_market pm ON f.strap = pm.strap
-        LEFT JOIN hcpa_bulk_parcels h ON h.strap = f.strap
-        WHERE f.strap IS NOT NULL
-          AND f.property_address IS NOT NULL
-          AND f.archived_at IS NULL
-          AND (pm.strap IS NULL
-               OR NOT (pm.redfin_json IS NOT NULL AND pm.redfin_json::text != 'null'
-                       AND pm.zillow_json IS NOT NULL AND pm.zillow_json::text != 'null'
-                       AND pm.homeharvest_json IS NOT NULL AND pm.homeharvest_json::text != 'null'))
-        ORDER BY f.auction_date DESC
-    """
+    if force:
+        query = """
+            SELECT f.strap, f.folio, f.case_number_raw AS case_number, f.property_address,
+                   h.city AS property_city, h.zip_code AS property_zip
+            FROM foreclosures f
+            LEFT JOIN hcpa_bulk_parcels h ON h.strap = f.strap
+            WHERE f.strap IS NOT NULL
+              AND f.property_address IS NOT NULL
+              AND f.archived_at IS NULL
+            ORDER BY f.auction_date DESC
+        """
+    else:
+        query = """
+            SELECT f.strap, f.folio, f.case_number_raw AS case_number, f.property_address,
+                   h.city AS property_city, h.zip_code AS property_zip
+            FROM foreclosures f
+            LEFT JOIN property_market pm ON f.strap = pm.strap
+            LEFT JOIN hcpa_bulk_parcels h ON h.strap = f.strap
+            WHERE f.strap IS NOT NULL
+              AND f.property_address IS NOT NULL
+              AND f.archived_at IS NULL
+              AND (
+                  pm.strap IS NULL
+                  -- Missing any source entirely
+                  OR pm.redfin_json IS NULL OR pm.redfin_json::text = 'null'
+                  OR pm.zillow_json IS NULL OR pm.zillow_json::text = 'null'
+                  OR pm.homeharvest_json IS NULL OR pm.homeharvest_json::text = 'null'
+                  -- Zillow exists but thin (no facts_and_features)
+                  OR (pm.zillow_json IS NOT NULL AND NOT (pm.zillow_json ? 'facts_and_features'))
+                  -- Redfin exists but thin (no property_facts from enriched parser)
+                  OR (pm.redfin_json IS NOT NULL AND NOT (pm.redfin_json ? 'property_facts'))
+                  -- Realtor missing or only has _attempted/_found stub
+                  OR pm.realtor_json IS NULL OR pm.realtor_json::text = 'null'
+                  OR (pm.realtor_json IS NOT NULL AND NOT (pm.realtor_json ? 'list_price'))
+              )
+            ORDER BY f.auction_date DESC
+        """
     params: dict[str, Any] = {}
     if limit and limit > 0:
         query += "\n LIMIT :limit"
@@ -116,11 +145,44 @@ class PgMarketDataScraplingService(MarketDataService):
         *,
         use_windows_chrome: bool = False,
         headless: bool = False,
+        force: bool = False,
     ) -> None:
         super().__init__(dsn=dsn, use_windows_chrome=use_windows_chrome)
         self._headless = headless
+        self._force = force
 
         self._fetcher_cls = self._detect_scrapling_fetcher()
+
+    def _get_enrichment_state(self, strap: str) -> dict[str, bool] | None:
+        """Check whether each source has enriched (not just thin) data.
+
+        Enrichment markers per source:
+        - Zillow: ``facts_and_features`` key present
+        - Redfin: ``property_facts`` key present
+        - Realtor: ``list_price`` key present (not just ``_attempted``/``_found``)
+        """
+        try:
+            with self._engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        "SELECT "
+                        "  zillow_json IS NOT NULL AND (zillow_json ? 'facts_and_features') AS zillow_enriched, "
+                        "  redfin_json IS NOT NULL AND (redfin_json ? 'property_facts') AS redfin_enriched, "
+                        "  realtor_json IS NOT NULL AND (realtor_json ? 'list_price') AS realtor_enriched "
+                        "FROM property_market WHERE strap = :strap"
+                    ),
+                    {"strap": strap},
+                ).fetchone()
+                if not row:
+                    return None
+                return {
+                    "zillow_enriched": row.zillow_enriched,
+                    "redfin_enriched": row.redfin_enriched,
+                    "realtor_enriched": row.realtor_enriched,
+                }
+        except Exception:
+            logger.debug("Enrichment state check failed for strap={}", strap)
+            return None
 
     @staticmethod
     def _normalize_float(raw_value: Any) -> float | None:
@@ -297,6 +359,23 @@ class PgMarketDataScraplingService(MarketDataService):
                 offer_price = offer_price.get("price")
             node["list_price"] = offer_price
 
+        # Price/tax/sale history
+        price_history = node.get("price_history") or node.get("priceHistory") or node.get("property_history")
+        tax_history = node.get("tax_history") or node.get("taxHistory")
+
+        # MLS number
+        mls = node.get("mls_id") or node.get("mlsId") or node.get("mls")
+        if isinstance(mls, dict):
+            mls = mls.get("id") or mls.get("number")
+
+        # HOA
+        hoa = node.get("hoa") or node.get("hoa_fee") or node.get("hoaFee")
+        if isinstance(hoa, dict):
+            hoa = hoa.get("fee") or hoa.get("amount")
+
+        # Facts/features
+        details = node.get("details") or node.get("features") or node.get("property_details")
+
         payload = {
             "listing_status": node.get("homeStatus") or node.get("status") or node.get("listing_status"),
             "list_price": node.get("list_price"),
@@ -311,6 +390,17 @@ class PgMarketDataScraplingService(MarketDataService):
             "photos": photos,
             "detail_url": node.get("detailUrl") or node.get("url") or detail_url,
         }
+
+        if mls:
+            payload["mls_number"] = mls
+        if hoa is not None:
+            payload["hoa_fee"] = hoa
+        if isinstance(price_history, list) and price_history:
+            payload["price_history"] = price_history
+        if isinstance(tax_history, list) and tax_history:
+            payload["tax_history"] = tax_history
+        if isinstance(details, (list, dict)) and details:
+            payload["facts_and_features"] = details
 
         if not payload["detail_url"]:
             # Keep detail URL in payload if present so we can still debug page output.
@@ -388,11 +478,17 @@ class PgMarketDataScraplingService(MarketDataService):
         return None
 
     def _fetcher(self):
+        """Return the fetcher class (not an instance).
+
+        Scrapling fetchers use classmethods (``fetch``/``async_fetch``),
+        so we call them directly on the class to avoid the deprecated
+        ``BaseFetcher.__init__`` warning.
+        """
         if not self._fetcher_cls:
             raise _MissingScraplingError(
                 "scrapling.fetchers unavailable. Install scrapling with fetchers extras before using this service."
             )
-        return self._fetcher_cls()
+        return self._fetcher_cls
 
     def _response_text(self, response: Any) -> str:
         candidates: tuple[str, ...] = (
@@ -537,26 +633,70 @@ class PgMarketDataScraplingService(MarketDataService):
     # Redfin URL + parse
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _to_redfin_url(address: str, city: str = "", zip_code: str = "") -> str:
-        street_slug = re.sub(r"[^\w\s]", "", address.strip())
-        street_slug = re.sub(r"\s+", "-", street_slug)
-        zip_clean = (zip_code or "").strip()[:5]
-        slug = f"{street_slug}-{zip_clean}" if zip_clean else street_slug
-        city_clean = (city or "Tampa").strip().replace(" ", "-")
-        return f"https://www.redfin.com/FL/{city_clean}/{slug}/home/"
+    async def _resolve_redfin_url(self, address: str, city: str = "") -> str | None:
+        """Resolve a Redfin property URL via Google ``site:`` search.
+
+        Redfin detail pages require an internal home ID in the URL path
+        (e.g. ``/home/148365970``).  Constructing URLs without that ID
+        always returns 404.  Google indexes these pages, so a quick
+        ``site:redfin.com "ADDRESS" CITY FL`` query reliably finds them.
+
+        Returns the first matching URL or *None* if not found.
+        """
+        addr_quoted = address.strip().replace(" ", "+")
+        city_clean = (city or "").strip().replace(" ", "+") or "FL"
+        google_url = (
+            f"https://www.google.com/search?q=site:redfin.com+"
+            f'%22{addr_quoted}%22+{city_clean}+FL'
+        )
+        fetcher = self._fetcher()
+        try:
+            if hasattr(fetcher, "async_fetch"):
+                resp = await fetcher.async_fetch(google_url, headless=True, wait=3)
+            else:
+                loop = asyncio.get_running_loop()
+                resp = await loop.run_in_executor(None, lambda: fetcher.fetch(google_url))
+            html = self._response_text(resp)
+        except Exception:
+            logger.debug("Redfin Google lookup failed for '{}'", address)
+            return None
+        finally:
+            close = getattr(fetcher, "close", None)
+            if close is not None:
+                result = close()
+                if inspect.isawaitable(result):
+                    with contextlib.suppress(Exception):
+                        await result
+
+        if not html:
+            return None
+
+        # Extract Redfin detail URLs with home IDs
+        redfin_urls = re.findall(
+            r"https://www\.redfin\.com/FL/[^\s\"'<>]+/home/\d+", html,
+        )
+        if not redfin_urls:
+            return None
+
+        # Match the exact address slug
+        addr_slug = re.sub(r"[^\w\s]", "", address.strip())
+        addr_slug = re.sub(r"\s+", "-", addr_slug)
+        for url in dict.fromkeys(redfin_urls):
+            if addr_slug.lower() in url.lower():
+                return url
+
+        return None
 
     def _parse_redfin_html(self, html: str, address: str, detail_url: str) -> dict[str, Any]:
         soup = bs4.BeautifulSoup(html, "lxml")
         payload: dict[str, Any] = {"_source": "scrapling", "_source_address": address, "detail_url": detail_url}
 
-        # Try __NEXT_DATA__ or preloaded JSON
+        # Try __NEXT_DATA__ or preloaded JSON (don't return early — DOM adds rich data)
         for script in soup.find_all("script", {"type": "application/json"}):
             raw = self._extract_json_from_script(script.get_text(" ", strip=True), "__NEXT_DATA__")
             if raw:
                 payload.update(self._extract_redfin_from_json(raw, address))
-                if payload.get("list_price") or payload.get("zestimate"):
-                    return payload
+                break
 
         # Fallback: meta tags
         for meta in soup.find_all("meta"):
@@ -565,8 +705,7 @@ class PgMarketDataScraplingService(MarketDataService):
             if not content:
                 continue
             if name == "og:description" and "$" in content:
-                import re as _re
-                price_match = _re.search(r"\$[\d,]+", content)
+                price_match = re.search(r"\$[\d,]+", content)
                 if price_match and not payload.get("list_price"):
                     payload["list_price"] = self._normalize_float(price_match.group().replace("$", ""))
 
@@ -602,6 +741,142 @@ class PgMarketDataScraplingService(MarketDataService):
                 photos.append(url)
         if photos:
             payload["photos"] = photos
+
+        # ---- Rich data extraction ----
+
+        # Sale / property history — always use text-line parsing (DOM class names
+        # are unreliable after dynamic scroll rendering).
+        history_section = soup.find("div", id="propertyHistory-collapsible")
+        if history_section:
+            sale_events: list[dict[str, str]] = []
+            lines = history_section.get_text("\n", strip=True).split("\n")
+            current: dict[str, str] = {}
+            for line in lines:
+                line = line.strip()
+                if re.match(r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d", line):
+                    if current:
+                        sale_events.append(current)
+                    current = {"date": line}
+                elif current and not current.get("event") and line in {
+                    "Sold", "Listed", "Pending", "Delisted", "Price Changed",
+                    "Contingent", "Listing Removed",
+                }:
+                    current["event"] = line
+                elif current and "$" in line and not current.get("price"):
+                    price_m = re.search(r"\$([\d,]+)", line)
+                    if price_m:
+                        current["price"] = price_m.group(1).replace(",", "")
+                elif current and not current.get("mls") and re.search(r"(?:MLS|GAMLS)\s*#?\s*(\w{5,})", line):
+                    current["mls"] = re.search(r"(?:MLS|GAMLS)\s*#?\s*(\w{5,})", line).group(1)
+            if current:
+                sale_events.append(current)
+            if sale_events:
+                payload["sale_history"] = sale_events
+
+        # MLS number — formats: "MLS# 10701006", "GAMLS #10701006",
+        # "Stellar MLS as Distributed by MLS Grid #T3282035"
+        mls_match = re.search(r"(?:GAMLS|Stellar\s+MLS|MLS\s*Grid|MLS)\s*#?\s*([A-Z0-9]\w{5,})", html)
+        if mls_match:
+            candidate = mls_match.group(1)
+            # Filter out false positives (JS identifiers, cookie names, etc.)
+            if not re.match(r"(?:onetrust|TourHome|cookie|banner|script)", candidate, re.IGNORECASE):
+                payload["mls_number"] = candidate
+
+        # Tax history — text-line parsing from tax panel (robust against class renames)
+        tax_panel = soup.find("div", {"data-rf-test-name": "taxHistoryPanel"})
+        if not tax_panel:
+            tax_panel = soup.find("div", id=re.compile(r"tax", re.IGNORECASE))
+        if tax_panel:
+            tax_rows: list[dict[str, str]] = []
+            tax_lines = [tl.strip() for tl in tax_panel.get_text("\n", strip=True).split("\n") if tl.strip()]
+            # Walk lines sequentially: year line, then 1-2 amount lines
+            idx = 0
+            while idx < len(tax_lines):
+                year_match = re.match(r"^(20\d{2})$", tax_lines[idx])
+                if year_match:
+                    entry: dict[str, str] = {"year": year_match.group(1)}
+                    # Collect dollar amounts from following lines until next year or non-$ line
+                    amounts: list[str] = []
+                    j = idx + 1
+                    while j < len(tax_lines) and not re.match(r"^20\d{2}$", tax_lines[j]):
+                        for am in re.findall(r"\$([\d,]+(?:\.\d{2})?)", tax_lines[j]):
+                            amounts.append(am.replace(",", ""))
+                        j += 1
+                    if amounts:
+                        entry["tax"] = amounts[0]
+                    if len(amounts) > 1:
+                        entry["assessment"] = amounts[1]
+                    tax_rows.append(entry)
+                    idx = j
+                else:
+                    # Check for inline format: "2025 $1,713 $119,648"
+                    inline = re.match(r"^(20\d{2})\s+", tax_lines[idx])
+                    if inline:
+                        entry = {"year": inline.group(1)}
+                        amounts = [a.replace(",", "") for a in re.findall(r"\$([\d,]+(?:\.\d{2})?)", tax_lines[idx])]
+                        if amounts:
+                            entry["tax"] = amounts[0]
+                        if len(amounts) > 1:
+                            entry["assessment"] = amounts[1]
+                        tax_rows.append(entry)
+                    idx += 1
+            tax_rows = [r for r in tax_rows if r.get("tax")]
+            if tax_rows:
+                payload["tax_history"] = tax_rows
+
+        # Building permits from embedded JSON
+        bp_match = re.search(r'"payload":\s*(\[\{[^]]*?"buildingPermitSurrogateId"[^]]*?\])', html)
+        if bp_match:
+            try:
+                permits_raw = json.loads(bp_match.group(1))
+                payload["building_permits"] = [
+                    {k: v for k, v in p.items() if k in (
+                        "permitNumber", "status", "type", "subtype",
+                        "startDate", "endDate", "issueDate", "description",
+                    )}
+                    for p in permits_raw
+                ]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Property facts (key details)
+        facts: dict[str, str] = {}
+        for kd in soup.find_all("div", class_="keyDetail"):
+            txt = kd.get_text(" ", strip=True)
+            # Parse "Value Label" patterns like "2004 Year Built" or "4.81 acres Lot Size"
+            parts = txt.split()
+            if len(parts) >= 2:
+                facts[" ".join(parts[1:])] = parts[0]
+        # Fallback: extract facts from stat-block style elements
+        if not facts:
+            for el in soup.find_all("div", class_=re.compile(r"keyFact|home-main-stats", re.IGNORECASE)):
+                txt = el.get_text(" ", strip=True)
+                parts = txt.split()
+                if len(parts) >= 2:
+                    facts[" ".join(parts[1:])] = parts[0]
+        # Fallback: parse well-known facts via regex from full text
+        if not facts:
+            full_text = soup.get_text(" ", strip=True)
+            for pattern, label in [
+                (r"(\d{4})\s*Year\s*Built", "Year Built"),
+                (r"([\d,.]+)\s*(?:Sq\.?\s*Ft|sqft)", "Sqft"),
+                (r"([\d,.]+)\s*(?:Acres?|acres?)\s*(?:Lot)?", "Lot Acres"),
+                (r"(\d+)\s*(?:Beds?|Bedrooms?)", "Beds"),
+                (r"([\d.]+)\s*(?:Baths?|Bathrooms?)", "Baths"),
+            ]:
+                m = re.search(pattern, full_text, re.IGNORECASE)
+                if m:
+                    facts[label] = m.group(1)
+        if facts:
+            payload["property_facts"] = facts
+
+        # Property details section text
+        amenity_section = soup.find("div", {"data-rf-test-name": "propertyDetails"})
+        if not amenity_section:
+            amenity_section = soup.find("div", class_=re.compile(r"propertyDetails|amenities", re.IGNORECASE))
+        if amenity_section:
+            details_text = amenity_section.get_text("\n", strip=True)
+            payload["property_details_text"] = details_text[:5000]
 
         return payload
 
@@ -657,7 +932,8 @@ class PgMarketDataScraplingService(MarketDataService):
         soup = bs4.BeautifulSoup(html, "lxml")
         payload: dict[str, Any] = {"_source": "scrapling", "_source_address": address, "detail_url": detail_url}
 
-        # Try preloaded data
+        # Try preloaded data (don't return early — DOM parsing adds rich data)
+        json_found = False
         for script in soup.find_all("script"):
             text_content = script.get_text(" ", strip=True)
 
@@ -667,7 +943,10 @@ class PgMarketDataScraplingService(MarketDataService):
                 if raw and isinstance(raw, dict):
                     payload.update(self._extract_zillow_from_json(raw, address))
                     if payload.get("zestimate") or payload.get("list_price"):
-                        return payload
+                        json_found = True
+                        break
+            if json_found:
+                break
 
         # JSON-LD
         for script in soup.find_all("script", {"type": "application/ld+json"}):
@@ -704,6 +983,90 @@ class PgMarketDataScraplingService(MarketDataService):
         if photos:
             payload["photos"] = photos
 
+        # ---- Rich data: facts & features from rendered DOM ----
+
+        # Facts sections (Interior, Property, Construction, Financial, Utilities)
+        facts: dict[str, Any] = {}
+        current_section = ""
+        for heading in soup.find_all(["h3", "h4", "h5", "h6"]):
+            heading_text = heading.get_text(strip=True)
+            if heading_text in {"Interior", "Property", "Construction", "Utilities & green energy",
+                                "Financial & listing details", "Community & HOA", "Location"}:
+                current_section = heading_text
+                section_parent = heading.parent
+                if section_parent:
+                    spans = section_parent.find_all("span")
+                    for span in spans:
+                        text = span.get_text(strip=True)
+                        if ":" in text:
+                            key, _, val = text.partition(":")
+                            facts.setdefault(current_section, {})[key.strip()] = val.strip()
+                        elif text and text not in {current_section}:
+                            # Standalone fact like "No" for fireplace
+                            facts.setdefault(current_section, {})
+
+        # Fallback: find all label:value patterns in fact containers
+        for container in soup.find_all("div", class_=re.compile(r"fact|detail", re.IGNORECASE)):
+            spans = container.find_all("span")
+            for span in spans:
+                text = span.get_text(strip=True)
+                if ":" in text and len(text) < 200:
+                    key, _, val = text.partition(":")
+                    key = key.strip()
+                    val = val.strip()
+                    if key and val and key not in facts:
+                        facts[key] = val
+
+        if facts:
+            payload["facts_and_features"] = facts
+
+        # HOA
+        hoa_el = soup.find("span", string=re.compile(r"HOA", re.IGNORECASE))
+        if hoa_el:
+            parent_text = (hoa_el.parent.get_text(strip=True) if hoa_el.parent else "")
+            hoa_match = re.search(r"\$[\d,]+", parent_text)
+            if hoa_match:
+                payload.setdefault("hoa_fee", hoa_match.group())
+            elif "No" in parent_text or "$--" in parent_text:
+                payload.setdefault("hoa_fee", "None")
+
+        # Price history from DOM
+        price_history_header = soup.find(string=re.compile(r"^Price history$"))
+        if price_history_header:
+            table = price_history_header.find_parent("div")
+            if table:
+                rows = table.find_all("tr")
+                ph_entries: list[dict[str, str]] = []
+                for row in rows:
+                    cells = [td.get_text(strip=True) for td in row.find_all("td")]
+                    if len(cells) >= 3:
+                        ph_entries.append({"date": cells[0], "event": cells[1], "price": cells[2]})
+                if ph_entries:
+                    payload["price_history"] = ph_entries
+
+        # Tax history from DOM
+        tax_header = soup.find(string=re.compile(r"^Public tax history$|^Tax history$"))
+        if tax_header:
+            table = tax_header.find_parent("div")
+            if table:
+                rows = table.find_all("tr")
+                th_entries: list[dict[str, str]] = []
+                for row in rows:
+                    cells = [td.get_text(strip=True) for td in row.find_all("td")]
+                    if len(cells) >= 3:
+                        th_entries.append({"year": cells[0], "tax_paid": cells[1], "assessment": cells[2]})
+                if th_entries:
+                    payload["tax_history"] = th_entries
+
+        # Zestimate from rendered page
+        zest_el = soup.find(string=re.compile(r"Zestimate"))
+        if zest_el and not payload.get("zestimate"):
+            parent = zest_el.find_parent("div")
+            if parent:
+                price_match = re.search(r"\$([\d,]+)", parent.get_text())
+                if price_match:
+                    payload["zestimate"] = self._normalize_float(price_match.group(1))
+
         return payload
 
     @staticmethod
@@ -718,6 +1081,7 @@ class PgMarketDataScraplingService(MarketDataService):
                 return
             # Zillow property data keys
             if obj.get("zpid") or obj.get("zestimate") or obj.get("price"):
+                result.setdefault("zpid", obj.get("zpid"))
                 result.setdefault("zestimate", obj.get("zestimate"))
                 result.setdefault("rent_estimate", obj.get("rentZestimate"))
                 result.setdefault("list_price", obj.get("price"))
@@ -729,6 +1093,9 @@ class PgMarketDataScraplingService(MarketDataService):
                 result.setdefault("lot_size", obj.get("lotSize") or obj.get("lotAreaValue"))
                 result.setdefault("property_type", obj.get("homeType") or obj.get("propertyType"))
                 result.setdefault("listing_status", obj.get("homeStatus") or obj.get("listingStatus"))
+                result.setdefault("monthly_hoa_fee", obj.get("monthlyHoaFee"))
+                result.setdefault("property_tax_rate", obj.get("propertyTaxRate"))
+                result.setdefault("days_on_zillow", obj.get("daysOnZillow"))
                 photos = obj.get("photos") or obj.get("hugePhotos") or obj.get("responsivePhotos") or []
                 if isinstance(photos, list) and photos:
                     urls = []
@@ -738,6 +1105,21 @@ class PgMarketDataScraplingService(MarketDataService):
                         elif isinstance(p, str):
                             urls.append(p)
                     result.setdefault("photos", [u for u in urls if u])
+
+            # resoFacts — the full facts & features blob
+            if obj.get("resoFacts") and isinstance(obj["resoFacts"], dict):
+                result.setdefault("facts_and_features", obj["resoFacts"])
+
+            # Price/tax/sale history from JSON
+            for hist_key in ("priceHistory", "taxHistory"):
+                if obj.get(hist_key) and isinstance(obj[hist_key], list):
+                    result.setdefault(hist_key, obj[hist_key])
+
+            # Attribution / MLS info
+            attr = obj.get("attributionInfo")
+            if isinstance(attr, dict) and attr.get("mlsId"):
+                result.setdefault("mls_number", attr["mlsId"])
+
             for v in obj.values():
                 if isinstance(v, dict):
                     _walk(v, depth + 1)
@@ -753,20 +1135,30 @@ class PgMarketDataScraplingService(MarketDataService):
     # Generic scrapling fetch
     # ------------------------------------------------------------------
 
-    async def _fetch_site_html(self, url: str) -> tuple[str, str]:
+    @staticmethod
+    async def _scroll_page(page: Any) -> None:
+        """Scroll down to trigger lazy-loaded sections (history, facts)."""
+        for _ in range(4):
+            await page.evaluate("window.scrollBy(0, window.innerHeight)")
+            await page.wait_for_timeout(800)
+
+    async def _fetch_site_html(self, url: str, *, scroll: bool = False) -> tuple[str, str]:
         """Fetch a URL via scrapling and return (final_url, html)."""
         fetcher = self._fetcher()
         try:
+            kwargs: dict[str, Any] = {
+                "headless": self._headless,
+                "google_search": True,
+                "network_idle": True,
+                "block_webrtc": True,
+                "hide_canvas": True,
+                "wait": 5,
+            }
+            if scroll:
+                kwargs["page_action"] = self._scroll_page
+                kwargs["wait"] = 3000  # 3s after scroll completes
             if hasattr(fetcher, "async_fetch"):
-                response = await fetcher.async_fetch(
-                    url,
-                    headless=self._headless,
-                    google_search=True,
-                    network_idle=True,
-                    block_webrtc=True,
-                    hide_canvas=True,
-                    wait=5,
-                )
+                response = await fetcher.async_fetch(url, **kwargs)
             else:
                 loop = asyncio.get_running_loop()
                 response = await loop.run_in_executor(None, lambda: fetcher.fetch(url))
@@ -799,6 +1191,8 @@ class PgMarketDataScraplingService(MarketDataService):
         html_parser,
         upsert_fn,
         is_useful_fn,
+        *,
+        scroll: bool = False,
     ) -> int:
         """Generic per-site scraping loop with delay profile and progress reporting."""
         if not properties:
@@ -841,7 +1235,7 @@ class PgMarketDataScraplingService(MarketDataService):
 
             try:
                 url = url_builder(address, city=city, zip_code=zip_code)
-                _, html = await self._fetch_site_html(url)
+                _, html = await self._fetch_site_html(url, scroll=scroll)
             except Exception:
                 logger.exception("{} scrapling fetch failed for {}", site.capitalize(), address)
                 self._mark_source_attempted(strap, folio, case_number, site)
@@ -884,14 +1278,96 @@ class PgMarketDataScraplingService(MarketDataService):
         )
 
     async def _run_redfin_scrapling(self, properties: list[dict[str, Any]]) -> int:
-        return await self._run_site_loop(
-            site=_REDFIN_SOURCE,
-            properties=properties,
-            url_builder=lambda addr, *, city="", zip_code="": self._to_redfin_url(addr, city=city, zip_code=zip_code),
-            html_parser=self._parse_redfin_html,
-            upsert_fn=self._upsert_redfin,
-            is_useful_fn=lambda p: any(p.get(k) for k in ("list_price", "zestimate", "beds", "sqft")),
-        )
+        """Redfin two-step scraping: Google lookup → fetch detail page.
+
+        Redfin detail URLs require an internal home ID that cannot be
+        constructed from address alone.  We resolve via Google search first.
+        """
+        if not properties:
+            return 0
+
+        profile = DELAY_PROFILES.get(_REDFIN_SOURCE, DELAY_PROFILES["realtor"])
+        matched = 0
+        attempted = 0
+        consecutive_failures = 0
+        def is_useful(p: dict[str, Any]) -> bool:
+            return any(p.get(k) for k in ("list_price", "zestimate", "beds", "sqft"))
+
+        for i, prop in enumerate(properties):
+            strap = prop.get("strap", "")
+            folio = prop.get("folio")
+            case_number = prop.get("case_number", "") or ""
+            address = (prop.get("property_address") or "").strip()
+            city = (prop.get("property_city") or "").strip()
+
+            if not strap or not address or address.lower() in {"unknown", "n/a", "none"}:
+                self._mark_source_attempted(strap, folio, case_number, _REDFIN_SOURCE)
+                continue
+
+            # Delay between requests (skip first)
+            if i > 0:
+                if consecutive_failures >= profile.backoff_after:
+                    backoff = random.uniform(profile.backoff_min, profile.backoff_max)  # noqa: S311
+                    logger.warning(
+                        "Redfin scrapling: {} consecutive failures — backing off {:.0f}s",
+                        consecutive_failures, backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    consecutive_failures = 0
+                else:
+                    delay = random.uniform(profile.delay_min, profile.delay_max)  # noqa: S311
+                    await asyncio.sleep(delay)
+
+            logger.info("Redfin scrapling [{}/{}]: '{}'", i + 1, len(properties), address)
+            attempted += 1
+
+            # Step 1: Resolve real Redfin URL via Google
+            try:
+                redfin_url = await self._resolve_redfin_url(address, city=city)
+            except Exception:
+                logger.debug("Redfin scrapling: Google lookup error for '{}'", address)
+                redfin_url = None
+
+            if not redfin_url:
+                logger.debug("Redfin scrapling: no Google result for '{}'", address)
+                self._mark_source_attempted(strap, folio, case_number, _REDFIN_SOURCE)
+                consecutive_failures += 1
+                if attempted % 10 == 0:
+                    logger.info("Redfin scrapling progress: {}/{} attempted, {} matched", attempted, len(properties), matched)
+                continue
+
+            # Brief pause between Google lookup and detail fetch
+            await asyncio.sleep(random.uniform(2, 5))  # noqa: S311
+
+            # Step 2: Fetch the real detail page
+            try:
+                _, html = await self._fetch_site_html(redfin_url, scroll=True)
+            except Exception:
+                logger.exception("Redfin scrapling: fetch failed for {}", redfin_url)
+                self._mark_source_attempted(strap, folio, case_number, _REDFIN_SOURCE)
+                consecutive_failures += 1
+                if attempted % 10 == 0:
+                    logger.info("Redfin scrapling progress: {}/{} attempted, {} matched", attempted, len(properties), matched)
+                continue
+
+            consecutive_failures = 0
+
+            payload = self._parse_redfin_html(html, address, redfin_url)
+            if not payload or not is_useful(payload):
+                self._mark_source_attempted(strap, folio, case_number, _REDFIN_SOURCE)
+                if attempted % 10 == 0:
+                    logger.info("Redfin scrapling progress: {}/{} attempted, {} matched", attempted, len(properties), matched)
+                continue
+
+            self._upsert_redfin(strap, folio, case_number, payload)
+            matched += 1
+            logger.success("Redfin scrapling: saved for {}", strap)
+
+            if attempted % 10 == 0:
+                logger.info("Redfin scrapling progress: {}/{} attempted, {} matched", attempted, len(properties), matched)
+
+        logger.info("Redfin scrapling complete: {}/{} matched", matched, attempted)
+        return matched
 
     async def _run_zillow_scrapling(self, properties: list[dict[str, Any]]) -> int:
         return await self._run_site_loop(
@@ -901,6 +1377,7 @@ class PgMarketDataScraplingService(MarketDataService):
             html_parser=self._parse_zillow_html,
             upsert_fn=self._upsert_zillow,
             is_useful_fn=lambda p: any(p.get(k) for k in ("zestimate", "list_price", "rent_estimate", "beds")),
+            scroll=True,
         )
 
     def _build_site_needs(
@@ -908,7 +1385,11 @@ class PgMarketDataScraplingService(MarketDataService):
         properties: list[dict[str, Any]],
         sources: list[str],
     ) -> dict[str, list[dict[str, Any]]]:
-        """Partition properties by which sites still need data."""
+        """Partition properties by which sites still need enriched data.
+
+        A source is considered complete only when its JSON contains enrichment
+        markers from the scrapling parsers — not just any non-NULL value.
+        """
         selected = {s.lower() for s in sources}
         state_key = {"realtor": "has_realtor", "redfin": "has_redfin", "zillow": "has_zillow"}
         needs: dict[str, list[dict[str, Any]]] = {s: [] for s in selected if s in state_key}
@@ -918,10 +1399,14 @@ class PgMarketDataScraplingService(MarketDataService):
             address = (prop.get("property_address") or "").strip()
             if not strap or not address:
                 continue
-            state = self._get_market_state(strap)
-            for site, key in state_key.items():
-                if site in needs and not (state and state.get(key)):
-                    needs[site].append(prop)
+            if self._force:
+                for site_list in needs.values():
+                    site_list.append(prop)
+            else:
+                enrichment = self._get_enrichment_state(strap)
+                for site, site_list in needs.items():
+                    if not (enrichment and enrichment.get(f"{site}_enriched")):
+                        site_list.append(prop)
 
         # Deduplicate by strap
         for site, site_list in needs.items():
@@ -994,16 +1479,17 @@ def run_market_data_update(
     dsn: str | None = None,
     limit: int | None = None,
     use_windows_chrome: bool = False,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Drop-in wrapper mirroring ``market_data_worker.run_market_data_update``."""
     resolved_dsn = resolve_pg_dsn(dsn)
-    properties = _query_properties_needing_market(dsn=resolved_dsn, limit=limit)
+    properties = _query_properties_needing_market(dsn=resolved_dsn, limit=limit, force=force)
     if not properties:
         return {"skipped": True, "reason": "no_properties_need_market_data"}
 
     logger.info("Scrapling market worker: {} foreclosures need market data", len(properties))
 
-    service = PgMarketDataScraplingService(dsn=resolved_dsn, use_windows_chrome=use_windows_chrome)
+    service = PgMarketDataScraplingService(dsn=resolved_dsn, use_windows_chrome=use_windows_chrome, force=force)
     result = asyncio.run(service.run_batch(properties))
     if result.get("error"):
         return {
@@ -1043,9 +1529,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Standalone Scrapling Market Data Worker")
     parser.add_argument("--use-windows-chrome", action="store_true", help="Compat flag")
     parser.add_argument("--limit", type=int, default=None, help="Max properties to process")
+    parser.add_argument("--force", action="store_true", help="Re-scrape even if data already exists")
     args = parser.parse_args()
 
-    result = run_market_data_update(limit=args.limit, use_windows_chrome=args.use_windows_chrome)
+    result = run_market_data_update(limit=args.limit, use_windows_chrome=args.use_windows_chrome, force=args.force)
     logger.info("Scrapling market worker complete: {}", result)
     print(json.dumps(result, indent=2, default=str))
     if _payload_failed(result):

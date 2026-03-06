@@ -146,6 +146,7 @@ _MAX_ITERATIONS = 10
 _MAX_DOCUMENTS = 500
 _MAX_OFFICIAL_RECORDS_CANDIDATES = 400
 _MIN_OFFICIAL_MATCH_SCORE = 4
+_MAX_SAT_PARENT_CHASE = 20  # instrument lookups per property for SAT parent chase
 
 # Generic legal description boilerplate — too common to be discriminating tokens.
 # These appear in thousands of condo/HOA/subdivision legal descriptions county-wide.
@@ -3593,7 +3594,7 @@ class PgOriService:
             sat_rows = conn.execute(
                 text("""
                     SELECT id, instrument_number, legal_description, party1,
-                           recording_date, case_number
+                           party2, recording_date, case_number
                     FROM ori_encumbrances
                     WHERE strap = :strap
                       AND encumbrance_type IN ('satisfaction', 'release')
@@ -3608,7 +3609,7 @@ class PgOriService:
             enc_rows = conn.execute(
                 text("""
                     SELECT id, instrument_number, book, page, case_number,
-                           party1, amount, recording_date
+                           party1, party2, amount, recording_date
                     FROM ori_encumbrances
                     WHERE strap = :strap
                       AND encumbrance_type IN ('mortgage', 'lien', 'judgment')

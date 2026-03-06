@@ -141,13 +141,16 @@ alpha load path is intact. No follow-up needed.
 
 ## Permit Expansion: Plant City & Temple Terrace
 
-**Status:** NOT STARTED (plan only)
+**Status:** IN PROGRESS (core services + routing implemented on 2026-03-06)
+
+
+
 
 **Goal:** Expand building permit coverage beyond Tampa and Unincorporated
 Hillsborough County.
 
-Plan documented in `docs/plans/2026-03-02-permit-expansion-plan.md`. Zero
-implementation code exists yet.
+Plan documented in `docs/plans/2026-03-02-permit-expansion-plan.md`.
+Implementation docs: `docs/guides/PERMIT_EXPANSION_PLANT_CITY_TEMPLE_TERRACE.md`.
 
 1. Identify and reverse-engineer **Plant City** permit portal API.
 2. Identify and reverse-engineer **Temple Terrace** permit portal API.
@@ -177,6 +180,20 @@ implementation code exists yet.
 ### 4. Daily New Civil Case Filings
 - **URL**: `https://publicrec.hillsclerk.com/Civil/dailyfilings/`
 - **Value**: 30 daily CSVs for ultra-low-latency new foreclosure/HOA lien alerts.
+
+### 5. Delinquent Utility Bills (Water & Power)
+- **Value**: Unpaid water/sewer/electric bills are unrecorded municipal liens
+  that survive foreclosure under FL Ch. 159 and transfer to the auction buyer.
+  These do not appear in official records and cannot be discovered via ORI.
+- **Sources to investigate**:
+  - Tampa Water / City of Tampa Utilities — account balance lookup by address
+  - TECO (Tampa Electric) — delinquency or shutoff records
+  - Hillsborough County Water Resources — unincorporated area utility accounts
+- **Risk**: A property with $5K+ in unpaid water/sewer is common on distressed
+  foreclosures. The buyer inherits the balance. This is one of the most
+  frequently missed liabilities at auction.
+- **Implementation**: Scraper per utility provider, keyed by property address.
+  Store as unrecorded liens in a new table or flag on the property record.
 
 ---
 

@@ -70,6 +70,7 @@ class ControllerSettings:
     skip_judgment_extract: bool = False
     skip_identifier_recovery: bool = False
     skip_ori_search: bool = False
+    skip_municipal_liens: bool = False
     skip_mortgage_extract: bool = False
     skip_survival: bool = False
     skip_encumbrance_audit: bool = False
@@ -199,6 +200,11 @@ class PgPipelineController:
                 "ori_search",
                 self.settings.skip_ori_search,
                 self._run_ori_search,
+            ),
+            (
+                "municipal_liens_phase0",
+                self.settings.skip_municipal_liens,
+                self._run_municipal_liens_phase0,
             ),
             (
                 "mortgage_extract",
@@ -773,9 +779,17 @@ class PgPipelineController:
             )
 
             resolved_dsn = self.dsn
-            props = _query_properties_needing_market(dsn=resolved_dsn, limit=self.settings.limit)
+            props = _query_properties_needing_market(
+                dsn=resolved_dsn,
+                limit=self.settings.limit,
+                force=self.settings.force_all,
+            )
             if props:
-                svc = PgMarketDataScraplingService(dsn=resolved_dsn, use_windows_chrome=self.settings.use_windows_chrome)
+                svc = PgMarketDataScraplingService(
+                    dsn=resolved_dsn,
+                    use_windows_chrome=self.settings.use_windows_chrome,
+                    force=self.settings.force_all,
+                )
                 scrapling_result = asyncio.run(
                     svc.run_batch(props, sources=["realtor"]),
                 )
@@ -789,11 +803,19 @@ class PgPipelineController:
         if self.settings.background_market_data:
             from src.services.market_data_dispatcher import dispatch_market_data_worker
 
-            worker_result = dispatch_market_data_worker(dsn=self.dsn, use_windows_chrome=self.settings.use_windows_chrome)
+            worker_result = dispatch_market_data_worker(
+                dsn=self.dsn,
+                use_windows_chrome=self.settings.use_windows_chrome,
+                force=self.settings.force_all,
+            )
         else:
             from src.services.market_data_worker import run_market_data_update
 
-            worker_result = run_market_data_update(dsn=self.dsn, use_windows_chrome=self.settings.use_windows_chrome)
+            worker_result = run_market_data_update(
+                dsn=self.dsn,
+                use_windows_chrome=self.settings.use_windows_chrome,
+                force=self.settings.force_all,
+            )
 
         return {"scrapling": scrapling_result, "worker": worker_result}
 
@@ -832,6 +854,17 @@ class PgPipelineController:
         svc = PgOriService(dsn=self.dsn)
         return svc.run(limit=self.settings.ori_limit)
 
+    def _run_municipal_liens_phase0(self) -> dict[str, Any]:
+        from src.services.pg_municipal_lien_service import PgMunicipalLienService
+
+        svc = PgMunicipalLienService(dsn=self.dsn)
+        return svc.run_phase0(
+            limit=self.settings.limit,
+            foreclosure_id=self.settings.foreclosure_id,
+            case_number=self.settings.case_number,
+            active_only=self.settings.active_only,
+        )
+
     def _run_mortgage_extract(self) -> dict[str, Any]:
         from src.services.pg_mortgage_extraction_service import PgMortgageExtractionService
 
@@ -844,7 +877,7 @@ class PgPipelineController:
         svc = PgSurvivalService(dsn=self.dsn)
         return svc.run(
             limit=self.settings.survival_limit,
-            force_reanalysis=self.settings.force_all,
+            force_reanalysis=True,
         )
 
     def _run_encumbrance_audit(self) -> dict[str, Any]:
@@ -1118,6 +1151,15 @@ class PgPipelineController:
                     s.pin,
                     s.folio,
                     s.property_address,
+                    CASE
+                        WHEN upper(COALESCE(s.property_address, '')) LIKE '%,%TEMPLE TERRACE%'
+                            THEN 'temple_terrace'
+                        WHEN upper(COALESCE(s.property_address, '')) LIKE '%,%PLANT CITY%'
+                            THEN 'plant_city'
+                        WHEN upper(COALESCE(s.property_address, '')) LIKE '%,%TAMPA%'
+                            THEN 'tampa'
+                        ELSE 'county'
+                    END AS jurisdiction_guess,
                     COALESCE(cp.county_total, 0) AS county_total,
                     COALESCE(cp.county_with_value, 0) AS county_with_value,
                     COALESCE(tp.tampa_total, 0) AS tampa_total,
@@ -1162,6 +1204,34 @@ class PgPipelineController:
                                 1
                             )
                         )) = upper(trim(split_part(replace(s.property_address, E'\\t', ' '), ',', 1)))
+                      AND (
+                            NULLIF(btrim(split_part(s.property_address, ',', 2)), '') IS NULL
+                         OR (
+                                NULLIF(btrim(tr.city), '') IS NOT NULL
+                            AND upper(btrim(tr.city)) = upper(btrim(split_part(s.property_address, ',', 2)))
+                         )
+                         OR (
+                                NULLIF(
+                                    btrim(
+                                        split_part(
+                                            COALESCE(tr.address_normalized, tr.address_raw, ''),
+                                            ',',
+                                            2
+                                        )
+                                    ),
+                                    ''
+                                ) IS NOT NULL
+                            AND upper(
+                                    btrim(
+                                        split_part(
+                                            COALESCE(tr.address_normalized, tr.address_raw, ''),
+                                            ',',
+                                            2
+                                        )
+                                    )
+                                ) = upper(btrim(split_part(s.property_address, ',', 2)))
+                         )
+                      )
                 ) tp ON TRUE
             )
             SELECT DISTINCT ON (pin)
@@ -1170,6 +1240,7 @@ class PgPipelineController:
                 pin,
                 folio,
                 property_address,
+                jurisdiction_guess,
                 county_total,
                 county_with_value,
                 tampa_total,
@@ -1352,6 +1423,7 @@ def parse_args() -> ControllerSettings:
     parser.add_argument("--skip-judgment-extract", action="store_true")
     parser.add_argument("--skip-identifier-recovery", action="store_true")
     parser.add_argument("--skip-ori-search", action="store_true")
+    parser.add_argument("--skip-municipal-liens", action="store_true")
     parser.add_argument("--skip-mortgage-extract", action="store_true")
     parser.add_argument("--skip-survival", action="store_true")
     parser.add_argument("--skip-encumbrance-audit", action="store_true")
@@ -1453,6 +1525,7 @@ def parse_args() -> ControllerSettings:
         skip_judgment_extract=bool(args.skip_judgment_extract),
         skip_identifier_recovery=bool(args.skip_identifier_recovery),
         skip_ori_search=bool(args.skip_ori_search),
+        skip_municipal_liens=bool(args.skip_municipal_liens),
         skip_mortgage_extract=bool(args.skip_mortgage_extract),
         skip_survival=bool(args.skip_survival),
         skip_encumbrance_audit=bool(args.skip_encumbrance_audit),

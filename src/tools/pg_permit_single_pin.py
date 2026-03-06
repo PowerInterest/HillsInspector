@@ -137,6 +137,10 @@ def _guess_source(permit_url: str | None) -> str:
         return "tampa"
     if "accela.com/hcfl" in url:
         return "hcfl"
+    if "h8.maintstar.co/plantcity" in url:
+        return "plant_city"
+    if "temp-egov.aspgov.com/click2govbp" in url:
+        return "temple_terrace"
     if "accela.com" in url:
         return "accela_other"
     if not url:

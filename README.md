@@ -162,6 +162,8 @@ The `docs/` folder contains comprehensive guides and technical design artifacts,
 ### 📖 Guides
 - [Operations Runbook](docs/guides/RUNBOOK.md) - Standard operational procedures and recurring scripts.
 - [Encumbrance Audit Web UI](docs/guides/ENCUMBRANCE_AUDIT_WEB_UI.md) - Read-only implementation guide for surfacing encumbrance audit issues in the property view and global review inbox.
+- [Municipal Utility Lien Plan](docs/guides/MUNICIPAL_UTILITY_LIEN_PLAN.md) - Provider-aware closure plan for Hillsborough Water Resources, Tampa Conduits, and TECO municipal-lien risk handling.
+- [Plant City + Temple Terrace Permit Expansion](docs/guides/PERMIT_EXPANSION_PLANT_CITY_TEMPLE_TERRACE.md) - Jurisdiction-aware municipal permit routing and ingestion design for incorporated cities outside Tampa.
 - [ORI Lis Pendens Recovery](docs/guides/ORI_LIS_PENDENS_RECOVERY.md) - How active foreclosure LP gaps are retried without adding new PostgreSQL schema.
 - [Foreclosure Identifier Repair](docs/guides/FORECLOSURE_IDENTIFIER_REPAIR.md) - How the pipeline repairs non-null but invalid HCPA straps from folio-backed parcel data.
 - [Tampa Permit Value And Enforcement](docs/guides/TAMPA_PERMIT_VALUE_AND_ENFORCEMENT.md) - Why enforcement rows stay stored, but are excluded from permit-gap scoring, and how Tampa valuation parsing works.

@@ -33,7 +33,9 @@ from loguru import logger
 from sqlalchemy import text
 
 from src.services.CountyPermit import CountyPermitService
+from src.services.PlantCityPermit import PlantCityPermitService
 from src.services.TampaPermit import TampaPermitService
+from src.services.TempleTerracePermit import TempleTerracePermitService
 from src.tools.pg_permit_single_pin import PermitSinglePinFetcher
 from sunbiz.db import get_engine
 from sunbiz.db import resolve_pg_dsn
@@ -67,10 +69,32 @@ def _to_int(value: Any) -> int | None:
 
 def _extract_city_from_site_address(site_address: str | None) -> str | None:
     text_value = _clean_text(site_address)
-    if not text_value or "," not in text_value:
+    if not text_value:
         return None
-    _, city = text_value.rsplit(",", 1)
-    return _clean_text(city)
+
+    parsed_city = TampaPermitService.normalize_address(text_value).get("city")
+    if parsed_city:
+        return _clean_text(parsed_city)
+
+    parts = [_clean_text(part) for part in text_value.split(",")]
+    parts = [part for part in parts if part]
+    if len(parts) >= 2:
+        return parts[1]
+    return None
+
+
+def _city_key_from_site_address(site_address: str | None) -> str | None:
+    city = _extract_city_from_site_address(site_address)
+    if not city:
+        return None
+    return re.sub(r"[^A-Z]", "", city.upper())
+
+
+def _street_query_from_site_address(site_address: str | None) -> str | None:
+    text_value = _clean_text(site_address)
+    if not text_value:
+        return None
+    return _clean_text(text_value.split(",", 1)[0]) or text_value
 
 
 def _looks_like_tampa_record_number(record_number: str | None) -> bool:
@@ -95,6 +119,8 @@ class PgPermitSinglePinService:
         timeout_seconds: int = 45,
         include_accela: bool = True,
         include_arcgis: bool = True,
+        include_plant_city: bool = True,
+        include_temple_terrace: bool = True,
     ) -> None:
         self.dsn = resolve_pg_dsn(dsn)
         self._engine = get_engine(self.dsn)
@@ -103,6 +129,29 @@ class PgPermitSinglePinService:
             include_accela=include_accela,
             include_arcgis=include_arcgis,
         )
+        self.include_plant_city = include_plant_city
+        self.include_temple_terrace = include_temple_terrace
+        self._plant_city_service = (
+            PlantCityPermitService(pg_dsn=self.dsn, timeout_seconds=timeout_seconds)
+            if include_plant_city
+            else None
+        )
+        self._temple_terrace_service = (
+            TempleTerracePermitService(pg_dsn=self.dsn, timeout_seconds=timeout_seconds)
+            if include_temple_terrace
+            else None
+        )
+
+    @staticmethod
+    def _route_jurisdiction(site_address: str | None) -> str:
+        city_key = _city_key_from_site_address(site_address)
+        if city_key == "PLANTCITY":
+            return "plant_city"
+        if city_key == "TEMPLETERRACE":
+            return "temple_terrace"
+        if city_key == "TAMPA":
+            return "tampa"
+        return "county"
 
     @staticmethod
     def _best_estimated_cost(permit: dict[str, Any]) -> tuple[float | None, str | None]:
@@ -641,8 +690,11 @@ class PgPermitSinglePinService:
         county_backfill_updates = 0
         county_hcpa_upserts = 0
         tampa_upserts = 0
+        plant_city_upserts = 0
+        temple_terrace_upserts = 0
         arcgis_errors = 0
         accela_errors = 0
+        municipal_errors = 0
         permits_with_any_write = 0
 
         with self._engine.begin() as conn:
@@ -727,22 +779,82 @@ class PgPermitSinglePinService:
                 if wrote_this_permit > 0:
                     permits_with_any_write += 1
 
+        routed_jurisdiction = self._route_jurisdiction(site_address)
+        municipal_query = _street_query_from_site_address(site_address) or site_address
+        municipal_max_rows = max_permits if max_permits is not None and max_permits > 0 else 25
+
+        plant_city_service = getattr(self, "_plant_city_service", None)
+        temple_terrace_service = getattr(self, "_temple_terrace_service", None)
+        municipal_error: str | None = None
+
+        if routed_jurisdiction == "plant_city" and plant_city_service and municipal_query:
+            try:
+                result = plant_city_service.sync_address_to_postgres(
+                    municipal_query,
+                    max_rows=municipal_max_rows,
+                )
+                plant_city_upserts = int(result.get("written") or 0)
+            except Exception as exc:
+                municipal_errors += 1
+                municipal_error = (
+                    f"Plant City permit sync failed for pin={pin} query='{municipal_query}': {exc}"
+                )
+                logger.exception(
+                    "Plant City permit sync failed for pin={} query='{}': {}",
+                    pin,
+                    municipal_query,
+                    exc,
+                )
+
+        if (
+            routed_jurisdiction == "temple_terrace"
+            and temple_terrace_service
+            and municipal_query
+        ):
+            try:
+                result = temple_terrace_service.sync_address_to_postgres(
+                    municipal_query,
+                    max_rows=municipal_max_rows,
+                )
+                temple_terrace_upserts = int(result.get("written") or 0)
+            except Exception as exc:
+                municipal_errors += 1
+                municipal_error = (
+                    f"Temple Terrace permit sync failed for pin={pin} query='{municipal_query}': {exc}"
+                )
+                logger.exception(
+                    "Temple Terrace permit sync failed for pin={} query='{}': {}",
+                    pin,
+                    municipal_query,
+                    exc,
+                )
+
+        if municipal_error is not None:
+            raise RuntimeError(municipal_error)
+
         stats = {
             "pin": pin,
+            "site_address": site_address,
+            "jurisdiction_route": routed_jurisdiction,
             "permit_count": len(permits),
             "county_arcgis_upserts": county_arcgis_upserts,
             "county_backfill_updates": county_backfill_updates,
             "county_hcpa_upserts": county_hcpa_upserts,
             "tampa_upserts": tampa_upserts,
+            "plant_city_upserts": plant_city_upserts,
+            "temple_terrace_upserts": temple_terrace_upserts,
             "total_writes": (
                 county_arcgis_upserts
                 + county_backfill_updates
                 + county_hcpa_upserts
                 + tampa_upserts
+                + plant_city_upserts
+                + temple_terrace_upserts
             ),
             "permits_with_any_write": permits_with_any_write,
             "arcgis_errors": arcgis_errors,
             "accela_errors": accela_errors,
+            "municipal_errors": municipal_errors,
         }
         logger.info("Single-pin permit sync complete: {}", stats)
         return stats
@@ -761,6 +873,9 @@ class PgPermitSinglePinService:
         total_writes = 0
         total_arcgis_errors = 0
         total_accela_errors = 0
+        total_municipal_errors = 0
+        total_plant_city_upserts = 0
+        total_temple_terrace_upserts = 0
         per_pin: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
 
@@ -773,6 +888,9 @@ class PgPermitSinglePinService:
                 total_writes += int(stats.get("total_writes") or 0)
                 total_arcgis_errors += int(stats.get("arcgis_errors") or 0)
                 total_accela_errors += int(stats.get("accela_errors") or 0)
+                total_municipal_errors += int(stats.get("municipal_errors") or 0)
+                total_plant_city_upserts += int(stats.get("plant_city_upserts") or 0)
+                total_temple_terrace_upserts += int(stats.get("temple_terrace_upserts") or 0)
             except Exception as exc:
                 failed += 1
                 err = {"pin": pin, "error": str(exc)}
@@ -791,6 +909,9 @@ class PgPermitSinglePinService:
             "total_writes": total_writes,
             "arcgis_errors_total": total_arcgis_errors,
             "accela_errors_total": total_accela_errors,
+            "municipal_errors_total": total_municipal_errors,
+            "plant_city_upserts_total": total_plant_city_upserts,
+            "temple_terrace_upserts_total": total_temple_terrace_upserts,
             "per_pin": per_pin,
             "errors": errors,
         }

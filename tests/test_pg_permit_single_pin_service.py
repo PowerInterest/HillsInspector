@@ -6,6 +6,7 @@ from typing import Any
 
 from src.services.pg_permit_single_pin_service import HCPA_SINGLE_PIN_LAYER_ID
 from src.services.pg_permit_single_pin_service import PgPermitSinglePinService
+from src.services.pg_permit_single_pin_service import _city_key_from_site_address
 
 
 class _FakeConn:
@@ -152,3 +153,8 @@ def test_sync_pin_to_postgres_keeps_tampa_records_out_of_county_fallback() -> No
 
     _, second_params = conn.calls[1]
     assert second_params["record_number"] == "BLD-25-0513202"
+
+
+def test_city_key_from_full_address_parses_city_not_state_zip() -> None:
+    assert _city_key_from_site_address("301 N PALMER ST, Plant City, FL 33563-3435") == "PLANTCITY"
+    assert _city_key_from_site_address("8301 N 56TH ST, Temple Terrace, FL 33617") == "TEMPLETERRACE"

@@ -177,7 +177,45 @@ ori_encumbrances (parent: mortgage/lien/judgment)
 
 ---
 
-## 5. Debugging & Audit Queries
+## 5. SAT Parent Chase (`_chase_unlinked_sat_parents`)
+
+Discovers parent mortgages that were never found by the standard ORI search
+phases by following instrument references embedded in unlinked SAT/REL documents.
+
+### Problem
+
+Satisfaction linking sits at ~11% because most parent mortgages were never
+discovered. SAT/REL documents contain CLK#/INST# references to their parent
+mortgages in the `legal_description` field, but the standard ORI phases (seed,
+case search, party search) never found those instruments.
+
+### Algorithm
+
+1. Query unlinked SAT/REL docs for the property (`satisfies_encumbrance_id IS NULL`).
+2. Extract instrument references using `_INST_REF_PATTERNS` (CLK#, INST#, O.R.).
+3. Build the set of instruments already known in `ori_encumbrances` for this strap.
+4. Filter to novel instruments not yet in the DB.
+5. Cap at `_MAX_SAT_PARENT_CHASE` (20) lookups per property.
+6. Look up each novel instrument via `_search_instrument_pav()` (PAV API, QueryID=320).
+7. Persist discovered documents via `_save_documents()`.
+8. If new docs were saved, re-run `_link_satisfactions()` to connect them.
+
+### Safety Guards
+
+- **Cap**: Max 20 instrument lookups per property.
+- **Dedup**: Instruments already in `ori_encumbrances` are skipped.
+- **Idempotent**: Only processes unlinked SATs (`satisfies_encumbrance_id IS NULL`).
+- **No false saves**: `_save_documents()` handles type classification and duplicate checks.
+
+### Wiring
+
+Called in `_process_target()` immediately after `_link_modifications()`, gated on
+`strap and saved > 0`. The chase result is added to the `satisfactions_linked`
+return field.
+
+---
+
+## 6. Debugging & Audit Queries
 
 ```sql
 -- Satisfaction link rate by method

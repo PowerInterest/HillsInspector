@@ -1,13 +1,28 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Self
 
 from src.services import pg_pipeline_controller
 from src.services.audit.pg_audit_encumbrance import AuditReport, BucketHit, BucketSummary
 
 
+class _DummyConnection:
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> bool:
+        return False
+
+    def execute(self, _statement: object, _params: dict[str, object] | None = None) -> None:
+        return None
+
+    def commit(self) -> None:
+        return None
+
+
 class _DummyEngine:
-    pass
+    def connect(self) -> _DummyConnection:
+        return _DummyConnection()
 
 
 def _build_controller(
@@ -45,6 +60,7 @@ def _build_controller(
         settings.skip_judgment_extract = True
         settings.skip_identifier_recovery = True
         settings.skip_ori_search = True
+        settings.skip_municipal_liens = True
         settings.skip_mortgage_extract = True
         settings.skip_survival = True
         settings.skip_final_refresh = True

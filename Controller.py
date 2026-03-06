@@ -21,12 +21,13 @@ Phase B (per-auction enrichment — scraping + analysis):
   16. Extract judgment PDFs (VisionService → disk JSON → PG)
   17. Recover missing strap/folio from final-judgment data
   18. ORI document search (Playwright → ORI website → PG ori_encumbrances)
-  19. Mortgage extraction from ORI-backed docs
-  20. Lien survival analysis (pure computation → PG ori_encumbrances)
-  21. Encumbrance audit (read-only issue and coverage metrics)
-  22. Encumbrance recovery (targeted backfill through existing writers)
-  23. Final refresh (pick up Phase B data)
-  24. Market data (Redfin/Zillow/HomeHarvest; optional background worker)
+  19. Municipal lien Phase 0 (recorded utility-lien detection → PG findings)
+  20. Mortgage extraction from ORI-backed docs
+  21. Lien survival analysis (pure computation → PG ori_encumbrances)
+  22. Encumbrance audit (read-only issue and coverage metrics)
+  23. Encumbrance recovery (targeted backfill through existing writers)
+  24. Final refresh (pick up Phase B data)
+  25. Market data (Redfin/Zillow/HomeHarvest; optional background worker)
 
 Usage:
   uv run Controller.py                           # Full pipeline
