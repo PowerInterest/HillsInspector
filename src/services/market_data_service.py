@@ -307,10 +307,10 @@ class MarketDataService:
                 if self._has_realtor_column:
                     row = conn.execute(
                         text(
-                            "SELECT redfin_json IS NOT NULL AS has_redfin, "
-                            "       zillow_json IS NOT NULL AS has_zillow, "
-                            "       realtor_json IS NOT NULL AS has_realtor, "
-                            "       homeharvest_json IS NOT NULL AS has_hh "
+                            "SELECT redfin_json IS NOT NULL AND redfin_json::text != 'null' AS has_redfin, "
+                            "       zillow_json IS NOT NULL AND zillow_json::text != 'null' AS has_zillow, "
+                            "       realtor_json IS NOT NULL AND realtor_json::text != 'null' AS has_realtor, "
+                            "       homeharvest_json IS NOT NULL AND homeharvest_json::text != 'null' AS has_hh "
                             "FROM property_market WHERE strap = :strap"
                         ),
                         {"strap": strap},
@@ -318,9 +318,9 @@ class MarketDataService:
                 else:
                     row = conn.execute(
                         text(
-                            "SELECT redfin_json IS NOT NULL AS has_redfin, "
-                            "       zillow_json IS NOT NULL AS has_zillow, "
-                            "       homeharvest_json IS NOT NULL AS has_hh "
+                            "SELECT redfin_json IS NOT NULL AND redfin_json::text != 'null' AS has_redfin, "
+                            "       zillow_json IS NOT NULL AND zillow_json::text != 'null' AS has_zillow, "
+                            "       homeharvest_json IS NOT NULL AND homeharvest_json::text != 'null' AS has_hh "
                             "FROM property_market WHERE strap = :strap"
                         ),
                         {"strap": strap},
@@ -1312,8 +1312,8 @@ def _query_properties_needing_market(dsn: str | None = None, limit: int = 0) -> 
           AND (
               pm.strap IS NULL 
               OR pm.zestimate IS NULL
-              OR pm.zillow_json IS NULL
-              OR pm.redfin_json IS NULL
+              OR pm.zillow_json IS NULL OR pm.zillow_json::text = 'null'
+              OR pm.redfin_json IS NULL OR pm.redfin_json::text = 'null'
           )
         ORDER BY f.auction_date DESC
     """

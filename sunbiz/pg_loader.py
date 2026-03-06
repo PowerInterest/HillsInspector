@@ -487,14 +487,34 @@ def _iter_text_records(path: Path):
                     continue
 
                 info = zf.getinfo(member)
-                if info.compress_type == 9:  # DEFLATE64
-                    logger.error(f"Cannot extract DEFLATE64 file {member} in {path.name} without C extensions. Skipping.")
-                    continue
+                if info.compress_type == 9:  # DEFLATE64 — zf.open() cannot decode this
+                    try:
+                        import inflate64
+                        import struct as _struct
 
-                with zf.open(member) as fp:
-                    for line_no, raw_line in enumerate(fp, start=1):
-                        text = raw_line.decode("latin-1", errors="replace").replace("\x00", "").rstrip("\r\n")
-                        yield member, line_no, text
+                        # Read raw compressed bytes by seeking past the local file header
+                        with open(path, "rb") as _raw:
+                            _raw.seek(info.header_offset)
+                            _raw.read(26)  # skip first 26 bytes of local header
+                            fname_len = _struct.unpack("<H", _raw.read(2))[0]
+                            extra_len = _struct.unpack("<H", _raw.read(2))[0]
+                            _raw.read(fname_len + extra_len)
+                            compressed = _raw.read(info.compress_size)
+                        decompressed = inflate64.Inflater().inflate(compressed)
+                        for line_no, raw_line in enumerate(decompressed.splitlines(keepends=True), start=1):
+                            text = raw_line.decode("latin-1", errors="replace").replace("\x00", "").rstrip("\r\n")
+                            yield member, line_no, text
+                    except ImportError:
+                        logger.error(f"DEFLATE64 file {member} in {path.name}: install 'inflate64' (uv add inflate64). Skipping.")
+                        continue
+                    except Exception as exc:
+                        logger.error(f"DEFLATE64 decode failed for {member} in {path.name}: {exc}. Skipping.")
+                        continue
+                else:
+                    with zf.open(member) as fp:
+                        for line_no, raw_line in enumerate(fp, start=1):
+                            text = raw_line.decode("latin-1", errors="replace").replace("\x00", "").rstrip("\r\n")
+                            yield member, line_no, text
     else:
         with path.open("rb") as fp:
             for line_no, raw_line in enumerate(fp, start=1):
@@ -871,7 +891,9 @@ def load_sunbiz_flr(
                             events.append(parsed)
 
                 row_count = len(filings) + len(parties) + len(events)
-                if row_count <= 0:
+                # Only enforce non-empty guard for actual FLR data zips, not readme/ancillary files
+                flr_data_zips = {"flrf.zip", "flrd.zip", "flrs.zip", "flre.zip"}
+                if row_count <= 0 and path.name.lower() in flr_data_zips:
                     raise RuntimeError(f"No FLR records parsed from {rel}; refusing to mark empty load as current")
 
                 if filings:

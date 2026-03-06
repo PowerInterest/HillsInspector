@@ -16,6 +16,37 @@
 </div>
 {% endif %}
 
+{# Split encumbrances into surviving vs cleared/historical #}
+{% set surviving_statuses = ['FORECLOSING', 'SURVIVED', 'UNCERTAIN'] %}
+{% set cleared_statuses = ['SATISFIED', 'EXTINGUISHED', 'HISTORICAL', 'EXPIRED'] %}
+
+{% set surviving_encs = [] %}
+{% set cleared_encs = [] %}
+{% for enc in encumbrances %}
+    {% set st = (enc.survival_status or '')|upper %}
+    {% if st in surviving_statuses %}
+        {% set _ = surviving_encs.append(enc) %}
+    {% elif st in cleared_statuses or enc.is_satisfied %}
+        {% set _ = cleared_encs.append(enc) %}
+    {% else %}
+        {# Pending/unknown status — show with surviving for visibility #}
+        {% set _ = surviving_encs.append(enc) %}
+    {% endif %}
+{% endfor %}
+
+<div class="lien-counts">
+    {% if surviving_encs %}
+    <span class="count-badge survived">{{ surviving_encs|length }} Surviving</span>
+    {% endif %}
+    {% if cleared_encs %}
+    <span class="count-badge cleared">{{ cleared_encs|length }} Cleared</span>
+    {% endif %}
+    <span class="count-badge total">{{ encumbrances|length }} Total</span>
+</div>
+
+{# --- Surviving Encumbrances (always visible) --- #}
+{% if surviving_encs %}
+<h3 class="lien-section-header">Surviving Encumbrances ({{ surviving_encs|length }})</h3>
 <table class="lien-table">
     <thead>
         <tr>
@@ -27,9 +58,9 @@
         </tr>
     </thead>
     <tbody>
-        {% for enc in encumbrances %}
+        {% for enc in surviving_encs %}
         {% set st = (enc.survival_status or '')|upper %}
-        <tr class="{% if st == 'FORECLOSING' %}foreclosing{% elif st == 'SURVIVED' %}surviving{% elif st in ['EXTINGUISHED','HISTORICAL','EXPIRED'] %}wiped{% endif %}">
+        <tr class="{% if st == 'FORECLOSING' %}foreclosing{% elif st == 'SURVIVED' %}surviving{% endif %}">
             <td>{{ enc.recording_date|format_date if enc.recording_date else '-' }}</td>
             <td>{{ enc.encumbrance_type or '-' }}</td>
             <td class="money-cell">
@@ -49,14 +80,8 @@
                 <span class="survival-badge foreclosing">FORECLOSING{% if enc.is_inferred %} (INFERRED){% endif %}</span>
                 {% elif st == 'SURVIVED' %}
                 <span class="survival-badge survives">SURVIVES</span>
-                {% elif st == 'EXTINGUISHED' %}
-                <span class="survival-badge wiped">WIPED</span>
-                {% elif st == 'HISTORICAL' %}
-                <span class="survival-badge wiped">HISTORICAL</span>
-                {% elif st == 'EXPIRED' %}
-                <span class="survival-badge wiped">EXPIRED</span>
-                {% elif st == 'SATISFIED' %}
-                <span class="survival-badge satisfied">SATISFIED</span>
+                {% elif st == 'UNCERTAIN' %}
+                <span class="survival-badge unknown">UNCERTAIN</span>
                 {% elif not enc.survival_status %}
                 <span class="survival-badge unknown">PENDING</span>
                 {% else %}
@@ -67,6 +92,61 @@
         {% endfor %}
     </tbody>
 </table>
+{% endif %}
+
+{# --- Cleared / Historical (collapsed) --- #}
+{% if cleared_encs %}
+<details class="lien-section">
+    <summary class="lien-section-header">Cleared / Historical ({{ cleared_encs|length }})</summary>
+    <table class="lien-table faded">
+        <thead>
+            <tr>
+                <th>Recording Date</th>
+                <th>Type</th>
+                <th>Amount</th>
+                <th>Holder</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for enc in cleared_encs %}
+            {% set st = (enc.survival_status or '')|upper %}
+            <tr class="{% if st == 'FORECLOSING' %}foreclosing{% else %}wiped{% endif %}">
+                <td>{{ enc.recording_date|format_date if enc.recording_date else '-' }}</td>
+                <td>{{ enc.encumbrance_type or '-' }}</td>
+                <td class="money-cell">
+                    {{ "${:,.0f}".format(enc.amount) if enc.amount else '-' }}
+                    {% if enc.amount_confidence and enc.amount_confidence not in ('HIGH', 'ori_api') %}
+                    <span class="confidence-badge {{ enc.amount_confidence|lower }}">{{ enc.amount_confidence }}</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {{ enc.creditor or '-' }}
+                    {% if enc.is_joined %}
+                    <span class="joined-badge" title="Named as Defendant in Foreclosure">JOINED</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if st == 'FORECLOSING' %}
+                    <span class="survival-badge foreclosing">FORECLOSING{% if enc.is_inferred %} (INFERRED){% endif %}</span>
+                    {% elif st == 'EXTINGUISHED' %}
+                    <span class="survival-badge wiped">WIPED</span>
+                    {% elif st == 'HISTORICAL' %}
+                    <span class="survival-badge wiped">HISTORICAL</span>
+                    {% elif st == 'EXPIRED' %}
+                    <span class="survival-badge wiped">EXPIRED</span>
+                    {% elif st == 'SATISFIED' %}
+                    <span class="survival-badge satisfied">SATISFIED</span>
+                    {% else %}
+                    <span class="survival-badge unknown">{{ st }}</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</details>
+{% endif %}
 
 {% else %}
 <p class="no-data">No liens found for this property.</p>

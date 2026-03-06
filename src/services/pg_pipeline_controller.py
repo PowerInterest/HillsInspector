@@ -7,6 +7,7 @@ SQLite dependency.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import datetime as dt
 import time
 import traceback
@@ -205,11 +206,6 @@ class PgPipelineController:
                 self._run_mortgage_extract,
             ),
             (
-                "survival_analysis",
-                self.settings.skip_survival,
-                self._run_survival_analysis,
-            ),
-            (
                 "encumbrance_audit",
                 self.settings.skip_encumbrance_audit,
                 self._run_encumbrance_audit,
@@ -218,6 +214,11 @@ class PgPipelineController:
                 "encumbrance_recovery",
                 self.settings.skip_encumbrance_recovery,
                 self._run_encumbrance_recovery,
+            ),
+            (
+                "survival_analysis",
+                self.settings.skip_survival,
+                self._run_survival_analysis,
             ),
             # Final refresh: pick up all new Phase B data
             (
@@ -762,14 +763,39 @@ class PgPipelineController:
         return svc.run(limit=self.settings.title_breaks_limit)
 
     def _run_market_data(self) -> dict[str, Any]:
+        # Phase 1: Run scrapling-backed Realtor enrichment (fast, no browser).
+        # This pre-fills realtor_json so the heavier browser path can skip those properties.
+        scrapling_result: dict[str, Any] = {}
+        try:
+            from src.services.pg_market_data_scrapling import (
+                PgMarketDataScraplingService,
+                _query_properties_needing_market,
+            )
+
+            resolved_dsn = self.dsn
+            props = _query_properties_needing_market(dsn=resolved_dsn, limit=self.settings.limit)
+            if props:
+                svc = PgMarketDataScraplingService(dsn=resolved_dsn, use_windows_chrome=self.settings.use_windows_chrome)
+                scrapling_result = asyncio.run(
+                    svc.run_batch(props, sources=["realtor"]),
+                )
+                logger.info("Scrapling Realtor enrichment complete: {}", scrapling_result)
+            else:
+                scrapling_result = {"skipped": True, "reason": "no_properties_need_market_data"}
+        except Exception:
+            logger.exception("Scrapling market enrichment failed; continuing with browser worker")
+
+        # Phase 2: Run the browser-based worker for remaining sources.
         if self.settings.background_market_data:
             from src.services.market_data_dispatcher import dispatch_market_data_worker
 
-            return dispatch_market_data_worker(dsn=self.dsn, use_windows_chrome=self.settings.use_windows_chrome)
+            worker_result = dispatch_market_data_worker(dsn=self.dsn, use_windows_chrome=self.settings.use_windows_chrome)
+        else:
+            from src.services.market_data_worker import run_market_data_update
 
-        from src.services.market_data_worker import run_market_data_update
+            worker_result = run_market_data_update(dsn=self.dsn, use_windows_chrome=self.settings.use_windows_chrome)
 
-        return run_market_data_update(dsn=self.dsn, use_windows_chrome=self.settings.use_windows_chrome)
+        return {"scrapling": scrapling_result, "worker": worker_result}
 
     def _should_dispatch_bulk_step(self, name: str) -> bool:
         return self.settings.background_bulk_steps and name in self.BACKGROUND_BULK_STEPS
@@ -816,7 +842,10 @@ class PgPipelineController:
         from src.services.pg_survival_service import PgSurvivalService
 
         svc = PgSurvivalService(dsn=self.dsn)
-        return svc.run(limit=self.settings.survival_limit)
+        return svc.run(
+            limit=self.settings.survival_limit,
+            force_reanalysis=self.settings.force_all,
+        )
 
     def _run_encumbrance_audit(self) -> dict[str, Any]:
         from src.services.audit.pg_audit_encumbrance import run_audit
@@ -877,7 +906,27 @@ class PgPipelineController:
             return {"skipped": True, "reason": "no_audit_report"}
         try:
             svc = EncumbranceRecoveryService(dsn=self.dsn)
-            return svc.run(report=report)
+            result = svc.run(report=report)
+            # Clear step_survival_analyzed for foreclosures that received new
+            # encumbrances so the subsequent survival pass re-analyzes them.
+            augmented_ids: list[int] = result.get("recovered_foreclosure_ids") or []
+            if augmented_ids:
+                logger.info(
+                    "Clearing step_survival_analyzed for {} recovered foreclosures",
+                    len(augmented_ids),
+                )
+                with self.engine.connect() as conn:
+                    conn.execute(
+                        text(
+                            "UPDATE foreclosures "
+                            "SET step_survival_analyzed = NULL "
+                            "WHERE foreclosure_id = ANY(:ids) "
+                            "AND archived_at IS NULL"
+                        ),
+                        {"ids": augmented_ids},
+                    )
+                    conn.commit()
+            return result
         finally:
             self._encumbrance_audit_report = None
 

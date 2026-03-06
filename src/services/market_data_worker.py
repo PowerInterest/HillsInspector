@@ -26,9 +26,9 @@ def _query_properties_needing_market(
           AND f.property_address IS NOT NULL
           AND f.archived_at IS NULL
           AND (pm.strap IS NULL
-               OR NOT (pm.redfin_json IS NOT NULL
-                       AND pm.zillow_json IS NOT NULL
-                       AND pm.homeharvest_json IS NOT NULL))
+               OR NOT (pm.redfin_json IS NOT NULL AND pm.redfin_json::text != 'null'
+                       AND pm.zillow_json IS NOT NULL AND pm.zillow_json::text != 'null'
+                       AND pm.homeharvest_json IS NOT NULL AND pm.homeharvest_json::text != 'null'))
         ORDER BY f.auction_date DESC
     """
     params: dict[str, Any] = {}

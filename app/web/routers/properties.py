@@ -20,6 +20,10 @@ from src.utils.time import today_local
 from sqlalchemy import text as sa_text
 
 from sunbiz.db import get_engine, resolve_pg_dsn
+from src.services.audit.web_audit_service import (
+    get_property_audit_snapshot,
+    group_issues_by_family,
+)
 
 router = APIRouter()
 
@@ -890,7 +894,17 @@ def _pg_encumbrances_for_property(
         encumbrance["is_joined"] = "JOINED AS DEFENDANT" in reason_upper
         encumbrance["is_inferred"] = "INFER" in reason_upper
         encumbrances.append(encumbrance)
-    return encumbrances
+
+    # Dedup by instrument number (safety net — DB has unique constraints)
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for enc in encumbrances:
+        inst = str(enc.get("instrument") or "").strip()
+        key = inst if inst else f"_id_{enc.get('id')}"
+        if key not in seen:
+            seen.add(key)
+            deduped.append(enc)
+    return deduped
 
 
 def _summarize_encumbrances(encumbrances: list[dict[str, Any]]) -> dict[str, Any]:
@@ -927,6 +941,86 @@ def _summarize_encumbrances(encumbrances: list[dict[str, Any]]) -> dict[str, Any
         "liens_surviving": liens_surviving,
         "liens_total_amount": liens_total_amount,
         "surviving_unknown_amount": surviving_unknown_amount,
+    }
+
+
+def _compute_judgment_breakdown(
+    judgment_data: dict[str, Any] | None,
+    auction_date: Any = None,
+) -> dict[str, Any]:
+    """Extract judgment cost components and compute per diem accrual since interest_through_date."""
+    empty: dict[str, Any] = {
+        "principal": 0.0,
+        "interest": 0.0,
+        "per_diem_rate": 0.0,
+        "interest_through_date": None,
+        "court_costs": 0.0,
+        "attorney_fees": 0.0,
+        "escrow_advances": 0.0,
+        "late_charges": 0.0,
+        "title_search_costs": 0.0,
+        "other_costs": 0.0,
+        "total_judgment": 0.0,
+        "accrual_days": 0,
+        "per_diem_accrual": 0.0,
+        "adjusted_total": 0.0,
+        "has_breakdown": False,
+    }
+    if not judgment_data or not isinstance(judgment_data, dict):
+        return empty
+
+    principal = _as_float(judgment_data.get("principal_amount"))
+    interest = _as_float(judgment_data.get("interest_amount"))
+    per_diem_rate = _as_float(judgment_data.get("per_diem_rate"))
+    court_costs = _as_float(judgment_data.get("court_costs"))
+    attorney_fees = _as_float(judgment_data.get("attorney_fees"))
+    escrow_advances = _as_float(judgment_data.get("escrow_advances"))
+    late_charges = _as_float(judgment_data.get("late_charges"))
+    title_search_costs = _as_float(judgment_data.get("title_search_costs"))
+    other_costs = _as_float(judgment_data.get("other_costs"))
+    total_judgment = _as_float(judgment_data.get("total_judgment_amount"))
+
+    # Parse interest_through_date
+    interest_through_date = None
+    raw_date = judgment_data.get("interest_through_date")
+    if raw_date:
+        with contextlib.suppress(ValueError, TypeError):
+            interest_through_date = date.fromisoformat(str(raw_date))
+
+    # Compute per diem accrual
+    accrual_days = 0
+    per_diem_accrual = 0.0
+    if per_diem_rate > 0 and interest_through_date:
+        target_date = None
+        if auction_date:
+            if isinstance(auction_date, date):
+                target_date = auction_date
+            else:
+                with contextlib.suppress(ValueError, TypeError):
+                    target_date = date.fromisoformat(str(auction_date))
+        if target_date is None:
+            target_date = datetime.now(tz=datetime.UTC).date()
+        accrual_days = max(0, (target_date - interest_through_date).days)
+        per_diem_accrual = per_diem_rate * accrual_days
+
+    adjusted_total = total_judgment + per_diem_accrual
+
+    return {
+        "principal": principal,
+        "interest": interest,
+        "per_diem_rate": per_diem_rate,
+        "interest_through_date": interest_through_date,
+        "court_costs": court_costs,
+        "attorney_fees": attorney_fees,
+        "escrow_advances": escrow_advances,
+        "late_charges": late_charges,
+        "title_search_costs": title_search_costs,
+        "other_costs": other_costs,
+        "total_judgment": total_judgment,
+        "accrual_days": accrual_days,
+        "per_diem_accrual": per_diem_accrual,
+        "adjusted_total": adjusted_total,
+        "has_breakdown": principal > 0,
     }
 
 
@@ -1194,7 +1288,23 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
         )
         enc_summary = _summarize_encumbrances(encumbrances)
         est_surviving_debt = _as_float(enc_summary["liens_total_amount"])
-        net_equity = _as_float(market_value) - _as_float(auction.get("final_judgment_amount")) - est_surviving_debt
+        judgment_breakdown = _compute_judgment_breakdown(
+            judgment_data,
+            auction_date=auction.get("auction_date"),
+        )
+        adjusted_judgment = _as_float(judgment_breakdown.get("adjusted_total"))
+        breakdown_total = _as_float(judgment_breakdown.get("total_judgment"))
+        per_diem_accrual = _as_float(judgment_breakdown.get("per_diem_accrual"))
+        raw_judgment = _as_float(auction.get("final_judgment_amount"))
+        # Prefer extracted breakdown when total exists; otherwise keep raw judgment
+        # and only add per diem if both are present.
+        if breakdown_total > 0:
+            judgment_for_equity = adjusted_judgment
+        elif raw_judgment > 0 and per_diem_accrual > 0:
+            judgment_for_equity = raw_judgment + per_diem_accrual
+        else:
+            judgment_for_equity = raw_judgment
+        net_equity = _as_float(market_value) - judgment_for_equity - est_surviving_debt
 
         cdd_warning = get_pg_queries().get_cdd_warning(strap_or_folio)
 
@@ -1247,6 +1357,7 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
             "net_equity": net_equity,
             "market_value": market_value,
             "est_surviving_debt": est_surviving_debt,
+            "judgment_breakdown": judgment_breakdown,
             "is_toxic_title": bool((auction.get("unsatisfied_encumbrance_count") or 0) > 2 or enc_summary["liens_surviving"] > 0),
             "market": market,
             "enrichments": enrichments,
@@ -1286,6 +1397,27 @@ async def property_detail(request: Request, folio: str):
         pg_data["multi_unit"] = None
         pg_data["pg_available"] = False
 
+    # Audit summary (graceful degradation)
+    audit_summary: dict[str, Any] = {
+        "total_open_issues": 0,
+        "has_issues": False,
+        "top_buckets": [],
+        "family_counts": {},
+    }
+    foreclosure_id = prop.get("_foreclosure_id")
+    if foreclosure_id:
+        try:
+            with _pg_engine().connect() as audit_conn:
+                audit_summary = get_property_audit_snapshot(
+                    foreclosure_id=foreclosure_id,
+                    folio=prop.get("_folio_raw"),
+                    strap=prop.get("_strap"),
+                    case_number=prop.get("_case_number_raw"),
+                    conn=audit_conn,
+                )
+        except Exception:
+            logger.debug("Audit summary unavailable for {}", folio, exc_info=True)
+
     return templates.TemplateResponse(
         "property.html",
         {
@@ -1298,9 +1430,76 @@ async def property_detail(request: Request, folio: str):
             "market_value": prop.get("market_value", 0),
             "market": prop.get("market", {}),
             "enrichments": prop.get("enrichments", {}),
+            "judgment_breakdown": prop.get("judgment_breakdown", {}),
             "pg_data": pg_data,
+            "audit_summary": audit_summary,
         },
     )
+
+
+@router.get("/{folio}/audit", response_class=HTMLResponse)
+async def property_audit(request: Request, folio: str):
+    """HTMX partial - audit issues tab for a property."""
+    try:
+        prop = _pg_property_detail(folio)
+        if not prop:
+            return templates.TemplateResponse(
+                "partials/audit.html",
+                {
+                    "request": request,
+                    "error": "Property not found",
+                    "grouped_issues": [],
+                    "snapshot": {},
+                },
+            )
+
+        foreclosure_id = prop.get("_foreclosure_id")
+        if not foreclosure_id:
+            return templates.TemplateResponse(
+                "partials/audit.html",
+                {
+                    "request": request,
+                    "error": None,
+                    "grouped_issues": [],
+                    "snapshot": {
+                        "total_open_issues": 0,
+                        "has_issues": False,
+                        "issues": [],
+                    },
+                },
+            )
+
+        with _pg_engine().connect() as conn:
+            snapshot = get_property_audit_snapshot(
+                foreclosure_id=foreclosure_id,
+                folio=prop.get("_folio_raw"),
+                strap=prop.get("_strap"),
+                case_number=prop.get("_case_number_raw"),
+                conn=conn,
+            )
+
+        grouped = group_issues_by_family(snapshot.get("issues", []))
+
+        return templates.TemplateResponse(
+            "partials/audit.html",
+            {
+                "request": request,
+                "error": None,
+                "grouped_issues": grouped,
+                "snapshot": snapshot,
+            },
+        )
+    except Exception:
+        logger.exception("Audit tab failed for {}", folio)
+        return templates.TemplateResponse(
+            "partials/audit.html",
+            {
+                "request": request,
+                "error": "Audit temporarily unavailable",
+                "grouped_issues": [],
+                "snapshot": {},
+            },
+        )
 
 
 @router.get("/{folio}/liens", response_class=HTMLResponse)

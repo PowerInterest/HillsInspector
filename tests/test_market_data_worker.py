@@ -34,7 +34,7 @@ def test_run_market_data_update_runs_batch_and_refresh(monkeypatch: Any) -> None
     ]
 
     class _FakeService:
-        def __init__(self, dsn: str) -> None:
+        def __init__(self, dsn: str, **_kwargs: Any) -> None:
             self.dsn = dsn
 
         async def run_batch(
@@ -82,7 +82,7 @@ def test_run_market_data_update_tolerates_refresh_failure(monkeypatch: Any) -> N
     ]
 
     class _FakeService:
-        def __init__(self, dsn: str) -> None:
+        def __init__(self, dsn: str, **_kwargs: Any) -> None:
             self.dsn = dsn
 
         async def run_batch(
@@ -123,7 +123,7 @@ def test_run_market_data_update_propagates_batch_error(monkeypatch: Any) -> None
     ]
 
     class _FakeService:
-        def __init__(self, dsn: str) -> None:
+        def __init__(self, dsn: str, **_kwargs: Any) -> None:
             self.dsn = dsn
 
         async def run_batch(
@@ -160,10 +160,11 @@ def test_payload_failed_detects_nested_update_error() -> None:
 
 
 def test_main_exits_nonzero_when_nested_update_fails(monkeypatch: Any) -> None:
+    monkeypatch.setattr("sys.argv", ["market_data_worker"])
     monkeypatch.setattr(
         market_data_worker,
         "run_market_data_update",
-        lambda: {"properties_queried": 1, "update": {"success": False}},
+        lambda **_kw: {"properties_queried": 1, "update": {"success": False}},
     )
 
     with pytest.raises(SystemExit) as exc:

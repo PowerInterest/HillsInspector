@@ -81,6 +81,7 @@ def _read_alembic_revision(engine: Engine) -> str | None:
                 text("SELECT version_num FROM alembic_version LIMIT 1")
             ).scalar_one_or_none()
     except Exception:
+        logger.warning("Could not read alembic_version table (may not exist yet)")
         return None
 
 

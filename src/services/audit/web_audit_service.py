@@ -210,7 +210,7 @@ def get_property_audit_snapshot(
                                 "badge_class": meta["badge_class"],
                             })
                 except Exception:
-                    logger.debug("Bucket {} failed for foreclosure {}", bdef["name"], foreclosure_id, exc_info=True)
+                    logger.warning("Bucket {} failed for foreclosure {}", bdef["name"], foreclosure_id, exc_info=True)
 
         # --- Signal-backed buckets: use per-foreclosure extractor ---
         try:
@@ -230,7 +230,7 @@ def get_property_audit_snapshot(
                     "badge_class": meta["badge_class"],
                 })
         except Exception:
-            logger.debug("Signal extraction failed for foreclosure {}", foreclosure_id, exc_info=True)
+            logger.warning("Signal extraction failed for foreclosure {}", foreclosure_id, exc_info=True)
 
         # --- Aggregate ---
         family_counts: dict[str, int] = {}

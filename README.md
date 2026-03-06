@@ -146,9 +146,11 @@ The `docs/` folder contains comprehensive guides and technical design artifacts,
 - [Auction Expiration Rules](docs/domain/AUCTION_EXPIRE.md) - Modeling property forfeiture and expiration mechanics.
 - [Chain of Title Recovery](docs/domain/TITLE_CHAIN_RECOVERY.md) - The mechanism of scraping and verifying a complete chain of title.
 - [NOC & Permit Linking](docs/domain/NOC_PERMIT_LINKING.md) - How we link notices of commencement to active building permits.
+- [ORI Property Matching](docs/domain/ORI_PROPERTY_MATCHING.md) - How discovered ORI documents are filtered to prevent cross-property contamination in subdivisions and condominiums.
 - [Party Matching Strategy](docs/domain/PARTY_MATCHING_STRATEGY.md) - Entity resolution logic for fuzzy matching property owners across completely different data silos.
 - [Legal Issues Overview](docs/domain/LEGAL_ISSUES.md) - Real estate law nuances codified into algorithms.
 - [Auction Buyer Resolution](docs/domain/AUCTION_BUYER_RESOLUTION.md) - Utilizing post-auction Property Appraiser Deeds to backwards resolve unknown auction winners.
+- [Encumbrance Linking](docs/domain/ENCUMBRANCE_LINKING.md) - Satisfaction, modification, and lifecycle document linking algorithms plus Phase 0 seed doc-type filtering.
 
 ### 🌐 External Systems & Scraping
 - [Deep Search Implementation](docs/DEEP_SEARCH_IMPLEMENTATION.md) - Bypassing ORI rate limits and complex search logic.
@@ -159,6 +161,7 @@ The `docs/` folder contains comprehensive guides and technical design artifacts,
 
 ### 📖 Guides
 - [Operations Runbook](docs/guides/RUNBOOK.md) - Standard operational procedures and recurring scripts.
+- [Encumbrance Audit Web UI](docs/guides/ENCUMBRANCE_AUDIT_WEB_UI.md) - Read-only implementation guide for surfacing encumbrance audit issues in the property view and global review inbox.
 - [ORI Lis Pendens Recovery](docs/guides/ORI_LIS_PENDENS_RECOVERY.md) - How active foreclosure LP gaps are retried without adding new PostgreSQL schema.
 - [Foreclosure Identifier Repair](docs/guides/FORECLOSURE_IDENTIFIER_REPAIR.md) - How the pipeline repairs non-null but invalid HCPA straps from folio-backed parcel data.
 - [Tampa Permit Value And Enforcement](docs/guides/TAMPA_PERMIT_VALUE_AND_ENFORCEMENT.md) - Why enforcement rows stay stored, but are excluded from permit-gap scoring, and how Tampa valuation parsing works.

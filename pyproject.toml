@@ -39,6 +39,9 @@ dependencies = [
     "psycopg[binary]>=3.3.2",
     "alembic>=1.18.4",
     "psycopg2-binary>=2.9.11",
+    "unzip>=1.0.0",
+    "inflate64>=1.0.4",
+    "scrapling[all,fetchers]>=0.4.1",
 ]
 requires-python = ">=3.12,<3.13"
 

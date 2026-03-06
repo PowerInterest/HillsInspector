@@ -97,6 +97,9 @@
             <button class="tab-link" onclick="openTab(event, 'tax')">Tax</button>
             <button class="tab-link" onclick="openTab(event, 'personal')">Personal</button>
             <button class="tab-link" onclick="openTab(event, 'documents')">Documents</button>
+            {% if audit_summary and audit_summary.total_open_issues > 0 %}
+            <button class="tab-link" onclick="openTab(event, 'audit')">Audit ({{ audit_summary.total_open_issues }})</button>
+            {% endif %}
         </div>
 
         <!-- Basic Tab (rendered server-side) -->
@@ -220,13 +223,71 @@
                                 <span>Market Value (Est.)</span>
                                 <span class="money positive">{{ "${:,.0f}".format(market_value) }}</span>
                             </div>
+
+                            {% set jb = judgment_breakdown or {} %}
+                            {% if jb.get('has_breakdown') %}
+                            {# Expandable judgment detail #}
+                            <div class="equity-line subtract judgment-header" onclick="this.parentElement.querySelector('.judgment-detail').classList.toggle('hidden');this.querySelector('.expand-icon').textContent=this.querySelector('.expand-icon').textContent==='▸'?'▾':'▸'">
+                                <span><span class="expand-icon">▸</span> Final Judgment</span>
+                                <span class="money">- {{ "${:,.0f}".format(jb.total_judgment) }}</span>
+                            </div>
+                            <div class="judgment-detail hidden">
+                                {% if jb.principal > 0 %}
+                                <div class="equity-subline">
+                                    <span>Principal</span>
+                                    <span class="money">{{ "${:,.0f}".format(jb.principal) }}</span>
+                                </div>
+                                {% endif %}
+                                {% if jb.interest > 0 %}
+                                <div class="equity-subline">
+                                    <span>Interest</span>
+                                    <span class="money">{{ "${:,.0f}".format(jb.interest) }}</span>
+                                </div>
+                                {% endif %}
+                                {% if jb.escrow_advances > 0 %}
+                                <div class="equity-subline">
+                                    <span>Escrow Advances</span>
+                                    <span class="money">{{ "${:,.0f}".format(jb.escrow_advances) }}</span>
+                                </div>
+                                {% endif %}
+                                {% set costs_fees = jb.court_costs + jb.attorney_fees %}
+                                {% if costs_fees > 0 %}
+                                <div class="equity-subline">
+                                    <span>Costs + Atty Fees</span>
+                                    <span class="money">{{ "${:,.0f}".format(costs_fees) }}</span>
+                                </div>
+                                {% endif %}
+                                {% if jb.title_search_costs > 0 %}
+                                <div class="equity-subline">
+                                    <span>Title Search</span>
+                                    <span class="money">{{ "${:,.0f}".format(jb.title_search_costs) }}</span>
+                                </div>
+                                {% endif %}
+                                {% set other = jb.late_charges + jb.other_costs %}
+                                {% if other > 0 %}
+                                <div class="equity-subline">
+                                    <span>Other</span>
+                                    <span class="money">{{ "${:,.0f}".format(other) }}</span>
+                                </div>
+                                {% endif %}
+                            </div>
+                            {% if jb.per_diem_rate > 0 and jb.accrual_days > 0 %}
+                            <div class="equity-line subtract per-diem">
+                                <span>Per Diem Accrual ({{ jb.accrual_days }}d @ ${{ "{:,.2f}".format(jb.per_diem_rate) }}/day)</span>
+                                <span class="money">- {{ "${:,.0f}".format(jb.per_diem_accrual) }}</span>
+                            </div>
+                            {% endif %}
+                            {% else %}
+                            {# Simple single-line when no breakdown available #}
                             <div class="equity-line subtract">
                                 <span>Final Judgment</span>
                                 <span class="money">- {{ "${:,.0f}".format(auction.final_judgment_amount) if
                                     auction.final_judgment_amount else '$0' }}</span>
                             </div>
+                            {% endif %}
+
                             <div class="equity-line subtract">
-                                <span>Est. Surviving Liens</span>
+                                <span>Est. Surviving Liens{% if enrichments.liens_surviving %} ({{ enrichments.liens_surviving }}){% endif %}</span>
                                 <span class="money">- {{ "${:,.0f}".format(property.est_surviving_debt) if
                                     property.est_surviving_debt else '$0' }}</span>
                             </div>
@@ -238,6 +299,11 @@
                                 </span>
                             </div>
                         </div>
+                        {% if jb.get('per_diem_rate', 0) > 0 and jb.get('interest_through_date') %}
+                        <div class="equity-note">
+                            Per diem of ${{ "{:,.2f}".format(jb.per_diem_rate) }}/day accruing since {{ jb.interest_through_date.strftime('%m/%d/%Y') if jb.interest_through_date else '?' }}
+                        </div>
+                        {% endif %}
                         {% if net_equity < 0 %}
                         <div class="equity-warning">
                             Warning: Negative equity - potential loss
@@ -402,6 +468,12 @@
     <div id="documents" class="tab-content" hx-get="/property/{{ property.folio }}/documents" hx-trigger="tab-show once"
         hx-swap="innerHTML" style="display:none;">
         <div class="htmx-loading">Loading documents...</div>
+    </div>
+
+    <!-- Audit Tab -->
+    <div id="audit" class="tab-content" hx-get="/property/{{ property.folio }}/audit" hx-trigger="tab-show once"
+        hx-swap="innerHTML" style="display:none;">
+        <div class="htmx-loading">Loading audit...</div>
     </div>
 </div>
 

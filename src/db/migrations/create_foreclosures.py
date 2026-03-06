@@ -973,11 +973,12 @@ DDL: list[str] = [
     END;
     $$ LANGUAGE plpgsql STABLE;
     """,
-    # 8e. compute_net_equity — compute net equity for a property
+    # 8e. compute_net_equity — compute net equity for a property (with per diem accrual)
     r"""
     CREATE OR REPLACE FUNCTION compute_net_equity(p_strap TEXT)
     RETURNS TABLE (
         market_value NUMERIC, final_judgment NUMERIC,
+        per_diem_accrual NUMERIC,
         survived_debt NUMERIC, net_equity NUMERIC,
         is_toxic BOOLEAN, survived_count INT, total_encumbrances INT
     ) AS $$
@@ -986,9 +987,37 @@ DDL: list[str] = [
         SELECT
             COALESCE(f.market_value, f.zestimate, f.assessed_value, 0) AS market_value,
             COALESCE(f.final_judgment_amount, 0) AS final_judgment,
+            -- Per diem accrual: rate * days since interest_through_date
+            COALESCE(
+                CASE
+                    WHEN (f.judgment_data->>'per_diem_rate') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                     AND (f.judgment_data->>'interest_through_date') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                    THEN (f.judgment_data->>'per_diem_rate')::NUMERIC
+                         * GREATEST(
+                             0,
+                             COALESCE(f.auction_date, CURRENT_DATE)
+                             - (f.judgment_data->>'interest_through_date')::DATE
+                         )
+                    ELSE 0
+                END,
+                0
+            ) AS per_diem_accrual,
             COALESCE(enc.survived_debt, 0) AS survived_debt,
             (COALESCE(f.market_value, f.zestimate, f.assessed_value, 0)
              - COALESCE(f.final_judgment_amount, 0)
+             - COALESCE(
+                CASE
+                    WHEN (f.judgment_data->>'per_diem_rate') ~ '^-?[0-9]+(\\.[0-9]+)?$'
+                     AND (f.judgment_data->>'interest_through_date') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                    THEN (f.judgment_data->>'per_diem_rate')::NUMERIC
+                         * GREATEST(
+                             0,
+                             COALESCE(f.auction_date, CURRENT_DATE)
+                             - (f.judgment_data->>'interest_through_date')::DATE
+                         )
+                    ELSE 0
+                END,
+                0)
              - COALESCE(enc.survived_debt, 0)) AS net_equity,
             (COALESCE(enc.survived_count, 0) > 2
              OR COALESCE(enc.survived_debt, 0) > COALESCE(f.final_judgment_amount, 0)) AS is_toxic,
@@ -996,8 +1025,8 @@ DDL: list[str] = [
             COALESCE(enc.total_count, 0)::INT
         FROM foreclosures f
         LEFT JOIN LATERAL (
-            SELECT COUNT(*) FILTER (WHERE oe.survival_status = 'SURVIVED') AS survived_count,
-                   COALESCE(SUM(oe.amount) FILTER (WHERE oe.survival_status = 'SURVIVED'), 0) AS survived_debt,
+            SELECT COUNT(*) FILTER (WHERE oe.survival_status IN ('SURVIVED', 'UNCERTAIN')) AS survived_count,
+                   COALESCE(SUM(oe.amount) FILTER (WHERE oe.survival_status IN ('SURVIVED', 'UNCERTAIN')), 0) AS survived_debt,
                    COUNT(*) AS total_count
             FROM ori_encumbrances oe
             WHERE oe.strap = f.strap

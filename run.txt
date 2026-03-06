@@ -5,6 +5,7 @@ sudo pg_ctlcluster 18 main start
   # Start web server with ngrok tunnel
   uv run python -m app.web.main --ngrok
 
+ Start up the web app in background, then start a controller.py full run and monitor both logs, surface warnings and errors, find root causes, let the run continue to completion 
   Before first use, you need to configure ngrok with your auth token (free at ngrok.com):
 
   ~/.local/bin/ngrok config add-authtoken YOUR_AUTH_TOKEN
@@ -37,7 +38,17 @@ sudo pg_ctlcluster 18 main start
   --block-resources --county Hillsborough --min-auction-date 2024-02-16 --max-auction-
   date 2026-02-16
 
-
+Review JSON Syntax
+{
+  "ssh": "Disabled",
+  "previewLimit": 50,
+  "server": "localhost",
+  "port": 5433,
+  "driver": "PostgreSQL",
+  "name": "PG",
+  "username": "hills",
+  "database": "hills_sunbiz"
+}
 
 
 ORI Search:

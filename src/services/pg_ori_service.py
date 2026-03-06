@@ -147,6 +147,26 @@ _MAX_DOCUMENTS = 500
 _MAX_OFFICIAL_RECORDS_CANDIDATES = 400
 _MIN_OFFICIAL_MATCH_SCORE = 4
 
+# Generic legal description boilerplate — too common to be discriminating tokens.
+# These appear in thousands of condo/HOA/subdivision legal descriptions county-wide.
+_LEGAL_BOILERPLATE_TOKENS = frozenset({
+    "CONDOMINIUM", "CONDO", "CONDOMINIUMS",
+    "ASSOCIATION", "ASSOC",
+    "UNIT", "UNITS",
+    "BLOCK", "BLK",
+    "COMMON", "ELEMENTS",
+    "UNDIV", "UNDIVIDED",
+    "AND", "THE", "FOR", "INT", "INC",
+    "INTEREST", "TOGETHER", "WITH",
+    "PLAT", "BOOK", "PAGE", "TRACT",
+    "PHASE", "ADDITION", "REPLAT",
+    "SUBDIVISION", "SUBD", "SUB",
+    "SECTION", "SEC", "TOWNSHIP", "RANGE",
+    "COUNTY", "HILLSBOROUGH", "FLORIDA",
+    "LIEN", "MORTGAGE", "SATISFACTION",
+    "PARCEL",
+})
+
 
 def _load_generic_names() -> set[str]:
     """Load generic party names from config file (cached)."""
@@ -621,6 +641,108 @@ class PgOriService:
             "per_target": per_target,
         }
 
+    def run_targeted_recovery(
+        self,
+        *,
+        foreclosure_ids: list[int],
+        limit: int | None = None,
+        dry_run: bool = False,
+        force_satisfaction_relink: bool = True,
+    ) -> dict[str, Any]:
+        """Re-run the full ORI discovery pipeline for a selected foreclosure scope.
+
+        This is used by the encumbrance audit recovery loop. It does not infer
+        new facts on its own; it simply reuses the existing ORI discovery and
+        persistence path for cases the audit identified as likely incomplete.
+        """
+        target_ids = sorted({int(fid) for fid in foreclosure_ids if fid})
+        if not target_ids:
+            return {"skipped": True, "reason": "no_targeted_recovery_ids"}
+
+        before_targets = self._find_targeted_recovery_targets(
+            foreclosure_ids=target_ids,
+            limit=None,
+        )
+        targets = before_targets[:limit] if limit is not None else before_targets
+        if not targets:
+            return {"skipped": True, "reason": "no_targeted_recovery_targets"}
+
+        total_docs = 0
+        total_saved = 0
+        total_inferred = 0
+        total_linked = 0
+        errors = 0
+        total_api_calls = 0
+        total_retries = 0
+        total_truncated = 0
+        total_unresolved_truncations = 0
+        total_official_seed_docs = 0
+        per_target: list[dict[str, Any]] = []
+
+        for index, base_target in enumerate(targets, start=1):
+            target = dict(base_target)
+            if force_satisfaction_relink:
+                target["force_satisfaction_relink"] = True
+
+            case = target["case_number"]
+            strap = target.get("strap")
+            logger.info(
+                "[{}/{}] Targeted ORI recovery for {} (strap={})",
+                index,
+                len(targets),
+                case,
+                strap,
+            )
+            try:
+                result = self._process_target(target, persist=not dry_run)
+                total_docs += result["docs_found"]
+                total_saved += result["saved"]
+                total_inferred += result["inferred"]
+                total_linked += result["satisfactions_linked"]
+                total_api_calls += result["api_calls"]
+                total_retries += result["retries"]
+                total_truncated += result["truncated"]
+                total_unresolved_truncations += result["unresolved_truncations"]
+                total_official_seed_docs += result["official_seed_docs"]
+                per_target.append(result)
+            except Exception as exc:
+                logger.exception(
+                    "Targeted ORI recovery error for case={} foreclosure_id={}",
+                    case,
+                    target["foreclosure_id"],
+                )
+                errors += 1
+                per_target.append(
+                    {
+                        "foreclosure_id": target["foreclosure_id"],
+                        "case_number": case,
+                        "strap": strap,
+                        "folio": target.get("folio"),
+                        "docs_found": 0,
+                        "saved": 0,
+                        "inferred": 0,
+                        "satisfactions_linked": 0,
+                        "error": str(exc),
+                    }
+                )
+
+        return {
+            "targets_requested": len(target_ids),
+            "targets": len(targets),
+            "total_documents_found": total_docs,
+            "encumbrances_saved": total_saved,
+            "inferred_saved": total_inferred,
+            "satisfactions_linked": total_linked,
+            "errors": errors,
+            "api_calls": total_api_calls,
+            "retries": total_retries,
+            "truncated": total_truncated,
+            "unresolved_truncations": total_unresolved_truncations,
+            "official_seed_docs": total_official_seed_docs,
+            "dry_run": dry_run,
+            "per_target": per_target,
+        }
+
     # ------------------------------------------------------------------
     # Target selection
     # ------------------------------------------------------------------
@@ -684,6 +806,40 @@ class PgOriService:
                     LIMIT :limit
                 """),
                 {"limit": limit or 1000},
+            ).fetchall()
+
+        return [self._row_to_target(r) for r in rows]
+
+    def _find_targeted_recovery_targets(
+        self,
+        *,
+        foreclosure_ids: list[int],
+        limit: int | None,
+    ) -> list[dict[str, Any]]:
+        """Load active judged foreclosures by id for audit-driven ORI retries."""
+        if not foreclosure_ids:
+            return []
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                text("""
+                    SELECT f.foreclosure_id, f.case_number_raw, f.strap, f.folio,
+                           f.judgment_data, f.auction_date, f.filing_date,
+                           bp.raw_legal1, bp.raw_legal2, bp.raw_legal3, bp.raw_legal4,
+                           bp.owner_name,
+                           COALESCE(NULLIF(btrim(f.property_address), ''), bp.property_address) AS property_address
+                    FROM foreclosures f
+                    LEFT JOIN hcpa_bulk_parcels bp ON f.strap = bp.strap
+                    WHERE f.archived_at IS NULL
+                      AND f.judgment_data IS NOT NULL
+                      AND f.foreclosure_id = ANY(:foreclosure_ids)
+                    ORDER BY f.auction_date NULLS LAST, f.foreclosure_id
+                    LIMIT :limit
+                """),
+                {
+                    "foreclosure_ids": foreclosure_ids,
+                    "limit": limit or 100000,
+                },
             ).fetchall()
 
         return [self._row_to_target(r) for r in rows]
@@ -1034,6 +1190,7 @@ class PgOriService:
                     )
             if strap and saved > 0:
                 linked = self._link_satisfactions(strap)
+                self._link_modifications(strap)
             if bool(target.get("mark_ori_searched", True)):
                 self._mark_searched(foreclosure_id)
 
@@ -1669,6 +1826,17 @@ class PgOriService:
                 OR (ori.recording_date BETWEEN :from_date AND :to_date)
             )
               AND ({" OR ".join(predicates)})
+              AND ori.doc_type IN (
+                  'MTG','MTGNT','MTGNIT','MTGREV','DOT','HELOC','AGD',
+                  'JUD','CCJ','FJ','DRJUD','CTF',
+                  'LN','LNCORPTX','FIN','MEDLN','HOA','MECH','CEL','SA','SPECASMT','ML',
+                  'LP','RELLP',
+                  'SAT','SATCORPTX','SATMTG','RELMTG',
+                  'REL','PR','TER','PRREL',
+                  'ASG','ASGT','ASGN','ASGNMTG','ASINT',
+                  'ORD','DRCP',
+                  'NOC','MOD','SUB','NCL','EAS'
+              )
             ORDER BY ori.recording_date DESC NULLS LAST, ori.instrument_number
             LIMIT :max_rows
         """
@@ -1760,6 +1928,8 @@ class PgOriService:
             "NATIONAL",
             "ASSOCIATION",
             "TRUST",
+            "TRUSTEE",
+            "TRUSTEES",
             "COMPANY",
             "CORP",
             "CORPORATION",
@@ -2047,7 +2217,11 @@ class PgOriService:
         legal_locators: set[tuple[str, str]] = set()
         for legal_field in ("legal1", "legal2", "legal3", "legal4"):
             value = (target.get(legal_field) or "").upper()
-            words = [w for w in re.split(r"[^A-Z0-9]+", value) if len(w) >= 3]
+            words = [
+                w
+                for w in re.split(r"[^A-Z0-9]+", value)
+                if len(w) >= 3 and w not in _LEGAL_BOILERPLATE_TOKENS
+            ]
             legal_tokens.update(words[:8])
             for match in _LEGAL_LOCATOR_RE.finditer(value):
                 legal_locators.add((match.group(1).upper(), match.group(2).upper()))
@@ -2095,29 +2269,32 @@ class PgOriService:
         return self._build_property_tokens(target, ownership_chain)
 
     @staticmethod
+    def _word_boundary_hits(tokens: set[str], text: str) -> int:
+        """Count tokens that appear as whole words in text (not substrings)."""
+        return sum(
+            1
+            for t in tokens
+            if re.search(rf"\b{re.escape(t)}\b", text)
+        )
+
+    @staticmethod
     def _has_property_text_match(doc: dict[str, Any], tokens: dict[str, Any]) -> bool:
         legal_text = (doc.get("Legal") or "").upper()
         if not legal_text:
             return False
 
         legal_tokens = tokens.get("legal_tokens") or set()
-        legal_hits = 0
-        if legal_tokens:
-            legal_hits = sum(1 for t in legal_tokens if t in legal_text)
+        legal_hits = PgOriService._word_boundary_hits(legal_tokens, legal_text)
 
         street_tokens = tokens.get("street_tokens") or set()
-        street_hits = 0
-        if street_tokens:
-            street_hits = sum(1 for t in street_tokens if t in legal_text)
+        street_hits = PgOriService._word_boundary_hits(street_tokens, legal_text)
         street_name_tokens = tokens.get("street_name_tokens") or {
             t
             for t in street_tokens
             if not re.fullmatch(r"\d+[A-Z]?", str(t))
             and str(t) not in _STREET_STOP_TOKENS
         }
-        street_name_hits = 0
-        if street_name_tokens:
-            street_name_hits = sum(1 for t in street_name_tokens if t in legal_text)
+        street_name_hits = PgOriService._word_boundary_hits(street_name_tokens, legal_text)
 
         legal_locators = tokens.get("legal_locators") or []
         locator_hits = 0
@@ -2161,10 +2338,27 @@ class PgOriService:
 
             return bool(legal_tokens) and legal_hits >= min(3, len(legal_tokens))
 
+        # Non-NOC documents: require locator match when we have locators
+        # (prevents unrelated condo liens from matching on generic tokens).
+        # Check LOT before UNIT — LOT/BLOCK is more specific than UNIT
+        # (subdivisions may have a UNIT phase number + LOT/BLOCK identifiers).
+        if "LOT" in locator_expected:
+            lot_match = bool(locator_matches.get("LOT"))
+            block_expected = "BLOCK" in locator_expected or "BLK" in locator_expected
+            block_match = bool(locator_matches.get("BLOCK") or locator_matches.get("BLK"))
+            if block_expected:
+                return lot_match and block_match and legal_hits >= 1
+            return lot_match and legal_hits >= 1
+
+        if "UNIT" in locator_expected:
+            return bool(locator_matches.get("UNIT")) and legal_hits >= 1
+
         if street_hits >= min(2, len(street_tokens)):
             return True
 
-        return bool(legal_tokens) and legal_hits >= min(2, len(legal_tokens))
+        # Scale threshold with token count — require at least 40% of tokens
+        min_required = max(2, (len(legal_tokens) * 2 + 4) // 5)  # ~40%, min 2
+        return bool(legal_tokens) and legal_hits >= min_required
 
     @staticmethod
     def _matches_property(doc: dict[str, Any], tokens: dict[str, Any]) -> bool:
@@ -3475,6 +3669,27 @@ class PgOriService:
                         matched_enc = candidates[0]
                         method = "case_number_match"
 
+                # Strategy 4: Party name + date heuristic
+                if not matched_enc:
+                    sat_party = (sat[3] or "").strip().upper()  # party1
+                    sat_date = sat[4]  # recording_date
+                    if sat_party and sat_date:
+                        from rapidfuzz.fuzz import token_set_ratio
+
+                        candidates = []
+                        for enc in enc_rows:
+                            enc_party = (enc[5] or "").strip().upper()  # party1
+                            enc_date = enc[7]  # recording_date
+                            if not enc_party or not enc_date:
+                                continue
+                            if sat_date <= enc_date:
+                                continue
+                            if token_set_ratio(sat_party, enc_party) >= 85:
+                                candidates.append(enc)
+                        if len(candidates) == 1:
+                            matched_enc = candidates[0]
+                            method = "party_date_heuristic"
+
                 if matched_enc:
                     enc_id = matched_enc[0]
                     # Mark the encumbrance as satisfied
@@ -3524,6 +3739,118 @@ class PgOriService:
 
         if linked:
             logger.info("Linked {} satisfaction(s) for strap={}", linked, strap)
+        return linked
+
+    def _link_modifications(self, strap: str) -> int:
+        """Link MOD/SUB/NCL/CTF lifecycle docs to parent encumbrances.
+
+        Matching strategies (same priority order as satisfaction linking):
+        1. Instrument reference — legal_description contains CLK#/INST# ref
+        2. Book/page reference — legal_description contains OR BK/PG ref
+        3. Case number match — shared case_number with unambiguous parent
+
+        Returns count of newly linked modification docs.
+        """
+        linked = 0
+        with self.engine.begin() as conn:
+            # Guard: check column exists (migration may not have run yet)
+            col_check = conn.execute(
+                text("""
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'ori_encumbrances'
+                      AND column_name = 'modifies_encumbrance_id'
+                """)
+            ).fetchone()
+            if not col_check:
+                return 0
+
+            mod_rows = conn.execute(
+                text("""
+                    SELECT id, instrument_number, legal_description,
+                           case_number, raw_document_type
+                    FROM ori_encumbrances
+                    WHERE strap = :strap
+                      AND encumbrance_type = 'other'
+                      AND raw_document_type IN ('MOD', 'SUB', 'NCL', 'CTF')
+                      AND modifies_encumbrance_id IS NULL
+                """),
+                {"strap": strap},
+            ).fetchall()
+
+            if not mod_rows:
+                return 0
+
+            enc_rows = conn.execute(
+                text("""
+                    SELECT id, instrument_number, book, page, case_number
+                    FROM ori_encumbrances
+                    WHERE strap = :strap
+                      AND encumbrance_type IN ('mortgage', 'lien', 'judgment')
+                """),
+                {"strap": strap},
+            ).fetchall()
+
+            if not enc_rows:
+                return 0
+
+            enc_by_inst: dict[str, Any] = {}
+            enc_by_bkpg: dict[str, Any] = {}
+            enc_by_case: dict[str, list] = {}
+            for enc in enc_rows:
+                inst = (enc[1] or "").strip()
+                if inst:
+                    enc_by_inst[inst] = enc
+                bk = (enc[2] or "").strip()
+                pg = (enc[3] or "").strip()
+                if bk and pg:
+                    enc_by_bkpg[f"{bk}/{pg}"] = enc
+                cn = (enc[4] or "").strip()
+                if cn:
+                    enc_by_case.setdefault(cn, []).append(enc)
+
+            for mod in mod_rows:
+                mod_id = mod[0]
+                legal = (mod[2] or "").upper()
+                mod_case = (mod[3] or "").strip()
+                matched = None
+
+                # Strategy 1: Instrument reference
+                for pat in _INST_REF_PATTERNS:
+                    for ref_inst in pat.findall(legal):
+                        if ref_inst in enc_by_inst:
+                            matched = enc_by_inst[ref_inst]
+                            break
+                    if matched:
+                        break
+
+                # Strategy 2: Book/page reference
+                if not matched:
+                    for bk, pg in _BKPG_REF_PATTERN.findall(legal):
+                        key = f"{bk}/{pg}"
+                        if key in enc_by_bkpg:
+                            matched = enc_by_bkpg[key]
+                            break
+
+                # Strategy 3: Case number (unambiguous only)
+                if not matched and mod_case and mod_case in enc_by_case:
+                    candidates = enc_by_case[mod_case]
+                    if len(candidates) == 1:
+                        matched = candidates[0]
+
+                if matched:
+                    conn.execute(
+                        text("""
+                            UPDATE ori_encumbrances
+                            SET modifies_encumbrance_id = :parent_id,
+                                updated_at = now()
+                            WHERE id = :mod_id
+                        """),
+                        {"parent_id": matched[0], "mod_id": mod_id},
+                    )
+                    linked += 1
+
+        if linked:
+            logger.info("Linked {} modification doc(s) for strap={}", linked, strap)
         return linked
 
     def _ori_satisfaction_link_columns_available(self, conn: Any) -> bool:

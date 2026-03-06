@@ -872,3 +872,270 @@ class TampaAccelaRecord(Base):
         Index("idx_tampa_accela_records_estimated_work_cost", "estimated_work_cost"),
         Index("idx_tampa_accela_records_source_window", "source_start_date", "source_end_date"),
     )
+
+
+class Foreclosure(Base):
+    """Foreclosure auction hub table — one row per case + auction_date.
+
+    Trigger-managed columns (case_number_norm, updated_at) have no Python-side
+    defaults; the DB trigger ``trg_normalize_foreclosure`` handles them.
+    The ``foreclosures_history`` VIEW is just ``WHERE archived_at IS NOT NULL``
+    on this same table — no separate model needed.
+    """
+
+    __tablename__ = "foreclosures"
+
+    foreclosure_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    listing_id: Mapped[str | None] = mapped_column(Text, unique=True)
+    case_number_raw: Mapped[str] = mapped_column(Text, nullable=False)
+    case_number_norm: Mapped[str | None] = mapped_column(Text)
+    auction_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    auction_type: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'foreclosure'"))
+    auction_status: Mapped[str | None] = mapped_column(Text)
+
+    # Property
+    folio: Mapped[str | None] = mapped_column(Text)
+    strap: Mapped[str | None] = mapped_column(Text)
+    property_address: Mapped[str | None] = mapped_column(Text)
+    latitude: Mapped[float | None] = mapped_column(Float)
+    longitude: Mapped[float | None] = mapped_column(Float)
+
+    # Auction economics
+    winning_bid: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    final_judgment_amount: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    appraised_value: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    sold_to: Mapped[str | None] = mapped_column(Text)
+    buyer_type: Mapped[str | None] = mapped_column(Text)
+
+    # Property enrichment
+    owner_name: Mapped[str | None] = mapped_column(Text)
+    land_use: Mapped[str | None] = mapped_column(Text)
+    year_built: Mapped[int | None] = mapped_column(Integer)
+    beds: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    baths: Mapped[float | None] = mapped_column(Numeric(6, 2))
+    heated_area: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    market_value: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    assessed_value: Mapped[float | None] = mapped_column(Numeric(14, 2))
+
+    # Clerk / case
+    clerk_case_type: Mapped[str | None] = mapped_column(Text)
+    clerk_case_status: Mapped[str | None] = mapped_column(Text)
+    filing_date: Mapped[dt.date | None] = mapped_column(Date)
+    judgment_date: Mapped[dt.date | None] = mapped_column(Date)
+    is_foreclosure: Mapped[bool | None] = mapped_column(Boolean)
+
+    # Judgment extraction
+    judgment_data: Mapped[dict | None] = mapped_column(JSONB)
+    pdf_path: Mapped[str | None] = mapped_column(Text)
+
+    # Resale analytics
+    first_valid_resale_date: Mapped[dt.date | None] = mapped_column(Date)
+    first_valid_resale_price: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    hold_days: Mapped[int | None] = mapped_column(Integer)
+    resale_profit: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    roi: Mapped[float | None] = mapped_column(Numeric(10, 4))
+
+    # Tax
+    homestead_exempt: Mapped[bool | None] = mapped_column(Boolean)
+    estimated_annual_tax: Mapped[float | None] = mapped_column(Numeric(14, 2))
+
+    # Market
+    zestimate: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    list_price: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    listing_status: Mapped[str | None] = mapped_column(Text)
+
+    # Risk
+    has_ucc_liens: Mapped[bool | None] = mapped_column(Boolean)
+    ucc_active_count: Mapped[int | None] = mapped_column(Integer)
+    encumbrance_count: Mapped[int | None] = mapped_column(Integer)
+    unsatisfied_encumbrance_count: Mapped[int | None] = mapped_column(Integer)
+
+    # Pipeline tracking
+    step_pdf_downloaded: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    step_judgment_extracted: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    step_ori_searched: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    step_survival_analyzed: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Lifecycle
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()"),
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()"),
+    )
+    archived_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("case_number_raw", "auction_date", name="uq_foreclosures_case_date"),
+        Index("idx_foreclosures_folio", "folio"),
+        Index("idx_foreclosures_strap", "strap"),
+        Index("idx_foreclosures_case_norm", "case_number_norm"),
+        Index("idx_foreclosures_auction_date", "auction_date"),
+    )
+
+
+class OriEncumbrance(Base):
+    """ORI (Official Records Index) encumbrance documents.
+
+    Encumbrance types (PG enum ``encumbrance_type_enum``): mortgage, judgment,
+    lis_pendens, lien, satisfaction, release, assignment, noc, other.
+    Mapped as ``Text`` — SQLAlchemy handles the enum cast transparently.
+
+    Trigger ``trg_ori_enc_computed`` auto-computes: party1_dmetaphone,
+    party2_dmetaphone, mrta_expiration_date, updated_at.
+    """
+
+    __tablename__ = "ori_encumbrances"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    folio: Mapped[str] = mapped_column(String(32), nullable=False)
+    strap: Mapped[str | None] = mapped_column(String(64))
+    instrument_number: Mapped[str | None] = mapped_column(String(64))
+    book: Mapped[str | None] = mapped_column(String(16))
+    page: Mapped[str | None] = mapped_column(String(16))
+    book_type: Mapped[str | None] = mapped_column(String(8), server_default=text("'OR'"))
+    ori_uuid: Mapped[str | None] = mapped_column(String(128))
+    ori_id: Mapped[int | None] = mapped_column(BigInteger)
+    raw_document_type: Mapped[str | None] = mapped_column(Text)
+    encumbrance_type: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'other'"),
+    )
+    party1: Mapped[str | None] = mapped_column(Text)
+    party2: Mapped[str | None] = mapped_column(Text)
+    parties_one_json: Mapped[dict | None] = mapped_column(JSONB)
+    parties_two_json: Mapped[dict | None] = mapped_column(JSONB)
+    party1_dmetaphone: Mapped[str | None] = mapped_column(Text)
+    party2_dmetaphone: Mapped[str | None] = mapped_column(Text)
+    amount: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    amount_confidence: Mapped[str | None] = mapped_column(String(16))
+    amount_source: Mapped[str | None] = mapped_column(String(32))
+    recording_date: Mapped[dt.date | None] = mapped_column(Date)
+    effective_date: Mapped[dt.date | None] = mapped_column(Date)
+    case_number: Mapped[str | None] = mapped_column(String(32))
+    legal_description: Mapped[str | None] = mapped_column(Text)
+    is_satisfied: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"),
+    )
+    satisfaction_date: Mapped[dt.date | None] = mapped_column(Date)
+    satisfaction_instrument: Mapped[str | None] = mapped_column(String(64))
+    satisfaction_book: Mapped[str | None] = mapped_column(String(16))
+    satisfaction_page: Mapped[str | None] = mapped_column(String(16))
+    satisfaction_method: Mapped[str | None] = mapped_column(Text)
+    satisfies_encumbrance_id: Mapped[int | None] = mapped_column(BigInteger)
+    survival_status: Mapped[str | None] = mapped_column(String(16))
+    survival_reason: Mapped[str | None] = mapped_column(Text)
+    survival_analyzed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    survival_case_number: Mapped[str | None] = mapped_column(String(32))
+    current_holder: Mapped[str | None] = mapped_column(Text)
+    assignment_count: Mapped[int | None] = mapped_column(Integer, server_default=text("0"))
+    mrta_expiration_date: Mapped[dt.date | None] = mapped_column(Date)
+    source_file_id: Mapped[int | None] = mapped_column(BigInteger)
+    discovered_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    mortgage_data: Mapped[dict | None] = mapped_column(JSONB)
+
+    __table_args__ = (
+        Index("idx_ori_enc_folio", "folio"),
+        Index("idx_ori_enc_strap", "strap"),
+        Index("idx_ori_enc_instrument", "instrument_number"),
+        Index("idx_ori_enc_type", "encumbrance_type"),
+        Index("idx_ori_enc_recording_date", "recording_date"),
+    )
+
+
+class ForeclosureTitleEvent(Base):
+    """Individual title-chain events (sales, liens, permits, clerk docket entries).
+
+    FK: ``foreclosure_id`` → ``foreclosures.foreclosure_id`` (CASCADE).
+    Created by ``PgTitleChainController``.
+    """
+
+    __tablename__ = "foreclosure_title_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    foreclosure_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("foreclosures.foreclosure_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    case_number_raw: Mapped[str] = mapped_column(Text, nullable=False)
+    case_number_norm: Mapped[str | None] = mapped_column(Text)
+    folio: Mapped[str | None] = mapped_column(Text)
+    strap: Mapped[str | None] = mapped_column(Text)
+    event_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    event_source: Mapped[str] = mapped_column(Text, nullable=False)
+    event_subtype: Mapped[str | None] = mapped_column(Text)
+    instrument_number: Mapped[str | None] = mapped_column(Text)
+    or_book: Mapped[str | None] = mapped_column(Text)
+    or_page: Mapped[str | None] = mapped_column(Text)
+    grantor: Mapped[str | None] = mapped_column(Text)
+    grantee: Mapped[str | None] = mapped_column(Text)
+    amount: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    description: Mapped[str | None] = mapped_column(Text)
+    sale_row_id: Mapped[int | None] = mapped_column(BigInteger)
+    clerk_event_id: Mapped[int | None] = mapped_column(BigInteger)
+    event_rank: Mapped[int | None] = mapped_column(Integer)
+    prior_event_id: Mapped[int | None] = mapped_column(BigInteger)
+    link_status: Mapped[str | None] = mapped_column(Text)
+    link_score: Mapped[float | None] = mapped_column(Numeric(6, 4))
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()"),
+    )
+
+    __table_args__ = (
+        Index("idx_fte_foreclosure_id", "foreclosure_id"),
+        Index("idx_fte_event_source", "event_source"),
+        Index("idx_fte_event_date", "event_date"),
+    )
+
+
+class ForeclosureTitleChain(Base):
+    """Computed ownership chain entries for a foreclosure property.
+
+    FK: ``foreclosure_id`` → ``foreclosures.foreclosure_id`` (CASCADE).
+    FK: ``acquired_event_id`` → ``foreclosure_title_events.id`` (CASCADE).
+    FK: ``next_event_id`` → ``foreclosure_title_events.id`` (SET NULL).
+    """
+
+    __tablename__ = "foreclosure_title_chain"
+
+    chain_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    foreclosure_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("foreclosures.foreclosure_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    case_number_raw: Mapped[str] = mapped_column(Text, nullable=False)
+    case_number_norm: Mapped[str | None] = mapped_column(Text)
+    folio: Mapped[str | None] = mapped_column(Text)
+    strap: Mapped[str | None] = mapped_column(Text)
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    owner_name: Mapped[str | None] = mapped_column(Text)
+    acquired_date: Mapped[dt.date | None] = mapped_column(Date)
+    disposed_date: Mapped[dt.date | None] = mapped_column(Date)
+    acquired_event_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("foreclosure_title_events.id", ondelete="CASCADE"),
+    )
+    next_event_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("foreclosure_title_events.id", ondelete="SET NULL"),
+    )
+    acquired_sale_type: Mapped[str | None] = mapped_column(Text)
+    acquired_amount: Mapped[float | None] = mapped_column(Numeric(14, 2))
+    grantor: Mapped[str | None] = mapped_column(Text)
+    grantee: Mapped[str | None] = mapped_column(Text)
+    link_status: Mapped[str | None] = mapped_column(Text)
+    link_score: Mapped[float | None] = mapped_column(Numeric(6, 4))
+    is_gap: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    is_terminal: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false"),
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()"),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("foreclosure_id", "sequence_no", name="uq_ftc_foreclosure_seq"),
+        Index("idx_ftc_foreclosure_id", "foreclosure_id"),
+    )

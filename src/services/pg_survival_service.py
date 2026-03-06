@@ -148,8 +148,17 @@ class PgSurvivalService:
 
         query = f"""
             SELECT f.foreclosure_id, f.case_number_raw, f.strap,
-                   f.judgment_data, f.homestead_exempt
+                   f.judgment_data,
+                   COALESCE(dn.homestead_exempt, f.homestead_exempt)
+                      AS homestead_exempt
             FROM foreclosures f
+            LEFT JOIN LATERAL (
+                SELECT dn2.homestead_exempt
+                FROM dor_nal_parcels dn2
+                WHERE dn2.strap = f.strap
+                ORDER BY dn2.tax_year DESC
+                LIMIT 1
+            ) dn ON true
             WHERE {" AND ".join(where_clauses)}
               AND EXISTS (
                   SELECT 1 FROM ori_encumbrances oe
@@ -182,7 +191,7 @@ class PgSurvivalService:
                 "case_number": r[1],
                 "strap": r[2],
                 "judgment_data": jdata,
-                "homestead_exempt": bool(r[4]),
+                "homestead_exempt": bool(r[4]) if r[4] is not None else False,
             })
 
         return targets

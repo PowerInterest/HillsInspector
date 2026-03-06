@@ -23,6 +23,7 @@ from sqlalchemy import text
 
 from src.services.scraper_storage import ScraperStorage
 from src.services.vision_service import VisionService, MORTGAGE_PROMPT
+from src.utils.amount_validator import validate_mortgage_amount
 from sunbiz.db import get_engine, resolve_pg_dsn
 
 if TYPE_CHECKING:
@@ -326,13 +327,15 @@ class PgMortgageExtractionService:
     def _save_to_pg(self, encumbrance_id: int, mortgage_data: dict[str, Any]) -> None:
         """Update the ori_encumbrances row with the JSON and amounts."""
         principal = mortgage_data.get("principal_amount")
-        if isinstance(principal, str):
-            principal = principal.replace("$", "").replace(",", "").strip()
-
-        try:
-            amount_val = float(principal) if principal else None
-        except ValueError:
-            amount_val = None
+        v = validate_mortgage_amount(principal)
+        amount_val = v["amount"]
+        if v["flags"]:
+            logger.debug(
+                "Mortgage amount flags for encumbrance {}: {} (confidence={})",
+                encumbrance_id,
+                ", ".join(v["flags"]),
+                v["confidence"],
+            )
 
         with self.engine.begin() as conn:
             conn.execute(

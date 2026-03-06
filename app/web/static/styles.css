@@ -474,6 +474,7 @@ a:hover {
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
+    min-width: 0;
 }
 
 /* Cards */
@@ -595,6 +596,109 @@ a:hover {
     border-radius: var(--radius-sm);
     color: #166534;
     font-size: 13px;
+}
+
+/* Judgment breakdown sub-lines */
+.equity-subline {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.15rem 0 0.15rem 1.5rem;
+    font-size: 12px;
+    color: var(--color-text-muted, #6b7280);
+}
+
+.judgment-detail.hidden {
+    display: none;
+}
+
+.judgment-header {
+    cursor: pointer;
+    user-select: none;
+}
+
+.judgment-header:hover {
+    background: var(--color-bg, #f9fafb);
+}
+
+.expand-icon {
+    display: inline-block;
+    width: 1em;
+    font-size: 11px;
+    color: var(--color-text-muted, #6b7280);
+}
+
+.equity-line.per-diem {
+    font-style: italic;
+    font-size: 13px;
+}
+
+.equity-note {
+    margin-top: 0.75rem;
+    padding-top: 0.5rem;
+    border-top: 1px dashed var(--color-border, #e5e7eb);
+    font-size: 11px;
+    color: var(--color-text-muted, #6b7280);
+}
+
+/* Lien section grouping */
+.lien-counts {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.count-badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.count-badge.survived {
+    background: #fecaca;
+    color: #991b1b;
+}
+
+.count-badge.cleared {
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.count-badge.total {
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.lien-section-header {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0.75rem 0 0.25rem;
+    color: var(--color-text, #111827);
+}
+
+.lien-table.faded {
+    opacity: 0.7;
+}
+
+details.lien-section {
+    margin-top: 0.5rem;
+}
+
+details.lien-section > summary {
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+}
+
+details.lien-section > summary::before {
+    content: '▸ ';
+    font-size: 11px;
+}
+
+details.lien-section[open] > summary::before {
+    content: '▾ ';
 }
 
 /* Lien Table Styles */
@@ -1383,10 +1487,15 @@ a:hover {
     position: relative;
     width: 100%;
     aspect-ratio: 16 / 10;
+    max-height: 400px;
     border-radius: var(--radius-md);
     overflow: hidden;
     border: 1px solid var(--color-border);
     background: #1a1a2e;
+}
+
+.property-media {
+    overflow: hidden;
 }
 
 .gallery-hero-viewport {
