@@ -1,5 +1,117 @@
 # TODO
 
+## 2026-03-08 Audit Follow-Up
+
+**Status:** OPEN
+
+These items came out of the March 8 audit / regression review and were not
+already tracked elsewhere in this file.
+
+### Market Data Source Priority Model
+
+**Status:** DEFERRED (needs design)
+
+Current `property_market` upserts are still effectively "first writer wins" for
+spec fields like beds, baths, sqft, and year built. That means scrape order can
+lock in inferior data even after a higher-priority source succeeds later.
+
+**What needs to happen**
+
+1. Define an explicit source-priority policy for each field (`HomeHarvest`,
+   `Zillow`, `Redfin`, `Realtor`, etc.).
+2. Replace the current chronological `COALESCE(existing, EXCLUDED)` behavior for
+   spec fields with source-aware overwrite rules.
+3. Add regression tests that prove a later higher-priority scrape can upgrade an
+   earlier lower-priority row.
+
+---
+
+### Photo Placeholder Healing And UI Fallback
+
+**Status:** DEFERRED
+
+Incoming market photos are now filtered, but existing dirty `photo_cdn_urls`
+rows do not automatically heal, stale `photo_local_paths` can remain after a
+property loses all valid photos, and the web read path still only looks at the
+first candidate photo.
+
+**What needs to happen**
+
+1. Make `property_market.photo_cdn_urls` self-healing on re-scrape instead of
+   always preserving the longer existing array.
+2. Clear or rewrite `photo_local_paths` when no valid CDN photos remain.
+3. Update the web/photo selection path to scan for the first valid non-logo,
+   non-placeholder image instead of checking only element `0`.
+4. Add focused tests for PG upsert + web rendering of mixed photo arrays like
+   `[logo, real_photo]`.
+
+---
+
+### Permit Sync Observability
+
+**Status:** DEFERRED
+
+The Plant City and Temple Terrace permit fixes corrected the overwrite
+direction, but the logs still only report coarse `written` counts. They do not
+show inserts vs updates or status/open-flag churn, which makes it hard to prove
+that stale permit rows were actually repaired.
+
+**What needs to happen**
+
+1. Add insert/update counters to permit sync stats.
+2. Surface status-transition counts such as `open -> closed`.
+3. Log suspicious mass-update patterns so a bad upstream response is visible.
+
+---
+
+### Photo Download Failure Logging
+
+**Status:** DEFERRED
+
+Per-image photo download failures are still too quiet for production triage.
+Current logs do not consistently include the property identifier or failing URL,
+and failures are easy to miss.
+
+**What needs to happen**
+
+1. Include `strap` and failing photo URL in download-failure logs.
+2. Promote repeated or terminal download failures above `debug`.
+3. Add a summary counter for properties with zero successfully-downloaded
+   photos after refresh.
+
+---
+
+### Trust Accounts Service-Unavailable Detail
+
+**Status:** OPEN
+
+`PgTrustAccountsService.run()` still returns `details` for
+`service_unavailable`, but `PgPipelineController._run_trust_accounts()` now
+drops that detail and only returns `{"skipped": true, "reason":
+"service_unavailable"}`.
+
+**What needs to happen**
+
+1. Preserve the underlying `unavailable_reason` in controller step output.
+2. Keep the step marked as `skipped`, but do not discard the diagnostic detail.
+
+---
+
+### Audit Regression Test Gaps
+
+**Status:** OPEN
+
+Several important fixes now exist in code but still lack focused regression
+tests.
+
+**Missing targeted tests**
+
+1. Multi-PDF judgment selection path in `PgJudgmentService`.
+2. Placeholder-photo filtering through PG upsert plus web rendering.
+3. Controller lock-contention path (`EX_TEMPFAIL` + `pipeline_job_runs` row).
+
+---
+
 ## PDF Download: Retry Mechanism for Failed Downloads
 
 **Discovered:** 2026-02-28
@@ -23,8 +135,8 @@ flag only gates Vision OCR, not download.
    download for cases where the initial attempt failed.
 2. **`_save_to_pg()` never writes `pdf_path`** from scraper results. The DB only
    gets `pdf_path` later when `judgment_extract` scans disk.
-3. **Dead code**: Two `_scrape_current_page` definitions in `auction_scraper.py`
-   (lines 261-351 shadowed by 353-455). The first is dead code.
+3. ~~**Dead code**: Two `_scrape_current_page` definitions in `auction_scraper.py`~~
+   **RESOLVED** (2026-03-08 audit fix #5) — first dead definition deleted.
 
 ### What Needs to Happen
 
@@ -259,3 +371,88 @@ All 3 bugs fixed in `pg_pipeline_controller.py`:
    `_link_satisfactions()` in per-property ORI flow.
 3. Property page nesting of lifecycle docs under parent is future work (low
    priority — data linkage is in place).
+
+---
+
+## Market Data Source-Priority Model (Architectural)
+
+**Discovered:** 2026-03-08 system audit (exposed by fix #6)
+**Status:** OPEN — needs design
+
+### The Problem
+
+All three market-data upserts (`_upsert_homeharvest`, `_upsert_zillow`,
+`_upsert_realtor`) use COALESCE-based "first non-null wins" for property specs
+(beds, baths, sqft, year_built). There is no source-priority awareness.
+
+The intended priority hierarchy is: **HomeHarvest > Zillow/Redfin > Realtor**.
+
+- HomeHarvest: `COALESCE(EXCLUDED, existing)` — incoming wins (correct, highest priority)
+- Zillow/Redfin: `COALESCE(existing, EXCLUDED)` — existing wins (preserves HomeHarvest)
+- Realtor: `COALESCE(existing, EXCLUDED)` — existing wins (preserves Zillow/Redfin)
+
+This works **only if scrapes execute in priority order**. If Realtor or
+HomeHarvest inserts inferior specs first (because Zillow timed out yesterday),
+Zillow's COALESCE sees non-null existing values and refuses to overwrite them
+with superior data. The specs are permanently locked to whichever source
+succeeded first.
+
+This flaw predates all audit fixes. Fix #6 (Realtor COALESCE correction) is
+correct — it stopped Realtor from actively overwriting Zillow. But it made the
+broader chronological-order dependency visible.
+
+### Proposed Fix
+
+Add a `specs_source` column (or similar) to `property_market` that tracks which
+source last wrote the spec fields. Upsert logic checks source priority before
+deciding whether to overwrite:
+
+```sql
+-- Only overwrite if incoming source has higher priority
+CASE WHEN source_priority(:new_source) > source_priority(property_market.specs_source)
+     THEN EXCLUDED.beds
+     ELSE property_market.beds
+END
+```
+
+This decouples data quality from scrape execution order.
+
+---
+
+## Future Hardening Notes (from 2026-03-08 Audit)
+
+Low-priority defensive improvements identified during the system audit.
+Not active bugs — tracked here so they don't get lost.
+
+### Permit Upsert: Null-Value Overwrite Guard
+
+Both Plant City and Temple Terrace scrapers currently normalize empty strings to
+None (`PlantCityPermit.py:41`, `TempleTerracePermit.py:104`) before building
+upsert rows. The COALESCE-first pattern (`COALESCE(EXCLUDED, existing)`) means a
+NULL incoming value harmlessly falls through to the existing value. However, if a
+future parser change skips normalization and passes empty strings, the COALESCE
+would treat `''` as non-null and overwrite real data with blanks.
+
+**Guard:** If permit parsers are ever refactored, ensure empty-string → None
+normalization is preserved at the boundary, or add explicit `NULLIF(EXCLUDED.field, '')`
+in the upsert SQL.
+
+### Generic Name Word-Boundary Edge Case
+
+The `_is_generic_name()` fix (audit #21) uses `\b` word boundaries in regex. The
+`\b` anchor sits between a `\w` and `\W` character. If a future generic term
+ends with punctuation (e.g., `"INC."` with trailing dot), the `\b` after the dot
+wouldn't fire because dot-to-space is `\W`-to-`\W`. Current generic terms list
+does not contain such forms.
+
+**Guard:** If adding new generic terms, use only alphanumeric entries (no trailing
+punctuation). Or switch to token-split matching if the list grows complex.
+
+### Permit Observability Gap
+
+Plant City and Temple Terrace permit services log coarse `written` counts but do
+not surface insert vs update counts or status/open-flag churn. Future regressions
+in the COALESCE direction would be hard to prove from logs alone.
+
+**Guard:** Add `xmax = 0` counting after upsert to distinguish inserts from
+updates, or log status-change counts when `is_open` flips.

@@ -19,44 +19,60 @@ before being implemented.
 | 18 | Trust accounts skip vs failure | MEDIUM | `pg_pipeline_controller.py` | Pipeline health metrics inflated |
 | 21 | Generic name substring matching | MEDIUM | `pg_ori_service.py` | Legitimate party searches skipped |
 | 22 | Cross-folio encumbrance update | MEDIUM | `pg_ori_service.py` | Encumbrances reassigned between properties |
+| — | **Review Round 2 Fixes** | | | |
+| 15b | Judgment writeback per-PDF | HIGH | `pg_judgment_service.py` | Fee orders overwriting real judgments in PG |
+| R1 | HOA inference regression | HIGH | `survival_service.py` | Mortgage lenders misclassified as HOA |
+| R2 | ORI SAT row shape + migration guard | HIGH | `pg_ori_service.py`, tests | Test break + unmigrated DB hard-fail |
+| R3 | Controller exit code | MEDIUM | `Controller.py` | Skipped runs looked successful |
+| R5 | `foreclosing_refs` backfill | MEDIUM | `pg_survival_service.py` | Null/empty refs bypassed repair |
 
-## Post-Merge Review Notes
+## Post-Merge Review & Second-Pass Fixes
 
-This section is the current authoritative review if it conflicts with the
-"fixed" descriptions below. It reflects a second-pass code review plus
-targeted test execution after the fixes landed.
+A code review after the initial 11 fixes identified additional issues. A second
+coding pass resolved the real ones. A third-pass reconciliation review (cross-checking
+Gemini, Codex, and Claude findings against the current tree) corrected stale findings
+and downgraded theoretical concerns.
 
-| Area | Review Status | Notes |
+### Review Round 2 — Resolution Status
+
+| Area | Initial Review | Resolution |
 |---|---|---|
-| #4 Permit upserts | ACCEPT WITH OBSERVABILITY GAP | The COALESCE direction fix is correct, but the current services still only log coarse `written` counts. They do not surface insert/update counts or status/open-flag churn, so future regressions here will be hard to prove from logs alone. |
-| #10a Controller concurrency | PARTIAL | The advisory lock prevents the original `title_chain` catalog race, but lock contention exits with `sys.exit(0)`. That makes a skipped controller invocation look like success to cron/CI wrappers unless they parse logs. |
-| #15 Judgment extraction | NOT FIXED | Per-PDF discovery is fixed, but PG writeback is still case-level. `_load_judgment_data_to_pg()` scans every `*_extracted.json` under a case and updates the same foreclosure row repeatedly, while choosing the first `*.pdf` in the folder instead of the PDF matching the JSON stem. In multi-PDF folders, the last JSON processed can overwrite the real final judgment with a fee order or other unrelated extraction. |
-| Survival HOA inference | NOT FIXED | The new plaintiff-name fallback runs whenever `is_hoa_fc` is false, not only when `foreclosure_type` is blank. Because it keys off `HOMEOWNER`, ordinary mortgage plaintiffs such as `HOMEOWNERS FINANCIAL GROUP USA LLC` get reclassified as HOA foreclosures, which skips exact `foreclosing_refs` matching and can mark a lis pendens as the foreclosing lien instead of the mortgage. |
-| ORI satisfaction linking | NOT FIXED | `_link_satisfactions()` now assumes a 7-column SAT row shape and unconditionally reads `sat[6]`, but the existing unit-test contract still supplies the older tuple shape. The new SAT-parent chase also queries `satisfies_encumbrance_id` without the migration guard already used by `_link_satisfactions()`, so unmigrated DBs can still hard-fail the ORI step. |
-| #21 Generic-name matching | ACCEPT | The word-boundary change is the right fix for the original false-positive problem. No blocker found in the reviewed call sites. |
-| #22 Cross-folio encumbrance update | ACCEPT | Adding `AND folio = :folio` is the right containment fix for the original overwrite bug. No regression found in the surrounding upsert path. |
-| Null-folio ORI recovery | PARTIAL | The new `AND folio = :folio` containment fix does not match null-folio rows. That leaves the case-only/no-parcel recovery path unable to repair existing encumbrances discovered without a folio. |
-| PG survival `foreclosing_refs` repair | PARTIAL | The backfill from `foreclosed_mortgage` only runs when the `foreclosing_refs` key is absent. Rows with `foreclosing_refs: null` or `{}` still bypass the repair even when usable instrument/book/page data is present. |
-| Market photo/logo filtering | PARTIAL | Incoming photo lists are now filtered, but the upsert logic still preserves whichever JSON array is longer. That means existing dirty `photo_cdn_urls` rows do not heal on re-scrape, and stale `photo_local_paths` are not cleared when a property now has zero valid photos. The web read path also only inspects the first array element and only filters a narrow subset of placeholder patterns. |
-| Logging quality | NEEDS FOLLOW-UP | Judgment extraction logs still omit `pdf_path`, so multi-PDF cases are ambiguous. Photo download failures are logged only at `debug` and do not include the failing `strap` or URL. |
+| #10a Controller exit code | PARTIAL — `sys.exit(0)` hides skipped runs | FIXED — changed to `sys.exit(75)` (EX_TEMPFAIL) + `pipeline_job_runs` status row |
+| #15 Judgment writeback | NOT FIXED — case-level writeback, wrong PDF | FIXED — `_select_best_judgment()` ranks final judgments over fee orders, derives PDF from JSON stem |
+| Survival HOA inference | NOT FIXED — "HOMEOWNER" token misclassifies lenders | FIXED — guard requires blank `foreclosure_type` + match requires "ASSOCIATION"/"ASSN"/"HOA" phrases |
+| ORI satisfaction linking | NOT FIXED — SAT row shape break, missing migration guard | FIXED — test updated to 7-column shape, migration guard added to `_chase_unlinked_sat_parents()` |
+| PG `foreclosing_refs` repair | PARTIAL — only triggers on missing key | FIXED — `not jdata.get("foreclosing_refs")` covers None, `{}`, missing |
 
-Targeted tests executed during this review:
+### Review Round 3 — Reconciliation Against Current Tree
 
-- `uv run pytest tests/test_pg_trust_accounts.py tests/test_type_normalizer.py tests/test_lien_survival_service.py tests/test_web_equity_model.py`
+| Finding | Verdict | Rationale |
+|---|---|---|
+| Market spec chronology flaw (first-writer-wins) | REAL — architectural, not a regression from #6 | `market_data_service.py:381,453,593` all implement first-writer-wins for specs. Inferior early data can block later Zillow/Redfin upgrades. Pre-dates the Realtor patch; the fix for #6 is correct but the broader priority model needs design work. |
+| Judgment multi-PDF writeback stale | DROPPED — already fixed | `pg_judgment_service.py:115` has `_select_best_judgment()`, line 191 groups by case, line 216 derives PDF from chosen stem. Earlier review note was written before round 2. |
+| Null-folio ORI duplicate risk | DROPPED — not possible in current schema | `ori_encumbrances.folio` is `NOT NULL` with a matching unique index. Live table has zero null-folio rows. The `IS NOT DISTINCT FROM` change is harmless defensive code but the concern was unfounded. |
+| Permit null-overwrite footgun | DOWNGRADED to future-hardening note | Both scrapers normalize empty strings to None (`PlantCityPermit.py:41`, `TempleTerracePermit.py:104`) before building upsert rows. Not an active bug; becomes relevant only if parser changes skip normalization. |
+| Generic-name `\b` edge case | DOWNGRADED to config-hygiene warning | Current `generic_names` list does not include punctuation-ended forms that would trigger the `\b` edge case. The word-boundary fix is correct; the theoretical concern is about future list contents. |
 
-Coverage gaps observed during this review:
+### Open Architectural Issue
 
-- No focused test currently covers the multi-PDF judgment writeback path in `pg_judgment_service.py`.
-- No focused test currently covers placeholder-photo filtering through PG upsert plus web rendering.
-- No focused test currently covers the controller lock-contention exit path.
-- The new `pg_survival_service` repair path is not covered for `foreclosing_refs: null` / `{}` payloads.
-- The ORI null-folio update path is not covered by a focused regression test.
+**Market data spec priority model**: The first-writer-wins scheme across
+`_upsert_homeharvest`, `_upsert_zillow`, and `_upsert_realtor` means scrape
+execution order determines which source's beds/baths/sqft/year_built survives.
+If HomeHarvest runs first with stale data, later Zillow/Redfin updates won't
+overwrite it. This is a design issue predating all audit fixes and needs a
+source-priority-aware upsert strategy. Tracked for future design work.
 
-Additional concrete review findings:
+### Tests Added in Review Round 2
 
-- I reproduced the HOA-regression path directly with `plaintiff='HOMEOWNERS FINANCIAL GROUP USA LLC'` and `foreclosure_type='MORTGAGE FORECLOSURE'`. The current logic infers HOA foreclosure anyway and marks a lis pendens as the foreclosing lien.
-- The existing satisfaction-linking fixture in `tests/test_pg_ori_service.py` still returns the older SAT tuple shape, so the current `_link_satisfactions()` indexing change is not review-clean even before considering production behavior.
-- The new SAT-parent chase is still weak on diagnostics. When a chased parent lookup fails or saves an unexpected document, the logs only emit aggregate counts and do not identify the source SAT row or chased instrument reference.
+- `test_mortgage_lender_with_homeowner_in_name_not_misclassified_as_hoa` — confirms mortgage lenders aren't treated as HOA
+- `test_homeowner_in_plaintiff_no_fc_type_not_hoa_without_association` — ensures "HOMEOWNER" alone doesn't trigger HOA inference
+- ORI satisfaction-linking test fixtures updated to 7-column row shape
+
+### Remaining Coverage Gaps
+
+- No focused test covers the multi-PDF judgment writeback selection path
+- No focused test covers placeholder-photo filtering through PG upsert + web rendering
+- No focused test covers the controller lock-contention exit path
 
 ## Detailed Fix Descriptions
 
@@ -159,17 +175,11 @@ concurrently updated`.
 
 **Fix:** Added a PostgreSQL session-level advisory lock at the controller entry point:
 - Acquires `pg_try_advisory_lock(hashtext('pg_pipeline_controller'))` before any pipeline work
-- Non-blocking: if lock cannot be acquired, logs a warning and exits cleanly (`sys.exit(0)`)
+- Non-blocking: if lock cannot be acquired, logs a warning and exits with `sys.exit(75)` (EX_TEMPFAIL)
 - Lock ID uses `hashtext()` in the same namespace as scheduled job locks but with a unique string
 - Released automatically via `finally` block closing the dedicated lock connection
 - Process crashes also release the lock (PostgreSQL releases on connection drop)
-
-**Post-merge review note:** This closes the original concurrency corruption bug,
-but the exit path is still too quiet for operations. A lock-contention skip
-returns process exit code `0`, so external schedulers and wrappers will report a
-successful run unless they inspect logs. Treat this as a partial fix until
-"skipped because another controller is active" is surfaced explicitly in the
-run status observed by automation.
+- Records a `"skipped"` row in `pipeline_job_runs` for operational visibility
 
 ---
 
@@ -183,19 +193,17 @@ order PDF gets extracted first (producing JSON), then the real final judgment PD
 same directory. The real judgment was permanently blocked from extraction, directly undermining
 the 90% extraction completeness gate.
 
-**Fix:** Changed to per-PDF checking. For each PDF in the directory, checks if its specific
-`{stem}_extracted.json` exists. Only that specific PDF is skipped. Other PDFs without their own
-JSON are returned for processing.
+**Fix (Round 1 — discovery):** Changed to per-PDF checking. For each PDF in the directory,
+checks if its specific `{stem}_extracted.json` exists. Only that specific PDF is skipped.
 
-**Post-merge review note:** This only fixes the discovery half of the bug. The
-loadback half is still wrong. `PgJudgmentService._load_judgment_data_to_pg()`
-scans every `*_extracted.json` under a case directory and updates the same
-`foreclosures` row repeatedly, but it selects the first `*.pdf` in the folder
-instead of the PDF whose stem matches the JSON file. In folders containing both
-a fee order and a real final judgment, the final stored `judgment_data` now
-depends on filesystem iteration order. The issue should remain open until PG
-writeback is made per-PDF or the service positively identifies the correct
-judgment document before updating the foreclosure row.
+**Fix (Round 2 — writeback):** Rewrote `_load_judgment_data_to_pg()` with a new
+`_select_best_judgment()` static method that:
+- Filters to only `final_judgment_*_extracted.json` files (ignores mortgage extractions, orders)
+- Uses `FinalJudgmentProcessor.is_thin_extraction()` to prefer real judgments over fee orders
+- Breaks ties by highest instrument number (most recently recorded)
+- Derives the PDF path from the chosen JSON's stem (`{stem}_extracted.json` → `{stem}.pdf`)
+- Logs the selection when multiple JSONs exist for a case
+- Added `pdf_path` to extraction log messages for multi-PDF auditability
 
 ---
 
@@ -235,9 +243,11 @@ imported.
 folio. If two properties share the same instrument number (blanket mortgages, HOA liens), running
 ORI for property B could overwrite property A's encumbrance row.
 
-**Fix:** Added `AND folio = :folio` to the WHERE clause. The `:folio` parameter was already
-present in the params dict. When the folio-scoped UPDATE finds no matching row (rowcount == 0),
-the existing INSERT with ON CONFLICT handles the new row correctly.
+**Fix (Round 1):** Added `AND folio = :folio` to the WHERE clause.
+
+**Fix (Round 2):** Changed to `AND folio IS NOT DISTINCT FROM :folio` to correctly handle
+null-folio rows from case-only/no-parcel recovery paths (`NULL = NULL` is false in SQL,
+but `NULL IS NOT DISTINCT FROM NULL` is true).
 
 ---
 

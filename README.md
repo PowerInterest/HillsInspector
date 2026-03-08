@@ -159,6 +159,9 @@ The `docs/` folder contains comprehensive guides and technical design artifacts,
 - [Tax Data Research](docs/external/TAX_DATA_RESEARCH.md) - Scraping instructions for the DOR (Department of Revenue) property millage layers.
 - [Case Fallback Scraping](docs/domain/CASE_FALLBACK.md) - Fail-safe mechanisms when primary URLs vanish.
 
+### 🔧 Maintenance & Audits
+- [System Audit Fixes (2026-03-08)](docs/AUDIT_FIXES_2026_03_08.md) - 11 confirmed bugs fixed from multi-reviewer system audit: JSONB key typos, COALESCE direction bugs, encumbrance misclassification, concurrency locks, and more.
+
 ### 📖 Guides
 - [Operations Runbook](docs/guides/RUNBOOK.md) - Standard operational procedures and recurring scripts.
 - [Encumbrance Audit Web UI](docs/guides/ENCUMBRANCE_AUDIT_WEB_UI.md) - Read-only implementation guide for surfacing encumbrance audit issues in the property view and global review inbox.
