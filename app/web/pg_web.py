@@ -24,6 +24,36 @@ def _engine():
     return get_engine(resolve_pg_dsn())
 
 
+def _sql_placeholder_photo_condition(url_expr: str) -> str:
+    return f"""
+        LOWER(COALESCE({url_expr}, '')) LIKE '%redfin-logo%'
+        OR LOWER(COALESCE({url_expr}, '')) LIKE '%/logos/%'
+        OR LOWER(COALESCE({url_expr}, '')) LIKE '%no_image%'
+        OR LOWER(COALESCE({url_expr}, '')) LIKE '%placeholder%'
+        OR LOWER(COALESCE({url_expr}, '')) LIKE '%default_photo%'
+        OR LOWER(COALESCE({url_expr}, '')) LIKE '%/images/logos/%'
+        OR LOWER(COALESCE({url_expr}, '')) LIKE '%/static/images/%'
+    """
+
+
+def _sql_first_valid_photo(jsonb_expr: str) -> str:
+    placeholder_sql = _sql_placeholder_photo_condition("photo_url")
+    return f"""
+        (
+            SELECT photo_url
+            FROM jsonb_array_elements_text(
+                CASE
+                    WHEN jsonb_typeof({jsonb_expr}) = 'array' THEN {jsonb_expr}
+                    ELSE '[]'::jsonb
+                END
+            ) WITH ORDINALITY AS photos(photo_url, ord)
+            WHERE NOT ({placeholder_sql})
+            ORDER BY ord
+            LIMIT 1
+        )
+    """
+
+
 def _normalize_auction_type(value: str | None) -> str | None:
     if not value:
         return None
@@ -157,7 +187,7 @@ def get_upcoming_auctions(
             COALESCE(enc.liens_total, 0)::integer AS liens_total,
             COALESCE(f.latitude, bp.latitude) AS latitude,
             COALESCE(f.longitude, bp.longitude) AS longitude,
-            (pm.photo_cdn_urls->>0)::text AS photo_url
+            {_sql_first_valid_photo("pm.photo_cdn_urls")} AS photo_url
         FROM foreclosures f
         LEFT JOIN LATERAL (
             SELECT
@@ -240,7 +270,7 @@ def get_upcoming_auctions(
                         COALESCE(enc.liens_total, 0)::integer AS liens_total,
                         COALESCE(f.latitude, bp.latitude) AS latitude,
                         COALESCE(f.longitude, bp.longitude) AS longitude,
-                        (pm.photo_cdn_urls->>0)::text AS photo_url
+                        {_sql_first_valid_photo("pm.photo_cdn_urls")} AS photo_url
                     FROM foreclosures_history f
                     LEFT JOIN LATERAL (
                         SELECT
@@ -1206,8 +1236,8 @@ def get_auction_intel_for_date(
                 - COALESCE(f.final_judgment_amount, 0)
                 - COALESCE(enc.est_surviving_debt, 0)
             ) AS net_equity,
-            -- Photo
-            (pm.photo_cdn_urls->>0)::text AS photo_url,
+            -- Photo (exclude site logos / branding placeholders)
+            {_sql_first_valid_photo("pm.photo_cdn_urls")} AS photo_url,
             -- LP filing date
             lp.lp_filing_date,
             (CURRENT_DATE - lp.lp_filing_date)::integer AS days_in_foreclosure,

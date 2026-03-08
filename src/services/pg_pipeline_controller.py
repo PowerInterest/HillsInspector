@@ -742,8 +742,7 @@ class PgPipelineController:
         svc = PgTrustAccountsService(dsn=self.dsn)
         if not svc.available:
             return {
-                "success": False,
-                "error": "service_unavailable",
+                "skipped": True,
                 "reason": "service_unavailable",
                 "details": svc.unavailable_reason,
             }

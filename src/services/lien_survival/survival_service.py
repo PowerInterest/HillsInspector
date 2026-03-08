@@ -141,38 +141,67 @@ class SurvivalService:
         # 3. Find the foreclosing lien
         fc_type = judgment_data.get('foreclosure_type', '').upper()
         is_hoa_fc = _is_hoa_foreclosure_type(fc_type)
+        # Also detect HOA by plaintiff name when foreclosure_type is empty
+        # (vision API often leaves it blank for condo/HOA cases).
+        # IMPORTANT: Only apply this heuristic when fc_type is blank/unknown.
+        # If fc_type is already set (e.g. "MORTGAGE FORECLOSURE"), trust it —
+        # otherwise mortgage lenders like "HOMEOWNERS FINANCIAL GROUP USA LLC"
+        # get misclassified as HOA foreclosures.
+        if not is_hoa_fc and not fc_type and plaintiff:
+            p_upper = plaintiff.upper()
+            is_hoa_fc = any(
+                kw in p_upper
+                for kw in (
+                    "HOMEOWNERS ASSOCIATION",
+                    "HOMEOWNER'S ASSOCIATION",
+                    "HOMEOWNERS ASSN",
+                    "CONDOMINIUM ASSOCIATION",
+                    "CONDOMINIUM ASSN",
+                    "CONDO ASSOCIATION",
+                    "CONDO ASSN",
+                    " HOA",
+                    "HOA ",
+                )
+            )
 
         foreclosing_doc = None
 
-        # Step 3a: Exact match via recording references (instrument, book/page)
-        for enc in encumbrances:
-            is_fc, reason = priority_engine.identify_foreclosing_lien(enc, plaintiff, fc_refs)
-            if is_fc:
-                foreclosing_doc = enc
-                enc['survival_status'] = 'FORECLOSING'
-                enc['survival_reason'] = f"Plaintiff's foreclosing lien ({reason})"
-                results['foreclosing'].append(enc)
-                break
-
-        # Step 3b: Name matching with comma-split creditor (for all encumbrance types)
-        if not foreclosing_doc and plaintiff:
-            best_enc = None
-            best_score = 0.0
+        # For HOA/condo foreclosures, skip the generic Steps 3a/3b entirely.
+        # The judgment's foreclosed_mortgage section describes the UNDERLYING
+        # mortgage on the property, not the HOA's own lien.  Steps 3a/3b
+        # would match that mortgage (by instrument or plaintiff name) instead
+        # of the association's LP/lien.  Fallback A below has HOA-specific
+        # logic that only considers lis_pendens and lien encumbrances.
+        if not is_hoa_fc:
+            # Step 3a: Exact match via recording references (instrument, book/page)
             for enc in encumbrances:
-                creditor = enc.get('creditor') or ''
-                if not creditor:
-                    continue
-                score = _match_creditor_to_plaintiff(creditor, plaintiff)
-                if score > best_score:
-                    best_score = score
-                    best_enc = enc
-            if best_enc and best_score >= 0.85:
-                foreclosing_doc = best_enc
-                foreclosing_doc['survival_status'] = 'FORECLOSING'
-                foreclosing_doc['survival_reason'] = (
-                    f"Plaintiff's foreclosing lien (CREDITOR_NAME_MATCH, score={best_score:.2f})"
-                )
-                results['foreclosing'].append(foreclosing_doc)
+                is_fc, reason = priority_engine.identify_foreclosing_lien(enc, plaintiff, fc_refs)
+                if is_fc:
+                    foreclosing_doc = enc
+                    enc['survival_status'] = 'FORECLOSING'
+                    enc['survival_reason'] = f"Plaintiff's foreclosing lien ({reason})"
+                    results['foreclosing'].append(enc)
+                    break
+
+            # Step 3b: Name matching with comma-split creditor (for all encumbrance types)
+            if not foreclosing_doc and plaintiff:
+                best_enc = None
+                best_score = 0.0
+                for enc in encumbrances:
+                    creditor = enc.get('creditor') or ''
+                    if not creditor:
+                        continue
+                    score = _match_creditor_to_plaintiff(creditor, plaintiff)
+                    if score > best_score:
+                        best_score = score
+                        best_enc = enc
+                if best_enc and best_score >= 0.85:
+                    foreclosing_doc = best_enc
+                    foreclosing_doc['survival_status'] = 'FORECLOSING'
+                    foreclosing_doc['survival_reason'] = (
+                        f"Plaintiff's foreclosing lien (CREDITOR_NAME_MATCH, score={best_score:.2f})"
+                    )
+                    results['foreclosing'].append(foreclosing_doc)
 
         # Helper for date sorting in fallbacks
         def _date_sort_key(x):
@@ -208,14 +237,15 @@ class SurvivalService:
             if best_match and best_score >= 0.55:
                 foreclosing_doc = best_match
                 foreclosing_doc['survival_status'] = 'FORECLOSING'
+                enc_kind = best_match.get('encumbrance_type', 'lien').replace('_', ' ')
                 foreclosing_doc['survival_reason'] = (
-                    f"HOA/Condo foreclosing lien (plaintiff name match, score={best_score:.2f})"
+                    f"Association foreclosing {enc_kind} (plaintiff match, score={best_score:.2f})"
                 )
                 results['foreclosing'].append(foreclosing_doc)
                 self.uncertainty_flags.append("FORECLOSING_LIEN_HOA_INFERRED")
                 logger.info(
                     f"Identified HOA foreclosing lien for {self.property_id}: "
-                    f"creditor={best_match.get('creditor')}, type={best_match.get('encumbrance_type')}, "
+                    f"creditor={best_match.get('creditor')}, type={enc_kind}, "
                     f"score={best_score:.2f}"
                 )
             elif hoa_candidates:

@@ -754,6 +754,45 @@ def test_save_documents_does_not_reset_is_satisfied_for_non_satisfaction_docs(
     assert update_calls[0]["is_sat_update"] is None
 
 
+def test_save_documents_matches_existing_instrument_by_strap_when_folio_changes(
+    monkeypatch: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    def _execute(sql_text: str, _params: dict[str, Any]) -> _CaptureResult:
+        if "UPDATE ori_encumbrances" in sql_text and "WHERE instrument_number = :instrument" in sql_text:
+            return _CaptureResult(rowcount=1)
+        return _CaptureResult()
+
+    service.engine = _ExecuteFnEngine(_execute, captured)  # type: ignore[assignment]
+
+    saved = service._save_documents(  # noqa: SLF001
+        "strap-123",
+        "folio-456",
+        [
+            {
+                "Instrument": "2024000456",
+                "DocType": "(MTG) MORTGAGE",
+                "RecordDate": "2024-01-10",
+                "BookType": "OR",
+                "Book": "12345",
+                "Page": "678",
+                "Legal": "123 MAIN ST TAMPA FL",
+            }
+        ],
+    )
+
+    assert saved == 1
+    update_sql = next(
+        sql_text
+        for sql_text, _params in captured
+        if "UPDATE ori_encumbrances" in sql_text and "WHERE instrument_number = :instrument" in sql_text
+    )
+    assert "folio IS NOT DISTINCT FROM :folio" in update_sql
+    assert "OR strap = :strap" in update_sql
+
+
 def test_link_satisfactions_updates_parent_without_self_reference(
     monkeypatch: Any,
 ) -> None:
@@ -771,6 +810,8 @@ def test_link_satisfactions_updates_parent_without_self_reference(
                 ]
             )
         if "encumbrance_type IN ('satisfaction', 'release')" in sql_text:
+            # Shape: id, instrument_number, legal_description, party1,
+            #        party2, recording_date, case_number
             return _CaptureResult(
                 rows=[
                     (
@@ -778,12 +819,15 @@ def test_link_satisfactions_updates_parent_without_self_reference(
                         "2024000999",
                         "SATISFACTION OF CLK #2024000123",
                         "",
+                        "",
                         date(2025, 1, 5),
                         "25-CA-000123",
                     )
                 ]
             )
         if "encumbrance_type IN ('mortgage', 'lien', 'judgment')" in sql_text:
+            # Shape: id, instrument_number, book, page, case_number,
+            #        party1, party2, amount, recording_date
             return _CaptureResult(
                 rows=[
                     (
@@ -792,6 +836,7 @@ def test_link_satisfactions_updates_parent_without_self_reference(
                         "12345",
                         "678",
                         "25-CA-000123",
+                        "",
                         "",
                         100000.0,
                         date(2024, 1, 10),

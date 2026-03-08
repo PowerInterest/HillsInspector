@@ -442,14 +442,18 @@ class RedfinScraper:
                 elif "style" in detail_lower or "type" in detail_lower:
                     listing.property_type = detail.split("\n")[-1].strip() if "\n" in detail else detail
 
-            # Photos
+            # Photos — filter out Redfin logo/branding images that appear
+            # when a property has no listing photos.
             photos = await self.page.evaluate("""
                 () => {
                     const imgs = document.querySelectorAll('img[src*="ssl.cdn-redfin"], img[src*="photos"]');
                     const urls = new Set();
                     for (const img of imgs) {
                         const src = img.src;
-                        if (src && (src.includes('photos') || src.includes('genMid'))) {
+                        if (src
+                            && (src.includes('photos') || src.includes('genMid'))
+                            && !src.includes('/logos/')
+                            && !src.includes('redfin-logo')) {
                             urls.add(src);
                         }
                     }

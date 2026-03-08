@@ -66,6 +66,39 @@ def test_dispatch_starts_detached_worker_and_writes_pid(
     assert captured["kwargs"]["env"]["SUNBIZ_PG_DSN"] == "postgresql://user:pw@host:5432/db"
 
 
+def test_dispatch_appends_force_flag_when_requested(
+    monkeypatch: Any,
+    tmp_path: Any,
+) -> None:
+    logs_dir = tmp_path / "logs"
+    monkeypatch.setattr(market_data_dispatcher, "read_pid_file", lambda _path: None)
+    captured: dict[str, Any] = {}
+
+    class _FakeProcess:
+        pid = 9876
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def _fake_popen(*args: Any, **kwargs: Any) -> _FakeProcess:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return _FakeProcess()
+
+    monkeypatch.setattr(market_data_dispatcher.subprocess, "Popen", _fake_popen)
+
+    result = market_data_dispatcher.dispatch_market_data_worker(
+        "postgresql://user:pw@host:5432/db",
+        logs_dir=logs_dir,
+        force=True,
+    )
+
+    assert result["reason"] == "market_data_worker_dispatched_background"
+    command = captured["args"][0]
+    assert command[1:] == ["-m", "src.services.market_data_worker", "--force"]
+
+
 def test_dispatch_market_worker_fails_if_exits_immediately(
     monkeypatch: Any,
     tmp_path: Any,

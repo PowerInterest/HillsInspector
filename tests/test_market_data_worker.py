@@ -153,6 +153,37 @@ def test_run_market_data_update_propagates_batch_error(monkeypatch: Any) -> None
     assert result["error"] == "browser_phase_failed:timeout"
 
 
+def test_run_market_data_update_passes_force_to_query(monkeypatch: Any) -> None:
+    monkeypatch.setattr(market_data_worker, "resolve_pg_dsn", lambda _dsn: "postgresql://x")
+    captured: dict[str, Any] = {}
+
+    def _fake_query(
+        dsn: str,
+        limit: int | None = None,
+        *,
+        force: bool = False,
+    ) -> list[dict[str, Any]]:
+        captured["dsn"] = dsn
+        captured["limit"] = limit
+        captured["force"] = force
+        return []
+
+    monkeypatch.setattr(
+        market_data_worker,
+        "_query_properties_needing_market",
+        _fake_query,
+    )
+
+    result = market_data_worker.run_market_data_update(force=True)
+
+    assert result["skipped"] is True
+    assert captured == {
+        "dsn": "postgresql://x",
+        "limit": None,
+        "force": True,
+    }
+
+
 def test_payload_failed_detects_nested_update_error() -> None:
     assert not market_data_worker._payload_failed({"update": {"rows": 1}})  # noqa: SLF001
     assert market_data_worker._payload_failed({"update": {"error": "boom"}})  # noqa: SLF001

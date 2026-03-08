@@ -76,3 +76,37 @@ def test_find_targets_force_reanalysis_scopes_to_selected_foreclosures(
     assert "f.step_survival_analyzed is null" not in sql_text
     assert "oe.survival_status is null" not in sql_text
     assert "oe.encumbrance_type != 'noc'" in sql_text
+
+
+def test_find_targets_builds_foreclosing_refs_from_foreclosed_mortgage(
+    monkeypatch: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+    captured: dict[str, Any] = {}
+    service.engine = _CaptureEngine(
+        captured,
+        rows=[
+            (
+                7,
+                "24-CA-000007",
+                "S7",
+                {
+                    "plaintiff": "BANK",
+                    "foreclosed_mortgage": {
+                        "instrument_number": "2024000123",
+                        "recording_book": "12345",
+                        "recording_page": "678",
+                    },
+                },
+                True,
+            ),
+        ],
+    )
+
+    targets = service._find_targets(25)  # noqa: SLF001
+
+    assert targets[0]["judgment_data"]["foreclosing_refs"] == {
+        "instrument": "2024000123",
+        "book": "12345",
+        "page": "678",
+    }

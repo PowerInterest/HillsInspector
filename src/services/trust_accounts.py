@@ -1157,7 +1157,7 @@ class TrustAccountsService:
                 return {}
 
             plaintiff_expr = (
-                "judgment_data->>'plaintiff_name'" if "judgment_data" in columns else "''"
+                "judgment_data->>'plaintiff'" if "judgment_data" in columns else "''"
             )
             archived_clause = "AND archived_at IS NULL" if "archived_at" in columns else ""
             rows = conn.execute(

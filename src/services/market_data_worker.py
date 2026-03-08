@@ -17,6 +17,8 @@ from sunbiz.db import get_engine, resolve_pg_dsn
 def _query_properties_needing_market(
     dsn: str,
     limit: int | None = None,
+    *,
+    force: bool = False,
 ) -> list[dict[str, Any]]:
     query = """
         SELECT f.strap, f.folio, f.case_number_raw AS case_number, f.property_address
@@ -25,10 +27,15 @@ def _query_properties_needing_market(
         WHERE f.strap IS NOT NULL
           AND f.property_address IS NOT NULL
           AND f.archived_at IS NULL
+    """
+    if not force:
+        query += """
           AND (pm.strap IS NULL
                OR NOT (pm.redfin_json IS NOT NULL AND pm.redfin_json::text != 'null'
                        AND pm.zillow_json IS NOT NULL AND pm.zillow_json::text != 'null'
                        AND pm.homeharvest_json IS NOT NULL AND pm.homeharvest_json::text != 'null'))
+        """
+    query += """
         ORDER BY f.auction_date DESC
     """
     params: dict[str, Any] = {}
@@ -46,9 +53,13 @@ def run_market_data_update(
     dsn: str | None = None,
     limit: int | None = None,
     use_windows_chrome: bool = False,
+    force: bool = False,
 ) -> dict[str, Any]:
     resolved_dsn = resolve_pg_dsn(dsn)
-    properties = _query_properties_needing_market(dsn=resolved_dsn, limit=limit)
+    query_kwargs: dict[str, Any] = {"dsn": resolved_dsn, "limit": limit}
+    if force:
+        query_kwargs["force"] = True
+    properties = _query_properties_needing_market(**query_kwargs)
     if not properties:
         return {"skipped": True, "reason": "no_properties_need_market_data"}
 
@@ -92,9 +103,13 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Standalone Market Data Worker")
     parser.add_argument("--use-windows-chrome", action="store_true", help="Connect to Windows Chrome via CDP")
+    parser.add_argument("--force", action="store_true", help="Process all eligible active foreclosures")
     args = parser.parse_args()
 
-    result = run_market_data_update(use_windows_chrome=args.use_windows_chrome)
+    result = run_market_data_update(
+        use_windows_chrome=args.use_windows_chrome,
+        force=args.force,
+    )
     logger.info(f"Market data worker complete: {result}")
     print(json.dumps(result, indent=2, default=str))
     if _payload_failed(result):

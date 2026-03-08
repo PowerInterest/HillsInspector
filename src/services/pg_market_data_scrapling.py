@@ -733,11 +733,11 @@ class PgMarketDataScraplingService(MarketDataService):
         for el in soup.select("[data-rf-test-id='abp-sqFt'] .statsValue"):
             payload.setdefault("sqft", self._normalize_int(el.get_text(strip=True)))
 
-        # Photos from meta
+        # Photos from meta — filter out Redfin logo/branding placeholders
         photos = []
         for meta in soup.find_all("meta", {"property": "og:image"}):
             url = (meta.get("content") or "").strip()
-            if url and url.startswith("http"):
+            if url and url.startswith("http") and "/logos/" not in url and "redfin-logo" not in url.lower():
                 photos.append(url)
         if photos:
             payload["photos"] = photos
@@ -1021,7 +1021,14 @@ class PgMarketDataScraplingService(MarketDataService):
             payload["facts_and_features"] = facts
 
         # HOA
-        hoa_el = soup.find("span", string=re.compile(r"HOA", re.IGNORECASE))
+        hoa_el = next(
+            (
+                span
+                for span in soup.find_all("span")
+                if "HOA" in span.get_text(strip=True).upper()
+            ),
+            None,
+        )
         if hoa_el:
             parent_text = (hoa_el.parent.get_text(strip=True) if hoa_el.parent else "")
             hoa_match = re.search(r"\$[\d,]+", parent_text)

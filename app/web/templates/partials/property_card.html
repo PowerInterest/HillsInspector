@@ -13,9 +13,16 @@
 {% set has_enrichments = enrich.has_enrichments | default(false) %}
 
 <div class="property-card {% if auction.is_toxic_title %}toxic{% endif %}" data-folio="{{ auction.folio }}">
-    <!-- Photo / Placeholder -->
+    <!-- Photo / Placeholder — guard against logo/branding URLs that are not property photos -->
     <div class="card-image">
-        {% if auction.photo_url %}
+        {% if auction.photo_url
+            and '/logos/' not in auction.photo_url
+            and 'redfin-logo' not in auction.photo_url
+            and 'no_image' not in auction.photo_url
+            and 'placeholder' not in auction.photo_url
+            and 'default_photo' not in auction.photo_url
+            and '/images/logos/' not in auction.photo_url
+            and '/static/images/' not in auction.photo_url %}
         <img src="{{ auction.photo_url }}" alt="{{ auction.property_address }}" loading="lazy">
         {% else %}
         <div class="card-image-placeholder">

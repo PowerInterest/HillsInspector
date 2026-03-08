@@ -186,6 +186,22 @@ class PgSurvivalService:
                 except (json.JSONDecodeError, TypeError):
                     jdata = {}
 
+            # Build foreclosing_refs from foreclosed_mortgage for exact
+            # lien matching.  The vision API stores instrument / book / page
+            # under "foreclosed_mortgage" but the survival engine expects a
+            # flat "foreclosing_refs" dict.  This mapping was present in the
+            # legacy SQLite orchestrator but was dropped in the PG migration.
+            if not jdata.get("foreclosing_refs") and "foreclosed_mortgage" in jdata:
+                fm = jdata.get("foreclosed_mortgage")
+                if fm and isinstance(fm, dict):
+                    refs = {
+                        "instrument": fm.get("instrument_number"),
+                        "book": fm.get("recording_book") or fm.get("book"),
+                        "page": fm.get("recording_page") or fm.get("page"),
+                    }
+                    if any(refs.values()):
+                        jdata["foreclosing_refs"] = refs
+
             targets.append({
                 "foreclosure_id": r[0],
                 "case_number": r[1],

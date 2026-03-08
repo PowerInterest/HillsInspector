@@ -203,7 +203,7 @@ def test_upcoming_context_keeps_earliest_date_per_case(monkeypatch: Any) -> None
     assert result["26-CA-000001"]["plaintiff"] == "EARLY BANK"
     assert result["26-CA-000002"]["plaintiff"] == ""
     sql = conn.execute_calls[0][0]
-    assert "judgment_data->>'plaintiff_name'" in sql
+    assert "judgment_data->>'plaintiff'" in sql
     assert "archived_at IS NULL" in sql
 
 

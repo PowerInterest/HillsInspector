@@ -95,7 +95,7 @@ def test_execute_step_runs_inline_for_non_bulk_steps(monkeypatch: Any) -> None:
     assert result["payload"]["update"]["ran_inline"] is True
 
 
-def test_run_trust_accounts_marks_unavailable_service_as_failure(monkeypatch: Any) -> None:
+def test_run_trust_accounts_marks_unavailable_service_as_skipped(monkeypatch: Any) -> None:
     controller = _build_controller(monkeypatch)
 
     class _FakeSvc:
@@ -109,7 +109,6 @@ def test_run_trust_accounts_marks_unavailable_service_as_failure(monkeypatch: An
 
     result = controller._run_trust_accounts()  # noqa: SLF001
 
-    assert result["success"] is False
-    assert result["error"] == "service_unavailable"
+    assert result["skipped"] is True
     assert result["reason"] == "service_unavailable"
     assert result["details"] == "db down"

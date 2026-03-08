@@ -151,20 +151,47 @@ _MAX_SAT_PARENT_CHASE = 20  # instrument lookups per property for SAT parent cha
 # Generic legal description boilerplate — too common to be discriminating tokens.
 # These appear in thousands of condo/HOA/subdivision legal descriptions county-wide.
 _LEGAL_BOILERPLATE_TOKENS = frozenset({
-    "CONDOMINIUM", "CONDO", "CONDOMINIUMS",
-    "ASSOCIATION", "ASSOC",
-    "UNIT", "UNITS",
-    "BLOCK", "BLK",
-    "COMMON", "ELEMENTS",
-    "UNDIV", "UNDIVIDED",
-    "AND", "THE", "FOR", "INT", "INC",
-    "INTEREST", "TOGETHER", "WITH",
-    "PLAT", "BOOK", "PAGE", "TRACT",
-    "PHASE", "ADDITION", "REPLAT",
-    "SUBDIVISION", "SUBD", "SUB",
-    "SECTION", "SEC", "TOWNSHIP", "RANGE",
-    "COUNTY", "HILLSBOROUGH", "FLORIDA",
-    "LIEN", "MORTGAGE", "SATISFACTION",
+    "CONDOMINIUM",
+    "CONDO",
+    "CONDOMINIUMS",
+    "ASSOCIATION",
+    "ASSOC",
+    "UNIT",
+    "UNITS",
+    "BLOCK",
+    "BLK",
+    "COMMON",
+    "ELEMENTS",
+    "UNDIV",
+    "UNDIVIDED",
+    "AND",
+    "THE",
+    "FOR",
+    "INT",
+    "INC",
+    "INTEREST",
+    "TOGETHER",
+    "WITH",
+    "PLAT",
+    "BOOK",
+    "PAGE",
+    "TRACT",
+    "PHASE",
+    "ADDITION",
+    "REPLAT",
+    "SUBDIVISION",
+    "SUBD",
+    "SUB",
+    "SECTION",
+    "SEC",
+    "TOWNSHIP",
+    "RANGE",
+    "COUNTY",
+    "HILLSBOROUGH",
+    "FLORIDA",
+    "LIEN",
+    "MORTGAGE",
+    "SATISFACTION",
     "PARCEL",
 })
 
@@ -187,7 +214,12 @@ def _load_generic_names() -> set[str]:
 
 
 def _is_generic_name(name: str) -> bool:
-    """Check if a party name is too generic for ORI search."""
+    """Check if a party name is too generic for ORI search.
+
+    Uses word-boundary matching so that short generic terms like "INC" only
+    match when they appear as whole words (e.g. "ACME INC") and NOT as
+    substrings of longer words (e.g. "SINCLAIR").
+    """
     if not name or len(name) < 3:
         return True
     generic = _load_generic_names()
@@ -195,8 +227,9 @@ def _is_generic_name(name: str) -> bool:
     # Exact match
     if name_upper in generic:
         return True
-    # Partial match (e.g. "WELLS FARGO" in "WELLS FARGO BANK NA")
-    return any(g in name_upper for g in generic)
+    # Word-boundary match (e.g. "WELLS FARGO" matches "WELLS FARGO BANK NA"
+    # but "INC" does NOT match "SINCLAIR")
+    return any(re.search(r"\b" + re.escape(g) + r"\b", name_upper) for g in generic)
 
 
 def _get_instrument(doc: dict) -> str:
@@ -254,8 +287,7 @@ def _get_parties(doc: dict) -> tuple[list[str], list[str]]:
 
 
 def _extract_instrument_references(doc: dict) -> list[str]:
-    """Extract instrument number references from document fields.
-    """
+    """Extract instrument number references from document fields."""
     refs: set[str] = set()
 
     fields_to_check = [
@@ -429,8 +461,7 @@ class PgOriService:
                 lp_docs = [
                     doc
                     for doc in discovered_docs
-                    if normalize_encumbrance_type(normalize_document_type(doc.get("DocType") or ""))
-                    == "lis_pendens"
+                    if normalize_encumbrance_type(normalize_document_type(doc.get("DocType") or "")) == "lis_pendens"
                 ]
                 saved = 0
                 persisted_lp = self._has_persisted_lis_pendens(case, strap)
@@ -448,28 +479,24 @@ class PgOriService:
                 total_unresolved_truncations += metrics["unresolved_truncations"]
                 if lp_docs:
                     targets_with_docs += 1
-                per_target.append(
-                    {
-                        "foreclosure_id": fid,
-                        "case_number": case,
-                        "strap": strap,
-                        "folio": folio,
-                        "docs_found": len(lp_docs),
-                        "saved": saved,
-                        "persisted_lp": persisted_lp,
-                        "inferred": 0,
-                        "api_calls": metrics["api_calls"],
-                        "retries": metrics["retries"],
-                        "truncated": metrics["truncated"],
-                        "unresolved_truncations": metrics["unresolved_truncations"],
-                        "official_seed_docs": metrics["official_seed_docs"],
-                        "deed_count": metrics["deed_count"],
-                        "clerk_case_count": metrics["clerk_case_count"],
-                        "instruments": [
-                            _get_instrument(doc) for doc in lp_docs if _get_instrument(doc)
-                        ],
-                    }
-                )
+                per_target.append({
+                    "foreclosure_id": fid,
+                    "case_number": case,
+                    "strap": strap,
+                    "folio": folio,
+                    "docs_found": len(lp_docs),
+                    "saved": saved,
+                    "persisted_lp": persisted_lp,
+                    "inferred": 0,
+                    "api_calls": metrics["api_calls"],
+                    "retries": metrics["retries"],
+                    "truncated": metrics["truncated"],
+                    "unresolved_truncations": metrics["unresolved_truncations"],
+                    "official_seed_docs": metrics["official_seed_docs"],
+                    "deed_count": metrics["deed_count"],
+                    "clerk_case_count": metrics["clerk_case_count"],
+                    "instruments": [_get_instrument(doc) for doc in lp_docs if _get_instrument(doc)],
+                })
             except Exception as exc:
                 logger.exception(
                     "LP backfill error for case={} foreclosure_id={}",
@@ -477,18 +504,16 @@ class PgOriService:
                     fid,
                 )
                 errors += 1
-                per_target.append(
-                    {
-                        "foreclosure_id": fid,
-                        "case_number": case,
-                        "strap": target.get("strap"),
-                        "folio": target.get("folio"),
-                        "docs_found": 0,
-                        "saved": 0,
-                        "inferred": 0,
-                        "error": str(exc),
-                    }
-                )
+                per_target.append({
+                    "foreclosure_id": fid,
+                    "case_number": case,
+                    "strap": target.get("strap"),
+                    "folio": target.get("folio"),
+                    "docs_found": 0,
+                    "saved": 0,
+                    "inferred": 0,
+                    "error": str(exc),
+                })
 
         after_remaining = len(
             self._find_lis_pendens_gap_targets(
@@ -586,19 +611,17 @@ class PgOriService:
                 if docs:
                     targets_with_docs += 1
 
-                per_target.append(
-                    {
-                        "foreclosure_id": fid,
-                        "case_number": case,
-                        "strap": strap,
-                        "folio": folio,
-                        "docs_found": len(docs),
-                        "saved": saved,
-                        "api_calls": stats["api_calls"],
-                        "truncated": stats["truncated"],
-                        "instruments": [_get_instrument(doc) for doc in docs if _get_instrument(doc)],
-                    }
-                )
+                per_target.append({
+                    "foreclosure_id": fid,
+                    "case_number": case,
+                    "strap": strap,
+                    "folio": folio,
+                    "docs_found": len(docs),
+                    "saved": saved,
+                    "api_calls": stats["api_calls"],
+                    "truncated": stats["truncated"],
+                    "instruments": [_get_instrument(doc) for doc in docs if _get_instrument(doc)],
+                })
             except Exception as exc:
                 logger.exception(
                     "Live NOC backfill error for case={} strap={} foreclosure_id={}",
@@ -607,17 +630,15 @@ class PgOriService:
                     fid,
                 )
                 errors += 1
-                per_target.append(
-                    {
-                        "foreclosure_id": fid,
-                        "case_number": case,
-                        "strap": strap,
-                        "folio": folio,
-                        "docs_found": 0,
-                        "saved": 0,
-                        "error": str(exc),
-                    }
-                )
+                per_target.append({
+                    "foreclosure_id": fid,
+                    "case_number": case,
+                    "strap": strap,
+                    "folio": folio,
+                    "docs_found": 0,
+                    "saved": 0,
+                    "error": str(exc),
+                })
 
         after_remaining = len(
             self._find_recent_permit_no_noc_targets(
@@ -713,19 +734,17 @@ class PgOriService:
                     target["foreclosure_id"],
                 )
                 errors += 1
-                per_target.append(
-                    {
-                        "foreclosure_id": target["foreclosure_id"],
-                        "case_number": case,
-                        "strap": strap,
-                        "folio": target.get("folio"),
-                        "docs_found": 0,
-                        "saved": 0,
-                        "inferred": 0,
-                        "satisfactions_linked": 0,
-                        "error": str(exc),
-                    }
-                )
+                per_target.append({
+                    "foreclosure_id": target["foreclosure_id"],
+                    "case_number": case,
+                    "strap": strap,
+                    "folio": target.get("folio"),
+                    "docs_found": 0,
+                    "saved": 0,
+                    "inferred": 0,
+                    "satisfactions_linked": 0,
+                    "error": str(exc),
+                })
 
         return {
             "targets_requested": len(target_ids),
@@ -940,10 +959,7 @@ class PgOriService:
         """
         with self.engine.connect() as conn:
             rows = conn.execute(text(sql), params).fetchall()
-        return [
-            self._decorate_lis_pendens_gap_target(self._row_to_target(row))
-            for row in rows
-        ]
+        return [self._decorate_lis_pendens_gap_target(self._row_to_target(row)) for row in rows]
 
     def _has_persisted_lis_pendens(
         self,
@@ -968,8 +984,8 @@ class PgOriService:
             SELECT EXISTS (
                 SELECT 1
                 FROM ori_encumbrances oe
-                WHERE {' AND '.join(clauses)}
-                  AND ({' OR '.join(match_clauses)})
+                WHERE {" AND ".join(clauses)}
+                  AND ({" OR ".join(match_clauses)})
             )
         """
         with self.engine.connect() as conn:
@@ -1314,9 +1330,7 @@ class PgOriService:
                 adjacent_searches += 1
                 candidate = str(base + offset)
                 candidate_docs = self._search_instrument_pav(candidate, stats)
-                known_instruments, known_book_pages = self._reference_anchor_sets(
-                    docs_by_inst.values()
-                )
+                known_instruments, known_book_pages = self._reference_anchor_sets(docs_by_inst.values())
                 filtered = [
                     d
                     for d in candidate_docs
@@ -1353,9 +1367,7 @@ class PgOriService:
                 if candidate in docs_by_inst:
                     continue
                 candidate_docs = self._search_instrument_pav(candidate, stats)
-                known_instruments, known_book_pages = self._reference_anchor_sets(
-                    docs_by_inst.values()
-                )
+                known_instruments, known_book_pages = self._reference_anchor_sets(docs_by_inst.values())
                 filtered = [
                     d
                     for d in candidate_docs
@@ -1426,9 +1438,7 @@ class PgOriService:
                     split_on_truncated=True,
                 )
 
-            known_instruments, known_book_pages = self._reference_anchor_sets(
-                docs_by_inst.values()
-            )
+            known_instruments, known_book_pages = self._reference_anchor_sets(docs_by_inst.values())
             filtered = [
                 d
                 for d in ref_docs
@@ -1469,14 +1479,8 @@ class PgOriService:
         # Phase 3: guarded fallback (clerk cases + legal/address + party).
         # Run Phase 3 when doc count is low OR when there's a specific
         # coverage gap (zero mortgages, no lien for CC cases, etc.).
-        _has_mortgage = any(
-            normalize_document_type(d.get("DocType") or "") == "mortgage"
-            for d in docs_by_inst.values()
-        )
-        _has_lien = any(
-            normalize_document_type(d.get("DocType") or "") == "lien"
-            for d in docs_by_inst.values()
-        )
+        _has_mortgage = any(normalize_document_type(d.get("DocType") or "") == "mortgage" for d in docs_by_inst.values())
+        _has_lien = any(normalize_document_type(d.get("DocType") or "") == "lien" for d in docs_by_inst.values())
         _is_cc_case = len(case_number) >= 8 and "CC" in case_number[6:8]
         _needs_targeted_fallback = (
             not _has_mortgage  # every foreclosure must have a mortgage
@@ -2221,14 +2225,9 @@ class PgOriService:
         legal_locators: set[tuple[str, str]] = set()
         for legal_field in ("legal1", "legal2", "legal3", "legal4"):
             value = (target.get(legal_field) or "").upper()
-            words = [
-                w
-                for w in re.split(r"[^A-Z0-9]+", value)
-                if len(w) >= 3 and w not in _LEGAL_BOILERPLATE_TOKENS
-            ]
+            words = [w for w in re.split(r"[^A-Z0-9]+", value) if len(w) >= 3 and w not in _LEGAL_BOILERPLATE_TOKENS]
             legal_tokens.update(words[:8])
-            for match in _LEGAL_LOCATOR_RE.finditer(value):
-                legal_locators.add((match.group(1).upper(), match.group(2).upper()))
+            legal_locators.update((match.group(1).upper(), match.group(2).upper()) for match in _LEGAL_LOCATOR_RE.finditer(value))
 
         owner_names: set[str] = set()
         if target.get("owner_name"):
@@ -2248,12 +2247,7 @@ class PgOriService:
             for t in re.split(r"[^A-Z0-9]+", self._extract_street_only(target.get("property_address") or "").upper())
             if len(t) >= 3
         }
-        street_name_tokens = {
-            t
-            for t in street_tokens
-            if not re.fullmatch(r"\d+[A-Z]?", t)
-            and t not in _STREET_STOP_TOKENS
-        }
+        street_name_tokens = {t for t in street_tokens if not re.fullmatch(r"\d+[A-Z]?", t) and t not in _STREET_STOP_TOKENS}
         return {
             "legal_tokens": legal_tokens,
             "legal_locators": list(legal_locators),
@@ -2275,11 +2269,7 @@ class PgOriService:
     @staticmethod
     def _word_boundary_hits(tokens: set[str], text: str) -> int:
         """Count tokens that appear as whole words in text (not substrings)."""
-        return sum(
-            1
-            for t in tokens
-            if re.search(rf"\b{re.escape(t)}\b", text)
-        )
+        return sum(1 for t in tokens if re.search(rf"\b{re.escape(t)}\b", text))
 
     @staticmethod
     def _has_property_text_match(doc: dict[str, Any], tokens: dict[str, Any]) -> bool:
@@ -2293,10 +2283,7 @@ class PgOriService:
         street_tokens = tokens.get("street_tokens") or set()
         street_hits = PgOriService._word_boundary_hits(street_tokens, legal_text)
         street_name_tokens = tokens.get("street_name_tokens") or {
-            t
-            for t in street_tokens
-            if not re.fullmatch(r"\d+[A-Z]?", str(t))
-            and str(t) not in _STREET_STOP_TOKENS
+            t for t in street_tokens if not re.fullmatch(r"\d+[A-Z]?", str(t)) and str(t) not in _STREET_STOP_TOKENS
         }
         street_name_hits = PgOriService._word_boundary_hits(street_name_tokens, legal_text)
 
@@ -2306,9 +2293,7 @@ class PgOriService:
         locator_expected: dict[str, set[str]] = {}
         for label, value in legal_locators:
             locator_expected.setdefault(label, set()).add(value)
-            locator_pattern = (
-                rf"\b{re.escape(label)}\b(?:\s+NO\.?)?\s*{re.escape(value)}\b"
-            )
+            locator_pattern = rf"\b{re.escape(label)}\b(?:\s+NO\.?)?\s*{re.escape(value)}\b"
             if re.search(locator_pattern, legal_text):
                 locator_hits += 1
                 locator_matches.setdefault(label, set()).add(value)
@@ -2318,9 +2303,7 @@ class PgOriService:
             has_explicit_street_address = bool(_ADDRESS_LINE_RE.search(legal_text))
             if has_explicit_street_address:
                 if street_number:
-                    return bool(
-                        re.search(rf"\b{re.escape(street_number)}\b", legal_text)
-                    ) and street_name_hits >= 1
+                    return bool(re.search(rf"\b{re.escape(street_number)}\b", legal_text)) and street_name_hits >= 1
                 return locator_hits > 0 and street_name_hits >= 1
 
             if "LOT" in locator_expected:
@@ -2442,10 +2425,7 @@ class PgOriService:
         instrument_refs, book_page_refs = self._extract_references_from_doc(doc)
         if anchor_instruments and any(ref in anchor_instruments for ref in instrument_refs):
             return True
-        return bool(
-            anchor_book_pages
-            and any(ref in anchor_book_pages for ref in book_page_refs)
-        )
+        return bool(anchor_book_pages and any(ref in anchor_book_pages for ref in book_page_refs))
 
     def _extract_references_from_doc(
         self,
@@ -3398,6 +3378,10 @@ class PgOriService:
                                 is_satisfied = COALESCE(:is_sat_update, is_satisfied),
                                 updated_at = now()
                             WHERE instrument_number = :instrument
+                              AND (
+                                  folio IS NOT DISTINCT FROM :folio
+                                  OR strap = :strap
+                              )
                         """),
                         params,
                     )
@@ -3586,8 +3570,7 @@ class PgOriService:
         with self.engine.begin() as conn:
             if not self._ori_satisfaction_link_columns_available(conn):
                 logger.warning(
-                    "Skipping satisfaction linking for strap={} because ori_encumbrances "
-                    "is missing satisfaction link columns",
+                    "Skipping satisfaction linking for strap={} because ori_encumbrances is missing satisfaction link columns",
                     strap,
                 )
                 return 0
@@ -3748,7 +3731,10 @@ class PgOriService:
                     linked += parent_update.rowcount
                     logger.debug(
                         "Linked satisfaction {} → encumbrance {} via {} for strap={}",
-                        sat_inst, matched_enc[1], method, strap,
+                        sat_inst,
+                        matched_enc[1],
+                        method,
+                        strap,
                     )
 
         if linked:
@@ -3866,6 +3852,140 @@ class PgOriService:
         if linked:
             logger.info("Linked {} modification doc(s) for strap={}", linked, strap)
         return linked
+
+    def _chase_unlinked_sat_parents(self, strap: str, folio: str | None) -> int:
+        """Chase CLK#/INST# refs in unlinked SAT/REL docs to discover parent mortgages.
+
+        SAT/REL documents contain instrument references (CLK#, INST#, O.R.) to
+        the parent mortgage they satisfy, but that parent mortgage may never have
+        been discovered by the standard ORI search phases. This method extracts
+        those references, looks up the missing instruments via PAV API, persists
+        any newly discovered documents, and re-runs satisfaction linking.
+
+        Returns the count of newly linked satisfactions from the re-link pass.
+        """
+        with self.engine.begin() as conn:
+            # Guard: satisfies_encumbrance_id column may not exist on unmigrated DBs
+            if not self._ori_satisfaction_link_columns_available(conn):
+                logger.warning(
+                    "Skipping SAT parent chase for strap={} because ori_encumbrances is missing satisfaction link columns",
+                    strap,
+                )
+                return 0
+
+            # 1. Query unlinked SAT/REL docs for this strap
+            unlinked = conn.execute(
+                text("""
+                    SELECT id, instrument_number, legal_description
+                    FROM ori_encumbrances
+                    WHERE strap = :strap
+                      AND encumbrance_type IN ('satisfaction', 'release')
+                      AND satisfies_encumbrance_id IS NULL
+                """),
+                {"strap": strap},
+            ).fetchall()
+
+            if not unlinked:
+                return 0
+
+            # 2. Extract instrument references from legal_description
+            ref_instruments: set[str] = set()
+            # Map each extracted reference back to its source SAT row for diagnostics
+            ref_source: dict[str, tuple[int, str]] = {}  # ref_inst -> (sat_id, sat_instrument)
+            for row in unlinked:
+                sat_id = row[0]
+                sat_inst = (row[1] or "").strip()
+                legal = (row[2] or "").upper()
+                for pat in _INST_REF_PATTERNS:
+                    for ref_inst in pat.findall(legal):
+                        ref_inst = ref_inst.strip()
+                        if ref_inst:
+                            ref_instruments.add(ref_inst)
+                            ref_source[ref_inst] = (sat_id, sat_inst)
+
+            if not ref_instruments:
+                return 0
+
+            # 3. Build set of already-known instruments for this strap
+            known_rows = conn.execute(
+                text("SELECT instrument_number FROM ori_encumbrances WHERE strap = :strap"),
+                {"strap": strap},
+            ).fetchall()
+            known_instruments = {(r[0] or "").strip() for r in known_rows}
+
+            # 4. Filter to novel instruments not yet in DB
+            novel = ref_instruments - known_instruments
+            novel.discard("")
+
+        if not novel:
+            return 0
+
+        # 5. Cap at _MAX_SAT_PARENT_CHASE to bound API calls
+        novel_list = sorted(novel)[:_MAX_SAT_PARENT_CHASE]
+
+        logger.info(
+            "Chasing {} novel instrument ref(s) from unlinked SATs for strap={}",
+            len(novel_list),
+            strap,
+        )
+
+        # 6. Look up each novel instrument via PAV API
+        stats: dict[str, int] = {"api_calls": 0, "retries": 0, "truncated": 0, "unresolved_truncations": 0}
+        all_docs: list[dict[str, Any]] = []
+        for instrument in novel_list:
+            source_sat_id, source_sat_inst = ref_source.get(instrument, (None, ""))
+            docs = self._search_instrument_pav(instrument, stats)
+            if docs:
+                logger.debug(
+                    "SAT parent chase: PAV returned {} doc(s) for chased ref={} "
+                    "(source SAT id={}, instrument={}), strap={}",
+                    len(docs),
+                    instrument,
+                    source_sat_id,
+                    source_sat_inst,
+                    strap,
+                )
+                all_docs.extend(docs)
+            else:
+                logger.debug(
+                    "SAT parent chase: PAV returned 0 docs for chased ref={} "
+                    "(source SAT id={}, instrument={}), strap={}",
+                    instrument,
+                    source_sat_id,
+                    source_sat_inst,
+                    strap,
+                )
+
+        if not all_docs:
+            return 0
+
+        # 7. Persist discovered documents
+        saved = self._save_documents(strap, folio, all_docs)
+        logger.info(
+            "SAT parent chase: saved {} doc(s) from {} API call(s) for strap={}",
+            saved,
+            stats["api_calls"],
+            strap,
+        )
+
+        # 8. Re-run satisfaction linking if new docs were saved
+        if saved > 0:
+            chase_linked = self._link_satisfactions(strap)
+            if chase_linked:
+                logger.info(
+                    "SAT parent chase: linked {} satisfaction(s) after discovery for strap={}",
+                    chase_linked,
+                    strap,
+                )
+            else:
+                logger.warning(
+                    "SAT parent chase: saved {} doc(s) but 0 linked for strap={} — "
+                    "chased refs may not match parent encumbrances",
+                    saved,
+                    strap,
+                )
+            return chase_linked
+        return 0
 
     def _ori_satisfaction_link_columns_available(self, conn: Any) -> bool:
         required = {

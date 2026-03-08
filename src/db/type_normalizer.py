@@ -50,6 +50,17 @@ def normalize_encumbrance_type(raw: str) -> str:
         or t == "CTF"
     ):
         return "other"
+    # --- Satisfaction / Release / Assignment MUST be checked before Mortgage ---
+    # Compound codes like SATMTG, RELMTG, ASGNMTG contain "MTG" but are NOT
+    # active mortgages.  Checking MTG first would misclassify them, inflating
+    # survived-debt totals in survival analysis.
+    if "SATISFACTION" in t or "SAT" in t:
+        return "satisfaction"
+    if "RELEASE" in t or "REL" in t or "TERMINATION" in t or "(TER)" in t or t == "TER":
+        return "release"
+    if "ASSIGNMENT" in t or "ASG" in t:
+        return "assignment"
+    # --- Now safe to check for active mortgages ---
     if "MORTGAGE" in t or "MTG" in t or "DOT" in t or "HELOC" in t:
         return "mortgage"
     if "JUDGMENT" in t or "JUD" in t or "CCJ" in t:
@@ -64,12 +75,6 @@ def normalize_encumbrance_type(raw: str) -> str:
         return "lien"
     if "EASEMENT" in t or "(EAS)" in t or t == "EAS":
         return "easement"
-    if "SATISFACTION" in t or "SAT" in t:
-        return "satisfaction"
-    if "RELEASE" in t or "REL" in t or "TERMINATION" in t or "(TER)" in t or t == "TER":
-        return "release"
-    if "ASSIGNMENT" in t or "ASG" in t:
-        return "assignment"
     if "NOC" in t or "NOTICE OF COMMENCEMENT" in t:
         return "noc"
     return "other"

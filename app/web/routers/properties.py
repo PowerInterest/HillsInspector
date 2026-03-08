@@ -462,6 +462,23 @@ def _market_photo_urls(
     local_paths: list[Any],
     cdn_urls: list[Any],
 ) -> tuple[list[str], list[dict[str, str | None]]]:
+    def _is_placeholder_photo_url(url: str) -> bool:
+        lower = (url or "").strip().lower()
+        if not lower:
+            return True
+        return any(
+            token in lower
+            for token in (
+                "redfin-logo",
+                "/logos/",
+                "no_image",
+                "placeholder",
+                "default_photo",
+                "/images/logos/",
+                "/static/images/",
+            )
+        )
+
     local_files: list[str] = []
     for raw in local_paths:
         path_str = str(raw or "").strip()
@@ -472,16 +489,23 @@ def _market_photo_urls(
             continue
         local_files.append(f"/property/{quote(identifier)}/photos/{quote(filename)}")
 
-    cdn_list = [str(url).strip() for url in cdn_urls if str(url or "").strip()]
+    raw_cdn_list = [str(url).strip() for url in cdn_urls if str(url or "").strip()]
     photos_with_fallback: list[dict[str, str | None]] = []
-    max_len = max(len(local_files), len(cdn_list))
-    for i in range(max_len):
-        local_url = local_files[i] if i < len(local_files) else None
-        cdn_url = cdn_list[i] if i < len(cdn_list) else None
-        if local_url:
-            photos_with_fallback.append({"url": local_url, "cdn_fallback": cdn_url})
-        elif cdn_url:
-            photos_with_fallback.append({"url": cdn_url, "cdn_fallback": None})
+    valid_cdn_slots = [
+        (index, url)
+        for index, url in enumerate(raw_cdn_list)
+        if not _is_placeholder_photo_url(url)
+    ]
+    if valid_cdn_slots:
+        for index, cdn_url in valid_cdn_slots:
+            local_url = local_files[index] if index < len(local_files) else None
+            if local_url:
+                photos_with_fallback.append({"url": local_url, "cdn_fallback": cdn_url})
+            else:
+                photos_with_fallback.append({"url": cdn_url, "cdn_fallback": None})
+    else:
+        for local_url in local_files:
+            photos_with_fallback.append({"url": local_url, "cdn_fallback": None})
 
     photos = [str(p["url"]) for p in photos_with_fallback if p.get("url")]
     return photos, photos_with_fallback

@@ -73,3 +73,18 @@ def test_query_properties_needing_market_includes_photo_backfill_clause(
     assert "photo_cdn_urls" in sql_text
     assert "photo_local_paths" in sql_text
     assert "jsonb_array_length(pm.photo_local_paths) < 15" in sql_text
+    assert "redfin-logo" in sql_text
+
+
+def test_filter_photos_drops_placeholder_urls_and_preserves_real_ones() -> None:
+    photos = [
+        "https://ssl.cdn-redfin.com/logos/redfin-logo-square-red-1200.png",
+        "https://example.com/no_image.jpg",
+        "https://photos.zillowstatic.com/fp/real-house-1.webp",
+        "https://example.com/property/front.jpg",
+    ]
+
+    assert market_data_service._filter_photos(photos) == [  # noqa: SLF001
+        "https://photos.zillowstatic.com/fp/real-house-1.webp",
+        "https://example.com/property/front.jpg",
+    ]

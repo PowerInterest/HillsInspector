@@ -362,7 +362,7 @@ class MarketDataService:
             "lot_size": str(payload.get("lot_size") or "") or None,
             "property_type": payload.get("property_type"),
             "detail_url": payload.get("detail_url"),
-            "photo_cdn_urls": payload.get("photos") or [],
+            "photo_cdn_urls": _filter_photos(payload.get("photos") or []),
             "redfin_json": payload,
             "primary_source": "redfin",
         }
@@ -388,16 +388,8 @@ class MarketDataService:
                 # Redfin wins for detail_url
                 "detail_url": text("COALESCE(EXCLUDED.detail_url, property_market.detail_url)"),
                 # Always update photo CDN URLs and raw JSON
-                "photo_cdn_urls": text("""
-                    CASE 
-                        WHEN property_market.photo_cdn_urls IS NULL THEN EXCLUDED.photo_cdn_urls
-                        WHEN EXCLUDED.photo_cdn_urls IS NULL THEN property_market.photo_cdn_urls
-                        WHEN jsonb_typeof(EXCLUDED.photo_cdn_urls) != 'array' THEN property_market.photo_cdn_urls
-                        WHEN jsonb_typeof(property_market.photo_cdn_urls) != 'array' THEN EXCLUDED.photo_cdn_urls
-                        WHEN jsonb_array_length(EXCLUDED.photo_cdn_urls) > jsonb_array_length(property_market.photo_cdn_urls) THEN EXCLUDED.photo_cdn_urls
-                        ELSE property_market.photo_cdn_urls
-                    END
-                """),
+                "photo_cdn_urls": text(_photo_cdn_urls_upsert_sql()),
+                "photo_local_paths": text(_photo_local_paths_reset_sql()),
                 "redfin_json": stmt.excluded.redfin_json,
                 "primary_source": text("COALESCE(property_market.primary_source, EXCLUDED.primary_source)"),
                 "updated_at": text("NOW()"),
@@ -431,7 +423,7 @@ class MarketDataService:
             "lot_size": str(payload.get("lot_size") or "") or None,
             "property_type": payload.get("property_type"),
             "detail_url": payload.get("detail_url"),
-            "photo_cdn_urls": payload.get("photos") or [],
+            "photo_cdn_urls": _filter_photos(payload.get("photos") or []),
             "zillow_json": payload,
             "primary_source": "zillow",
         }
@@ -460,16 +452,8 @@ class MarketDataService:
                 # Keep existing detail_url (Redfin > Zillow)
                 "detail_url": text("COALESCE(property_market.detail_url, EXCLUDED.detail_url)"),
                 # Update photo CDN URLs: keep whichever array has more photos
-                "photo_cdn_urls": text("""
-                    CASE 
-                        WHEN property_market.photo_cdn_urls IS NULL THEN EXCLUDED.photo_cdn_urls
-                        WHEN EXCLUDED.photo_cdn_urls IS NULL THEN property_market.photo_cdn_urls
-                        WHEN jsonb_typeof(EXCLUDED.photo_cdn_urls) != 'array' THEN property_market.photo_cdn_urls
-                        WHEN jsonb_typeof(property_market.photo_cdn_urls) != 'array' THEN EXCLUDED.photo_cdn_urls
-                        WHEN jsonb_array_length(EXCLUDED.photo_cdn_urls) > jsonb_array_length(property_market.photo_cdn_urls) THEN EXCLUDED.photo_cdn_urls
-                        ELSE property_market.photo_cdn_urls
-                    END
-                """),
+                "photo_cdn_urls": text(_photo_cdn_urls_upsert_sql()),
+                "photo_local_paths": text(_photo_local_paths_reset_sql()),
                 "zillow_json": stmt.excluded.zillow_json,
                 "primary_source": text(
                     "CASE WHEN property_market.primary_source IS NULL THEN 'zillow' ELSE property_market.primary_source END"
@@ -532,16 +516,8 @@ class MarketDataService:
                 # Keep existing detail_url (Redfin/Zillow > HomeHarvest)
                 "detail_url": text("COALESCE(property_market.detail_url, EXCLUDED.detail_url)"),
                 # Update photo CDN URLs: keep whichever array has more photos
-                "photo_cdn_urls": text("""
-                    CASE 
-                        WHEN property_market.photo_cdn_urls IS NULL THEN EXCLUDED.photo_cdn_urls
-                        WHEN EXCLUDED.photo_cdn_urls IS NULL THEN property_market.photo_cdn_urls
-                        WHEN jsonb_typeof(EXCLUDED.photo_cdn_urls) != 'array' THEN property_market.photo_cdn_urls
-                        WHEN jsonb_typeof(property_market.photo_cdn_urls) != 'array' THEN EXCLUDED.photo_cdn_urls
-                        WHEN jsonb_array_length(EXCLUDED.photo_cdn_urls) > jsonb_array_length(property_market.photo_cdn_urls) THEN EXCLUDED.photo_cdn_urls
-                        ELSE property_market.photo_cdn_urls
-                    END
-                """),
+                "photo_cdn_urls": text(_photo_cdn_urls_upsert_sql()),
+                "photo_local_paths": text(_photo_local_paths_reset_sql()),
                 "homeharvest_json": stmt.excluded.homeharvest_json,
                 "primary_source": text(
                     "CASE WHEN property_market.primary_source IS NULL THEN 'homeharvest' ELSE property_market.primary_source END"
@@ -574,7 +550,7 @@ class MarketDataService:
             "lot_size": str(payload.get("lot_size") or "") or None,
             "property_type": payload.get("property_type"),
             "detail_url": payload.get("detail_url"),
-            "photo_cdn_urls": payload.get("photos") or [],
+            "photo_cdn_urls": _filter_photos(payload.get("photos") or []),
             "realtor_json": payload,
             # We treat realtor as backup if zillow/redfin are present
             "primary_source": "realtor",
@@ -590,23 +566,16 @@ class MarketDataService:
                 "rent_zestimate": text("COALESCE(property_market.rent_zestimate, EXCLUDED.rent_zestimate)"),
                 "list_price": text("COALESCE(property_market.list_price, EXCLUDED.list_price)"),
                 "listing_status": text("COALESCE(property_market.listing_status, EXCLUDED.listing_status)"),
-                "beds": text("COALESCE(EXCLUDED.beds, property_market.beds)"),
-                "baths": text("COALESCE(EXCLUDED.baths, property_market.baths)"),
-                "sqft": text("COALESCE(EXCLUDED.sqft, property_market.sqft)"),
-                "year_built": text("COALESCE(EXCLUDED.year_built, property_market.year_built)"),
-                "lot_size": text("COALESCE(EXCLUDED.lot_size, property_market.lot_size)"),
-                "property_type": text("COALESCE(EXCLUDED.property_type, property_market.property_type)"),
+                # Realtor is backup for specs — preserve existing Zillow/Redfin/HomeHarvest values
+                "beds": text("COALESCE(property_market.beds, EXCLUDED.beds)"),
+                "baths": text("COALESCE(property_market.baths, EXCLUDED.baths)"),
+                "sqft": text("COALESCE(property_market.sqft, EXCLUDED.sqft)"),
+                "year_built": text("COALESCE(property_market.year_built, EXCLUDED.year_built)"),
+                "lot_size": text("COALESCE(property_market.lot_size, EXCLUDED.lot_size)"),
+                "property_type": text("COALESCE(property_market.property_type, EXCLUDED.property_type)"),
                 "detail_url": text("COALESCE(property_market.detail_url, EXCLUDED.detail_url)"),
-                "photo_cdn_urls": text("""
-                    CASE 
-                        WHEN property_market.photo_cdn_urls IS NULL THEN EXCLUDED.photo_cdn_urls
-                        WHEN EXCLUDED.photo_cdn_urls IS NULL THEN property_market.photo_cdn_urls
-                        WHEN jsonb_typeof(EXCLUDED.photo_cdn_urls) != 'array' THEN property_market.photo_cdn_urls
-                        WHEN jsonb_typeof(property_market.photo_cdn_urls) != 'array' THEN EXCLUDED.photo_cdn_urls
-                        WHEN jsonb_array_length(EXCLUDED.photo_cdn_urls) > jsonb_array_length(property_market.photo_cdn_urls) THEN EXCLUDED.photo_cdn_urls
-                        ELSE property_market.photo_cdn_urls
-                    END
-                """),
+                "photo_cdn_urls": text(_photo_cdn_urls_upsert_sql()),
+                "photo_local_paths": text(_photo_local_paths_reset_sql()),
                 "realtor_json": stmt.excluded.realtor_json,
                 "primary_source": text(
                     "CASE WHEN property_market.primary_source IS NULL THEN 'realtor' ELSE property_market.primary_source END"
@@ -749,7 +718,14 @@ class MarketDataService:
                         _time.sleep(0.5)
 
                 except Exception as dl_err:
-                    logger.debug(f"Photo {idx} download failed: {dl_err}")
+                    logger.warning(
+                        "Photo download failed for strap={} case={} idx={} url={}: {}",
+                        strap,
+                        case_number,
+                        idx,
+                        url,
+                        dl_err,
+                    )
                     continue
 
             # Update PG with local paths
@@ -1227,6 +1203,86 @@ def _safe_json(value: Any) -> Any:
     return None
 
 
+def _sql_placeholder_photo_condition(url_expr: str) -> str:
+    """Return SQL that treats logos/placeholders as invalid property photos."""
+    return f"""
+        LOWER(COALESCE({url_expr}, '')) LIKE '%redfin-logo%'
+        OR LOWER(COALESCE({url_expr}, '')) LIKE '%/logos/%'
+        OR LOWER(COALESCE({url_expr}, '')) LIKE '%no_image%'
+        OR LOWER(COALESCE({url_expr}, '')) LIKE '%placeholder%'
+        OR LOWER(COALESCE({url_expr}, '')) LIKE '%default_photo%'
+        OR LOWER(COALESCE({url_expr}, '')) LIKE '%/images/logos/%'
+        OR LOWER(COALESCE({url_expr}, '')) LIKE '%/static/images/%'
+    """
+
+
+def _sql_first_photo_placeholder_condition(jsonb_expr: str) -> str:
+    """Return SQL that checks whether the first JSONB photo entry is invalid."""
+    return _sql_placeholder_photo_condition(f"{jsonb_expr}->>0")
+
+
+def _photo_cdn_urls_upsert_sql() -> str:
+    """Prefer longer valid arrays, but allow placeholder-only rows to heal."""
+    existing_placeholder = _sql_first_photo_placeholder_condition(
+        "property_market.photo_cdn_urls"
+    )
+    return f"""
+        CASE
+            WHEN property_market.photo_cdn_urls IS NULL THEN EXCLUDED.photo_cdn_urls
+            WHEN jsonb_typeof(property_market.photo_cdn_urls) != 'array' THEN EXCLUDED.photo_cdn_urls
+            WHEN EXCLUDED.photo_cdn_urls IS NULL THEN property_market.photo_cdn_urls
+            WHEN jsonb_typeof(EXCLUDED.photo_cdn_urls) != 'array' THEN property_market.photo_cdn_urls
+            WHEN ({existing_placeholder}) THEN EXCLUDED.photo_cdn_urls
+            WHEN jsonb_array_length(EXCLUDED.photo_cdn_urls) > jsonb_array_length(property_market.photo_cdn_urls) THEN EXCLUDED.photo_cdn_urls
+            ELSE property_market.photo_cdn_urls
+        END
+    """
+
+
+def _photo_local_paths_reset_sql() -> str:
+    """Clear cached local photos when replacing a placeholder-only CDN array."""
+    existing_placeholder = _sql_first_photo_placeholder_condition(
+        "property_market.photo_cdn_urls"
+    )
+    return f"""
+        CASE
+            WHEN ({existing_placeholder})
+              AND EXCLUDED.photo_cdn_urls IS NOT NULL
+              AND jsonb_typeof(EXCLUDED.photo_cdn_urls) = 'array'
+              AND EXCLUDED.photo_cdn_urls IS DISTINCT FROM property_market.photo_cdn_urls
+            THEN NULL
+            ELSE property_market.photo_local_paths
+        END
+    """
+
+
+def _is_placeholder_photo(url: str) -> bool:
+    """Return True if *url* is a site logo, placeholder, or generic fallback image.
+
+    Redfin returns its square logo (``redfin-logo-square-red-1200.png``) for
+    properties that have no listing photos.  Zillow and Realtor have similar
+    fallback images.  These must not be stored as property photos because they
+    cause many unrelated properties to display the same picture on the
+    dashboard.
+    """
+    if not url:
+        return True
+    lower = url.lower()
+    # Redfin logo / generic branding images
+    if "redfin-logo" in lower or "/logos/" in lower:
+        return True
+    # Zillow/Trulia/Realtor generic placeholders
+    if "no_image" in lower or "placeholder" in lower or "default_photo" in lower:
+        return True
+    # Generic static asset paths (not a property photo)
+    return "/images/logos/" in lower or "/static/images/" in lower
+
+
+def _filter_photos(photos: list[str]) -> list[str]:
+    """Remove placeholder/logo URLs from a photo list."""
+    return [u for u in photos if not _is_placeholder_photo(u)]
+
+
 def _extract_hh_photos(payload: dict) -> list[str]:
     """Extract photo URLs from HomeHarvest payload."""
     urls: list[str] = []
@@ -1239,7 +1295,7 @@ def _extract_hh_photos(payload: dict) -> list[str]:
             for u in raw:
                 if isinstance(u, str) and u.strip():
                     urls.append(u.strip())
-    return list(dict.fromkeys(urls))  # dedupe, preserve order
+    return _filter_photos(list(dict.fromkeys(urls)))  # dedupe, filter, preserve order
 
 
 def _build_homeharvest_payload(folio: str, row: dict) -> dict:
@@ -1303,7 +1359,8 @@ def _build_homeharvest_payload(folio: str, row: dict) -> dict:
 def _query_properties_needing_market(dsn: str | None = None, limit: int = 0) -> list[dict]:
     """Query properties needing market data from PG foreclosures."""
     engine = get_engine(resolve_pg_dsn(dsn))
-    query = """
+    first_photo_placeholder = _sql_first_photo_placeholder_condition("pm.photo_cdn_urls")
+    query = f"""
         SELECT f.strap, f.folio, f.case_number_raw AS case_number, f.property_address
         FROM foreclosures f
         LEFT JOIN property_market pm ON f.strap = pm.strap
@@ -1314,6 +1371,21 @@ def _query_properties_needing_market(dsn: str | None = None, limit: int = 0) -> 
               OR pm.zestimate IS NULL
               OR pm.zillow_json IS NULL OR pm.zillow_json::text = 'null'
               OR pm.redfin_json IS NULL OR pm.redfin_json::text = 'null'
+              OR (
+                  pm.photo_cdn_urls IS NOT NULL
+                  AND jsonb_typeof(pm.photo_cdn_urls) = 'array'
+                  AND (
+                      jsonb_array_length(pm.photo_cdn_urls) = 0
+                      OR ({first_photo_placeholder})
+                      OR pm.photo_local_paths IS NULL
+                      OR jsonb_typeof(pm.photo_local_paths) != 'array'
+                      OR jsonb_array_length(pm.photo_local_paths) = 0
+                      OR (
+                          jsonb_array_length(pm.photo_local_paths) < 15
+                          AND jsonb_array_length(pm.photo_local_paths) < jsonb_array_length(pm.photo_cdn_urls)
+                      )
+                  )
+              )
           )
         ORDER BY f.auction_date DESC
     """

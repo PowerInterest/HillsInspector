@@ -16,6 +16,7 @@ STEP_METHODS: dict[str, str] = {
     "hcpa_suite": "_run_hcpa_suite",
     "clerk_bulk": "_run_clerk_bulk",
     "clerk_criminal": "_run_clerk_criminal",
+    "clerk_civil_alpha": "_run_clerk_civil_alpha",
     "dor_nal": "_run_nal",
     "sunbiz_flr": "_run_flr",
     "sunbiz_entity": "_run_sunbiz_entity",

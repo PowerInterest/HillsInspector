@@ -1,5 +1,11 @@
 """PG-first entrypoint controller — single pipeline for the entire project.
 
+Singleton protection: acquires a PostgreSQL session-level advisory lock
+(``pg_try_advisory_lock(hashtext('pg_pipeline_controller'))``) at startup.
+If another Controller.py process already holds the lock the new invocation
+logs a warning and exits immediately.  The lock auto-releases when the
+holding connection closes (normal exit, crash, or SIGKILL).
+
 Phase A (bulk data refresh — idempotent, no per-property scraping):
   1. HCPA suite (parcels, sales, subdivisions)
   2. Clerk bulk (cases, events)
@@ -62,6 +68,11 @@ load_dotenv()
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
+
+# Advisory lock key for singleton protection.  Uses hashtext() on a fixed
+# string so the lock ID lives in the same int4 namespace as the per-job
+# locks in pg_job_control_service (which use hashtext(job_name)).
+_CONTROLLER_LOCK_NAME = "pg_pipeline_controller"
 
 
 def _build_controller_run_id() -> str:
@@ -148,41 +159,139 @@ def main() -> None:
                 conn.execute(text("SELECT 1"))
         except Exception as e:
             logger.error(f"PostgreSQL connection failed: {e}")
-            logger.error("Please ensure the PostgreSQL server is running and accepting TCP/IP connections.")
+            logger.error(
+                "Please ensure the PostgreSQL server is running "
+                "and accepting TCP/IP connections."
+            )
             sys.exit(1)
 
-        # Keep database schema at Alembic head before pipeline execution.
+        # ------------------------------------------------------------------
+        # Singleton protection: acquire a PG session-level advisory lock.
+        # If another Controller.py process already holds it we exit early
+        # instead of risking concurrent DDL in title_chain / ORI steps.
+        # The lock auto-releases when lock_conn is closed (finally block).
+        # ------------------------------------------------------------------
+        lock_conn = None
         try:
-            before_revision, after_revision, head_revision = _upgrade_pg_schema_to_head(
-                dsn=dsn,
-                engine=engine,
+            lock_conn = engine.connect()
+            lock_acquired = bool(
+                lock_conn.execute(
+                    text("SELECT pg_try_advisory_lock(hashtext(:name))"),
+                    {"name": _CONTROLLER_LOCK_NAME},
+                ).scalar()
             )
+            if not lock_acquired:
+                # Record the skipped invocation in pipeline_job_runs so
+                # cron/CI dashboards can distinguish "skipped due to lock"
+                # from "never ran".
+                try:
+                    with engine.connect() as skip_conn:
+                        skip_conn.execute(
+                            text(
+                                """
+                                INSERT INTO pipeline_job_config (
+                                    job_name, enabled, min_interval_sec,
+                                    max_runtime_sec, singleton, args_json
+                                ) VALUES (
+                                    :job_name, TRUE, 0, 86400, TRUE,
+                                    '{}'::jsonb
+                                )
+                                ON CONFLICT (job_name) DO NOTHING
+                                """
+                            ),
+                            {"job_name": _CONTROLLER_LOCK_NAME},
+                        )
+                        skip_conn.execute(
+                            text(
+                                """
+                                INSERT INTO pipeline_job_runs (
+                                    job_name, triggered_by, status,
+                                    summary_json, started_at, finished_at
+                                ) VALUES (
+                                    :job_name, 'controller', 'skipped',
+                                    CAST(:summary AS JSONB),
+                                    now(), now()
+                                )
+                                """
+                            ),
+                            {
+                                "job_name": _CONTROLLER_LOCK_NAME,
+                                "summary": json.dumps(
+                                    {"reason": "lock_not_acquired"}
+                                ),
+                            },
+                        )
+                        skip_conn.commit()
+                except Exception as skip_err:
+                    logger.warning(
+                        "Could not record skipped run in pipeline_job_runs: {}",
+                        skip_err,
+                    )
+                lock_conn.close()
+                lock_conn = None
+                logger.warning(
+                    "Another Controller.py run is already in progress "
+                    "(advisory lock '{}' held by another session). "
+                    "Exiting with EX_TEMPFAIL (75) so cron/CI treats "
+                    "this as a temporary, retryable skip — not success.",
+                    _CONTROLLER_LOCK_NAME,
+                )
+                sys.exit(75)
             logger.info(
-                "Alembic revision sync: before={} after={} head={}",
-                before_revision or "none",
-                after_revision or "none",
-                head_revision,
+                "Acquired singleton advisory lock '{}'", _CONTROLLER_LOCK_NAME
             )
-            if after_revision != head_revision:
-                logger.error(
-                    "Alembic revision mismatch after upgrade (after={} head={}).",
-                    after_revision,
+        except Exception as e:
+            if lock_conn is not None:
+                lock_conn.close()
+                lock_conn = None
+            logger.error(f"Failed to acquire advisory lock: {e}")
+            sys.exit(1)
+
+        try:
+            # Keep database schema at Alembic head before pipeline execution.
+            try:
+                before_revision, after_revision, head_revision = (
+                    _upgrade_pg_schema_to_head(
+                        dsn=dsn,
+                        engine=engine,
+                    )
+                )
+                logger.info(
+                    "Alembic revision sync: before={} after={} head={}",
+                    before_revision or "none",
+                    after_revision or "none",
                     head_revision,
                 )
+                if after_revision != head_revision:
+                    logger.error(
+                        "Alembic revision mismatch after upgrade (after={} head={}).",
+                        after_revision,
+                        head_revision,
+                    )
+                    sys.exit(1)
+            except Exception as e:
+                logger.error(f"Alembic upgrade failed: {e}")
+                logger.error(
+                    "Resolve migration errors and rerun. If this is a new "
+                    "database, initialize core schema first with "
+                    "`uv run python -m src.db.migrations.create_foreclosures`."
+                )
                 sys.exit(1)
-        except Exception as e:
-            logger.error(f"Alembic upgrade failed: {e}")
-            logger.error(
-                "Resolve migration errors and rerun. If this is a new database, initialize core schema first with "
-                "`uv run python -m src.db.migrations.create_foreclosures`."
-            )
-            sys.exit(1)
 
-        controller = PgPipelineController(settings)
-        result = controller.run()
+            controller = PgPipelineController(settings)
+            result = controller.run()
 
-        logger.info("PG controller complete")
-        print(json.dumps(result, indent=2, default=str))
+            logger.info("PG controller complete")
+            print(json.dumps(result, indent=2, default=str))
+
+        finally:
+            # Release the advisory lock by closing the dedicated connection.
+            if lock_conn is not None:
+                lock_conn.close()
+                logger.info(
+                    "Released singleton advisory lock '{}'",
+                    _CONTROLLER_LOCK_NAME,
+                )
 
 
 if __name__ == "__main__":

@@ -9,20 +9,10 @@ already tracked elsewhere in this file.
 
 ### Market Data Source Priority Model
 
-**Status:** DEFERRED (needs design)
+**Status:** SUBSUMED by "Upsert Overwrite Logging" Phase 3 below.
 
-Current `property_market` upserts are still effectively "first writer wins" for
-spec fields like beds, baths, sqft, and year built. That means scrape order can
-lock in inferior data even after a higher-priority source succeeds later.
-
-**What needs to happen**
-
-1. Define an explicit source-priority policy for each field (`HomeHarvest`,
-   `Zillow`, `Redfin`, `Realtor`, etc.).
-2. Replace the current chronological `COALESCE(existing, EXCLUDED)` behavior for
-   spec fields with source-aware overwrite rules.
-3. Add regression tests that prove a later higher-priority scrape can upgrade an
-   earlier lower-priority row.
+See the overwrite logging section for the full design including
+`specs_source` column and source-priority-aware upsert logic.
 
 ---
 
@@ -109,6 +99,322 @@ tests.
 1. Multi-PDF judgment selection path in `PgJudgmentService`.
 2. Placeholder-photo filtering through PG upsert plus web rendering.
 3. Controller lock-contention path (`EX_TEMPFAIL` + `pipeline_job_runs` row).
+
+---
+
+## Upsert Overwrite Logging & Source-of-Truth Metadata
+
+**Status:** OPEN — high priority
+**Discovered:** 2026-03-08 system audit
+
+### The Problem
+
+At least half the audit findings trace back to one root cause: data from
+different sources silently overwrites each other and there is no record of what
+changed. When beds goes from 4 to 3, or a permit status flips back to Open,
+nothing in the logs or database tells you it happened, which source did it, or
+what the old value was. You only find out weeks later when a dashboard number
+looks wrong.
+
+This affects every upsert-heavy table: `property_market`, `foreclosures`,
+`ori_encumbrances`, `tampa_accela_records`, and `hcpa_bulk_parcels`.
+
+### Phase 1: Overwrite Detection in Python (no schema change)
+
+Use PostgreSQL `RETURNING` + `xmax` to detect insert vs update at the upsert
+call site. When `xmax != 0` (update), compare returned values against what was
+sent. Log when a **non-null value is replaced by a different non-null value**
+from a different source:
+
+```
+OVERWRITE property_market strap=1929084NUB00000000040A beds: 4→3 source: realtor (was: zillow)
+```
+
+Ignore harmless cases:
+- `NULL → value` = gap fill (good)
+- `value → same value` = idempotent (fine)
+- `value → NULL` = shouldn't happen with COALESCE (bug if it does)
+
+Implementation: a shared `UpsertResult` dataclass in `src/utils/upsert.py` that
+every service returns:
+
+```python
+@dataclass
+class UpsertResult:
+    table: str
+    inserted: int
+    updated: int
+    unchanged: int  # updated but no values actually changed
+    overwrites: list[OverwriteEvent]  # non-null → different non-null
+```
+
+### Phase 2: `data_change_log` Table (Alembic migration)
+
+For queryable audit trail beyond ephemeral logs:
+
+```sql
+CREATE TABLE data_change_log (
+    id          BIGSERIAL PRIMARY KEY,
+    table_name  TEXT NOT NULL,
+    row_key     TEXT NOT NULL,     -- strap, folio, or foreclosure_id
+    column_name TEXT NOT NULL,
+    old_value   TEXT,
+    new_value   TEXT,
+    source      TEXT NOT NULL,     -- 'zillow', 'realtor', 'homeharvest', etc.
+    changed_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX idx_dcl_table_key ON data_change_log(table_name, row_key);
+CREATE INDEX idx_dcl_changed_at ON data_change_log(changed_at);
+```
+
+Not a trigger — the Python upsert helpers emit the rows. This keeps it opt-in
+per table and avoids trigger overhead on bulk loads.
+
+**Queryable insights this enables:**
+- "Show every time Realtor overwrote a Zillow value in the last 30 days"
+- "Which properties had beds/baths change more than once this month?"
+- "What source is most frequently overwriting others?"
+
+### Phase 3: `last_updated_by` + `updated_at` on Key Columns
+
+Add source-tracking columns to high-value tables so the upsert itself can make
+priority decisions:
+
+```sql
+ALTER TABLE property_market ADD COLUMN specs_source TEXT;
+ALTER TABLE property_market ADD COLUMN specs_updated_at TIMESTAMPTZ;
+```
+
+Upsert logic becomes source-priority-aware instead of chronological:
+
+```sql
+CASE WHEN source_priority(:new_source) > source_priority(property_market.specs_source)
+     THEN EXCLUDED.beds
+     ELSE property_market.beds
+END
+```
+
+This subsumes the "Market Data Source Priority Model" item above.
+
+### Rollout Order
+
+1. **Phase 1 first** — zero schema changes, immediate visibility. Every upsert
+   service starts returning `UpsertResult` and logging overwrites.
+2. **Phase 2 when Phase 1 shows patterns** — add the `data_change_log` table
+   once you know which tables and columns have the most overwrite churn.
+3. **Phase 3 for market data** — source-priority upserts for `property_market`
+   first, then extend to permits and encumbrances if needed.
+
+### Candidate Alembic Migration (Phases 2 + 3 + Confidence)
+
+Combines the schema changes for `data_change_log`, `property_market` source
+tracking, and `ori_encumbrances` confidence into a single migration. This is
+the schema half — the Python `UpsertResult` helper (Phase 1) should land first.
+
+```python
+"""Add data quality tracking columns and overwrite log.
+
+Creates:
+- `data_change_log` table for tracking source overwrites
+- `specs_source` and `specs_updated_at` on `property_market`
+- `confidence` on `ori_encumbrances`
+
+Retention note: data_change_log will grow proportionally to upsert volume.
+Plan a periodic cleanup job (e.g. DELETE WHERE changed_at < now() - interval
+'90 days') once table size is monitored in production.
+
+Revision ID: 009_data_quality
+Revises: 008_add_municipal_lien_findings
+Create Date: 2026-03-08
+"""
+
+from alembic import op
+import sqlalchemy as sa
+
+
+revision = "009_data_quality"
+down_revision = "008_add_municipal_lien_findings"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    conn = op.get_bind()
+
+    # 1. Create data_change_log table
+    conn.execute(
+        sa.text(
+            """
+            CREATE TABLE IF NOT EXISTS data_change_log (
+                id          BIGSERIAL PRIMARY KEY,
+                table_name  TEXT NOT NULL,
+                row_key     TEXT NOT NULL,
+                column_name TEXT NOT NULL,
+                old_value   TEXT,
+                new_value   TEXT,
+                source      TEXT NOT NULL,
+                changed_at  TIMESTAMPTZ DEFAULT now()
+            )
+            """
+        )
+    )
+    conn.execute(
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS idx_dcl_table_key "
+            "ON data_change_log(table_name, row_key)"
+        )
+    )
+    conn.execute(
+        sa.text(
+            "CREATE INDEX IF NOT EXISTS idx_dcl_changed_at "
+            "ON data_change_log(changed_at)"
+        )
+    )
+
+    # 2. Add specs_source and specs_updated_at to property_market
+    conn.execute(
+        sa.text(
+            """
+            ALTER TABLE property_market
+            ADD COLUMN IF NOT EXISTS specs_source TEXT,
+            ADD COLUMN IF NOT EXISTS specs_updated_at TIMESTAMPTZ
+            """
+        )
+    )
+
+    # 3. Add confidence to ori_encumbrances
+    conn.execute(
+        sa.text(
+            """
+            ALTER TABLE ori_encumbrances
+            ADD COLUMN IF NOT EXISTS confidence FLOAT NOT NULL DEFAULT 1.0
+            """
+        )
+    )
+
+
+def downgrade() -> None:
+    raise NotImplementedError("Forward-only migration")
+```
+
+---
+
+## Encumbrance Confidence Scoring
+
+**Status:** OPEN — needs design
+**Discovered:** 2026-03-08 system audit
+
+### The Problem
+
+Inferred encumbrances, fuzzy-linked satisfactions, party-date heuristics, and
+exact instrument matches all feed the same `ori_encumbrances` table with the
+same weight. The equity model and dashboard treat a party-name-heuristic
+satisfaction link identically to an exact instrument reference match. When the
+heuristic is wrong, survived-debt totals silently inflate, and a clean property
+looks toxic.
+
+### Proposed Design
+
+Add a `confidence` float column to `ori_encumbrances`:
+
+| Discovery Method | Confidence | Examples |
+|---|---|---|
+| Exact instrument match | 1.0 | Direct ORI lookup by instrument number |
+| Book/page reference match | 0.9 | Satisfaction references encumbrance by book/page |
+| Case number match | 0.85 | Lifecycle doc shares case number with parent |
+| Party-date heuristic | 0.7 | `_link_satisfactions()` Strategy 4 |
+| Judgment-inferred | 0.5 | `infer_encumbrances_from_judgment()` |
+| Legal description only | 0.4 | Found via legal desc search, no party/instrument match |
+
+**How this changes downstream behavior:**
+
+1. **Equity model**: Weight uncertain liens by confidence. A 0.5-confidence
+   mortgage contributes 50% of its face value to survived debt instead of 100%.
+2. **Dashboard**: Show confidence badges (green/yellow/red) next to
+   encumbrances. Users can see which liens are solid vs speculative.
+3. **Survival analysis**: Below a confidence threshold (e.g., 0.6), flag
+   survival status as `UNCERTAIN` regardless of type classification.
+4. **Audit buckets**: Add a "low confidence encumbrances" bucket so the
+   encumbrance audit surfaces properties where manual verification is most
+   needed.
+
+### Implementation
+
+1. Alembic migration: `ALTER TABLE ori_encumbrances ADD COLUMN confidence FLOAT DEFAULT 1.0`
+2. Set confidence at write time in `pg_ori_service._save_documents()` based on
+   how the document was discovered.
+3. Set confidence at link time in `_link_satisfactions()` based on which
+   strategy succeeded.
+4. Update `compute_net_equity()` PG function to weight by confidence.
+5. Update property detail encumbrance rendering to show confidence indicator.
+
+---
+
+## Structured Step Results (Idempotent Step Replay)
+
+**Status:** OPEN — high priority
+**Discovered:** 2026-03-08 system audit
+
+### The Problem
+
+Several audit bugs (#10, #15, #18) went unnoticed for extended periods because
+re-running a pipeline step doesn't distinguish "nothing to do" from "silently
+failed." The controller logs coarse success/failure, but there's no structured
+record of what each step actually accomplished. A step that processes 0 rows
+looks identical to a step that processes 500.
+
+This also makes the `_payload_failed` duplication (issue #19) worse — five files
+have slightly different notions of "did this step succeed."
+
+### Proposed Design
+
+Every pipeline step returns a standardized `StepResult`:
+
+```python
+@dataclass
+class StepResult:
+    step_name: str
+    status: Literal["success", "skipped", "failed", "noop"]
+    inserted: int = 0
+    updated: int = 0
+    skipped: int = 0
+    errors: int = 0
+    duration_ms: int = 0
+    details: dict = field(default_factory=dict)  # step-specific extras
+    overwrites: list[OverwriteEvent] = field(default_factory=list)
+```
+
+**Status semantics:**
+- `success` — step ran and changed data (`inserted + updated > 0`)
+- `noop` — step ran but found nothing to do (all rows already current)
+- `skipped` — step was not attempted (service unavailable, flag disabled)
+- `failed` — step attempted but hit errors
+
+**Key property:** `noop` is explicitly not `success`. A step returning `noop`
+10 runs in a row is suspicious and should be flagged. This catches bugs like
+#10 (clerk_civil_alpha dispatched but never handled) and #15 (PDFs skipped
+because directory-level JSON check blocked them).
+
+### What This Replaces
+
+- The 5 duplicated `_payload_failed` helpers → one `StepResult.is_failure` check
+- Ad-hoc `{"success": True/False}` dicts → structured objects
+- Missing logging → every step emits a one-line summary:
+  ```
+  STEP auction_scrape: success (inserted=12, updated=3, skipped=112, errors=0) 4.2s
+  STEP clerk_civil_alpha: noop (0 rows, 0 errors) 0.3s  ← suspicious after 10 runs
+  ```
+
+### Implementation
+
+1. Define `StepResult` in `src/utils/step_result.py`.
+2. Migrate `_run_*` methods in `pg_pipeline_controller.py` to return
+   `StepResult` instead of raw dicts. Start with the simplest steps.
+3. Controller summary logs aggregate `StepResult` counts instead of
+   `succeeded_steps` / `failed_steps` integers.
+4. Add a `noop` alert: if a step returns `noop` for N consecutive runs
+   (configurable, default 5), log a warning.
+5. Store `StepResult` JSON in `pipeline_job_runs.result` for historical query.
 
 ---
 

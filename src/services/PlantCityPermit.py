@@ -267,51 +267,50 @@ class PlantCityPermitService:
                 now()
             )
             ON CONFLICT (record_number) DO UPDATE SET
-                record_date = COALESCE(tampa_accela_records.record_date, EXCLUDED.record_date),
-                record_type = COALESCE(tampa_accela_records.record_type, EXCLUDED.record_type),
-                module = COALESCE(tampa_accela_records.module, EXCLUDED.module),
-                short_notes = COALESCE(tampa_accela_records.short_notes, EXCLUDED.short_notes),
-                project_name = COALESCE(tampa_accela_records.project_name, EXCLUDED.project_name),
-                status = COALESCE(tampa_accela_records.status, EXCLUDED.status),
-                address_raw = COALESCE(tampa_accela_records.address_raw, EXCLUDED.address_raw),
+                record_date = COALESCE(EXCLUDED.record_date, tampa_accela_records.record_date),
+                record_type = COALESCE(EXCLUDED.record_type, tampa_accela_records.record_type),
+                module = COALESCE(EXCLUDED.module, tampa_accela_records.module),
+                short_notes = COALESCE(EXCLUDED.short_notes, tampa_accela_records.short_notes),
+                project_name = COALESCE(EXCLUDED.project_name, tampa_accela_records.project_name),
+                status = COALESCE(EXCLUDED.status, tampa_accela_records.status),
+                address_raw = COALESCE(EXCLUDED.address_raw, tampa_accela_records.address_raw),
                 address_normalized = COALESCE(
-                    tampa_accela_records.address_normalized,
-                    EXCLUDED.address_normalized
+                    EXCLUDED.address_normalized,
+                    tampa_accela_records.address_normalized
                 ),
-                city = COALESCE(tampa_accela_records.city, EXCLUDED.city),
-                state = COALESCE(tampa_accela_records.state, EXCLUDED.state),
-                zip_code = COALESCE(tampa_accela_records.zip_code, EXCLUDED.zip_code),
-                is_violation = COALESCE(tampa_accela_records.is_violation, EXCLUDED.is_violation),
-                is_open = COALESCE(tampa_accela_records.is_open, EXCLUDED.is_open),
+                city = COALESCE(EXCLUDED.city, tampa_accela_records.city),
+                state = COALESCE(EXCLUDED.state, tampa_accela_records.state),
+                zip_code = COALESCE(EXCLUDED.zip_code, tampa_accela_records.zip_code),
+                is_violation = COALESCE(EXCLUDED.is_violation, tampa_accela_records.is_violation),
+                is_open = COALESCE(EXCLUDED.is_open, tampa_accela_records.is_open),
                 needs_closeout = COALESCE(
-                    tampa_accela_records.needs_closeout,
-                    EXCLUDED.needs_closeout
+                    EXCLUDED.needs_closeout,
+                    tampa_accela_records.needs_closeout
                 ),
-                is_fix_record = COALESCE(tampa_accela_records.is_fix_record, EXCLUDED.is_fix_record),
+                is_fix_record = COALESCE(EXCLUDED.is_fix_record, tampa_accela_records.is_fix_record),
                 estimated_work_cost = COALESCE(
-                    tampa_accela_records.estimated_work_cost,
-                    EXCLUDED.estimated_work_cost
+                    EXCLUDED.estimated_work_cost,
+                    tampa_accela_records.estimated_work_cost
                 ),
                 estimated_cost_source = CASE
-                    WHEN tampa_accela_records.estimated_work_cost IS NULL
-                     AND EXCLUDED.estimated_work_cost IS NOT NULL
+                    WHEN EXCLUDED.estimated_work_cost IS NOT NULL
                     THEN EXCLUDED.estimated_cost_source
                     ELSE tampa_accela_records.estimated_cost_source
                 END,
-                detail_url = COALESCE(tampa_accela_records.detail_url, EXCLUDED.detail_url),
+                detail_url = COALESCE(EXCLUDED.detail_url, tampa_accela_records.detail_url),
                 expiration_date = COALESCE(
-                    tampa_accela_records.expiration_date,
-                    EXCLUDED.expiration_date
+                    EXCLUDED.expiration_date,
+                    tampa_accela_records.expiration_date
                 ),
                 source_query_text = COALESCE(
-                    tampa_accela_records.source_query_text,
-                    EXCLUDED.source_query_text
+                    EXCLUDED.source_query_text,
+                    tampa_accela_records.source_query_text
                 ),
                 source_export_url = COALESCE(
-                    tampa_accela_records.source_export_url,
-                    EXCLUDED.source_export_url
+                    EXCLUDED.source_export_url,
+                    tampa_accela_records.source_export_url
                 ),
-                source_payload = COALESCE(tampa_accela_records.source_payload, EXCLUDED.source_payload),
+                source_payload = COALESCE(EXCLUDED.source_payload, tampa_accela_records.source_payload),
                 source_ingested_at = now(),
                 updated_at = now()
             """
