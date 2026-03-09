@@ -242,44 +242,6 @@ class PgForeclosureService:
             logger.warning(f"update_pipeline_step failed: {e}")
             return False
 
-    def update_judgment_data(
-        self,
-        case_number_raw: str,
-        auction_date: date,
-        judgment_data: dict[str, Any],
-        pdf_path: str | None = None,
-    ) -> bool:
-        """Store extracted judgment JSON on a foreclosure row."""
-        if not self._available:
-            return False
-        try:
-            import json
-
-            with self._engine.begin() as conn:
-                r = conn.execute(
-                    text(
-                        "UPDATE foreclosures "
-                        "SET judgment_data = :jd::jsonb, "
-                        "    pdf_path = COALESCE(:pp, pdf_path), "
-                        "    step_pdf_downloaded = COALESCE("
-                        "        step_pdf_downloaded, "
-                        "        CASE WHEN COALESCE(:pp, pdf_path, '') <> '' THEN now() END"
-                        "    ), "
-                        "    step_judgment_extracted = now() "
-                        "WHERE case_number_raw = :cn AND auction_date = :ad"
-                    ),
-                    {
-                        "jd": json.dumps(judgment_data),
-                        "pp": pdf_path,
-                        "cn": case_number_raw,
-                        "ad": auction_date,
-                    },
-                )
-                return r.rowcount > 0
-        except Exception as e:
-            logger.warning(f"update_judgment_data failed: {e}")
-            return False
-
     # ------------------------------------------------------------------
     # Refresh (delegates to the refresh script logic)
     # ------------------------------------------------------------------

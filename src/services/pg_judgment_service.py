@@ -117,7 +117,7 @@ class PgJudgmentService:
         return extracted
 
     @staticmethod
-    def _select_best_judgment(
+    def select_best_judgment(
         json_paths: list[Path],
     ) -> tuple[Path, dict[str, Any]] | None:
         """Pick the single best final-judgment JSON from a case directory.
@@ -171,11 +171,57 @@ class PgJudgmentService:
 
         return best[0], best[1]
 
+    @staticmethod
+    def persist_judgment(
+        conn: Any,
+        *,
+        foreclosure_id: int,
+        judgment_data: dict[str, Any],
+        pdf_path: str | None,
+    ) -> bool:
+        """Write a single judgment extraction into PG foreclosures.
+
+        This is the **single canonical path** for persisting judgment data.
+        Both ``_load_judgment_data_to_pg`` (Phase B extraction step) and
+        ``refresh_foreclosures._load_judgment_data`` (refresh step) call
+        this helper to ensure identical write semantics everywhere:
+
+        - ``judgment_data`` is stored as JSONB
+        - ``pdf_path`` is set only if non-null (preserves existing)
+        - ``final_judgment_amount`` is extracted from the JSON
+        - ``step_pdf_downloaded`` is set once (COALESCE preserves first)
+        - ``step_judgment_extracted`` is set once (COALESCE preserves first)
+
+        Returns True if a row was updated, False otherwise.
+        """
+        fja = judgment_data.get("total_judgment_amount")
+        result = conn.execute(
+            text(
+                "UPDATE foreclosures SET "
+                "  judgment_data = CAST(:jd AS jsonb), "
+                "  pdf_path = COALESCE(:pp, pdf_path), "
+                "  final_judgment_amount = COALESCE(:fja, final_judgment_amount), "
+                "  step_pdf_downloaded = COALESCE("
+                "      step_pdf_downloaded, "
+                "      CASE WHEN COALESCE(:pp, pdf_path, '') <> '' THEN now() END"
+                "  ), "
+                "  step_judgment_extracted = COALESCE(step_judgment_extracted, now()) "
+                "WHERE foreclosure_id = :fid"
+            ),
+            {
+                "jd": json.dumps(judgment_data),
+                "pp": pdf_path,
+                "fja": fja,
+                "fid": foreclosure_id,
+            },
+        )
+        return result.rowcount > 0
+
     def _load_judgment_data_to_pg(self) -> int:
         """Scan final-judgment extracted JSONs and push to PG foreclosures.
 
         For each case directory we pick the single best final-judgment JSON
-        (see ``_select_best_judgment``) and derive the matching PDF path from
+        (see ``select_best_judgment``) and derive the matching PDF path from
         its stem (``{stem}_extracted.json`` -> ``{stem}.pdf``).  This avoids
         the previous bug where every ``*_extracted.json`` (including mortgage
         extractions) overwrote the same foreclosure row, with the PDF path
@@ -208,7 +254,7 @@ class PgJudgmentService:
 
             updated = 0
             for case_number, json_paths in case_jsons.items():
-                best = self._select_best_judgment(json_paths)
+                best = self.select_best_judgment(json_paths)
                 if best is None:
                     continue
                 chosen_json_path, jd = best
@@ -232,28 +278,12 @@ class PgJudgmentService:
                         f"chose {chosen_json_path.name} (pdf={pdf_path})"
                     )
 
-                fja = jd.get("total_judgment_amount")
-
-                conn.execute(
-                    text(
-                        "UPDATE foreclosures SET "
-                        "  judgment_data = CAST(:jd AS jsonb), "
-                        "  pdf_path = COALESCE(:pp, pdf_path), "
-                        "  final_judgment_amount = COALESCE(:fja, final_judgment_amount), "
-                        "  step_pdf_downloaded = COALESCE("
-                        "      step_pdf_downloaded, "
-                        "      CASE WHEN COALESCE(:pp, pdf_path, '') <> '' THEN now() END"
-                        "  ), "
-                        "  step_judgment_extracted = COALESCE(step_judgment_extracted, now()) "
-                        "WHERE foreclosure_id = :fid"
-                    ),
-                    {
-                        "jd": json.dumps(jd),
-                        "pp": pdf_path,
-                        "fja": fja,
-                        "fid": fid,
-                    },
-                )
-                updated += 1
+                if self.persist_judgment(
+                    conn,
+                    foreclosure_id=fid,
+                    judgment_data=jd,
+                    pdf_path=pdf_path,
+                ):
+                    updated += 1
 
         return updated

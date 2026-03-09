@@ -67,7 +67,7 @@ def test_select_best_judgment_prefers_extracted_metadata_over_filename_stem(
         encoding="utf-8",
     )
 
-    best = pg_judgment_service.PgJudgmentService._select_best_judgment(  # noqa: SLF001
+    best = pg_judgment_service.PgJudgmentService.select_best_judgment(
         [older_case_stem, newer_instrument_stem]
     )
 

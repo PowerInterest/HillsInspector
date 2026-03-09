@@ -18,7 +18,6 @@ Run:  uv run python scripts/refresh_foreclosures.py
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 from pathlib import Path
@@ -313,9 +312,15 @@ WHERE auction_date < CURRENT_DATE
 def _load_judgment_data(conn: object) -> int:
     """Scan data/Foreclosure/*/documents/*_extracted.json and push into PG.
 
-    Matches by case_number first, then falls back to strap from the JSON's
-    parcel_id field.
+    Uses PgJudgmentService.select_best_judgment to pick the single best
+    final-judgment JSON per case directory, then delegates the actual PG
+    write to PgJudgmentService.persist_judgment — the single canonical
+    persistence path.  This eliminates the previous divergence where the
+    refresh path used different write semantics (missing step_pdf_downloaded,
+    no best-judgment selection, arbitrary PDF matching).
     """
+    from src.services.pg_judgment_service import PgJudgmentService
+
     if not FORECLOSURE_DATA_DIR.exists():
         return 0
 
@@ -331,18 +336,22 @@ def _load_judgment_data(conn: object) -> int:
     case_map: dict[str, int] = {r[1]: r[0] for r in rows}
     strap_map: dict[str, int] = {r[2]: r[0] for r in rows if r[2]}
 
-    updated = 0
-    parse_errors = 0
-    unmatched = 0
+    # Group extracted JSONs by case directory so we process each case
+    # exactly once, choosing the best candidate.
+    case_jsons: dict[str, list[Path]] = {}
     for json_path in FORECLOSURE_DATA_DIR.rglob("*_extracted.json"):
-        case_number = json_path.parent.parent.name
-
-        try:
-            jd = json.loads(json_path.read_text())
-        except (json.JSONDecodeError, OSError) as exc:
-            parse_errors += 1
-            logger.warning("Skipping invalid judgment JSON {}: {}", json_path, exc)
+        if json_path.parent.name != "documents":
             continue
+        case_number = json_path.parent.parent.name
+        case_jsons.setdefault(case_number, []).append(json_path)
+
+    updated = 0
+    unmatched = 0
+    for case_number, json_paths in case_jsons.items():
+        best = PgJudgmentService.select_best_judgment(json_paths)
+        if best is None:
+            continue
+        chosen_json_path, jd = best
 
         # Match: case_number first, then strap from JSON parcel_id
         fid = case_map.get(case_number)
@@ -354,31 +363,20 @@ def _load_judgment_data(conn: object) -> int:
             unmatched += 1
             continue
 
-        pdf_path = None
-        for p in json_path.parent.glob("*.pdf"):
-            pdf_path = str(p)
-            break
-
-        fja = jd.get("total_judgment_amount")
-
-        conn.execute(  # type: ignore[union-attr]
-            text(
-                "UPDATE foreclosures SET "
-                "  judgment_data = CAST(:jd AS jsonb), "
-                "  pdf_path = COALESCE(:pp, pdf_path), "
-                "  final_judgment_amount = COALESCE(:fja, final_judgment_amount), "
-                "  step_judgment_extracted = COALESCE(step_judgment_extracted, now()) "
-                "WHERE foreclosure_id = :fid"
-            ),
-            {"jd": json.dumps(jd), "pp": pdf_path, "fja": fja, "fid": fid},
+        # Derive PDF path from chosen JSON stem (not arbitrary first PDF)
+        matching_pdf = chosen_json_path.parent / (
+            f"{chosen_json_path.stem.removesuffix('_extracted')}.pdf"
         )
-        updated += 1
+        pdf_path = str(matching_pdf) if matching_pdf.exists() else None
 
-    if parse_errors:
-        logger.warning(
-            "Judgment extraction ingest skipped {} unreadable JSON files",
-            parse_errors,
-        )
+        if PgJudgmentService.persist_judgment(
+            conn,
+            foreclosure_id=fid,
+            judgment_data=jd,
+            pdf_path=pdf_path,
+        ):
+            updated += 1
+
     if unmatched:
         logger.info(
             "Judgment extraction ingest had {} files that did not match foreclosures",

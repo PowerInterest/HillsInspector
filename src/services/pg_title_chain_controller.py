@@ -143,10 +143,36 @@ DDL_STATEMENTS: list[str] = [
 class TitleChainController:
     """Build foreclosure title chain from PG-only sources."""
 
+    GAP_STATUSES: tuple[str, ...] = ("MISSING_PARTY", "CHAINED_BY_FOLIO")
+
     def __init__(self, config: ControllerConfig) -> None:
         self._config = config
         resolved = resolve_pg_dsn(config.dsn)
         self._engine = get_engine(resolved)
+
+    @classmethod
+    def _gap_status_sql(cls, value_expr: str) -> str:
+        statuses = ", ".join(f"'{status}'" for status in cls.GAP_STATUSES)
+        return f"{value_expr} IN ({statuses})"
+
+    @classmethod
+    def is_gap_status(cls, link_status: str | None) -> bool:
+        return link_status in cls.GAP_STATUSES
+
+    @staticmethod
+    def summarize_chain_status(
+        *,
+        folio: str | None,
+        sale_events_count: int,
+        gap_count: int,
+    ) -> str:
+        if folio is None:
+            return "MISSING_FOLIO"
+        if sale_events_count == 0:
+            return "NO_SALES"
+        if gap_count == 0:
+            return "COMPLETE"
+        return "BROKEN"
 
     def run(self) -> dict[str, Any]:
         t0 = time.monotonic()
@@ -807,6 +833,7 @@ class TitleChainController:
 
     @staticmethod
     def _build_chain_sql() -> str:
+        gap_sql = TitleChainController._gap_status_sql("s.link_status")
         return """
             WITH sales AS (
                 SELECT
@@ -873,7 +900,7 @@ class TitleChainController:
                 s.grantee,
                 s.link_status,
                 s.link_score,
-                (s.link_status = 'GAP') AS is_gap,
+                (""" + gap_sql + """) AS is_gap,
                 (s.next_event_id IS NULL) AS is_terminal
             FROM sales s
             JOIN controller_scope sc ON sc.foreclosure_id = s.foreclosure_id
@@ -881,6 +908,7 @@ class TitleChainController:
 
     @staticmethod
     def _build_summary_sql() -> str:
+        gap_sql = TitleChainController._gap_status_sql("e.link_status")
         return """
             WITH event_counts AS (
                 SELECT
@@ -904,8 +932,7 @@ class TitleChainController:
                         AS fuzzy_links_count,
                     COUNT(*) FILTER (WHERE e.link_status = 'MISSING_PARTY')
                         AS missing_party_links_count,
-                    COUNT(*) FILTER (WHERE e.link_status = 'GAP')
-                        AS gap_count
+                    COUNT(*) FILTER (WHERE """ + gap_sql + """) AS gap_count
                 FROM foreclosure_title_events e
                 WHERE e.event_source = 'SALE'
                   AND e.foreclosure_id IN (
