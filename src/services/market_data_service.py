@@ -26,6 +26,7 @@ from src.scrapers.redfin_scraper import (
     RedfinScraper,
     normalize_address_for_match,
 )
+from src.utils.upsert import MARKET_SOURCE_COLUMN, MARKET_TRACKED_COLUMNS, OverwriteTracker
 from sunbiz.db import get_engine, resolve_pg_dsn
 from sunbiz.models import Base, PropertyMarket
 
@@ -396,8 +397,12 @@ class MarketDataService:
             },
         )
         try:
+            tracker = OverwriteTracker("property_market", source="redfin")
             with self._engine.begin() as conn:
+                tracker.snapshot_before(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
                 conn.execute(stmt)
+                result = tracker.compare_after(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
+            result.log_overwrites()
         except Exception as e:
             logger.error(f"PG Redfin upsert failed for {strap}: {e}")
 
@@ -462,8 +467,12 @@ class MarketDataService:
             },
         )
         try:
+            tracker = OverwriteTracker("property_market", source="zillow")
             with self._engine.begin() as conn:
+                tracker.snapshot_before(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
                 conn.execute(stmt)
+                result = tracker.compare_after(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
+            result.log_overwrites()
         except Exception as e:
             logger.error(f"PG Zillow upsert failed for {strap}: {e}")
 
@@ -526,8 +535,12 @@ class MarketDataService:
             },
         )
         try:
+            tracker = OverwriteTracker("property_market", source="homeharvest")
             with self._engine.begin() as conn:
+                tracker.snapshot_before(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
                 conn.execute(stmt)
+                result = tracker.compare_after(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
+            result.log_overwrites()
         except Exception as e:
             logger.error(f"PG HomeHarvest upsert failed for {strap}: {e}")
 
@@ -584,8 +597,12 @@ class MarketDataService:
             },
         )
         try:
+            tracker = OverwriteTracker("property_market", source="realtor")
             with self._engine.begin() as conn:
+                tracker.snapshot_before(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
                 conn.execute(stmt)
+                result = tracker.compare_after(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
+            result.log_overwrites()
         except Exception as e:
             logger.error(f"PG Realtor upsert failed for {strap}: {e}")
 

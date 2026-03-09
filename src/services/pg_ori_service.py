@@ -38,6 +38,9 @@ from loguru import logger
 from sqlalchemy import text
 
 from src.services.pav_cache import pav_cache_get, pav_cache_put
+from src.utils.legal_description import combine_legal_fields
+from src.utils.legal_description import legal_descriptions_match
+from src.utils.legal_description import parse_legal_description
 
 from src.db.type_normalizer import (
     CANONICAL_ENCUMBRANCE_TYPES,
@@ -80,11 +83,46 @@ _BKPG_REF_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _CASE_VARIANT_RE = re.compile(r"^\d{2}(\d{4})([A-Z]{2})(\d{6}).*$")
+_PARCEL_SEGMENT_RE = re.compile(
+    r"^(?:U-)?(\d{2})-(\d{2})-(\d{2})-([A-Z0-9]+)-(\d+)-(\d+)\.(\d)$"
+)
 _ADDRESS_LINE_RE = re.compile(r"\b\d{3,6}[A-Z]?(?:\s+[A-Z0-9]+){1,4}\b", re.IGNORECASE)
 _LEGAL_LOCATOR_RE = re.compile(
     r"\b(LOT|UNIT|BLOCK|BLK)\s*(?:NO\.?\s*)?([A-Z0-9]+)\b",
     re.IGNORECASE,
 )
+_TARGET_LEGAL_EXPR = (
+    "UPPER(COALESCE(raw_legal1, '') || ' ' || COALESCE(raw_legal2, '') || "
+    "' ' || COALESCE(raw_legal3, '') || ' ' || COALESCE(raw_legal4, ''))"
+)
+_TARGET_MAX_LEGAL_CANDIDATES = 40
+_PLACEHOLDER_PARCEL_IDS = frozenset({
+    "STRING OR NULL",
+    "N/A",
+    "NONE",
+    "UNKNOWN",
+    "MULTIPLE PARCEL",
+})
+_GENERIC_SUBDIVISION_TERMS = frozenset({
+    "THE",
+    "OF",
+    "IN",
+    "AT",
+    "A",
+    "AN",
+    "AND",
+    "OR",
+    "LOT",
+    "BLOCK",
+    "UNIT",
+    "PHASE",
+    "SECTION",
+    "SUBDIVISION",
+    "SUBDIV",
+    "PLAT",
+    "BOOK",
+    "PAGE",
+})
 _STREET_STOP_TOKENS = frozenset({
     "ALLEY",
     "AVE",
@@ -122,6 +160,9 @@ _PAV_HEADERS = {
     "Origin": "https://publicaccess.hillsclerk.com",
     "Referer": "https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html",
 }
+FORECLOSURE_DATA_DIR = Path("data/Foreclosure")
+_CASE_ONLY_ORI_STAGE_FILENAME = "case_only_unresolved_documents.json"
+_CASE_ONLY_LP_STAGE_FILENAME = "case_only_unresolved_lis_pendens_docs.json"
 _PAV_QUERY_LIMIT = 500
 _PAV_MAX_RETRIES = 3
 _PAV_SPLIT_DEPTH = 6
@@ -359,6 +400,20 @@ class _SearchItem:
     source_instrument: str | None = None  # which doc triggered this
 
 
+@dataclass(slots=True)
+class _RecoveredTargetIdentity:
+    strap: str
+    folio: str
+    property_address: str | None
+    legal1: str
+    legal2: str
+    legal3: str
+    legal4: str
+    owner_name: str | None
+    legal_description: str
+    reason: str
+
+
 @dataclass
 class _DiscoveryState:
     """Per-property discovery state kept in memory."""
@@ -445,6 +500,10 @@ class PgOriService:
         per_target: list[dict[str, Any]] = []
 
         for index, target in enumerate(targets, start=1):
+            target, recovered_identity = self._prepare_target_identity(
+                target,
+                persist_update=not dry_run,
+            )
             fid = target["foreclosure_id"]
             case = target["case_number"]
             strap = (target.get("strap") or "").strip() or None
@@ -465,9 +524,19 @@ class PgOriService:
                 ]
                 saved = 0
                 persisted_lp = self._has_persisted_lis_pendens(case, strap)
+                staged_path: str | None = None
                 if lp_docs and not dry_run:
-                    saved = self._save_documents(strap, folio, lp_docs)
-                    persisted_lp = self._has_persisted_lis_pendens(case, strap)
+                    if not self._has_persistable_identity(target):
+                        staged_path = self._stage_case_only_documents(
+                            target=target,
+                            documents=lp_docs,
+                            lp_only=True,
+                        )
+                    else:
+                        saved = self._save_documents(strap, folio, lp_docs)
+                        if saved > 0:
+                            self._clear_case_only_stage_files(case)
+                        persisted_lp = self._has_persisted_lis_pendens(case, strap)
                     if persisted_lp:
                         self._mark_searched(fid)
 
@@ -487,6 +556,9 @@ class PgOriService:
                     "docs_found": len(lp_docs),
                     "saved": saved,
                     "persisted_lp": persisted_lp,
+                    "identity_recovered": recovered_identity is not None,
+                    "identity_recovery_reason": recovered_identity.reason if recovered_identity else None,
+                    "case_only_stage_path": staged_path,
                     "inferred": 0,
                     "api_calls": metrics["api_calls"],
                     "retries": metrics["retries"],
@@ -882,6 +954,430 @@ class PgOriService:
         return decorated
 
     @staticmethod
+    def _has_persistable_identity(target: dict[str, Any]) -> bool:
+        strap = (target.get("strap") or "").strip()
+        folio = (target.get("folio") or "").strip()
+        return bool(strap and strap != "MULTIPLE PARCEL" and folio)
+
+    @staticmethod
+    def _segmented_parcel_to_strap(parcel_id: str) -> str | None:
+        token = parcel_id.strip().upper()
+        match = _PARCEL_SEGMENT_RE.match(token)
+        if not match:
+            return None
+        seg1, seg2, seg3, seg4, seg5, seg6, decimal = match.groups()
+        return f"{seg3}{seg2}{seg1}{seg4}{seg5}{seg6}{decimal}U"
+
+    @staticmethod
+    def _subdivision_terms(subdivision: str | None) -> list[str]:
+        if not subdivision:
+            return []
+        words = re.findall(r"[A-Z0-9]+", subdivision.upper())
+        terms: list[str] = []
+        for word in words:
+            if len(word) < 4 or word in _GENERIC_SUBDIVISION_TERMS:
+                continue
+            if word not in terms:
+                terms.append(word)
+            if len(terms) >= 3:
+                break
+        return terms
+
+    @staticmethod
+    def _target_legal_description(target: dict[str, Any]) -> str:
+        legal_fields = combine_legal_fields(
+            target.get("legal1") or "",
+            target.get("legal2"),
+            target.get("legal3"),
+            target.get("legal4"),
+        ).strip()
+        if legal_fields:
+            return legal_fields
+
+        judgment_data = target.get("judgment_data") or {}
+        judgment_legal = (judgment_data.get("legal_description") or "").strip()
+        if judgment_legal:
+            return judgment_legal
+
+        parsed = parse_legal_description("")
+        parsed.subdivision = (judgment_data.get("subdivision") or "").strip() or None
+        parsed.lot = (judgment_data.get("lot") or "").strip() or None
+        parsed.block = (judgment_data.get("block") or "").strip() or None
+        parsed.unit = (judgment_data.get("unit") or "").strip() or None
+        if parsed.subdivision:
+            parts = [parsed.subdivision]
+            if parsed.lot:
+                parts.append(f"LOT {parsed.lot}")
+            if parsed.block:
+                parts.append(f"BLOCK {parsed.block}")
+            if parsed.unit:
+                parts.append(f"UNIT {parsed.unit}")
+            return " ".join(parts)
+        return ""
+
+    @staticmethod
+    def _row_to_recovered_identity(row: Any, *, reason: str) -> _RecoveredTargetIdentity:
+        legal_description = combine_legal_fields(
+            row.get("raw_legal1") or "",
+            row.get("raw_legal2"),
+            row.get("raw_legal3"),
+            row.get("raw_legal4"),
+        )
+        return _RecoveredTargetIdentity(
+            strap=str(row.get("strap") or "").strip(),
+            folio=str(row.get("folio") or "").strip(),
+            property_address=(row.get("property_address") or "").strip() or None,
+            legal1=(row.get("raw_legal1") or "").strip(),
+            legal2=(row.get("raw_legal2") or "").strip(),
+            legal3=(row.get("raw_legal3") or "").strip(),
+            legal4=(row.get("raw_legal4") or "").strip(),
+            owner_name=(row.get("owner_name") or "").strip() or None,
+            legal_description=legal_description,
+            reason=reason,
+        )
+
+    def _lookup_identity_by_existing_identifiers(
+        self,
+        conn: Any,
+        *,
+        strap: str | None,
+        folio: str | None,
+    ) -> _RecoveredTargetIdentity | None:
+        strap_value = (strap or "").strip()
+        folio_value = (folio or "").strip()
+        folio_digits = re.sub(r"\D", "", folio_value)
+        row = conn.execute(
+            text(
+                r"""
+                SELECT
+                    strap,
+                    folio,
+                    property_address,
+                    raw_legal1,
+                    raw_legal2,
+                    raw_legal3,
+                    raw_legal4,
+                    owner_name
+                FROM hcpa_bulk_parcels
+                WHERE (:strap <> '' AND strap = :strap)
+                   OR (:folio <> '' AND folio = :folio)
+                   OR (
+                        :folio_digits <> ''
+                        AND regexp_replace(COALESCE(folio, ''), '\D', '', 'g') = :folio_digits
+                   )
+                ORDER BY
+                    CASE
+                        WHEN (:strap <> '' AND strap = :strap) AND (:folio <> '' AND folio = :folio) THEN 0
+                        WHEN :strap <> '' AND strap = :strap THEN 1
+                        WHEN :folio <> '' AND folio = :folio THEN 2
+                        ELSE 3
+                    END
+                LIMIT 1
+                """
+            ),
+            {
+                "strap": strap_value,
+                "folio": folio_value,
+                "folio_digits": folio_digits,
+            },
+        ).mappings().first()
+        if row is None:
+            return None
+        identity = self._row_to_recovered_identity(row, reason="existing_identifier_lookup")
+        if not identity.strap or not identity.folio:
+            return None
+        return identity
+
+    def _recover_target_identity(
+        self,
+        conn: Any,
+        target: dict[str, Any],
+    ) -> _RecoveredTargetIdentity | None:
+        judgment_data = target.get("judgment_data") or {}
+        parcel_id = (judgment_data.get("parcel_id") or "").strip().upper()
+        if parcel_id and parcel_id not in _PLACEHOLDER_PARCEL_IDS:
+            parcel_candidates: list[tuple[str, str]] = []
+            parcel_candidates.append(("parcel_id_exact", parcel_id))
+            segmented = self._segmented_parcel_to_strap(parcel_id)
+            if segmented:
+                parcel_candidates.append(("parcel_id_segmented", segmented))
+
+            for reason, token in parcel_candidates:
+                row = conn.execute(
+                    text(
+                        r"""
+                        SELECT
+                            strap,
+                            folio,
+                            property_address,
+                            raw_legal1,
+                            raw_legal2,
+                            raw_legal3,
+                            raw_legal4,
+                            owner_name
+                        FROM hcpa_bulk_parcels
+                        WHERE strap = :token OR folio = :token
+                        ORDER BY source_file_id DESC NULLS LAST
+                        LIMIT 1
+                        """
+                    ),
+                    {"token": token},
+                ).mappings().first()
+                if row is None:
+                    continue
+                identity = self._row_to_recovered_identity(row, reason=reason)
+                if identity.strap and identity.folio:
+                    return identity
+
+            digits = re.sub(r"\D", "", parcel_id)
+            if digits:
+                row = conn.execute(
+                    text(
+                        r"""
+                        SELECT
+                            strap,
+                            folio,
+                            property_address,
+                            raw_legal1,
+                            raw_legal2,
+                            raw_legal3,
+                            raw_legal4,
+                            owner_name
+                        FROM hcpa_bulk_parcels
+                        WHERE regexp_replace(COALESCE(strap, ''), '\D', '', 'g') = :digits
+                           OR regexp_replace(COALESCE(folio, ''), '\D', '', 'g') = :digits
+                        ORDER BY source_file_id DESC NULLS LAST
+                        LIMIT 1
+                        """
+                    ),
+                    {"digits": digits},
+                ).mappings().first()
+                if row is not None:
+                    identity = self._row_to_recovered_identity(row, reason="parcel_id_digits")
+                    if identity.strap and identity.folio:
+                        return identity
+
+        judgment_legal = self._target_legal_description(target)
+        if not judgment_legal:
+            return None
+
+        parsed = parse_legal_description(judgment_legal)
+        subdivision = (
+            (judgment_data.get("subdivision") or "").strip()
+            or (parsed.subdivision or "").strip()
+        )
+        lot = ((judgment_data.get("lot") or "").strip() or (parsed.lot or "").strip())
+        block = ((judgment_data.get("block") or "").strip() or (parsed.block or "").strip())
+        unit = ((judgment_data.get("unit") or "").strip() or (parsed.unit or "").strip())
+        # Parsed plat-book/page extraction is too noisy on narrative legals
+        # like "... PLAT BOOK 28, PAGE 41 ..." and can misread "28/41" as "2/8".
+        # Only trust explicit judgment_data plat fields here.
+        clauses: list[str] = []
+        params: dict[str, Any] = {"limit": _TARGET_MAX_LEGAL_CANDIDATES}
+        for index, term in enumerate(self._subdivision_terms(subdivision)):
+            key = f"sub_term_{index}"
+            clauses.append(f"{_TARGET_LEGAL_EXPR} LIKE :{key}")
+            params[key] = f"%{term}%"
+
+        if lot:
+            clauses.append(f"{_TARGET_LEGAL_EXPR} ~* :lot_regex")
+            params["lot_regex"] = (
+                rf"(^|[^A-Z0-9])(LOT|L|LT)\s*{re.escape(lot.upper())}([^A-Z0-9]|$)"
+            )
+
+        if block:
+            clauses.append(f"{_TARGET_LEGAL_EXPR} ~* :block_regex")
+            params["block_regex"] = (
+                rf"(^|[^A-Z0-9])(BLOCK|BLK|B)\s*{re.escape(block.upper())}"
+                r"([^A-Z0-9]|$)"
+            )
+
+        if unit:
+            clauses.append(f"{_TARGET_LEGAL_EXPR} ~* :unit_regex")
+            params["unit_regex"] = (
+                rf"(^|[^A-Z0-9])(UNIT|U|UN)\s*{re.escape(unit.upper())}"
+                r"([^A-Z0-9]|$)"
+            )
+
+        if not clauses:
+            return None
+
+        rows = conn.execute(
+            text(
+                f"""
+                SELECT
+                    strap,
+                    folio,
+                    property_address,
+                    raw_legal1,
+                    raw_legal2,
+                    raw_legal3,
+                    raw_legal4,
+                    owner_name
+                FROM hcpa_bulk_parcels
+                WHERE {' AND '.join(clauses)}
+                ORDER BY source_file_id DESC NULLS LAST
+                LIMIT :limit
+                """
+            ),
+            params,
+        ).mappings().fetchall()
+        if not rows:
+            return None
+
+        scored: list[tuple[float, _RecoveredTargetIdentity]] = []
+        for row in rows:
+            identity = self._row_to_recovered_identity(row, reason="judgment_legal_match")
+            if not identity.strap or not identity.folio or not identity.legal_description:
+                continue
+            matched, confidence, _ = legal_descriptions_match(
+                judgment_legal,
+                identity.legal_description,
+                threshold=0.82,
+            )
+            if matched:
+                scored.append((confidence, identity))
+
+        if not scored:
+            return None
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        if len(scored) == 1:
+            return scored[0][1]
+
+        top_score, top_identity = scored[0]
+        second_score = scored[1][0]
+        if top_score >= 0.92 and (top_score - second_score) >= 0.08:
+            return top_identity
+        return None
+
+    def _prepare_target_identity(
+        self,
+        target: dict[str, Any],
+        *,
+        persist_update: bool,
+    ) -> tuple[dict[str, Any], _RecoveredTargetIdentity | None]:
+        prepared = dict(target)
+        strap = (prepared.get("strap") or "").strip() or None
+        folio = (prepared.get("folio") or "").strip() or None
+        needs_identity = not self._has_persistable_identity(prepared)
+        needs_context = not any(
+            (prepared.get("property_address"), prepared.get("legal1"), prepared.get("legal2"), prepared.get("legal3"), prepared.get("legal4"))
+        )
+        if not needs_identity and not needs_context:
+            return prepared, None
+
+        try:
+            context_manager = self.engine.begin() if persist_update else self.engine.connect()
+            with context_manager as conn:
+                identity = None
+                if strap or folio:
+                    identity = self._lookup_identity_by_existing_identifiers(
+                        conn,
+                        strap=strap,
+                        folio=folio,
+                    )
+                if identity is None:
+                    identity = self._recover_target_identity(conn, prepared)
+                if identity is None:
+                    return prepared, None
+
+                prepared["strap"] = prepared.get("strap") or identity.strap
+                prepared["folio"] = prepared.get("folio") or identity.folio
+                prepared["property_address"] = prepared.get("property_address") or identity.property_address or ""
+                prepared["legal1"] = prepared.get("legal1") or identity.legal1
+                prepared["legal2"] = prepared.get("legal2") or identity.legal2
+                prepared["legal3"] = prepared.get("legal3") or identity.legal3
+                prepared["legal4"] = prepared.get("legal4") or identity.legal4
+                prepared["owner_name"] = prepared.get("owner_name") or identity.owner_name or ""
+
+                if persist_update and prepared.get("foreclosure_id"):
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE foreclosures
+                            SET strap = COALESCE(strap, :strap),
+                                folio = COALESCE(folio, :folio),
+                                property_address = COALESCE(NULLIF(btrim(property_address), ''), :property_address)
+                            WHERE foreclosure_id = :foreclosure_id
+                            """
+                        ),
+                        {
+                            "foreclosure_id": int(prepared["foreclosure_id"]),
+                            "strap": prepared["strap"],
+                            "folio": prepared["folio"],
+                            "property_address": prepared["property_address"] or None,
+                        },
+                    )
+                logger.info(
+                    "Recovered ORI target identity for case={} foreclosure_id={} via {} -> strap={} folio={}",
+                    prepared.get("case_number") or "",
+                    prepared.get("foreclosure_id"),
+                    identity.reason,
+                    prepared.get("strap") or "",
+                    prepared.get("folio") or "",
+                )
+                return prepared, identity
+        except Exception:
+            logger.exception(
+                "ORI target identity recovery failed for case={} foreclosure_id={}",
+                prepared.get("case_number") or "",
+                prepared.get("foreclosure_id"),
+            )
+            return prepared, None
+
+    @staticmethod
+    def _case_only_stage_path(case_number: str, *, lp_only: bool) -> Path:
+        filename = _CASE_ONLY_LP_STAGE_FILENAME if lp_only else _CASE_ONLY_ORI_STAGE_FILENAME
+        return FORECLOSURE_DATA_DIR / case_number / "ori" / filename
+
+    def _stage_case_only_documents(
+        self,
+        *,
+        target: dict[str, Any],
+        documents: list[dict[str, Any]],
+        lp_only: bool,
+    ) -> str | None:
+        case_number = (target.get("case_number") or "").strip()
+        if not case_number or not documents:
+            return None
+
+        path = self._case_only_stage_path(case_number, lp_only=lp_only)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "foreclosure_id": target.get("foreclosure_id"),
+            "case_number": case_number,
+            "lp_only": lp_only,
+            "saved_at": datetime.now(tz=UTC).isoformat(),
+            "reason": "missing_property_identity",
+            "target": {
+                "strap": target.get("strap"),
+                "folio": target.get("folio"),
+                "property_address": target.get("property_address"),
+            },
+            "judgment_data": target.get("judgment_data") or {},
+            "documents": documents,
+        }
+        path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        logger.warning(
+            "Staged {} unresolved {} ORI doc(s) for case={} at {}",
+            len(documents),
+            "LP-only" if lp_only else "case-only",
+            case_number,
+            path,
+        )
+        return str(path)
+
+    def _clear_case_only_stage_files(self, case_number: str) -> None:
+        clean_case = (case_number or "").strip()
+        if not clean_case:
+            return
+        for lp_only in (False, True):
+            path = self._case_only_stage_path(clean_case, lp_only=lp_only)
+            if path.exists():
+                path.unlink()
+
+    @staticmethod
     def _merge_targets(
         primary: list[dict[str, Any]],
         secondary: list[dict[str, Any]],
@@ -1172,6 +1668,10 @@ class PgOriService:
         persist: bool,
     ) -> dict[str, Any]:
         """Discover, save, and optionally mark a single ORI target."""
+        target, recovered_identity = self._prepare_target_identity(
+            target,
+            persist_update=persist,
+        )
         foreclosure_id = int(target["foreclosure_id"])
         case_number = target.get("case_number") or ""
         strap = (target.get("strap") or "").strip() or None
@@ -1194,24 +1694,45 @@ class PgOriService:
         saved = 0
         inferred = 0
         linked = 0
+        staged_path: str | None = None
         if persist:
-            saved = self._save_documents(strap, folio, docs)
-            if saved == 0 and not bool(target.get("skip_inferred_fallback")):
-                inferred = self._infer_from_judgment(strap, folio, target)
-                saved += inferred
-                if inferred == 0:
-                    logger.warning(
-                        "No encumbrances saved and no inferred fallback for case={} strap={}",
-                        case_number,
-                        strap or "",
+            if not self._has_persistable_identity(target):
+                if docs:
+                    staged_path = self._stage_case_only_documents(
+                        target=target,
+                        documents=docs,
+                        lp_only=bool(target.get("lp_recovery_mode")),
                     )
+                else:
+                    logger.warning(
+                        "ORI target still missing strap/folio after recovery for case={} foreclosure_id={}; leaving unmarked",
+                        case_number,
+                        foreclosure_id,
+                    )
+            else:
+                saved = self._save_documents(strap, folio, docs)
+                if saved == 0 and not bool(target.get("skip_inferred_fallback")):
+                    inferred = self._infer_from_judgment(strap, folio, target)
+                    saved += inferred
+                    if inferred == 0:
+                        logger.warning(
+                            "No encumbrances saved and no inferred fallback for case={} strap={}",
+                            case_number,
+                            strap or "",
+                        )
+                if saved > 0 or inferred > 0:
+                    self._clear_case_only_stage_files(case_number)
             if strap and saved > 0:
                 linked = self._link_satisfactions(strap)
                 self._link_modifications(strap)
                 # Chase CLK# refs from unlinked SATs to discover parent mortgages
                 chase_linked = self._chase_unlinked_sat_parents(strap, folio)
                 linked += chase_linked
-            if bool(target.get("mark_ori_searched", True)):
+            if (
+                bool(target.get("mark_ori_searched", True))
+                and self._has_persistable_identity(target)
+                and not staged_path
+            ):
                 self._mark_searched(foreclosure_id)
 
         return {
@@ -1223,6 +1744,9 @@ class PgOriService:
             "saved": saved,
             "inferred": inferred,
             "satisfactions_linked": linked,
+            "identity_recovered": recovered_identity is not None,
+            "identity_recovery_reason": recovered_identity.reason if recovered_identity else None,
+            "case_only_stage_path": staged_path,
             "api_calls": metrics["api_calls"],
             "retries": metrics["retries"],
             "truncated": metrics["truncated"],

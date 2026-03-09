@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from typing import Any
 from typing import Self
@@ -26,12 +27,28 @@ def _build_service(monkeypatch: Any) -> pg_ori_service.PgOriService:
 
 
 class _CaptureResult:
-    def __init__(self, rowcount: int = 0, rows: list[tuple[Any, ...]] | None = None) -> None:
+    def __init__(
+        self,
+        rowcount: int = 0,
+        rows: list[tuple[Any, ...]] | None = None,
+        mapping_rows: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.rowcount = rowcount
         self._rows = rows or []
+        self._mapping_rows = mapping_rows or []
 
-    def fetchall(self) -> list[tuple[Any, ...]]:
+    def fetchall(self) -> list[Any]:
+        if self._mapping_rows:
+            return self._mapping_rows
         return self._rows
+
+    def first(self) -> dict[str, Any] | None:
+        if self._mapping_rows:
+            return self._mapping_rows[0]
+        return None
+
+    def mappings(self) -> Self:
+        return self
 
 
 class _CaptureConnection:
@@ -85,6 +102,18 @@ class _ExecuteFnEngine:
 
     def begin(self) -> _ExecuteFnConnection:
         return _ExecuteFnConnection(self._execute_fn, self._captured)
+
+    def connect(self) -> _ExecuteFnConnection:
+        return _ExecuteFnConnection(self._execute_fn, self._captured)
+
+
+def _passthrough_prepare_target_identity(
+    target: dict[str, Any],
+    *,
+    persist_update: bool,
+) -> tuple[dict[str, Any], None]:
+    assert isinstance(persist_update, bool)
+    return dict(target), None
 
 
 def test_matches_property_rejects_owner_only_noc() -> None:
@@ -1092,6 +1121,11 @@ def test_process_target_skips_inferred_fallback_for_lp_gap(monkeypatch: Any) -> 
         "skip_inferred_fallback": True,
         "mark_ori_searched": False,
     }
+    monkeypatch.setattr(
+        service,
+        "_prepare_target_identity",
+        _passthrough_prepare_target_identity,
+    )
 
     monkeypatch.setattr(
         service,
@@ -1120,6 +1154,125 @@ def test_process_target_skips_inferred_fallback_for_lp_gap(monkeypatch: Any) -> 
 
     assert result["saved"] == 0
     assert result["inferred"] == 0
+
+
+def test_prepare_target_identity_recovers_from_judgment_legal(
+    monkeypatch: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    def _execute(sql_text: str, params: dict[str, Any]) -> _CaptureResult:
+        if "FROM hcpa_bulk_parcels" in sql_text and "LIMIT :limit" in sql_text:
+            return _CaptureResult(
+                mapping_rows=[
+                    {
+                        "strap": "19283348Y000000000310A",
+                        "folio": "1534060000",
+                        "property_address": "4102 E HANNA AVE",
+                        "raw_legal1": "HIGH POINT SUBDIVISION",
+                        "raw_legal2": "LOT 31",
+                        "raw_legal3": "",
+                        "raw_legal4": "",
+                        "owner_name": "EXAMPLE OWNER",
+                    }
+                ],
+            )
+        return _CaptureResult()
+
+    service.engine = _ExecuteFnEngine(_execute, captured)  # type: ignore[assignment]
+
+    target = {
+        "foreclosure_id": 21007,
+        "case_number": "292024CA003727A001HC",
+        "strap": None,
+        "folio": None,
+        "judgment_data": {
+            "legal_description": "LOT 31, HIGH POINT SUBDIVISION",
+            "property_address": "314 S. Franklin Street, Titusville, Pennsylvania 16354",
+        },
+        "property_address": "",
+        "legal1": "",
+        "legal2": "",
+        "legal3": "",
+        "legal4": "",
+        "owner_name": "",
+    }
+
+    prepared, recovered = service._prepare_target_identity(  # noqa: SLF001
+        target,
+        persist_update=True,
+    )
+
+    assert recovered is not None
+    assert recovered.reason == "judgment_legal_match"
+    assert prepared["strap"] == "19283348Y000000000310A"
+    assert prepared["folio"] == "1534060000"
+    assert prepared["property_address"] == "4102 E HANNA AVE"
+    update_params = next(
+        params for sql_text, params in captured if "UPDATE foreclosures" in sql_text
+    )
+    assert update_params["foreclosure_id"] == 21007
+    assert update_params["strap"] == "19283348Y000000000310A"
+    assert update_params["folio"] == "1534060000"
+
+
+def test_process_target_stages_case_only_docs_when_identity_missing(
+    monkeypatch: Any,
+    tmp_path: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+    marks: list[int] = []
+    target = {
+        "foreclosure_id": 21007,
+        "case_number": "292024CA003727A001HC",
+        "strap": None,
+        "folio": None,
+        "judgment_data": {"legal_description": "LOT 31 HIGH POINT SUBDIVISION"},
+        "property_address": "",
+    }
+
+    monkeypatch.setattr(pg_ori_service, "FORECLOSURE_DATA_DIR", tmp_path)
+    monkeypatch.setattr(
+        service,
+        "_prepare_target_identity",
+        _passthrough_prepare_target_identity,
+    )
+    monkeypatch.setattr(
+        service,
+        "_discover_property",
+        lambda _target: (
+            [{"Instrument": "2024000123", "DocType": "MORTGAGE"}],
+            {
+                "api_calls": 1,
+                "retries": 0,
+                "truncated": 0,
+                "unresolved_truncations": 0,
+                "deed_count": 0,
+                "clerk_case_count": 0,
+                "official_seed_docs": 0,
+            },
+        ),
+    )
+
+    def _unexpected_save(*_args: Any, **_kwargs: Any) -> int:
+        raise AssertionError("_save_documents should not run without recovered identity")
+
+    monkeypatch.setattr(service, "_save_documents", _unexpected_save)
+    monkeypatch.setattr(service, "_mark_searched", lambda fid: marks.append(fid))
+
+    result = service._process_target(target, persist=True)  # noqa: SLF001
+
+    assert result["saved"] == 0
+    assert result["case_only_stage_path"] is not None
+    assert marks == []
+    staged_payload = json.loads(
+        (tmp_path / "292024CA003727A001HC" / "ori" / "case_only_unresolved_documents.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert staged_payload["reason"] == "missing_property_identity"
+    assert staged_payload["documents"][0]["Instrument"] == "2024000123"
 
 
 def test_discover_property_bypasses_case_cache_and_skips_noc_fallback_for_lp_gap(
@@ -1180,8 +1333,8 @@ def test_run_lis_pendens_backfill_saves_only_lis_pendens_docs(monkeypatch: Any) 
     target = {
         "foreclosure_id": 21007,
         "case_number": "292024CA003727A001HC",
-        "strap": None,
-        "folio": None,
+        "strap": "19283348Y000000000310A",
+        "folio": "1534060000",
         "judgment_data": {},
         "auction_date": None,
         "filing_date": None,
@@ -1206,6 +1359,11 @@ def test_run_lis_pendens_backfill_saves_only_lis_pendens_docs(monkeypatch: Any) 
         service,
         "_find_lis_pendens_gap_targets",
         lambda **_kwargs: next(states),
+    )
+    monkeypatch.setattr(
+        service,
+        "_prepare_target_identity",
+        _passthrough_prepare_target_identity,
     )
     monkeypatch.setattr(
         service,
@@ -1248,8 +1406,8 @@ def test_run_lis_pendens_backfill_does_not_mark_searched_without_persisted_lp(
     target = {
         "foreclosure_id": 21007,
         "case_number": "292024CA003727A001HC",
-        "strap": None,
-        "folio": None,
+        "strap": "19283348Y000000000310A",
+        "folio": "1534060000",
         "judgment_data": {},
         "auction_date": None,
         "filing_date": None,
@@ -1270,6 +1428,78 @@ def test_run_lis_pendens_backfill_does_not_mark_searched_without_persisted_lp(
         service,
         "_find_lis_pendens_gap_targets",
         lambda **_kwargs: next(states),
+    )
+    monkeypatch.setattr(
+        service,
+        "_prepare_target_identity",
+        _passthrough_prepare_target_identity,
+    )
+    monkeypatch.setattr(
+        service,
+        "_discover_property",
+        lambda _target: (
+            [{"Instrument": "2024000123", "DocType": "LIS PENDENS"}],
+            {
+                "api_calls": 2,
+                "retries": 0,
+                "truncated": 0,
+                "unresolved_truncations": 0,
+                "deed_count": 0,
+                "clerk_case_count": 0,
+                "official_seed_docs": 0,
+            },
+        ),
+    )
+
+    monkeypatch.setattr(service, "_save_documents", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(service, "_has_persisted_lis_pendens", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(service, "_mark_searched", lambda fid: marks.append(fid))
+
+    result = service.run_lis_pendens_backfill(require_ori_searched=False)
+
+    assert result["total_lp_docs_found"] == 1
+    assert result["total_saved"] == 0
+    assert result["remaining_lp_gaps_after"] == 1
+    assert result["per_target"][0]["persisted_lp"] is False
+    assert marks == []
+
+
+def test_run_lis_pendens_backfill_stages_unresolved_docs_when_identity_missing(
+    monkeypatch: Any,
+    tmp_path: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+    target = {
+        "foreclosure_id": 21007,
+        "case_number": "292024CA003727A001HC",
+        "strap": None,
+        "folio": None,
+        "judgment_data": {},
+        "auction_date": None,
+        "filing_date": None,
+        "legal1": "",
+        "legal2": "",
+        "legal3": "",
+        "legal4": "",
+        "owner_name": "",
+        "property_address": "",
+        "lp_recovery_mode": True,
+        "skip_inferred_fallback": True,
+        "skip_live_noc_fallback": True,
+    }
+    states = iter([[target], [target]])
+    marks: list[int] = []
+
+    monkeypatch.setattr(pg_ori_service, "FORECLOSURE_DATA_DIR", tmp_path)
+    monkeypatch.setattr(
+        service,
+        "_find_lis_pendens_gap_targets",
+        lambda **_kwargs: next(states),
+    )
+    monkeypatch.setattr(
+        service,
+        "_prepare_target_identity",
+        _passthrough_prepare_target_identity,
     )
     monkeypatch.setattr(
         service,
@@ -1295,6 +1525,16 @@ def test_run_lis_pendens_backfill_does_not_mark_searched_without_persisted_lp(
 
     assert result["total_lp_docs_found"] == 1
     assert result["total_saved"] == 0
-    assert result["remaining_lp_gaps_after"] == 1
+    assert result["per_target"][0]["case_only_stage_path"] is not None
     assert result["per_target"][0]["persisted_lp"] is False
     assert marks == []
+    staged_payload = json.loads(
+        (
+            tmp_path
+            / "292024CA003727A001HC"
+            / "ori"
+            / "case_only_unresolved_lis_pendens_docs.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert staged_payload["lp_only"] is True
+    assert staged_payload["documents"][0]["Instrument"] == "2024000123"

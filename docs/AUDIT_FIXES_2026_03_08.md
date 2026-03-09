@@ -73,6 +73,23 @@ source-priority-aware upsert strategy. Tracked for future design work.
 - No focused test covers the multi-PDF judgment writeback selection path
 - No focused test covers placeholder-photo filtering through PG upsert + web rendering
 - No focused test covers the controller lock-contention exit path
+- No integration test exercises OverwriteTracker through the actual MarketDataService upserts end-to-end
+
+### Follow-On Fix — ORI Case-Only Identity Recovery
+
+After the original audit closed, one additional ORI persistence bug was fixed:
+
+- **Problem:** case-only ORI/LP discovery could find documents for foreclosures with
+  unknown `strap`/`folio`, but `_save_documents()` persisted into `ori_encumbrances`,
+  where `folio` is `NOT NULL`. PostgreSQL rejected those inserts and the documents
+  were effectively dropped.
+- **Fix:** `PgOriService` now attempts to recover parcel identity from
+  `judgment_data.parcel_id` and judgment legal description *before* discovery and
+  persistence. When identity still cannot be resolved, ORI/LP documents are staged
+  under `data/Foreclosure/{case_number}/ori/` instead of being discarded.
+- **Verification:** foreclosure `21007 / 292024CA003727A001HC` now resolves to
+  `strap=19283348Y000000000310A`, `folio=1534060000`, persists LP instrument
+  `2024194401`, and clears the staged-case file on success.
 
 ## Detailed Fix Descriptions
 
