@@ -1,13 +1,22 @@
-"""Phase B Step 4: Lien survival analysis → PG ori_encumbrances.
+"""Phase B Step 4: Lien survival analysis with per-foreclosure persistence.
 
 Reads encumbrances from PG ``ori_encumbrances``, judgment data from
 ``foreclosures.judgment_data``, and chain-of-title from
-``foreclosure_title_chain``.  Runs ``SurvivalService.analyze()`` and
-writes ``survival_status`` / ``survival_reason`` back to PG.
+``foreclosure_title_chain``. Runs ``SurvivalService.analyze()`` and persists
+results to ``foreclosure_encumbrance_survival`` keyed by
+``(foreclosure_id, encumbrance_id)``.
+
+That extra scope is required because two active foreclosure cases can share the
+same parcel/strap. A single parcel-scoped ``ori_encumbrances.survival_status``
+column cannot represent both cases correctly. The service still updates the
+legacy row-level status columns for compatibility, but correctness-sensitive
+reads should prefer ``foreclosure_encumbrance_survival`` and fall back to the
+legacy columns only when no per-foreclosure row exists.
 
 NOCs (encumbrance_type='noc') are excluded from both target selection and
 encumbrance loading — they are administrative notices, not liens.
-See docs/NOC_PERMIT_LINKING.md for the full exclusion map.
+See docs/NOC_PERMIT_LINKING.md for the full exclusion map and
+docs/domain/PER_FORECLOSURE_SURVIVAL.md for the persistence model.
 """
 
 from __future__ import annotations
@@ -30,6 +39,21 @@ class PgSurvivalService:
     def __init__(self, dsn: str | None = None) -> None:
         self.dsn = resolve_pg_dsn(dsn)
         self.engine = get_engine(self.dsn)
+
+    @staticmethod
+    def _encumbrance_parties(
+        encumbrance_type: str,
+        party1: str,
+        party2: str,
+        current_holder: str,
+    ) -> tuple[str, str]:
+        """Map ORI party columns into creditor/debtor semantics for survival."""
+        enc_type = (encumbrance_type or "").lower()
+        if enc_type == "mortgage":
+            creditor = current_holder or party2 or party1
+            debtor = party1 or party2
+            return creditor, debtor
+        return party1 or current_holder or party2, party2 or party1
 
     def run(
         self,
@@ -99,7 +123,7 @@ class PgSurvivalService:
                 )
 
                 # Write results back to PG
-                self._save_survival_results(strap, result)
+                self._save_survival_results(fid, case, strap, result)
                 self._mark_analyzed(fid)
                 analyzed += 1
 
@@ -144,7 +168,15 @@ class PgSurvivalService:
             "oe.encumbrance_type != 'noc'",
         ]
         if not force_reanalysis:
-            exists_clauses.insert(1, "oe.survival_status IS NULL")
+            exists_clauses.insert(
+                1,
+                """NOT EXISTS (
+                    SELECT 1
+                    FROM foreclosure_encumbrance_survival fes
+                    WHERE fes.foreclosure_id = f.foreclosure_id
+                      AND fes.encumbrance_id = oe.id
+                )""",
+            )
 
         query = f"""
             SELECT f.foreclosure_id, f.case_number_raw, f.strap,
@@ -201,6 +233,8 @@ class PgSurvivalService:
                     }
                     if any(refs.values()):
                         jdata["foreclosing_refs"] = refs
+            if not jdata.get("case_number") and r[1]:
+                jdata["case_number"] = r[1]
 
             targets.append({
                 "foreclosure_id": r[0],
@@ -219,38 +253,45 @@ class PgSurvivalService:
     def _load_encumbrances(self, strap: str) -> list[dict[str, Any]]:
         """Load encumbrances from PG ori_encumbrances as dicts for SurvivalService."""
         with self.engine.connect() as conn:
-            rows = conn.execute(
+            result = conn.execute(
                 text("""
                     SELECT id, encumbrance_type, party1, party2,
                            amount, recording_date, instrument_number,
                            book, page, is_satisfied,
                            satisfaction_instrument, satisfaction_date,
-                           survival_status, case_number
+                           survival_status, case_number, current_holder
                     FROM ori_encumbrances
                     WHERE strap = :strap
                       AND encumbrance_type != 'noc'
                     ORDER BY recording_date NULLS LAST
                 """),
                 {"strap": strap},
-            ).fetchall()
+            )
+            rows = result.mappings().fetchall()
 
         encumbrances = []
         for r in rows:
+            creditor, debtor = self._encumbrance_parties(
+                str(r["encumbrance_type"] or ""),
+                str(r["party1"] or ""),
+                str(r["party2"] or ""),
+                str(r["current_holder"] or ""),
+            )
             encumbrances.append({
-                "id": r[0],
-                "encumbrance_type": r[1] or "other",
-                "creditor": r[2] or "",
-                "debtor": r[3] or "",
-                "amount": float(r[4]) if r[4] else 0.0,
-                "recording_date": str(r[5]) if r[5] else None,
-                "instrument": r[6] or "",
-                "book": r[7] or "",
-                "page": r[8] or "",
-                "is_satisfied": bool(r[9]),
-                "satisfaction_instrument": r[10] or "",
-                "satisfaction_date": str(r[11]) if r[11] else None,
-                "survival_status": r[12],
-                "case_number": r[13] or "",
+                "id": r["id"],
+                "encumbrance_type": r["encumbrance_type"] or "other",
+                "creditor": creditor,
+                "debtor": debtor,
+                "amount": float(r["amount"]) if r["amount"] else 0.0,
+                "recording_date": str(r["recording_date"]) if r["recording_date"] else None,
+                "instrument": r["instrument_number"] or "",
+                "book": r["book"] or "",
+                "page": r["page"] or "",
+                "is_satisfied": bool(r["is_satisfied"]),
+                "satisfaction_instrument": r["satisfaction_instrument"] or "",
+                "satisfaction_date": str(r["satisfaction_date"]) if r["satisfaction_date"] else None,
+                "survival_status": r["survival_status"],
+                "case_number": r["case_number"] or "",
             })
 
         return encumbrances
@@ -288,10 +329,12 @@ class PgSurvivalService:
 
     def _save_survival_results(
         self,
+        foreclosure_id: int,
+        foreclosure_case_number: str,
         strap: str,
         result: dict[str, Any],
     ) -> None:
-        """Write survival_status + survival_reason back to PG ori_encumbrances."""
+        """Persist survival results per foreclosure and update legacy row fields."""
         all_encs = []
         for category in (
             "survived",
@@ -318,6 +361,41 @@ class PgSurvivalService:
 
                 conn.execute(
                     text("""
+                        INSERT INTO foreclosure_encumbrance_survival (
+                            foreclosure_id,
+                            encumbrance_id,
+                            survival_status,
+                            survival_reason,
+                            survival_case_number,
+                            analyzed_at,
+                            updated_at
+                        ) VALUES (
+                            :foreclosure_id,
+                            :encumbrance_id,
+                            :status,
+                            :reason,
+                            :case_number,
+                            now(),
+                            now()
+                        )
+                        ON CONFLICT (foreclosure_id, encumbrance_id) DO UPDATE SET
+                            survival_status = EXCLUDED.survival_status,
+                            survival_reason = EXCLUDED.survival_reason,
+                            survival_case_number = EXCLUDED.survival_case_number,
+                            analyzed_at = EXCLUDED.analyzed_at,
+                            updated_at = EXCLUDED.updated_at
+                    """),
+                    {
+                        "foreclosure_id": foreclosure_id,
+                        "encumbrance_id": enc_id,
+                        "status": status,
+                        "reason": reason,
+                        "case_number": foreclosure_case_number,
+                    },
+                )
+
+                conn.execute(
+                    text("""
                         UPDATE ori_encumbrances SET
                             survival_status = :status,
                             survival_reason = :reason,
@@ -329,7 +407,7 @@ class PgSurvivalService:
                         "id": enc_id,
                         "status": status,
                         "reason": reason,
-                        "case_number": enc.get("case_number"),
+                        "case_number": foreclosure_case_number,
                     },
                 )
 

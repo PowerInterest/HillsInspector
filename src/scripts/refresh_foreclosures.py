@@ -21,6 +21,7 @@ import argparse
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 from sqlalchemy import text
@@ -251,17 +252,26 @@ UPDATE foreclosures f SET
     encumbrance_count             = sub.total,
     unsatisfied_encumbrance_count = sub.unsatisfied
 FROM (
-    SELECT oe.strap,
+    SELECT f2.foreclosure_id,
            COUNT(*)                              AS total,
-           COUNT(*) FILTER (WHERE NOT oe.is_satisfied
-                            AND oe.survival_status NOT IN ('SATISFIED','EXPIRED','HISTORICAL','EXTINGUISHED'))
+           COUNT(*) FILTER (
+               WHERE NOT oe.is_satisfied
+                 AND COALESCE(fes.survival_status, oe.survival_status) NOT IN (
+                     'SATISFIED', 'EXPIRED', 'HISTORICAL', 'EXTINGUISHED'
+                 )
+           )
                                                  AS unsatisfied
-    FROM ori_encumbrances oe
-    WHERE oe.strap IS NOT NULL
+    FROM foreclosures f2
+    JOIN ori_encumbrances oe
+      ON oe.strap = f2.strap
+    LEFT JOIN foreclosure_encumbrance_survival fes
+      ON fes.foreclosure_id = f2.foreclosure_id
+     AND fes.encumbrance_id = oe.id
+    WHERE f2.strap IS NOT NULL
       AND oe.encumbrance_type != 'noc'
-    GROUP BY oe.strap
+    GROUP BY f2.foreclosure_id
 ) sub
-WHERE sub.strap = f.strap;
+WHERE sub.foreclosure_id = f.foreclosure_id;
 """
 
 # ---------------------------------------------------------------------------
@@ -405,7 +415,18 @@ UPDATE foreclosures new_f SET
     END,
     step_survival_analyzed = CASE
         WHEN COALESCE(new_f.strap, donor.strap) = donor.strap
-         AND NOT EXISTS (SELECT 1 FROM ori_encumbrances WHERE strap = donor.strap AND survival_status IS NULL)
+         AND NOT EXISTS (
+             SELECT 1
+             FROM ori_encumbrances oe
+             WHERE oe.strap = donor.strap
+               AND oe.encumbrance_type != 'noc'
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM foreclosure_encumbrance_survival fes
+                   WHERE fes.foreclosure_id = donor.foreclosure_id
+                     AND fes.encumbrance_id = oe.id
+               )
+         )
         THEN COALESCE(new_f.step_survival_analyzed, donor.step_survival_analyzed)
         ELSE new_f.step_survival_analyzed
     END
@@ -424,8 +445,78 @@ WHERE new_f.case_number_raw = donor.case_number_raw
   AND (new_f.judgment_data IS NULL
        OR new_f.strap IS NULL
        OR new_f.folio IS NULL
-       OR new_f.property_address IS NULL);
+       OR new_f.property_address IS NULL)
+RETURNING
+    new_f.foreclosure_id AS new_foreclosure_id,
+    donor.foreclosure_id AS donor_foreclosure_id,
+    CASE
+        WHEN COALESCE(new_f.strap, donor.strap) = donor.strap
+         AND NOT EXISTS (
+             SELECT 1
+             FROM ori_encumbrances oe
+             WHERE oe.strap = donor.strap
+               AND oe.encumbrance_type != 'noc'
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM foreclosure_encumbrance_survival fes
+                   WHERE fes.foreclosure_id = donor.foreclosure_id
+                     AND fes.encumbrance_id = oe.id
+               )
+         )
+        THEN TRUE
+        ELSE FALSE
+    END AS copy_survival;
 """
+
+RESCHEDULED_COPY_SURVIVAL_SQL = """
+INSERT INTO foreclosure_encumbrance_survival (
+    foreclosure_id,
+    encumbrance_id,
+    survival_status,
+    survival_reason,
+    survival_case_number,
+    analyzed_at,
+    created_at,
+    updated_at
+)
+SELECT
+    :new_foreclosure_id,
+    fes.encumbrance_id,
+    fes.survival_status,
+    fes.survival_reason,
+    fes.survival_case_number,
+    fes.analyzed_at,
+    now(),
+    now()
+FROM foreclosure_encumbrance_survival fes
+WHERE fes.foreclosure_id = :donor_foreclosure_id
+ON CONFLICT (foreclosure_id, encumbrance_id) DO NOTHING;
+"""
+
+
+def _reuse_rescheduled_enrichment(conn: Any) -> dict[str, int]:
+    """Copy archived-row enrichment and any matching per-foreclosure survival rows."""
+    result = conn.execute(text(RESCHEDULED_REUSE_SQL))
+    rows = result.mappings().fetchall()
+    updated_foreclosures = len(rows)
+    copied_survival_rows = 0
+
+    survival_pairs = [
+        {
+            "new_foreclosure_id": row["new_foreclosure_id"],
+            "donor_foreclosure_id": row["donor_foreclosure_id"],
+        }
+        for row in rows
+        if row["copy_survival"]
+    ]
+    if survival_pairs:
+        copy_result = conn.execute(text(RESCHEDULED_COPY_SURVIVAL_SQL), survival_pairs)
+        copied_survival_rows = max(copy_result.rowcount or 0, 0)
+
+    return {
+        "updated_foreclosures": updated_foreclosures,
+        "copied_survival_rows": copied_survival_rows,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -550,9 +641,18 @@ def refresh(dsn: str | None = None) -> dict[str, int]:
         logger.info(f"Step 6: loaded {n} judgment extractions from disk")
 
         # Step 7: Reuse enrichment data for rescheduled auctions
-        r = conn.execute(text(RESCHEDULED_REUSE_SQL))
-        counts["rescheduled_reused"] = r.rowcount
-        logger.info(f"Step 7: copied enrichment data to {r.rowcount} rescheduled auction rows")
+        reuse_counts = _reuse_rescheduled_enrichment(conn)
+        counts["rescheduled_reused"] = reuse_counts["updated_foreclosures"]
+        counts["rescheduled_survival_rows"] = reuse_counts["copied_survival_rows"]
+        logger.info(
+            "Step 7: copied enrichment data to {} rescheduled auction rows",
+            reuse_counts["updated_foreclosures"],
+        )
+        if reuse_counts["copied_survival_rows"]:
+            logger.info(
+                "Step 7: copied {} per-foreclosure survival rows to rescheduled auctions",
+                reuse_counts["copied_survival_rows"],
+            )
 
         upcoming = (
             conn.execute(

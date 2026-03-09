@@ -84,6 +84,7 @@ def _sort_sql(sort_by: str, sort_order: str) -> str:
 
 def _encumbrance_lateral_join(table_alias: str) -> str:
     """Lateral aggregate for encumbrance counts + estimated surviving debt."""
+    status_expr = "UPPER(COALESCE(fes.survival_status, oe.survival_status, ''))"
     return f"""
         LEFT JOIN LATERAL (
             SELECT
@@ -92,21 +93,24 @@ def _encumbrance_lateral_join(table_alias: str) -> str:
                 ) AS liens_total,
                 COUNT(*) FILTER (
                     WHERE COALESCE(oe.is_satisfied, FALSE) = FALSE
-                      AND UPPER(COALESCE(oe.survival_status, '')) = 'SURVIVED'
+                      AND {status_expr} = 'SURVIVED'
                 ) AS liens_survived,
                 COUNT(*) FILTER (
                     WHERE COALESCE(oe.is_satisfied, FALSE) = FALSE
-                      AND UPPER(COALESCE(oe.survival_status, '')) = 'UNCERTAIN'
+                      AND {status_expr} = 'UNCERTAIN'
                 ) AS liens_uncertain,
                 COUNT(*) FILTER (
                     WHERE COALESCE(oe.is_satisfied, FALSE) = FALSE
-                      AND UPPER(COALESCE(oe.survival_status, '')) IN ('SURVIVED', 'UNCERTAIN')
+                      AND {status_expr} IN ('SURVIVED', 'UNCERTAIN')
                 ) AS liens_surviving,
                 COALESCE(SUM(oe.amount) FILTER (
                     WHERE COALESCE(oe.is_satisfied, FALSE) = FALSE
-                      AND UPPER(COALESCE(oe.survival_status, '')) IN ('SURVIVED', 'UNCERTAIN')
+                      AND {status_expr} IN ('SURVIVED', 'UNCERTAIN')
                 ), 0)::numeric AS est_surviving_debt
             FROM ori_encumbrances oe
+            LEFT JOIN foreclosure_encumbrance_survival fes
+              ON fes.encumbrance_id = oe.id
+             AND fes.foreclosure_id = {table_alias}.foreclosure_id
             WHERE (({table_alias}.strap IS NOT NULL AND oe.strap = {table_alias}.strap)
                OR ({table_alias}.folio IS NOT NULL AND oe.folio = {table_alias}.folio))
               AND oe.encumbrance_type != 'noc'
@@ -553,7 +557,7 @@ def get_auctions_by_date(auction_date: date) -> list[dict[str, Any]]:
     try:
         with _engine().connect() as conn:
             rows = conn.execute(
-                text("""
+                text(f"""
                     SELECT
                         f.foreclosure_id AS id,
                         f.case_number_raw AS case_number,

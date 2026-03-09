@@ -240,8 +240,12 @@ def audit_database(dsn: str | None = None) -> None:
                 SELECT COUNT(DISTINCT f.foreclosure_id)
                 FROM foreclosures f
                 JOIN ori_encumbrances oe ON oe.strap = f.strap
+                LEFT JOIN foreclosure_encumbrance_survival fes
+                  ON fes.foreclosure_id = f.foreclosure_id
+                 AND fes.encumbrance_id = oe.id
                 WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL
-                  AND f.strap IS NOT NULL AND oe.survival_status IS NOT NULL
+                  AND f.strap IS NOT NULL
+                  AND COALESCE(fes.survival_status, oe.survival_status) IS NOT NULL
             """,
                 )
                 if _has_table(conn, "ori_encumbrances")

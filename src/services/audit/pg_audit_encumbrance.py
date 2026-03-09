@@ -658,18 +658,21 @@ def _bucket_historical_window_gap(conn: Any) -> list[BucketHit]:
            f.property_address,
            COUNT(*)                                     AS total_enc,
            COUNT(*) FILTER (
-               WHERE oe.survival_status = 'HISTORICAL'
+               WHERE COALESCE(fes.survival_status, oe.survival_status) = 'HISTORICAL'
            )                                            AS historical_enc
     FROM   foreclosures f
     JOIN   ori_encumbrances oe
       ON   oe.strap = f.strap
+    LEFT JOIN foreclosure_encumbrance_survival fes
+      ON   fes.foreclosure_id = f.foreclosure_id
+     AND   fes.encumbrance_id = oe.id
     WHERE  f.archived_at IS NULL
       AND  f.judgment_data IS NOT NULL
       AND  f.strap IS NOT NULL
       AND  oe.encumbrance_type NOT IN ('noc', 'satisfaction', 'release', 'assignment')
     GROUP  BY f.foreclosure_id, f.case_number_raw, f.strap, f.property_address
     HAVING COUNT(*) = COUNT(*) FILTER (
-               WHERE oe.survival_status = 'HISTORICAL'
+               WHERE COALESCE(fes.survival_status, oe.survival_status) = 'HISTORICAL'
            )
       AND  COUNT(*) > 0
     ORDER  BY f.foreclosure_id
@@ -892,8 +895,11 @@ def run_audit(dsn: str | None = None, *, conn: Any | None = None) -> AuditReport
                 "SELECT COUNT(DISTINCT f.foreclosure_id) "
                 "FROM foreclosures f "
                 "JOIN ori_encumbrances oe ON oe.strap = f.strap "
+                "LEFT JOIN foreclosure_encumbrance_survival fes "
+                "ON fes.foreclosure_id = f.foreclosure_id AND fes.encumbrance_id = oe.id "
                 "WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL "
-                "AND f.strap IS NOT NULL AND oe.survival_status IS NOT NULL",
+                "AND f.strap IS NOT NULL "
+                "AND COALESCE(fes.survival_status, oe.survival_status) IS NOT NULL",
             )
         else:
             with_enc_count = 0

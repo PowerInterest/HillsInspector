@@ -844,9 +844,19 @@ DDL: list[str] = [
         ) perm ON TRUE
         LEFT JOIN LATERAL (
             SELECT COUNT(*) AS total,
-                   COUNT(*) FILTER (WHERE oe.survival_status = 'SURVIVED') AS survived,
-                   COALESCE(SUM(oe.amount) FILTER (WHERE oe.survival_status = 'SURVIVED'), 0) AS survived_debt
+                   COUNT(*) FILTER (
+                       WHERE COALESCE(fes.survival_status, oe.survival_status) = 'SURVIVED'
+                   ) AS survived,
+                   COALESCE(
+                       SUM(oe.amount) FILTER (
+                           WHERE COALESCE(fes.survival_status, oe.survival_status) = 'SURVIVED'
+                       ),
+                       0
+                   ) AS survived_debt
             FROM ori_encumbrances oe
+            LEFT JOIN foreclosure_encumbrance_survival fes
+              ON fes.encumbrance_id = oe.id
+             AND fes.foreclosure_id = f.foreclosure_id
             WHERE oe.strap = f.strap
         ) enc ON TRUE
         WHERE f.archived_at IS NULL
@@ -890,8 +900,14 @@ DDL: list[str] = [
     $$ LANGUAGE plpgsql STABLE;
     """,
     # 8c. get_property_encumbrances — all encumbrances for a property
+    """
+    DROP FUNCTION IF EXISTS get_property_encumbrances(TEXT);
+    """,
     r"""
-    CREATE OR REPLACE FUNCTION get_property_encumbrances(p_strap TEXT)
+    CREATE OR REPLACE FUNCTION get_property_encumbrances(
+        p_strap TEXT,
+        p_foreclosure_id BIGINT DEFAULT NULL
+    )
     RETURNS TABLE (
         id BIGINT, encumbrance_type TEXT, raw_document_type TEXT,
         party1 TEXT, party2 TEXT, amount NUMERIC,
@@ -901,16 +917,33 @@ DDL: list[str] = [
         current_holder TEXT, assignment_count INT, mrta_expiration_date DATE,
         case_number TEXT
     ) AS $$
+    DECLARE
+        v_foreclosure_id BIGINT;
     BEGIN
+        v_foreclosure_id := p_foreclosure_id;
+        IF v_foreclosure_id IS NULL THEN
+            SELECT f.foreclosure_id
+              INTO v_foreclosure_id
+            FROM foreclosures f
+            WHERE f.archived_at IS NULL
+              AND f.strap = p_strap
+            ORDER BY f.auction_date DESC NULLS LAST, f.foreclosure_id DESC
+            LIMIT 1;
+        END IF;
+
         RETURN QUERY
         SELECT oe.id, oe.encumbrance_type::TEXT, oe.raw_document_type,
                oe.party1, oe.party2, oe.amount,
                oe.recording_date, oe.instrument_number::TEXT, oe.book::TEXT, oe.page::TEXT,
                oe.is_satisfied, oe.satisfaction_date, oe.satisfaction_instrument::TEXT,
-               oe.survival_status::TEXT, oe.survival_reason,
+               COALESCE(fes.survival_status, oe.survival_status)::TEXT,
+               COALESCE(fes.survival_reason, oe.survival_reason),
                oe.current_holder, oe.assignment_count, oe.mrta_expiration_date,
                oe.case_number::TEXT
         FROM ori_encumbrances oe
+        LEFT JOIN foreclosure_encumbrance_survival fes
+          ON fes.encumbrance_id = oe.id
+         AND fes.foreclosure_id = v_foreclosure_id
         WHERE oe.strap = p_strap
           AND oe.encumbrance_type != 'noc'
         ORDER BY oe.recording_date DESC NULLS LAST, oe.id;
@@ -974,15 +1007,34 @@ DDL: list[str] = [
     $$ LANGUAGE plpgsql STABLE;
     """,
     # 8e. compute_net_equity — compute net equity for a property (with per diem accrual)
+    """
+    DROP FUNCTION IF EXISTS compute_net_equity(TEXT);
+    """,
     r"""
-    CREATE OR REPLACE FUNCTION compute_net_equity(p_strap TEXT)
+    CREATE OR REPLACE FUNCTION compute_net_equity(
+        p_strap TEXT,
+        p_foreclosure_id BIGINT DEFAULT NULL
+    )
     RETURNS TABLE (
         market_value NUMERIC, final_judgment NUMERIC,
         per_diem_accrual NUMERIC,
         survived_debt NUMERIC, net_equity NUMERIC,
         is_toxic BOOLEAN, survived_count INT, total_encumbrances INT
     ) AS $$
+    DECLARE
+        v_foreclosure_id BIGINT;
     BEGIN
+        v_foreclosure_id := p_foreclosure_id;
+        IF v_foreclosure_id IS NULL THEN
+            SELECT f2.foreclosure_id
+              INTO v_foreclosure_id
+            FROM foreclosures f2
+            WHERE f2.archived_at IS NULL
+              AND f2.strap = p_strap
+            ORDER BY f2.auction_date DESC NULLS LAST, f2.foreclosure_id DESC
+            LIMIT 1;
+        END IF;
+
         RETURN QUERY
         SELECT
             COALESCE(f.market_value, f.zestimate, f.assessed_value, 0) AS market_value,
@@ -1025,13 +1077,24 @@ DDL: list[str] = [
             COALESCE(enc.total_count, 0)::INT
         FROM foreclosures f
         LEFT JOIN LATERAL (
-            SELECT COUNT(*) FILTER (WHERE oe.survival_status IN ('SURVIVED', 'UNCERTAIN')) AS survived_count,
-                   COALESCE(SUM(oe.amount) FILTER (WHERE oe.survival_status IN ('SURVIVED', 'UNCERTAIN')), 0) AS survived_debt,
+            SELECT COUNT(*) FILTER (
+                       WHERE COALESCE(fes.survival_status, oe.survival_status) IN ('SURVIVED', 'UNCERTAIN')
+                   ) AS survived_count,
+                   COALESCE(
+                       SUM(oe.amount) FILTER (
+                           WHERE COALESCE(fes.survival_status, oe.survival_status) IN ('SURVIVED', 'UNCERTAIN')
+                       ),
+                       0
+                   ) AS survived_debt,
                    COUNT(*) AS total_count
             FROM ori_encumbrances oe
+            LEFT JOIN foreclosure_encumbrance_survival fes
+              ON fes.encumbrance_id = oe.id
+             AND fes.foreclosure_id = f.foreclosure_id
             WHERE oe.strap = f.strap
         ) enc ON TRUE
-        WHERE f.strap = p_strap
+        WHERE f.foreclosure_id = COALESCE(v_foreclosure_id, f.foreclosure_id)
+          AND f.strap = p_strap
         ORDER BY f.auction_date DESC
         LIMIT 1;
     END;

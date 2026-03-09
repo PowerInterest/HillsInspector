@@ -170,3 +170,203 @@ def test_homeowner_in_plaintiff_no_fc_type_not_hoa_without_association() -> None
     assert len(foreclosing) == 1
     assert foreclosing[0]["id"] == 30
     assert foreclosing[0]["survival_status"] == "FORECLOSING"
+
+
+def test_mortgage_case_prefers_underlying_mortgage_over_matching_lis_pendens() -> None:
+    service = SurvivalService("STRAP-5")
+    encumbrances = [
+        {
+            "id": 40,
+            "encumbrance_type": "mortgage",
+            "creditor": "NAVY FEDERAL CREDIT UNION",
+            "debtor": "MAIDA AMANDA, MAIDA CHRISTOPHER S",
+            "recording_date": "2014-09-26",
+            "instrument": "2014318871",
+            "is_satisfied": False,
+        },
+        {
+            "id": 41,
+            "encumbrance_type": "lis_pendens",
+            "creditor": "NAVY FEDERAL CREDIT UNION",
+            "recording_date": "2022-09-08",
+            "instrument": "2022438726",
+            "is_satisfied": False,
+        },
+    ]
+    judgment_data = {
+        "plaintiff": "NAVY FEDERAL CREDIT UNION",
+        "foreclosure_type": "FIRST MORTGAGE FORECLOSURE",
+        "defendants": [],
+    }
+
+    result = service.analyze(encumbrances, judgment_data, [], None)
+
+    foreclosing = result["results"]["foreclosing"]
+    assert len(foreclosing) == 1
+    assert foreclosing[0]["id"] == 40
+    assert foreclosing[0]["survival_status"] == "FORECLOSING"
+
+    lp = next(enc for enc in result["results"]["historical"] if enc["id"] == 41)
+    assert lp["survival_reason"] == "Lis pendens is procedural notice, not an independent encumbrance"
+
+
+def test_mortgage_case_matches_plaintiff_against_debtor_side_when_needed() -> None:
+    service = SurvivalService("STRAP-6")
+    encumbrances = [
+        {
+            "id": 50,
+            "encumbrance_type": "mortgage",
+            "creditor": "BORROWER NAME",
+            "debtor": "ROCKET MORTGAGE LLC, QUICKEN LOANS LLC",
+            "recording_date": "2021-12-07",
+            "instrument": "2021630628",
+            "is_satisfied": False,
+        },
+        {
+            "id": 51,
+            "encumbrance_type": "assignment",
+            "creditor": "MORTGAGE ELECTRONIC REGISTRATION SYSTEMS INC NOM, QUICKEN LOANS LLC, ROCKET MORTGAGE LLC",
+            "debtor": "BORROWER NAME",
+            "recording_date": "2024-10-15",
+            "instrument": "2024419943",
+            "is_satisfied": False,
+        },
+    ]
+    judgment_data = {
+        "plaintiff": "ROCKET MORTGAGE, LLC F/K/A QUICKEN LOANS, LLC",
+        "foreclosure_type": "MORTGAGE FORECLOSURE",
+        "defendants": [],
+    }
+
+    result = service.analyze(encumbrances, judgment_data, [], None)
+
+    foreclosing = result["results"]["foreclosing"]
+    assert len(foreclosing) == 1
+    assert foreclosing[0]["id"] == 50
+    assert foreclosing[0]["survival_status"] == "FORECLOSING"
+
+    assignment = next(enc for enc in result["results"]["historical"] if enc["id"] == 51)
+    assert assignment["survival_reason"] == (
+        "Assignment transfers lien ownership; not an independent encumbrance"
+    )
+
+
+def test_same_case_judgment_is_not_treated_as_surviving_independent_lien() -> None:
+    service = SurvivalService("STRAP-7")
+    encumbrances = [
+        {
+            "id": 60,
+            "encumbrance_type": "mortgage",
+            "creditor": "WELLS FARGO BANK NA",
+            "debtor": "KERRI BROWNING",
+            "recording_date": "2011-06-17",
+            "instrument": "2011199740",
+            "is_satisfied": False,
+            "case_number": "",
+        },
+        {
+            "id": 61,
+            "encumbrance_type": "judgment",
+            "creditor": "WELLS FARGO BANK NA",
+            "debtor": "KERRI BROWNING",
+            "recording_date": "2026-01-21",
+            "instrument": "2026024338",
+            "is_satisfied": False,
+            "case_number": "292025CA000651A001HC",
+        },
+    ]
+    judgment_data = {
+        "plaintiff": "Wells Fargo Bank, N.A.",
+        "foreclosure_type": "MORTGAGE FORECLOSURE",
+        "case_number": "2025 CA 000651",
+        "defendants": [],
+    }
+
+    result = service.analyze(encumbrances, judgment_data, [], None)
+
+    foreclosing = result["results"]["foreclosing"]
+    assert len(foreclosing) == 1
+    assert foreclosing[0]["id"] == 60
+
+    same_case_judgment = next(enc for enc in result["results"]["historical"] if enc["id"] == 61)
+    assert same_case_judgment["survival_reason"] == (
+        "Recorded in the current foreclosure case; not an independent encumbrance"
+    )
+
+
+def test_same_case_judgment_matches_pipeline_and_clerk_case_formats() -> None:
+    service = SurvivalService("STRAP-8")
+    encumbrances = [
+        {
+            "id": 70,
+            "encumbrance_type": "mortgage",
+            "creditor": "TRUIST BANK",
+            "debtor": "JANE DOE",
+            "recording_date": "2020-01-15",
+            "instrument": "2020012345",
+            "is_satisfied": False,
+            "case_number": "",
+        },
+        {
+            "id": 71,
+            "encumbrance_type": "judgment",
+            "creditor": "TRUIST BANK",
+            "debtor": "JANE DOE",
+            "recording_date": "2024-07-01",
+            "instrument": "2024123456",
+            "is_satisfied": False,
+            "case_number": "292024CA003253A001HC",
+        },
+    ]
+    judgment_data = {
+        "plaintiff": "Truist Bank",
+        "foreclosure_type": "MORTGAGE FORECLOSURE",
+        "case_number": "24-CA-3253",
+        "defendants": [],
+    }
+
+    result = service.analyze(encumbrances, judgment_data, [], None)
+
+    same_case_judgment = next(enc for enc in result["results"]["historical"] if enc["id"] == 71)
+    assert same_case_judgment["survival_reason"] == (
+        "Recorded in the current foreclosure case; not an independent encumbrance"
+    )
+
+
+def test_same_case_judgment_matches_five_digit_clerk_sequence() -> None:
+    service = SurvivalService("STRAP-9")
+    encumbrances = [
+        {
+            "id": 80,
+            "encumbrance_type": "lis_pendens",
+            "creditor": "PALMETTO COVE COMMUNITY ASSOCIATION INC",
+            "debtor": "ALEX PAJIL",
+            "recording_date": "2025-05-01",
+            "instrument": "2025012345",
+            "is_satisfied": False,
+            "case_number": "292025CC019119A001HC",
+        },
+        {
+            "id": 81,
+            "encumbrance_type": "judgment",
+            "creditor": "PALMETTO COVE COMMUNITY ASSOCIATION INC",
+            "debtor": "ALEX PAJIL",
+            "recording_date": "2026-01-10",
+            "instrument": "2026044534",
+            "is_satisfied": False,
+            "case_number": "292025CC019119A001HC",
+        },
+    ]
+    judgment_data = {
+        "plaintiff": "Palmetto Cove Community Association, Inc.",
+        "foreclosure_type": "HOA",
+        "case_number": "25-CC-19119",
+        "defendants": [],
+    }
+
+    result = service.analyze(encumbrances, judgment_data, [], None)
+
+    same_case_judgment = next(enc for enc in result["results"]["historical"] if enc["id"] == 81)
+    assert same_case_judgment["survival_reason"] == (
+        "Recorded in the current foreclosure case; not an independent encumbrance"
+    )

@@ -514,12 +514,16 @@ def _market_photo_urls(
 def _pg_tax_liens_for_property(
     conn: Any,
     *,
+    foreclosure_id: int | None = None,
     strap: str | None,
     folio: str | None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     where_clauses: list[str] = []
-    params: dict[str, Any] = {"lim": max(1, min(limit, 1000))}
+    params: dict[str, Any] = {
+        "lim": max(1, min(limit, 1000)),
+        "foreclosure_id": foreclosure_id or 0,
+    }
     if strap:
         where_clauses.append("oe.strap = :strap")
         params["strap"] = strap
@@ -538,7 +542,7 @@ def _pg_tax_liens_for_property(
                 oe.encumbrance_type::text AS encumbrance_type,
                 oe.raw_document_type,
                 oe.amount,
-                oe.survival_status,
+                COALESCE(fes.survival_status, oe.survival_status) AS survival_status,
                 oe.party1,
                 oe.party2,
                 oe.instrument_number,
@@ -548,6 +552,9 @@ def _pg_tax_liens_for_property(
                     ELSE COALESCE(NULLIF(oe.party1, ''), NULLIF(oe.party2, ''), '')
                 END AS creditor
             FROM ori_encumbrances oe
+            LEFT JOIN foreclosure_encumbrance_survival fes
+              ON fes.encumbrance_id = oe.id
+             AND fes.foreclosure_id = :foreclosure_id
             WHERE ({" OR ".join(where_clauses)})
               AND (
                     UPPER(COALESCE(oe.raw_document_type, '')) LIKE '%LNCORPTX%'
@@ -857,6 +864,7 @@ def _normalized_survival_status(value: Any) -> str:
 def _pg_encumbrances_for_property(
     conn: Any,
     *,
+    foreclosure_id: int | None = None,
     strap: str | None,
     folio: str | None,
     limit: int = 500,
@@ -864,7 +872,10 @@ def _pg_encumbrances_for_property(
     if not strap and not folio:
         return []
     where_clauses: list[str] = []
-    params: dict[str, Any] = {"lim": max(1, min(limit, 2000))}
+    params: dict[str, Any] = {
+        "lim": max(1, min(limit, 2000)),
+        "foreclosure_id": foreclosure_id or 0,
+    }
     if strap:
         where_clauses.append("oe.strap = :strap")
         params["strap"] = strap
@@ -883,8 +894,8 @@ def _pg_encumbrances_for_property(
                 oe.encumbrance_type::text AS encumbrance_type,
                 oe.amount,
                 oe.amount_confidence,
-                oe.survival_status,
-                oe.survival_reason,
+                COALESCE(fes.survival_status, oe.survival_status) AS survival_status,
+                COALESCE(fes.survival_reason, oe.survival_reason) AS survival_reason,
                 COALESCE(oe.is_satisfied, FALSE) AS is_satisfied,
                 oe.instrument_number AS instrument,
                 oe.instrument_number,
@@ -900,6 +911,9 @@ def _pg_encumbrances_for_property(
                     ELSE COALESCE(NULLIF(oe.party1, ''), NULLIF(oe.party2, ''), '')
                 END AS creditor
             FROM ori_encumbrances oe
+            LEFT JOIN foreclosure_encumbrance_survival fes
+              ON fes.encumbrance_id = oe.id
+             AND fes.foreclosure_id = :foreclosure_id
             WHERE ({" OR ".join(where_clauses)})
               AND oe.encumbrance_type::text != 'noc'
             ORDER BY oe.recording_date DESC NULLS LAST, oe.id DESC
@@ -1307,6 +1321,7 @@ def _pg_property_detail(identifier: str) -> dict[str, Any] | None:
 
         encumbrances = _pg_encumbrances_for_property(
             conn,
+            foreclosure_id=foreclosure_id,
             strap=auction.get("strap"),
             folio=auction.get("folio"),
         )

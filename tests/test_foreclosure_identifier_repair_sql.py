@@ -20,3 +20,31 @@ def test_normalize_trigger_repairs_non_null_invalid_strap_from_folio() -> None:
     assert "WHERE bp.strap = NEW.strap" in trigger_sql
     assert "AND bp.folio = NEW.folio" in trigger_sql
     assert "WHERE bp.folio = NEW.folio" in trigger_sql
+
+
+def test_bootstrap_dashboard_auctions_prefers_per_foreclosure_survival_rows() -> None:
+    sql = next(stmt for stmt in DDL if "CREATE OR REPLACE FUNCTION get_dashboard_auctions(" in stmt)
+
+    assert "LEFT JOIN foreclosure_encumbrance_survival fes" in sql
+    assert "fes.foreclosure_id = f.foreclosure_id" in sql
+    assert "COALESCE(fes.survival_status, oe.survival_status)" in sql
+
+
+def test_bootstrap_property_encumbrances_accepts_foreclosure_context() -> None:
+    drop_sql = next(stmt for stmt in DDL if "DROP FUNCTION IF EXISTS get_property_encumbrances(TEXT);" in stmt)
+    sql = next(stmt for stmt in DDL if "CREATE OR REPLACE FUNCTION get_property_encumbrances(" in stmt)
+
+    assert "DROP FUNCTION IF EXISTS get_property_encumbrances(TEXT);" in drop_sql
+    assert "p_foreclosure_id BIGINT DEFAULT NULL" in sql
+    assert "COALESCE(fes.survival_status, oe.survival_status)" in sql
+    assert "fes.foreclosure_id = v_foreclosure_id" in sql
+
+
+def test_bootstrap_compute_net_equity_accepts_foreclosure_context() -> None:
+    drop_sql = next(stmt for stmt in DDL if "DROP FUNCTION IF EXISTS compute_net_equity(TEXT);" in stmt)
+    sql = next(stmt for stmt in DDL if "CREATE OR REPLACE FUNCTION compute_net_equity(" in stmt)
+
+    assert "DROP FUNCTION IF EXISTS compute_net_equity(TEXT);" in drop_sql
+    assert "p_foreclosure_id BIGINT DEFAULT NULL" in sql
+    assert "COALESCE(fes.survival_status, oe.survival_status)" in sql
+    assert "WHERE f.foreclosure_id = COALESCE(v_foreclosure_id, f.foreclosure_id)" in sql

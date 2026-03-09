@@ -143,6 +143,7 @@ The `docs/` folder contains comprehensive guides and technical design artifacts,
 ### ⚖️ Real Estate Domain Logic
 - [Encumbrance Audit Buckets](docs/domain/ENCUMBRANCE_AUDIT_BUCKETS.md) - Taxonomy for separating ORI discovery gaps, survival-risk gaps, and identity/title-break gaps on active foreclosures.
 - [Lien Survival Analysis](docs/domain/LIEN_SURVIVAL.md) - Exact logic for modeling Florida statues covering extinguished/surviving liens and foreclosures.
+- [Per-Foreclosure Survival Persistence](docs/domain/PER_FORECLOSURE_SURVIVAL.md) - Why shared-strap cases need survival results keyed by `(foreclosure_id, encumbrance_id)` instead of only parcel-scoped encumbrance rows.
 - [Auction Expiration Rules](docs/domain/AUCTION_EXPIRE.md) - Modeling property forfeiture and expiration mechanics.
 - [Chain of Title Recovery](docs/domain/TITLE_CHAIN_RECOVERY.md) - The mechanism of scraping and verifying a complete chain of title.
 - [NOC & Permit Linking](docs/domain/NOC_PERMIT_LINKING.md) - How we link notices of commencement to active building permits.

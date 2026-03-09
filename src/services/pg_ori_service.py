@@ -2876,30 +2876,33 @@ class PgOriService:
         if PgOriService._has_property_text_match(doc, tokens):
             return True
 
-        parties_text = " ".join([
-            *(doc.get("PartiesOne") or []),
-            *(doc.get("PartiesTwo") or []),
-            (doc.get("party1") or ""),
-            (doc.get("party2") or ""),
-        ]).upper()
-        doc_type = normalize_document_type(doc.get("DocType") or "")
+        raw_type = doc.get("DocType") or doc.get("document_type") or doc.get("doc_type") or ""
+        doc_type = normalize_document_type(raw_type)
+        enc_type = normalize_encumbrance_type(doc_type or raw_type)
+        prop_case = (tokens.get("case_number") or "").strip().upper()
+        doc_case = (doc.get("CaseNum") or doc.get("case_number") or "").strip().upper()
+
+        # LP/JUD documents with an explicit case number from a different
+        # foreclosure must not attach to this parcel just because the owner name
+        # overlaps (for example HUD- or bank-owned REO inventory).
+        is_lp_or_judgment = doc_type in {"lis_pendens", "judgment"} or enc_type in {"lis_pendens", "judgment"}
+        if is_lp_or_judgment and doc_case and prop_case and doc_case != prop_case:
+            return False
+
         if _is_noc_type(doc):
             return False
 
-        owner_names = tokens.get("owner_names") or []
-        if owner_names and parties_text:
-            from rapidfuzz import fuzz
-
-            for owner_name in owner_names:
-                if fuzz.token_set_ratio(owner_name, parties_text) > 80:
-                    return True
+        # Owner-name-only matching is too broad for parcel attachment. It can
+        # pull in unrelated foreclosure docs for REO inventory or institutional
+        # owners (for example HUD-owned parcels), even when the legal text and
+        # case number do not match this property.
         # LP/JUD docs: keep only if they belong to this foreclosure case.
-        if doc_type in {"lis_pendens", "judgment"}:
-            doc_case = (doc.get("CaseNum") or "").strip().upper()
-            prop_case = (tokens.get("case_number") or "").strip().upper()
-            if doc_case and prop_case and doc_case == prop_case:
-                return True
-        return False
+        return bool(
+            is_lp_or_judgment
+            and doc_case
+            and prop_case
+            and doc_case == prop_case
+        )
 
     @staticmethod
     def matches_property(doc: dict[str, Any], tokens: dict[str, Any]) -> bool:

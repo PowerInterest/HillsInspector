@@ -9,6 +9,7 @@ Main entry point that coordinates:
 - Final survival status setting
 """
 
+import re
 from datetime import date, datetime
 from typing import List, Dict, Any, Optional
 from loguru import logger
@@ -38,10 +39,31 @@ def _is_lien_type(enc_type: str) -> bool:
     return t == "LIEN" or "(LN)" in t
 
 
+def _is_assignment_type(enc_type: str) -> bool:
+    """Check if encumbrance type represents an assignment."""
+    return (enc_type or "").upper() == "ASSIGNMENT"
+
+
 def _is_hoa_foreclosure_type(fc_type: str) -> bool:
     """Check if foreclosure type indicates an HOA or condo association foreclosure."""
     t = (fc_type or "").upper()
     return "HOA" in t or "CONDO" in t or "ASSOCIATION" in t
+
+
+def _normalize_case_number(case_number: str | None) -> str:
+    """Normalize clerk, OCR, and pipeline case-number variants to a comparable key."""
+    if not case_number:
+        return ""
+    raw = re.sub(r"[^A-Z0-9]", "", str(case_number).upper())
+    if not raw:
+        return ""
+    if match := re.match(r"^29(\d{4})([A-Z]{2})(\d{6}).*$", raw):
+        return match.group(1)[2:4] + match.group(2) + match.group(3)
+    if match := re.match(r"^(\d{4})([A-Z]{2})(\d{1,6})$", raw):
+        return match.group(1)[2:4] + match.group(2) + match.group(3).zfill(6)
+    if match := re.match(r"^(\d{2})([A-Z]{2})(\d{1,6})$", raw):
+        return match.group(1) + match.group(2) + match.group(3).zfill(6)
+    return raw
 
 
 def _match_creditor_to_plaintiff(creditor: str, plaintiff: str) -> float:
@@ -71,6 +93,14 @@ def _match_creditor_to_plaintiff(creditor: str, plaintiff: str) -> float:
             best_score = max(best_score, part_score)
 
     return best_score
+
+
+def _match_parties_to_plaintiff(encumbrance: Dict[str, Any], plaintiff: str) -> float:
+    """Return the best plaintiff-match score across claimant-facing parties."""
+    scores = [_match_creditor_to_plaintiff(encumbrance.get("creditor") or "", plaintiff)]
+    if _is_mortgage_type(encumbrance.get("encumbrance_type", "")):
+        scores.append(_match_creditor_to_plaintiff(encumbrance.get("debtor") or "", plaintiff))
+    return max(scores)
 
 
 class SurvivalService:
@@ -132,6 +162,7 @@ class SurvivalService:
         lp_date = lp_data.get('recording_date') if isinstance(lp_data, dict) else judgment_data.get('lis_pendens_date')
         defendants = judgment_data.get('defendants') or []
         fc_refs = judgment_data.get('foreclosing_refs')
+        current_case_number = _normalize_case_number(judgment_data.get("case_number"))
         mortgage_count = sum(
             1
             for e in encumbrances
@@ -163,6 +194,15 @@ class SurvivalService:
                     "HOA ",
                 )
             )
+        is_mortgage_fc = (
+            not is_hoa_fc
+            and (
+                "FIRST" in fc_type
+                or "MORTGAGE" in fc_type
+                or bool(fc_refs)
+                or isinstance(judgment_data.get("foreclosed_mortgage"), dict)
+            )
+        )
 
         foreclosing_doc = None
 
@@ -174,7 +214,18 @@ class SurvivalService:
         # logic that only considers lis_pendens and lien encumbrances.
         if not is_hoa_fc:
             # Step 3a: Exact match via recording references (instrument, book/page)
-            for enc in encumbrances:
+            exact_candidates = [
+                enc
+                for enc in encumbrances
+                if not enc.get("is_satisfied")
+                and not _is_assignment_type(enc.get("encumbrance_type", ""))
+                and (
+                    not is_mortgage_fc
+                    or _is_mortgage_type(enc.get("encumbrance_type", ""))
+                    or _is_lien_type(enc.get("encumbrance_type", ""))
+                )
+            ]
+            for enc in exact_candidates:
                 is_fc, reason = priority_engine.identify_foreclosing_lien(enc, plaintiff, fc_refs)
                 if is_fc:
                     foreclosing_doc = enc
@@ -183,15 +234,19 @@ class SurvivalService:
                     results['foreclosing'].append(enc)
                     break
 
-            # Step 3b: Name matching with comma-split creditor (for all encumbrance types)
-            if not foreclosing_doc and plaintiff:
+            # Step 3b: Non-mortgage plaintiff match against base lien rows only.
+            # Mortgage cases use Fallback B/C below so LP/assignment proxies cannot
+            # outrank the underlying mortgage when exact refs are absent.
+            if not foreclosing_doc and plaintiff and not is_mortgage_fc:
                 best_enc = None
                 best_score = 0.0
                 for enc in encumbrances:
-                    creditor = enc.get('creditor') or ''
-                    if not creditor:
+                    if enc.get("is_satisfied"):
                         continue
-                    score = _match_creditor_to_plaintiff(creditor, plaintiff)
+                    enc_type = enc.get("encumbrance_type", "")
+                    if _is_lis_pendens_type(enc_type) or _is_assignment_type(enc_type):
+                        continue
+                    score = _match_parties_to_plaintiff(enc, plaintiff)
                     if score > best_score:
                         best_score = score
                         best_enc = enc
@@ -267,7 +322,7 @@ class SurvivalService:
                 )
 
         # Fallback B: Mortgage foreclosure — use most recent unsatisfied mortgage
-        if not foreclosing_doc and ('FIRST' in fc_type or 'MORTGAGE' in fc_type):
+        if not foreclosing_doc and is_mortgage_fc:
             mortgages = [e for e in encumbrances
                          if _is_mortgage_type(e.get('encumbrance_type', ''))
                          and _unsatisfied(e)]
@@ -277,12 +332,10 @@ class SurvivalService:
                     best_mtg = None
                     best_mtg_score = 0.0
                     for m in mortgages:
-                        cred = m.get('creditor') or ''
-                        if cred:
-                            score = _match_creditor_to_plaintiff(cred, plaintiff)
-                            if score > best_mtg_score:
-                                best_mtg_score = score
-                                best_mtg = m
+                        score = _match_parties_to_plaintiff(m, plaintiff)
+                        if score > best_mtg_score:
+                            best_mtg_score = score
+                            best_mtg = m
                     if best_mtg and best_mtg_score >= 0.55:
                         foreclosing_doc = best_mtg
                         foreclosing_doc['survival_status'] = 'FORECLOSING'
@@ -307,7 +360,7 @@ class SurvivalService:
 
         # Fallback C: Mortgage foreclosure with NO mortgages in encumbrances —
         # try lis_pendens matching by plaintiff name (LP is always filed for a foreclosure)
-        if not foreclosing_doc and ('FIRST' in fc_type or 'MORTGAGE' in fc_type) and plaintiff:
+        if not foreclosing_doc and is_mortgage_fc and plaintiff:
             lp_encs = [
                 e for e in encumbrances
                 if _is_lis_pendens_type(e.get('encumbrance_type', ''))
@@ -356,6 +409,7 @@ class SurvivalService:
             remaining = [
                 e for e in encumbrances
                 if _unsatisfied(e)
+                and not _is_assignment_type(e.get('encumbrance_type', ''))
             ]
             if remaining:
                 # Prefer judgment encumbrances (the final judgment is always recorded)
@@ -415,15 +469,42 @@ class SurvivalService:
             if enc.get('survival_status') == 'FORECLOSING':
                 continue
 
+            enc_type = enc.get("encumbrance_type", "")
+            enc_case_number = _normalize_case_number(enc.get("case_number"))
+
             # A. Check if already satisfied
             if enc.get('is_satisfied'):
                 enc['survival_status'] = 'SATISFIED'
                 results['satisfied'].append(enc)
                 continue
 
+            # Procedural documents are useful for discovery, but they are not
+            # independent debts that survive a foreclosure sale.
+            if _is_assignment_type(enc_type):
+                enc['survival_status'] = 'HISTORICAL'
+                enc['survival_reason'] = (
+                    "Assignment transfers lien ownership; not an independent encumbrance"
+                )
+                results['historical'].append(enc)
+                continue
+            if _is_lis_pendens_type(enc_type):
+                enc['survival_status'] = 'HISTORICAL'
+                enc['survival_reason'] = (
+                    "Lis pendens is procedural notice, not an independent encumbrance"
+                )
+                results['historical'].append(enc)
+                continue
+            if enc_type == 'judgment' and current_case_number and enc_case_number == current_case_number:
+                enc['survival_status'] = 'HISTORICAL'
+                enc['survival_reason'] = (
+                    "Recorded in the current foreclosure case; not an independent encumbrance"
+                )
+                results['historical'].append(enc)
+                continue
+
             # B. Check Expiration
             expired, reason = statutory_rules.is_expired(
-                enc.get('encumbrance_type', ''),
+                enc_type,
                 enc.get('recording_date')
             )
             if expired:

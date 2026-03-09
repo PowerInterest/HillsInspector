@@ -135,6 +135,64 @@ def test_matches_property_rejects_owner_only_noc() -> None:
     assert pg_ori_service.PgOriService.matches_property(doc, tokens) is False
 
 
+def test_matches_property_rejects_owner_only_foreclosure_judgment_with_other_case() -> None:
+    tokens = {
+        "legal_tokens": {"LAKEWOOD", "ESTATES", "UNIT"},
+        "owner_names": ["SECRETARY OF HOUSING AND URBAN DEVELOPMENT"],
+        "street_tokens": {"2902", "147TH"},
+        "case_number": "292025CA008465A001HC",
+    }
+    doc = {
+        "DocType": "(JUD) JUDGMENT",
+        "Legal": "JUDGMENT",
+        "CaseNum": "292022CA010278A001HC",
+        "party1": "MORTGAGE ASSETS MANAGEMENT LLC",
+        "party2": "UNITED STATES OF AMERICA, ACTING ON BEHALF OF THE SECRETARY OF HOUSING AND URBAN DEVELOPMENT",
+        "PartiesOne": [],
+        "PartiesTwo": [],
+    }
+
+    assert pg_ori_service.PgOriService.matches_property(doc, tokens) is False
+
+
+def test_matches_property_rejects_owner_only_lis_pendens_without_case_or_property_text() -> None:
+    tokens = {
+        "legal_tokens": {"LAKEWOOD", "ESTATES", "UNIT"},
+        "owner_names": ["SECRETARY OF HOUSING AND URBAN DEVELOPMENT"],
+        "street_tokens": {"2902", "147TH"},
+        "case_number": "292025CA008465A001HC",
+    }
+    doc = {
+        "DocType": "(LIS) LIS PENDENS",
+        "Legal": "FORECLOSURE ACTION",
+        "party1": "TRUSTEE NAME",
+        "party2": "UNITED STATES OF AMERICA, ACTING ON BEHALF OF THE SECRETARY OF HOUSING AND URBAN DEVELOPMENT",
+        "PartiesOne": [],
+        "PartiesTwo": [],
+    }
+
+    assert pg_ori_service.PgOriService.matches_property(doc, tokens) is False
+
+
+def test_matches_property_rejects_owner_only_mortgage_without_property_text() -> None:
+    tokens = {
+        "legal_tokens": {"LAKEWOOD", "ESTATES", "UNIT"},
+        "owner_names": ["SECRETARY OF HOUSING AND URBAN DEVELOPMENT"],
+        "street_tokens": {"2902", "147TH"},
+        "case_number": "292025CA008465A001HC",
+    }
+    doc = {
+        "DocType": "(MTG) MORTGAGE",
+        "Legal": "MORTGAGE",
+        "party1": "OTHER BORROWER",
+        "party2": "SECRETARY OF HOUSING AND URBAN DEVELOPMENT",
+        "PartiesOne": [],
+        "PartiesTwo": [],
+    }
+
+    assert pg_ori_service.PgOriService.matches_property(doc, tokens) is False
+
+
 def test_matches_property_rejects_noc_with_other_street_address() -> None:
     tokens = {
         "legal_tokens": {"PATIO", "TEMPLE", "CONDOMINIUM", "TERRACE"},
