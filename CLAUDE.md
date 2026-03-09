@@ -39,6 +39,7 @@ The chain of title and encumbrance data are the core deliverable. Without them, 
 - `uv run Controller.py` runs the full PG-first pipeline; `uv run python -m app.web.main` launches the dashboard.
 - **When developing/testing**: Use controller skip flags and per-step limits (for example `--skip-hcpa --skip-clerk-bulk --skip-clerk-criminal --skip-clerk-civil-alpha --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits --skip-single-pin-permits --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain --skip-title-breaks --skip-market-data` for Phase B only). Only run the full pipeline when explicitly requested by the user.
 - `uv run ruff check .` (add `--fix` when safe) for linting; `uv run ty check` for typing; `uv run pytest` for unit tests.
+- **Jinja Linting**: We use `djlint`. Run `uv run djlint app/web/templates/ --lint --profile=jinja` to check Jinja/HTML templates for syntax and formatting errors.
 - One-time scraper setup: `uv run playwright install chromium`.
 
 ## Coding Style & Naming Conventions

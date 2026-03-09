@@ -1,746 +1,839 @@
 {% extends "base.html" %}
-
 {% block title %}{{ auction.property_address or 'Property' }} - HillsInspector{% endblock %}
-
 {% block content %}
-<div class="property-detail">
-    <!-- Breadcrumb -->
-    <nav class="breadcrumb">
-        <a href="/">Dashboard</a> &raquo;
-        <span>{{ auction.property_address or auction.folio }}</span>
-    </nav>
-
-    <!-- Limited Analysis Banner (Mobile Homes / No Parcel ID) -->
-    {% if auction.has_valid_parcel_id == false %}
-    <div class="alert alert-warning"
-        style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 8px; padding: 15px 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
-        <span style="font-size: 24px;">⚠️</span>
-        <div>
-            <strong>Limited Analysis Available</strong>
-            <p style="margin: 5px 0 0 0; color: #856404;">This property (likely a mobile home lot or unresolved parcel)
-                does not have a standard county parcel ID. Only Final Judgment data is available. HCPA, title chain,
-                liens, and market analysis cannot be performed.</p>
-        </div>
-    </div>
-    {% endif %}
-
-
-    <!-- CDD Warning Banner -->
-    {% if enrichments and enrichments.cdd_warning %}
-    <div class="alert alert-danger"
-        style="background: #f8ccce; border: 1px solid #f5c2c7; border-radius: 8px; padding: 15px 20px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
-        <span style="font-size: 24px;">⛔</span>
-        <div>
-            <strong style="color: #842029;">CDD Assessment Warning</strong>
-            <p style="margin: 5px 0 0 0; color: #842029;">This property appears to be located in the <strong>{{ enrichments.cdd_warning.cdd_name }}</strong> Community Development District. CDDs carry annual assessment fees that act as super-priority liens and generally survive foreclosure.</p>
-        </div>
-    </div>
-    {% endif %}
-    <!-- Header -->
-    <div class="property-header">
-        <div class="property-title">
-            <h1>{{ auction.property_address or 'Address Unknown' }}</h1>
-            <div class="property-meta">
-                <span class="folio">Folio: {{ property.folio }}</span>
-                <span class="badge badge-{{ auction.auction_type|lower }}">
-                    {{ auction.auction_type or 'UNKNOWN' }}
-                </span>
-                {% if property.is_toxic_title %}
-                <span class="flag flag-danger">TOXIC TITLE</span>
-                {% endif %}
+    <div class="property-detail">
+        <!-- Breadcrumb -->
+        <nav class="breadcrumb">
+            <a href="/">Dashboard</a> &raquo;
+            <span>{{ auction.property_address or auction.folio }}</span>
+        </nav>
+        <!-- Limited Analysis Banner (Mobile Homes / No Parcel ID) -->
+        {% if auction.has_valid_parcel_id == false %}
+            <div class="alert alert-warning"
+                 style="background: #fff3cd;
+                        border: 1px solid #ffc107;
+                        border-radius: 8px;
+                        padding: 15px 20px;
+                        margin-bottom: 20px;
+                        display: flex;
+                        align-items: center;
+                        gap: 10px">
+                <span style="font-size: 24px;">⚠️</span>
+                <div>
+                    <strong>Limited Analysis Available</strong>
+                    <p style="margin: 5px 0 0 0; color: #856404;">
+                        This property (likely a mobile home lot or unresolved parcel)
+                        does not have a standard county parcel ID. Only Final Judgment data is available. HCPA, title chain,
+                        liens, and market analysis cannot be performed.
+                    </p>
+                </div>
+            </div>
+        {% endif %}
+        <!-- CDD Warning Banner -->
+        {% if enrichments and enrichments.cdd_warning %}
+            <div class="alert alert-danger"
+                 style="background: #f8ccce;
+                        border: 1px solid #f5c2c7;
+                        border-radius: 8px;
+                        padding: 15px 20px;
+                        margin-bottom: 20px;
+                        display: flex;
+                        align-items: center;
+                        gap: 10px">
+                <span style="font-size: 24px;">⛔</span>
+                <div>
+                    <strong style="color: #842029;">CDD Assessment Warning</strong>
+                    <p style="margin: 5px 0 0 0; color: #842029;">
+                        This property appears to be located in the <strong>{{
+                        enrichments.cdd_warning.cdd_name }}</strong> Community Development District. CDDs carry annual
+                        assessment fees that act as super-priority liens and generally survive foreclosure.
+                    </p>
+                </div>
+            </div>
+        {% endif %}
+        <!-- Header -->
+        <div class="property-header">
+            <div class="property-title">
+                <h1>{{ auction.property_address or 'Address Unknown' }}</h1>
+                <div class="property-meta">
+                    <span class="folio">Folio: {{ property.folio }}</span>
+                    <span class="badge badge-{{ auction.auction_type|lower }}">{{ auction.auction_type or 'UNKNOWN' }}</span>
+                    {% if property.is_toxic_title %}<span class="flag flag-danger">TOXIC TITLE</span>{% endif %}
+                </div>
+            </div>
+            {% if auction.auction_date %}
+                <div class="auction-date-box">
+                    <div class="auction-date-label">Auction Date</div>
+                    <div class="auction-date-value">{{ auction.auction_date|format_date_long }}</div>
+                </div>
+            {% endif %}
+            <div class="property-actions" style="margin-left: 20px;">
+                <a href="/property/{{ auction.case_number or property.folio }}/title-report"
+                   target="_blank"
+                   class="btn btn-primary"
+                   style="background: #3498db;
+                          color: white;
+                          padding: 10px 20px;
+                          text-decoration: none;
+                          border-radius: 5px;
+                          font-weight: bold">Generate Title Report</a>
             </div>
         </div>
-        {% if auction.auction_date %}
-        <div class="auction-date-box">
-            <div class="auction-date-label">Auction Date</div>
-            <div class="auction-date-value">{{ auction.auction_date|format_date_long }}</div>
-        </div>
-        {% endif %}
-        <div class="property-actions" style="margin-left: 20px;">
-            <a href="/property/{{ auction.case_number or property.folio }}/title-report" target="_blank"
-                class="btn btn-primary"
-                style="background: #3498db; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">
-                Generate Title Report
-            </a>
-        </div>
-    </div>
-
-    <!-- PG Enrichment Badges (Subdivision / Multi-Unit) -->
-    {% if pg_data is defined and pg_data.pg_available %}
-    <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
-        {% if pg_data.subdivision %}
-        <span class="badge"
-            style="background: #2ecc71; color: white; padding: 5px 12px; border-radius: 4px; font-size: 0.85rem;">
-            Subdivision: {{ pg_data.subdivision.sub_name }}
-            {% if pg_data.subdivision.plat_bk %}(Plat {{ pg_data.subdivision.plat_bk }}/{{ pg_data.subdivision.page
-            }}){% endif %}
-        </span>
-        {% endif %}
-        {% if pg_data.multi_unit %}
-        <span class="badge"
-            style="background: #e67e22; color: white; padding: 5px 12px; border-radius: 4px; font-size: 0.85rem;">
-            Multi-Unit: {{ pg_data.multi_unit.units }} units | {{ pg_data.multi_unit.land_use_desc }}
-        </span>
-        {% endif %}
-    </div>
-    {% endif %}
-
-    <!-- Tabs (full-width) -->
-    <div class="tabs-container property-tabs">
-        <div class="tabs">
-            <button class="tab-link active" onclick="openTab(event, 'basic')">Basic</button>
-            <button class="tab-link" onclick="openTab(event, 'judgment')">Judgment</button>
-            <button class="tab-link" onclick="openTab(event, 'chain')">Chain of Title</button>
-            <button class="tab-link" onclick="openTab(event, 'liens')">Liens & Encumbrances</button>
-            <button class="tab-link" onclick="openTab(event, 'comparables')">Comparables</button>
-            <button class="tab-link" onclick="openTab(event, 'permits')">Permits & NOCs</button>
-            <button class="tab-link" onclick="openTab(event, 'tax')">Tax</button>
-            <button class="tab-link" onclick="openTab(event, 'personal')">Personal</button>
-            <button class="tab-link" onclick="openTab(event, 'documents')">Documents</button>
-            {% if audit_summary and audit_summary.total_open_issues > 0 %}
-            <button class="tab-link" onclick="openTab(event, 'audit')">Audit ({{ audit_summary.total_open_issues }})</button>
-            {% endif %}
-        </div>
-
-        <!-- Basic Tab (rendered server-side) -->
-        <div id="basic" class="tab-content active">
-            <div class="property-detail-grid">
-                <div class="property-column">
-                    {% set photos_fb = (market.photos_with_fallback if market and market.photos_with_fallback else []) %}
-                    {% set photos = (market.photos if market and market.photos else []) %}
-                    {% set photo_count = photos_fb|length if photos_fb else photos|length %}
-                    <section class="card property-media">
-                        <h2>Photos{% if photo_count %} <span style="font-weight:400;font-size:0.85em;color:#6b7280">({{ photo_count }} photo{{ 's' if photo_count != 1 }})</span>{% endif %}</h2>
-
-                        {% if photos_fb or photos %}
-                        {# -- Gallery Hero -- #}
-                        {% set first_photo = photos_fb[0] if photos_fb else (photos[0] if photos else none) %}
-                        <div class="gallery-hero{% if photo_count == 1 %} single-photo{% endif %}" id="galleryHero">
-                            <div class="gallery-hero-viewport">
-                                <img class="gallery-img gallery-img--active" id="heroSlotA"
-                                    src="{{ first_photo.url if first_photo is mapping else first_photo }}"
-                                    {% if first_photo is mapping and first_photo.cdn_fallback %}data-fallback="{{ first_photo.cdn_fallback }}"{% endif %}
-                                    alt="Property photo" onerror="galleryFallback(this)">
-                                <img class="gallery-img" id="heroSlotB" src="" alt="Property photo"
-                                    onerror="galleryFallback(this)">
-                            </div>
-                            <button class="gallery-arrow gallery-arrow--prev" onclick="gallery.prev()" aria-label="Previous photo">
-                                <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
-                            </button>
-                            <button class="gallery-arrow gallery-arrow--next" onclick="gallery.next()" aria-label="Next photo">
-                                <svg viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"/></svg>
-                            </button>
-                            <span class="gallery-counter" id="galleryCounter"></span>
-                            <button class="gallery-hero-click" onclick="gallery.openLightbox()" aria-label="Open lightbox"></button>
-                        </div>
-
-                        {# -- Thumbnail Strip -- #}
-                        {% if photo_count > 1 %}
-                        <div class="gallery-thumbs-wrap">
-                            <button class="gallery-thumb-scroll gallery-thumb-scroll--left" id="thumbScrollL"
-                                onclick="gallery.scrollThumbs(-1)" aria-label="Scroll thumbnails left">
-                                <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
-                            </button>
-                            <div class="gallery-thumbs" id="galleryThumbs">
-                                {% for p in (photos_fb if photos_fb else photos) %}
-                                <button class="gallery-thumb{% if loop.index0 == 0 %} gallery-thumb--active{% endif %}"
-                                    data-index="{{ loop.index0 }}" onclick="gallery.goTo({{ loop.index0 }})">
-                                    <img src="{{ p.url if p is mapping else p }}" loading="lazy" alt="Thumbnail {{ loop.index }}"
-                                        onerror="galleryFallback(this)">
-                                </button>
-                                {% endfor %}
-                            </div>
-                            <button class="gallery-thumb-scroll gallery-thumb-scroll--right" id="thumbScrollR"
-                                onclick="gallery.scrollThumbs(1)" aria-label="Scroll thumbnails right">
-                                <svg viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"/></svg>
-                            </button>
-                        </div>
+        <!-- PG Enrichment Badges (Subdivision / Multi-Unit) -->
+        {% if pg_data is defined and pg_data.pg_available %}
+            <div style="display: flex;
+                        gap: 10px;
+                        margin-bottom: 15px;
+                        flex-wrap: wrap">
+                {% if pg_data.subdivision %}
+                    <span class="badge"
+                          style="background: #2ecc71;
+                                 color: white;
+                                 padding: 5px 12px;
+                                 border-radius: 4px;
+                                 font-size: 0.85rem">
+                        Subdivision: {{ pg_data.subdivision.sub_name }}
+                        {% if pg_data.subdivision.plat_bk %}
+                            (Plat {{ pg_data.subdivision.plat_bk }}/{{ pg_data.subdivision.page
+                            }})
                         {% endif %}
-
-                        {% else %}
-                        {# -- Empty State -- #}
-                        <div class="gallery-empty">
-                            <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
-                                <rect x="2" y="3" width="20" height="18" rx="2"/>
-                                <circle cx="8.5" cy="9.5" r="1.5"/>
-                                <path d="M21 15l-5-5L5 21"/>
-                            </svg>
-                            <span>No Photos Available</span>
+                    </span>
+                {% endif %}
+                {% if pg_data.multi_unit %}
+                    <span class="badge"
+                          style="background: #e67e22;
+                                 color: white;
+                                 padding: 5px 12px;
+                                 border-radius: 4px;
+                                 font-size: 0.85rem">
+                        Multi-Unit: {{ pg_data.multi_unit.units }} units | {{ pg_data.multi_unit.land_use_desc }}
+                    </span>
+                {% endif %}
+            </div>
+        {% endif %}
+        <!-- Tabs (full-width) -->
+        <div class="tabs-container property-tabs">
+            <div class="tabs">
+                <button class="tab-link active" onclick="openTab(event, 'basic')">Basic</button>
+                <button class="tab-link" onclick="openTab(event, 'judgment')">Judgment</button>
+                <button class="tab-link" onclick="openTab(event, 'chain')">Chain of Title</button>
+                <button class="tab-link" onclick="openTab(event, 'liens')">Liens & Encumbrances</button>
+                <button class="tab-link" onclick="openTab(event, 'comparables')">Comparables</button>
+                <button class="tab-link" onclick="openTab(event, 'permits')">Permits & NOCs</button>
+                <button class="tab-link" onclick="openTab(event, 'tax')">Tax</button>
+                <button class="tab-link" onclick="openTab(event, 'personal')">Personal</button>
+                <button class="tab-link" onclick="openTab(event, 'documents')">Documents</button>
+                {% if audit_summary and audit_summary.total_open_issues > 0 %}
+                    <button class="tab-link" onclick="openTab(event, 'audit')">
+                        Audit ({{ audit_summary.total_open_issues
+                        }})
+                    </button>
+                {% endif %}
+            </div>
+            <!-- Basic Tab (rendered server-side) -->
+            <div id="basic" class="tab-content active">
+                <div class="property-detail-grid">
+                    <div class="property-column">
+                        {% set photos_fb = (market.photos_with_fallback if market and market.photos_with_fallback else []) %}
+                        {% set photos = (market.photos if market and market.photos else []) %}
+                        {% set photo_count = photos_fb|length if photos_fb else photos|length %}
+                        <section class="card property-media">
+                            <h2>
+                                Photos
+                                {% if photo_count %}
+                                    <span style="font-weight:400;font-size:0.85em;color:#6b7280">({{
+                                    photo_count }} photo{{ 's' if photo_count != 1 }})</span>
+                                {% endif %}
+                            </h2>
+                            {% if photos_fb or photos %}
+                                {# -- Gallery Hero -- #}
+                                {% set first_photo = photos_fb[0] if photos_fb else (photos[0] if photos else none) %}
+                                <div class="gallery-hero{% if photo_count == 1 %} single-photo{% endif %}"
+                                     id="galleryHero">
+                                    <div class="gallery-hero-viewport">
+                                        <img class="gallery-img gallery-img--active" id="heroSlotA"
+                                            src="{{ first_photo.url if first_photo is mapping else first_photo }}" {% if
+                                            first_photo is mapping and first_photo.cdn_fallback
+                                            %}data-fallback="{{ first_photo.cdn_fallback }}" {% endif %} alt="Property photo"
+                                            onerror="galleryFallback(this)">
+                                            <img class="gallery-img"
+                                                 id="heroSlotB"
+                                                 src=""
+                                                 alt="Property photo"
+                                                 onerror="galleryFallback(this)">
+                                        </div>
+                                        <button class="gallery-arrow gallery-arrow--prev"
+                                                onclick="gallery.prev()"
+                                                aria-label="Previous photo">
+                                            <svg viewBox="0 0 24 24">
+                                                <polyline points="15 18 9 12 15 6" />
+                                            </svg>
+                                        </button>
+                                        <button class="gallery-arrow gallery-arrow--next"
+                                                onclick="gallery.next()"
+                                                aria-label="Next photo">
+                                            <svg viewBox="0 0 24 24">
+                                                <polyline points="9 6 15 12 9 18" />
+                                            </svg>
+                                        </button>
+                                        <span class="gallery-counter" id="galleryCounter"></span>
+                                        <button class="gallery-hero-click"
+                                                onclick="gallery.openLightbox()"
+                                                aria-label="Open lightbox"></button>
+                                    </div>
+                                    {# -- Thumbnail Strip -- #}
+                                    {% if photo_count > 1 %}
+                                        <div class="gallery-thumbs-wrap">
+                                            <button class="gallery-thumb-scroll gallery-thumb-scroll--left"
+                                                    id="thumbScrollL"
+                                                    onclick="gallery.scrollThumbs(-1)"
+                                                    aria-label="Scroll thumbnails left">
+                                                <svg viewBox="0 0 24 24">
+                                                    <polyline points="15 18 9 12 15 6" />
+                                                </svg>
+                                            </button>
+                                            <div class="gallery-thumbs" id="galleryThumbs">
+                                                {% for p in (photos_fb if photos_fb else photos) %}
+                                                    <button class="gallery-thumb{% if loop.index0 == 0 %} gallery-thumb--active{% endif %}"
+                                                            data-index="{{ loop.index0 }}"
+                                                            onclick="gallery.goTo({{ loop.index0 }})">
+                                                        <img src="{{ p.url if p is mapping else p }}"
+                                                             loading="lazy"
+                                                             alt="Thumbnail {{ loop.index }}"
+                                                             onerror="galleryFallback(this)">
+                                                    </button>
+                                                {% endfor %}
+                                            </div>
+                                            <button class="gallery-thumb-scroll gallery-thumb-scroll--right"
+                                                    id="thumbScrollR"
+                                                    onclick="gallery.scrollThumbs(1)"
+                                                    aria-label="Scroll thumbnails right">
+                                                <svg viewBox="0 0 24 24">
+                                                    <polyline points="9 6 15 12 9 18" />
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    {% endif %}
+                                {% else %}
+                                    {# -- Empty State -- #}
+                                    <div class="gallery-empty">
+                                        <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                                            <rect x="2" y="3" width="20" height="18" rx="2" />
+                                            <circle cx="8.5" cy="9.5" r="1.5" />
+                                            <path d="M21 15l-5-5L5 21" />
+                                        </svg>
+                                        <span>No Photos Available</span>
+                                    </div>
+                                {% endif %}
+                            </section>
+                            {% include "partials/market_module.html" %}
+                            <section class="card">
+                                <h2>Property Overview</h2>
+                                <div class="info-grid">
+                                    <div class="info-item">
+                                        <span class="info-label">Owner</span>
+                                        <span class="info-value">{{ parcel.owner_name or auction.owner_name or 'Unknown'
+                                        }}</span>
+                                    </div>
+                                    <div class="info-item">
+                                        <span class="info-label">Beds</span>
+                                        <span class="info-value">{{ parcel.beds|int if parcel.beds else '-' }}</span>
+                                    </div>
+                                    <div class="info-item">
+                                        <span class="info-label">Baths</span>
+                                        <span class="info-value">{{ parcel.baths if parcel.baths else '-' }}</span>
+                                    </div>
+                                    <div class="info-item">
+                                        <span class="info-label">Sq Ft</span>
+                                        <span class="info-value">{{ "{:,.0f}".format(parcel.heated_area) if parcel.heated_area
+                                        else '-' }}</span>
+                                    </div>
+                                    <div class="info-item">
+                                        <span class="info-label">Year Built</span>
+                                        <span class="info-value">{{ parcel.year_built|int if parcel.year_built else '-'
+                                        }}</span>
+                                    </div>
+                                    <div class="info-item">
+                                        <span class="info-label">Land Use</span>
+                                        <span class="info-value">{{ parcel.land_use_desc or parcel.land_use or '-' }}</span>
+                                    </div>
+                                    {% if enrichments and enrichments.flood_zone %}
+                                        <div class="info-item">
+                                            <span class="info-label">Flood</span>
+                                            <span class="info-value">
+                                                {{ enrichments.flood_zone }}
+                                                {% if enrichments.flood_risk %}
+                                                    ({{
+                                                    enrichments.flood_risk }})
+                                                {% endif %}
+                                            </span>
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            </section>
                         </div>
-                        {% endif %}
-                    </section>
-
-                    {% include "partials/market_module.html" %}
-
-                    <section class="card">
-                        <h2>Property Overview</h2>
-                        <div class="info-grid">
-                            <div class="info-item">
-                                <span class="info-label">Owner</span>
-                                <span class="info-value">{{ parcel.owner_name or auction.owner_name or 'Unknown'
-                                    }}</span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label">Beds</span>
-                                <span class="info-value">{{ parcel.beds|int if parcel.beds else '-' }}</span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label">Baths</span>
-                                <span class="info-value">{{ parcel.baths if parcel.baths else '-' }}</span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label">Sq Ft</span>
-                                <span class="info-value">{{ "{:,.0f}".format(parcel.heated_area) if parcel.heated_area
-                                    else '-' }}</span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label">Year Built</span>
-                                <span class="info-value">{{ parcel.year_built|int if parcel.year_built else '-'
-                                    }}</span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label">Land Use</span>
-                                <span class="info-value">{{ parcel.land_use_desc or parcel.land_use or '-' }}</span>
-                            </div>
-                            {% if enrichments and enrichments.flood_zone %}
-                            <div class="info-item">
-                                <span class="info-label">Flood</span>
-                                <span class="info-value">
-                                    {{ enrichments.flood_zone }}{% if enrichments.flood_risk %} ({{
-                                    enrichments.flood_risk }}){% endif %}
-                                </span>
-                            </div>
-                            {% endif %}
+                        <div class="property-column">
+                            <section class="card equity-card">
+                                <h2>Net Equity Analysis</h2>
+                                <div class="equity-breakdown">
+                                    <div class="equity-line">
+                                        <span>Market Value (Est.)</span>
+                                        <span class="money positive">{{ "${:,.0f}".format(market_value) }}</span>
+                                    </div>
+                                    {% set jb = judgment_breakdown or {} %}
+                                    {% if jb.get('has_breakdown') %}
+                                        {# Expandable judgment detail #}
+                                        <div class="equity-line subtract judgment-header"
+                                             onclick="this.parentElement.querySelector('.judgment-detail').classList.toggle('hidden');this.querySelector('.expand-icon').textContent=this.querySelector('.expand-icon').textContent==='▸'?'▾':'▸'">
+                                            <span><span class="expand-icon">▸</span> Final Judgment</span>
+                                            <span class="money">- {{ "${:,.0f}".format(jb.total_judgment) }}</span>
+                                        </div>
+                                        <div class="judgment-detail hidden">
+                                            {% if jb.principal > 0 %}
+                                                <div class="equity-subline">
+                                                    <span>Principal</span>
+                                                    <span class="money">{{ "${:,.0f}".format(jb.principal) }}</span>
+                                                </div>
+                                            {% endif %}
+                                            {% if jb.interest > 0 %}
+                                                <div class="equity-subline">
+                                                    <span>Interest</span>
+                                                    <span class="money">{{ "${:,.0f}".format(jb.interest) }}</span>
+                                                </div>
+                                            {% endif %}
+                                            {% if jb.escrow_advances > 0 %}
+                                                <div class="equity-subline">
+                                                    <span>Escrow Advances</span>
+                                                    <span class="money">{{ "${:,.0f}".format(jb.escrow_advances) }}</span>
+                                                </div>
+                                            {% endif %}
+                                            {% set costs_fees = jb.court_costs + jb.attorney_fees %}
+                                            {% if costs_fees > 0 %}
+                                                <div class="equity-subline">
+                                                    <span>Costs + Atty Fees</span>
+                                                    <span class="money">{{ "${:,.0f}".format(costs_fees) }}</span>
+                                                </div>
+                                            {% endif %}
+                                            {% if jb.title_search_costs > 0 %}
+                                                <div class="equity-subline">
+                                                    <span>Title Search</span>
+                                                    <span class="money">{{ "${:,.0f}".format(jb.title_search_costs) }}</span>
+                                                </div>
+                                            {% endif %}
+                                            {% set other = jb.late_charges + jb.other_costs %}
+                                            {% if other > 0 %}
+                                                <div class="equity-subline">
+                                                    <span>Other</span>
+                                                    <span class="money">{{ "${:,.0f}".format(other) }}</span>
+                                                </div>
+                                            {% endif %}
+                                        </div>
+                                        {% if jb.per_diem_rate > 0 and jb.accrual_days > 0 %}
+                                            <div class="equity-line subtract per-diem">
+                                                <span>Per Diem Accrual ({{ jb.accrual_days }}d @ ${{ "{:,.2f}".format(jb.per_diem_rate) 
+                                                }}/day)</span>
+                                                <span class="money">- {{ "${:,.0f}".format(jb.per_diem_accrual) }}</span>
+                                            </div>
+                                        {% endif %}
+                                    {% else %}
+                                        {# Simple single-line when no breakdown available #}
+                                        <div class="equity-line subtract">
+                                            <span>Final Judgment</span>
+                                            <span class="money">- {{ "${:,.0f}".format(auction.final_judgment_amount) if
+                                            auction.final_judgment_amount else '$0' }}</span>
+                                        </div>
+                                    {% endif %}
+                                    <div class="equity-line subtract">
+                                        <span>Est. Surviving Liens
+                                            {% if enrichments.liens_surviving %}
+                                                ({{
+                                                enrichments.liens_surviving }})
+                                            {% endif %}
+                                        </span>
+                                        <span class="money">- {{ "${:,.0f}".format(property.est_surviving_debt) if
+                                        property.est_surviving_debt else '$0' }}</span>
+                                    </div>
+                                    <div class="equity-line total">
+                                        <span>NET EQUITY</span>
+                                        <span class="money {% if net_equity > 0 %}positive{% elif net_equity < 0 %}negative{% endif %}">
+                                            {{ "${:,.0f}".format(net_equity) }}
+                                        </span>
+                                    </div>
+                                </div>
+                                {% if jb.get('per_diem_rate', 0) > 0 and jb.get('interest_through_date') %}
+                                    <div class="equity-note">
+                                        Per diem of ${{ "{:,.2f}".format(jb.per_diem_rate) }}/day accruing since {{ jb.interest_through_date.strftime("%m/%d/%Y") if jb.interest_through_date else '?' }}
+                                    </div>
+                                {% endif %}
+                                {% if net_equity < 0 %}<div class="equity-warning">Warning: Negative equity - potential loss</div>{% endif %}
+                            </section>
+                            <section class="card">
+                                <h2>Valuation</h2>
+                                <div class="valuation-grid">
+                                    <div class="valuation-item">
+                                        <span class="valuation-label">HCPA Assessed</span>
+                                        <span class="valuation-value">{{ "${:,.0f}".format(parcel.assessed_value) if parcel and
+                                        parcel.assessed_value else '-' }}</span>
+                                    </div>
+                                    <div class="valuation-item">
+                                        <span class="valuation-label">HCPA Market</span>
+                                        <span class="valuation-value">{{ "${:,.0f}".format(parcel.market_value) if parcel and
+                                        parcel.market_value else '-' }}</span>
+                                    </div>
+                                    <div class="valuation-item">
+                                        <span class="valuation-label">Auction Assessed</span>
+                                        <span class="valuation-value">{{ "${:,.0f}".format(auction.assessed_value) if
+                                        auction.assessed_value else '-' }}</span>
+                                    </div>
+                                    {% if parcel and parcel.last_sale_price %}
+                                        <div class="valuation-item">
+                                            <span class="valuation-label">Last Sale</span>
+                                            <span class="valuation-value">{{ "${:,.0f}".format(parcel.last_sale_price) }} ({{
+                                            parcel.last_sale_date }})</span>
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            </section>
+                            <section class="card">
+                                <h2>Auction Information</h2>
+                                <div class="info-grid">
+                                    <div class="info-item">
+                                        <span class="info-label">Case Number</span>
+                                        <span class="info-value">
+                                            <a href="https://hover.hillsclerk.com" target="_blank">{{ auction.case_number }}</a>
+                                        </span>
+                                    </div>
+                                    <div class="info-item">
+                                        <span class="info-label">Auction Type</span>
+                                        <span class="info-value">{{ auction.auction_type }}</span>
+                                    </div>
+                                    <div class="info-item">
+                                        <span class="info-label">Final Judgment</span>
+                                        <span class="info-value money">{{ "${:,.2f}".format(auction.final_judgment_amount) if
+                                        auction.final_judgment_amount else 'Not Available' }}</span>
+                                    </div>
+                                    <div class="info-item">
+                                        <span class="info-label">Opening Bid</span>
+                                        <span class="info-value money">{{ "${:,.2f}".format(auction.opening_bid) if
+                                        auction.opening_bid else 'Not Published Yet' }}</span>
+                                    </div>
+                                    {% if auction.plaintiff_max_bid %}
+                                        <div class="info-item">
+                                            <span class="info-label">Plaintiff Max Bid</span>
+                                            <span class="info-value money">{{ auction.plaintiff_max_bid }}</span>
+                                        </div>
+                                    {% endif %}
+                                    <div class="info-item">
+                                        <span class="info-label">Status</span>
+                                        <span class="info-value">{{ auction.status or 'PENDING' }}</span>
+                                    </div>
+                                    {% if auction.plaintiff %}
+                                        <div class="info-item">
+                                            <span class="info-label">Plaintiff (Foreclosing)</span>
+                                            <span class="info-value">{{ auction.plaintiff }}</span>
+                                        </div>
+                                    {% endif %}
+                                    {% if auction.foreclosure_type %}
+                                        <div class="info-item">
+                                            <span class="info-label">Foreclosure Type</span>
+                                            <span class="info-value">{{ auction.foreclosure_type }}</span>
+                                        </div>
+                                    {% endif %}
+                                    {% if auction.lis_pendens_date %}
+                                        <div class="info-item">
+                                            <span class="info-label">Lis Pendens Date</span>
+                                            <span class="info-value">{{ auction.lis_pendens_date }}</span>
+                                        </div>
+                                    {% endif %}
+                                    {% if auction.extracted_judgment_data and
+                                        auction.extracted_judgment_data.get('foreclosed_mortgage') %}
+                                        {% set fm = auction.extracted_judgment_data.get('foreclosed_mortgage') %}
+                                        {% if fm and (fm.get('instrument_number') or fm.get('recording_book') or
+                                            fm.get('recording_page')) %}
+                                            <div class="info-item">
+                                                <span class="info-label">Foreclosed Mortgage Ref</span>
+                                                <span class="info-value">
+                                                    {% if fm.get('instrument_number') %}Inst {{ fm.get("instrument_number") }}{% endif %}
+                                                    {% if fm.get('recording_book') and fm.get('recording_page') %}
+                                                        {% if fm.get('instrument_number') %}|{% endif %}
+                                                        Bk/Pg {{ fm.get("recording_book") }}/{{ fm.get("recording_page") }}
+                                                    {% endif %}
+                                                </span>
+                                            </div>
+                                        {% endif %}
+                                    {% endif %}
+                                </div>
+                            </section>
+                        </div>
+                    </div>
+                    <!-- Sales History - Full Width -->
+                    <section class="card" style="margin-top: 1.5rem;">
+                        <h2>Sales History</h2>
+                        <div id="sales-history-section"
+                             hx-get="/property/{{ property.folio }}/sales"
+                             hx-trigger="load"
+                             hx-swap="innerHTML">
+                            <div class="htmx-loading">Loading sales history...</div>
                         </div>
                     </section>
                 </div>
-
-                <div class="property-column">
-                    <section class="card equity-card">
-                        <h2>Net Equity Analysis</h2>
-                        <div class="equity-breakdown">
-                            <div class="equity-line">
-                                <span>Market Value (Est.)</span>
-                                <span class="money positive">{{ "${:,.0f}".format(market_value) }}</span>
-                            </div>
-
-                            {% set jb = judgment_breakdown or {} %}
-                            {% if jb.get('has_breakdown') %}
-                            {# Expandable judgment detail #}
-                            <div class="equity-line subtract judgment-header" onclick="this.parentElement.querySelector('.judgment-detail').classList.toggle('hidden');this.querySelector('.expand-icon').textContent=this.querySelector('.expand-icon').textContent==='▸'?'▾':'▸'">
-                                <span><span class="expand-icon">▸</span> Final Judgment</span>
-                                <span class="money">- {{ "${:,.0f}".format(jb.total_judgment) }}</span>
-                            </div>
-                            <div class="judgment-detail hidden">
-                                {% if jb.principal > 0 %}
-                                <div class="equity-subline">
-                                    <span>Principal</span>
-                                    <span class="money">{{ "${:,.0f}".format(jb.principal) }}</span>
-                                </div>
-                                {% endif %}
-                                {% if jb.interest > 0 %}
-                                <div class="equity-subline">
-                                    <span>Interest</span>
-                                    <span class="money">{{ "${:,.0f}".format(jb.interest) }}</span>
-                                </div>
-                                {% endif %}
-                                {% if jb.escrow_advances > 0 %}
-                                <div class="equity-subline">
-                                    <span>Escrow Advances</span>
-                                    <span class="money">{{ "${:,.0f}".format(jb.escrow_advances) }}</span>
-                                </div>
-                                {% endif %}
-                                {% set costs_fees = jb.court_costs + jb.attorney_fees %}
-                                {% if costs_fees > 0 %}
-                                <div class="equity-subline">
-                                    <span>Costs + Atty Fees</span>
-                                    <span class="money">{{ "${:,.0f}".format(costs_fees) }}</span>
-                                </div>
-                                {% endif %}
-                                {% if jb.title_search_costs > 0 %}
-                                <div class="equity-subline">
-                                    <span>Title Search</span>
-                                    <span class="money">{{ "${:,.0f}".format(jb.title_search_costs) }}</span>
-                                </div>
-                                {% endif %}
-                                {% set other = jb.late_charges + jb.other_costs %}
-                                {% if other > 0 %}
-                                <div class="equity-subline">
-                                    <span>Other</span>
-                                    <span class="money">{{ "${:,.0f}".format(other) }}</span>
-                                </div>
-                                {% endif %}
-                            </div>
-                            {% if jb.per_diem_rate > 0 and jb.accrual_days > 0 %}
-                            <div class="equity-line subtract per-diem">
-                                <span>Per Diem Accrual ({{ jb.accrual_days }}d @ ${{ "{:,.2f}".format(jb.per_diem_rate) }}/day)</span>
-                                <span class="money">- {{ "${:,.0f}".format(jb.per_diem_accrual) }}</span>
-                            </div>
-                            {% endif %}
-                            {% else %}
-                            {# Simple single-line when no breakdown available #}
-                            <div class="equity-line subtract">
-                                <span>Final Judgment</span>
-                                <span class="money">- {{ "${:,.0f}".format(auction.final_judgment_amount) if
-                                    auction.final_judgment_amount else '$0' }}</span>
-                            </div>
-                            {% endif %}
-
-                            <div class="equity-line subtract">
-                                <span>Est. Surviving Liens{% if enrichments.liens_surviving %} ({{ enrichments.liens_surviving }}){% endif %}</span>
-                                <span class="money">- {{ "${:,.0f}".format(property.est_surviving_debt) if
-                                    property.est_surviving_debt else '$0' }}</span>
-                            </div>
-                            <div class="equity-line total">
-                                <span>NET EQUITY</span>
-                                <span
-                                    class="money {% if net_equity > 0 %}positive{% elif net_equity < 0 %}negative{% endif %}">
-                                    {{ "${:,.0f}".format(net_equity) }}
-                                </span>
-                            </div>
-                        </div>
-                        {% if jb.get('per_diem_rate', 0) > 0 and jb.get('interest_through_date') %}
-                        <div class="equity-note">
-                            Per diem of ${{ "{:,.2f}".format(jb.per_diem_rate) }}/day accruing since {{ jb.interest_through_date.strftime('%m/%d/%Y') if jb.interest_through_date else '?' }}
-                        </div>
-                        {% endif %}
-                        {% if net_equity < 0 %}
-                        <div class="equity-warning">
-                            Warning: Negative equity - potential loss
-                        </div>
-                        {% endif %}
-                    </section>
-
-                <section class="card">
-                    <h2>Valuation</h2>
-                    <div class="valuation-grid">
-                        <div class="valuation-item">
-                            <span class="valuation-label">HCPA Assessed</span>
-                            <span class="valuation-value">{{ "${:,.0f}".format(parcel.assessed_value) if parcel and
-                                parcel.assessed_value else '-' }}</span>
-                        </div>
-                        <div class="valuation-item">
-                            <span class="valuation-label">HCPA Market</span>
-                            <span class="valuation-value">{{ "${:,.0f}".format(parcel.market_value) if parcel and
-                                parcel.market_value else '-' }}</span>
-                        </div>
-                        <div class="valuation-item">
-                            <span class="valuation-label">Auction Assessed</span>
-                            <span class="valuation-value">{{ "${:,.0f}".format(auction.assessed_value) if
-                                auction.assessed_value else '-' }}</span>
-                        </div>
-                        {% if parcel and parcel.last_sale_price %}
-                        <div class="valuation-item">
-                            <span class="valuation-label">Last Sale</span>
-                            <span class="valuation-value">{{ "${:,.0f}".format(parcel.last_sale_price) }} ({{
-                                parcel.last_sale_date }})</span>
-                        </div>
-                        {% endif %}
+                <!-- Judgment Tab -->
+                <div id="judgment"
+                     class="tab-content"
+                     hx-get="/property/{{ property.folio }}/judgment"
+                     hx-trigger="tab-show once"
+                     hx-swap="innerHTML"
+                     style="display:none">
+                    <div class="htmx-loading">Loading judgment data...</div>
+                </div>
+                <!-- Chain Tab -->
+                <div id="chain"
+                     class="tab-content"
+                     hx-get="/property/{{ property.folio }}/chain"
+                     hx-trigger="tab-show once"
+                     hx-swap="innerHTML"
+                     style="display:none">
+                    <div class="htmx-loading">Loading chain of title...</div>
+                </div>
+                <!-- Liens Tab -->
+                <div id="liens"
+                     class="tab-content"
+                     hx-get="/property/{{ property.folio }}/liens"
+                     hx-trigger="tab-show once"
+                     hx-swap="innerHTML"
+                     style="display:none">
+                    <div class="htmx-loading">Loading liens...</div>
+                </div>
+                <!-- Comparables Tab -->
+                <div id="comparables"
+                     class="tab-content"
+                     hx-get="/property/{{ property.folio }}/comparables"
+                     hx-trigger="tab-show once"
+                     hx-swap="innerHTML"
+                     style="display:none">
+                    <div class="htmx-loading">Loading comparable sales...</div>
+                </div>
+                <!-- Permits Tab -->
+                <div id="permits"
+                     class="tab-content"
+                     hx-get="/property/{{ property.folio }}/permits"
+                     hx-trigger="tab-show once"
+                     hx-swap="innerHTML"
+                     style="display:none">
+                    <div class="htmx-loading">Loading permits...</div>
+                </div>
+                <!-- Tax Tab -->
+                <div id="tax"
+                     class="tab-content"
+                     hx-get="/property/{{ property.folio }}/tax"
+                     hx-trigger="tab-show once"
+                     hx-swap="innerHTML"
+                     style="display:none">
+                    <div class="htmx-loading">Loading tax...</div>
+                </div>
+                <!-- Personal Tab -->
+                <div id="personal"
+                     class="tab-content"
+                     hx-get="/property/{{ property.folio }}/personal"
+                     hx-trigger="tab-show once"
+                     hx-swap="innerHTML"
+                     style="display:none">
+                    <div class="htmx-loading">Loading personal dossier...</div>
+                </div>
+                <!-- Documents Tab -->
+                <div id="documents"
+                     class="tab-content"
+                     hx-get="/property/{{ property.folio }}/documents"
+                     hx-trigger="tab-show once"
+                     hx-swap="innerHTML"
+                     style="display:none">
+                    <div class="htmx-loading">Loading documents...</div>
+                </div>
+                <!-- Audit Tab -->
+                <div id="audit"
+                     class="tab-content"
+                     hx-get="/property/{{ property.folio }}/audit"
+                     hx-trigger="tab-show once"
+                     hx-swap="innerHTML"
+                     style="display:none">
+                    <div class="htmx-loading">Loading audit...</div>
+                </div>
+            </div>
+            <!-- OCR Content (if available) -->
+            {% if auction.final_judgment_content %}
+                <section class="card ocr-section">
+                    <h2>Final Judgment OCR Text</h2>
+                    <details>
+                        <summary>Show extracted text</summary>
+                        <pre class="ocr-text">{{ auction.final_judgment_content }}</pre>
+                    </details>
+                </section>
+            {% endif %}
+            <!-- Data Sources -->
+            {% if property.sources %}
+                <section class="card sources-section">
+                    <h2>Data Sources</h2>
+                    <div class="table-container">
+                        <table class="auction-table">
+                            <thead>
+                                <tr>
+                                    <th>Source</th>
+                                    <th>URL</th>
+                                    <th>Description</th>
+                                    <th>Captured At</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for source in property.sources %}
+                                    <tr class="auction-row">
+                                        <td>{{ source.source_name }}</td>
+                                        <td>
+                                            <a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">
+                                                {{ source.url[:60] }}
+                                                {% if source.url|length > 60 %}...{% endif %}
+                                            </a>
+                                        </td>
+                                        <td>{{ source.description }}</td>
+                                        <td>{{ source.created_at }}</td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
                     </div>
                 </section>
-
-                <section class="card">
-                    <h2>Auction Information</h2>
-                    <div class="info-grid">
-                        <div class="info-item">
-                            <span class="info-label">Case Number</span>
-                            <span class="info-value">
-                                <a href="https://hover.hillsclerk.com" target="_blank">{{ auction.case_number }}</a>
-                            </span>
-                        </div>
-                        <div class="info-item">
-                            <span class="info-label">Auction Type</span>
-                            <span class="info-value">{{ auction.auction_type }}</span>
-                        </div>
-                        <div class="info-item">
-                            <span class="info-label">Final Judgment</span>
-                            <span class="info-value money">{{ "${:,.2f}".format(auction.final_judgment_amount) if
-                                auction.final_judgment_amount else 'Not Available' }}</span>
-                        </div>
-                        <div class="info-item">
-                            <span class="info-label">Opening Bid</span>
-                            <span class="info-value money">{{ "${:,.2f}".format(auction.opening_bid) if
-                                auction.opening_bid else 'Not Published Yet' }}</span>
-                        </div>
-                        {% if auction.plaintiff_max_bid %}
-                        <div class="info-item">
-                            <span class="info-label">Plaintiff Max Bid</span>
-                            <span class="info-value money">{{ auction.plaintiff_max_bid }}</span>
-                        </div>
-                        {% endif %}
-                        <div class="info-item">
-                            <span class="info-label">Status</span>
-                            <span class="info-value">{{ auction.status or 'PENDING' }}</span>
-                        </div>
-                        {% if auction.plaintiff %}
-                        <div class="info-item">
-                            <span class="info-label">Plaintiff (Foreclosing)</span>
-                            <span class="info-value">{{ auction.plaintiff }}</span>
-                        </div>
-                        {% endif %}
-                        {% if auction.foreclosure_type %}
-                        <div class="info-item">
-                            <span class="info-label">Foreclosure Type</span>
-                            <span class="info-value">{{ auction.foreclosure_type }}</span>
-                        </div>
-                        {% endif %}
-                        {% if auction.lis_pendens_date %}
-                        <div class="info-item">
-                            <span class="info-label">Lis Pendens Date</span>
-                            <span class="info-value">{{ auction.lis_pendens_date }}</span>
-                        </div>
-                        {% endif %}
-                        {% if auction.extracted_judgment_data and
-                        auction.extracted_judgment_data.get('foreclosed_mortgage') %}
-                        {% set fm = auction.extracted_judgment_data.get('foreclosed_mortgage') %}
-                        {% if fm and (fm.get('instrument_number') or fm.get('recording_book') or
-                        fm.get('recording_page')) %}
-                        <div class="info-item">
-                            <span class="info-label">Foreclosed Mortgage Ref</span>
-                            <span class="info-value">
-                                {% if fm.get('instrument_number') %}Inst {{ fm.get('instrument_number') }}{% endif %}
-                                {% if fm.get('recording_book') and fm.get('recording_page') %}
-                                {% if fm.get('instrument_number') %} | {% endif %}
-                                Bk/Pg {{ fm.get('recording_book') }}/{{ fm.get('recording_page') }}
-                                {% endif %}
-                            </span>
-                        </div>
-                        {% endif %}
-                        {% endif %}
-                    </div>
-                </section>
-
-            </div>
+            {% endif %}
         </div>
-        <!-- Sales History - Full Width -->
-        <section class="card" style="margin-top: 1.5rem;">
-            <h2>Sales History</h2>
-            <div id="sales-history-section" hx-get="/property/{{ property.folio }}/sales" hx-trigger="load"
-                hx-swap="innerHTML">
-                <div class="htmx-loading">Loading sales history...</div>
+        {# ===== Lightbox ===== #}
+        <div class="lightbox" id="lightbox">
+            <div class="lightbox-backdrop" onclick="gallery.closeLightbox()"></div>
+            <button class="lightbox-close"
+                    onclick="gallery.closeLightbox()"
+                    aria-label="Close lightbox">&times;</button>
+            <span class="lightbox-counter" id="lightboxCounter"></span>
+            <div class="lightbox-stage">
+                <button class="lightbox-arrow"
+                        onclick="gallery.prev()"
+                        aria-label="Previous photo">
+                    <svg viewBox="0 0 24 24">
+                        <polyline points="15 18 9 12 15 6" />
+                    </svg>
+                </button>
+                <div class="lightbox-img-wrap">
+                    <img class="lightbox-img lightbox-img--active"
+                         id="lbSlotA"
+                         src=""
+                         alt="Property photo">
+                    <img class="lightbox-img" id="lbSlotB" src="" alt="Property photo">
+                </div>
+                <button class="lightbox-arrow"
+                        onclick="gallery.next()"
+                        aria-label="Next photo">
+                    <svg viewBox="0 0 24 24">
+                        <polyline points="9 6 15 12 9 18" />
+                    </svg>
+                </button>
             </div>
-        </section>
-    </div>
-
-    <!-- Judgment Tab -->
-    <div id="judgment" class="tab-content" hx-get="/property/{{ property.folio }}/judgment" hx-trigger="tab-show once"
-        hx-swap="innerHTML" style="display:none;">
-        <div class="htmx-loading">Loading judgment data...</div>
-    </div>
-
-    <!-- Chain Tab -->
-    <div id="chain" class="tab-content" hx-get="/property/{{ property.folio }}/chain" hx-trigger="tab-show once"
-        hx-swap="innerHTML" style="display:none;">
-        <div class="htmx-loading">Loading chain of title...</div>
-    </div>
-
-    <!-- Liens Tab -->
-    <div id="liens" class="tab-content" hx-get="/property/{{ property.folio }}/liens" hx-trigger="tab-show once"
-        hx-swap="innerHTML" style="display:none;">
-        <div class="htmx-loading">Loading liens...</div>
-    </div>
-
-    <!-- Comparables Tab -->
-    <div id="comparables" class="tab-content" hx-get="/property/{{ property.folio }}/comparables"
-        hx-trigger="tab-show once" hx-swap="innerHTML" style="display:none;">
-        <div class="htmx-loading">Loading comparable sales...</div>
-    </div>
-
-    <!-- Permits Tab -->
-    <div id="permits" class="tab-content" hx-get="/property/{{ property.folio }}/permits" hx-trigger="tab-show once"
-        hx-swap="innerHTML" style="display:none;">
-        <div class="htmx-loading">Loading permits...</div>
-    </div>
-
-    <!-- Tax Tab -->
-    <div id="tax" class="tab-content" hx-get="/property/{{ property.folio }}/tax" hx-trigger="tab-show once"
-        hx-swap="innerHTML" style="display:none;">
-        <div class="htmx-loading">Loading tax...</div>
-    </div>
-
-    <!-- Personal Tab -->
-    <div id="personal" class="tab-content" hx-get="/property/{{ property.folio }}/personal" hx-trigger="tab-show once"
-        hx-swap="innerHTML" style="display:none;">
-        <div class="htmx-loading">Loading personal dossier...</div>
-    </div>
-
-    <!-- Documents Tab -->
-    <div id="documents" class="tab-content" hx-get="/property/{{ property.folio }}/documents" hx-trigger="tab-show once"
-        hx-swap="innerHTML" style="display:none;">
-        <div class="htmx-loading">Loading documents...</div>
-    </div>
-
-    <!-- Audit Tab -->
-    <div id="audit" class="tab-content" hx-get="/property/{{ property.folio }}/audit" hx-trigger="tab-show once"
-        hx-swap="innerHTML" style="display:none;">
-        <div class="htmx-loading">Loading audit...</div>
-    </div>
-</div>
-
-<!-- OCR Content (if available) -->
-{% if auction.final_judgment_content %}
-<section class="card ocr-section">
-    <h2>Final Judgment OCR Text</h2>
-    <details>
-        <summary>Show extracted text</summary>
-        <pre class="ocr-text">{{ auction.final_judgment_content }}</pre>
-    </details>
-</section>
-{% endif %}
-
-<!-- Data Sources -->
-{% if property.sources %}
-<section class="card sources-section">
-    <h2>Data Sources</h2>
-    <div class="table-container">
-        <table class="auction-table">
-            <thead>
-                <tr>
-                    <th>Source</th>
-                    <th>URL</th>
-                    <th>Description</th>
-                    <th>Captured At</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for source in property.sources %}
-                <tr class="auction-row">
-                    <td>{{ source.source_name }}</td>
-                    <td>
-                        <a href="{{ source.url }}" target="_blank" rel="noopener noreferrer">
-                            {{ source.url[:60] }}{% if source.url|length > 60 %}...{% endif %}
-                        </a>
-                    </td>
-                    <td>{{ source.description }}</td>
-                    <td>{{ source.created_at }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</section>
-{% endif %}
-</div>
-
-{# ===== Lightbox ===== #}
-<div class="lightbox" id="lightbox">
-    <div class="lightbox-backdrop" onclick="gallery.closeLightbox()"></div>
-    <button class="lightbox-close" onclick="gallery.closeLightbox()" aria-label="Close lightbox">&times;</button>
-    <span class="lightbox-counter" id="lightboxCounter"></span>
-    <div class="lightbox-stage">
-        <button class="lightbox-arrow" onclick="gallery.prev()" aria-label="Previous photo">
-            <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
-        </button>
-        <div class="lightbox-img-wrap">
-            <img class="lightbox-img lightbox-img--active" id="lbSlotA" src="" alt="Property photo">
-            <img class="lightbox-img" id="lbSlotB" src="" alt="Property photo">
+            <div class="lightbox-thumbs" id="lightboxThumbs"></div>
         </div>
-        <button class="lightbox-arrow" onclick="gallery.next()" aria-label="Next photo">
-            <svg viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"/></svg>
-        </button>
-    </div>
-    <div class="lightbox-thumbs" id="lightboxThumbs"></div>
-</div>
-
-<script>
-function galleryFallback(img) {
-    if (img.dataset.fallback && !img.dataset.tried) {
-        img.dataset.tried = '1';
-        img.src = img.dataset.fallback;
+        <script>
+    function galleryFallback(img) {
+        if (img.dataset.fallback && !img.dataset.tried) {
+            img.dataset.tried = '1';
+            img.src = img.dataset.fallback;
+        }
     }
-}
 
-class PropertyGallery {
-    constructor(photos) {
-        this.photos = photos;
-        this.idx = 0;
-        this.useSlotA = true;
-        this.lbUseSlotA = true;
-        this.lbOpen = false;
+    class PropertyGallery {
+        constructor(photos) {
+            this.photos = photos;
+            this.idx = 0;
+            this.useSlotA = true;
+            this.lbUseSlotA = true;
+            this.lbOpen = false;
 
-        // Hero refs
-        this.heroSlotA = document.getElementById('heroSlotA');
-        this.heroSlotB = document.getElementById('heroSlotB');
-        this.heroCounter = document.getElementById('galleryCounter');
-        this.thumbsEl = document.getElementById('galleryThumbs');
-        this.thumbScrollL = document.getElementById('thumbScrollL');
-        this.thumbScrollR = document.getElementById('thumbScrollR');
+            // Hero refs
+            this.heroSlotA = document.getElementById('heroSlotA');
+            this.heroSlotB = document.getElementById('heroSlotB');
+            this.heroCounter = document.getElementById('galleryCounter');
+            this.thumbsEl = document.getElementById('galleryThumbs');
+            this.thumbScrollL = document.getElementById('thumbScrollL');
+            this.thumbScrollR = document.getElementById('thumbScrollR');
 
-        // Lightbox refs
-        this.lightbox = document.getElementById('lightbox');
-        this.lbSlotA = document.getElementById('lbSlotA');
-        this.lbSlotB = document.getElementById('lbSlotB');
-        this.lbCounter = document.getElementById('lightboxCounter');
-        this.lbThumbs = document.getElementById('lightboxThumbs');
+            // Lightbox refs
+            this.lightbox = document.getElementById('lightbox');
+            this.lbSlotA = document.getElementById('lbSlotA');
+            this.lbSlotB = document.getElementById('lbSlotB');
+            this.lbCounter = document.getElementById('lightboxCounter');
+            this.lbThumbs = document.getElementById('lightboxThumbs');
 
-        if (!this.heroSlotA || photos.length === 0) return;
+            if (!this.heroSlotA || photos.length === 0) return;
 
-        // Init first photo
-        this.heroSlotA.src = photos[0].url;
-        if (photos[0].fallback) this.heroSlotA.dataset.fallback = photos[0].fallback;
-        this.lbSlotA.src = photos[0].url;
-        if (photos[0].fallback) this.lbSlotA.dataset.fallback = photos[0].fallback;
-        this._updateCounters();
+            // Init first photo
+            this.heroSlotA.src = photos[0].url;
+            if (photos[0].fallback) this.heroSlotA.dataset.fallback = photos[0].fallback;
+            this.lbSlotA.src = photos[0].url;
+            if (photos[0].fallback) this.lbSlotA.dataset.fallback = photos[0].fallback;
+            this._updateCounters();
 
-        // Build lightbox thumbs
-        if (this.lbThumbs) {
-            this.lbThumbs.innerHTML = photos.map((p, i) =>
-                `<button class="lightbox-thumb${i === 0 ? ' lightbox-thumb--active' : ''}" data-index="${i}" onclick="gallery.goTo(${i})">` +
-                `<img src="${p.url}" alt="Thumb ${i+1}"${p.fallback ? ' data-fallback="'+p.fallback+'"' : ''} onerror="galleryFallback(this)">` +
-                `</button>`
-            ).join('');
+            // Build lightbox thumbs
+            if (this.lbThumbs) {
+                this.lbThumbs.innerHTML = photos.map((p, i) =>
+                    `<button class="lightbox-thumb${i === 0 ? ' lightbox-thumb--active' : ''}" data-index="${i}" onclick="gallery.goTo(${i})">` +
+                    `<img src="${p.url}" alt="Thumb ${i + 1}"${p.fallback ? ' data-fallback="' + p.fallback + '"' : ''} onerror="galleryFallback(this)">` +
+                    `</button>`
+                ).join('');
+            }
+
+            // Thumb overflow detection
+            this._checkThumbOverflow();
+            if (this.thumbsEl) {
+                const ro = new ResizeObserver(() => this._checkThumbOverflow());
+                ro.observe(this.thumbsEl);
+                this.thumbsEl.addEventListener('scroll', () => this._checkThumbOverflow());
+            }
+
+            // Keyboard
+            document.addEventListener('keydown', (e) => this._onKey(e));
+
+            // Touch (hero)
+            const hero = document.getElementById('galleryHero');
+            if (hero) this._addTouch(hero);
+
+            // Touch (lightbox stage)
+            const stage = this.lightbox?.querySelector('.lightbox-stage');
+            if (stage) this._addTouch(stage);
+
+            // Preload adjacent
+            this._preloadAdjacent();
         }
 
-        // Thumb overflow detection
-        this._checkThumbOverflow();
-        if (this.thumbsEl) {
-            const ro = new ResizeObserver(() => this._checkThumbOverflow());
-            ro.observe(this.thumbsEl);
-            this.thumbsEl.addEventListener('scroll', () => this._checkThumbOverflow());
+        goTo(idx) {
+            if (idx < 0 || idx >= this.photos.length || idx === this.idx) return;
+            this.idx = idx;
+            const photo = this.photos[idx];
+
+            // Crossfade hero
+            this._crossfade(this.heroSlotA, this.heroSlotB, this.useSlotA, photo);
+            this.useSlotA = !this.useSlotA;
+
+            // Crossfade lightbox if open
+            if (this.lbOpen) {
+                this._crossfade(this.lbSlotA, this.lbSlotB, this.lbUseSlotA, photo);
+                this.lbUseSlotA = !this.lbUseSlotA;
+            }
+
+            this._updateCounters();
+            this._highlightThumb(this.thumbsEl, 'gallery-thumb--active', idx);
+            this._highlightThumb(this.lbThumbs, 'lightbox-thumb--active', idx);
+            this._scrollThumbIntoView(idx);
+            this._preloadAdjacent();
         }
 
-        // Keyboard
-        document.addEventListener('keydown', (e) => this._onKey(e));
+        next() { this.goTo((this.idx + 1) % this.photos.length); }
+        prev() { this.goTo((this.idx - 1 + this.photos.length) % this.photos.length); }
 
-        // Touch (hero)
-        const hero = document.getElementById('galleryHero');
-        if (hero) this._addTouch(hero);
-
-        // Touch (lightbox stage)
-        const stage = this.lightbox?.querySelector('.lightbox-stage');
-        if (stage) this._addTouch(stage);
-
-        // Preload adjacent
-        this._preloadAdjacent();
-    }
-
-    goTo(idx) {
-        if (idx < 0 || idx >= this.photos.length || idx === this.idx) return;
-        this.idx = idx;
-        const photo = this.photos[idx];
-
-        // Crossfade hero
-        this._crossfade(this.heroSlotA, this.heroSlotB, this.useSlotA, photo);
-        this.useSlotA = !this.useSlotA;
-
-        // Crossfade lightbox if open
-        if (this.lbOpen) {
-            this._crossfade(this.lbSlotA, this.lbSlotB, this.lbUseSlotA, photo);
-            this.lbUseSlotA = !this.lbUseSlotA;
+        openLightbox() {
+            if (!this.lightbox || this.photos.length === 0) return;
+            this.lbOpen = true;
+            // Sync lightbox to current image
+            const photo = this.photos[this.idx];
+            this.lbSlotA.src = photo.url;
+            if (photo.fallback) this.lbSlotA.dataset.fallback = photo.fallback;
+            this.lbSlotA.classList.add('lightbox-img--active');
+            this.lbSlotB.classList.remove('lightbox-img--active');
+            this.lbUseSlotA = true;
+            this._highlightThumb(this.lbThumbs, 'lightbox-thumb--active', this.idx);
+            this.lightbox.classList.add('open');
+            document.body.classList.add('lightbox-open');
         }
 
-        this._updateCounters();
-        this._highlightThumb(this.thumbsEl, 'gallery-thumb--active', idx);
-        this._highlightThumb(this.lbThumbs, 'lightbox-thumb--active', idx);
-        this._scrollThumbIntoView(idx);
-        this._preloadAdjacent();
-    }
-
-    next() { this.goTo((this.idx + 1) % this.photos.length); }
-    prev() { this.goTo((this.idx - 1 + this.photos.length) % this.photos.length); }
-
-    openLightbox() {
-        if (!this.lightbox || this.photos.length === 0) return;
-        this.lbOpen = true;
-        // Sync lightbox to current image
-        const photo = this.photos[this.idx];
-        this.lbSlotA.src = photo.url;
-        if (photo.fallback) this.lbSlotA.dataset.fallback = photo.fallback;
-        this.lbSlotA.classList.add('lightbox-img--active');
-        this.lbSlotB.classList.remove('lightbox-img--active');
-        this.lbUseSlotA = true;
-        this._highlightThumb(this.lbThumbs, 'lightbox-thumb--active', this.idx);
-        this.lightbox.classList.add('open');
-        document.body.classList.add('lightbox-open');
-    }
-
-    closeLightbox() {
-        if (!this.lightbox) return;
-        this.lbOpen = false;
-        this.lightbox.classList.remove('open');
-        document.body.classList.remove('lightbox-open');
-    }
-
-    scrollThumbs(dir) {
-        if (!this.thumbsEl) return;
-        const w = this.thumbsEl.clientWidth * 0.7;
-        this.thumbsEl.scrollBy({ left: dir * w, behavior: 'smooth' });
-    }
-
-    _crossfade(slotA, slotB, useSlotANow, photo) {
-        const incoming = useSlotANow ? slotB : slotA;
-        const outgoing = useSlotANow ? slotA : slotB;
-        incoming.src = photo.url;
-        if (photo.fallback) {
-            incoming.dataset.fallback = photo.fallback;
-        } else {
-            delete incoming.dataset.fallback;
+        closeLightbox() {
+            if (!this.lightbox) return;
+            this.lbOpen = false;
+            this.lightbox.classList.remove('open');
+            document.body.classList.remove('lightbox-open');
         }
-        delete incoming.dataset.tried;
-        requestAnimationFrame(() => {
-            incoming.classList.add(incoming.classList.contains('gallery-img') ? 'gallery-img--active' : 'lightbox-img--active');
-            outgoing.classList.remove('gallery-img--active', 'lightbox-img--active');
-        });
-    }
 
-    _updateCounters() {
-        const label = `${this.idx + 1} / ${this.photos.length}`;
-        if (this.heroCounter) this.heroCounter.textContent = label;
-        if (this.lbCounter) this.lbCounter.textContent = label;
-    }
+        scrollThumbs(dir) {
+            if (!this.thumbsEl) return;
+            const w = this.thumbsEl.clientWidth * 0.7;
+            this.thumbsEl.scrollBy({ left: dir * w, behavior: 'smooth' });
+        }
 
-    _highlightThumb(container, cls, idx) {
-        if (!container) return;
-        container.querySelectorAll('.' + cls).forEach(el => el.classList.remove(cls));
-        const thumb = container.querySelector(`[data-index="${idx}"]`);
-        if (thumb) thumb.classList.add(cls);
-    }
+        _crossfade(slotA, slotB, useSlotANow, photo) {
+            const incoming = useSlotANow ? slotB : slotA;
+            const outgoing = useSlotANow ? slotA : slotB;
+            incoming.src = photo.url;
+            if (photo.fallback) {
+                incoming.dataset.fallback = photo.fallback;
+            } else {
+                delete incoming.dataset.fallback;
+            }
+            delete incoming.dataset.tried;
+            requestAnimationFrame(() => {
+                incoming.classList.add(incoming.classList.contains('gallery-img') ? 'gallery-img--active' : 'lightbox-img--active');
+                outgoing.classList.remove('gallery-img--active', 'lightbox-img--active');
+            });
+        }
 
-    _scrollThumbIntoView(idx) {
-        [this.thumbsEl, this.lbThumbs].forEach(container => {
+        _updateCounters() {
+            const label = `${this.idx + 1} / ${this.photos.length}`;
+            if (this.heroCounter) this.heroCounter.textContent = label;
+            if (this.lbCounter) this.lbCounter.textContent = label;
+        }
+
+        _highlightThumb(container, cls, idx) {
             if (!container) return;
+            container.querySelectorAll('.' + cls).forEach(el => el.classList.remove(cls));
             const thumb = container.querySelector(`[data-index="${idx}"]`);
-            if (thumb) thumb.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-        });
+            if (thumb) thumb.classList.add(cls);
+        }
+
+        _scrollThumbIntoView(idx) {
+            [this.thumbsEl, this.lbThumbs].forEach(container => {
+                if (!container) return;
+                const thumb = container.querySelector(`[data-index="${idx}"]`);
+                if (thumb) thumb.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            });
+        }
+
+        _checkThumbOverflow() {
+            if (!this.thumbsEl || !this.thumbScrollL || !this.thumbScrollR) return;
+            const { scrollLeft, scrollWidth, clientWidth } = this.thumbsEl;
+            this.thumbScrollL.classList.toggle('visible', scrollLeft > 4);
+            this.thumbScrollR.classList.toggle('visible', scrollLeft + clientWidth < scrollWidth - 4);
+        }
+
+        _preloadAdjacent() {
+            [-1, 1].forEach(offset => {
+                const i = (this.idx + offset + this.photos.length) % this.photos.length;
+                if (i !== this.idx) new Image().src = this.photos[i].url;
+            });
+        }
+
+        _onKey(e) {
+            if (!this.lbOpen) return;
+            if (e.key === 'Escape') this.closeLightbox();
+            else if (e.key === 'ArrowLeft') this.prev();
+            else if (e.key === 'ArrowRight') this.next();
+        }
+
+        _addTouch(el) {
+            let startX = 0;
+            el.addEventListener('touchstart', (e) => { startX = e.changedTouches[0].clientX; }, { passive: true });
+            el.addEventListener('touchend', (e) => {
+                const dx = e.changedTouches[0].clientX - startX;
+                if (Math.abs(dx) > 40) dx > 0 ? this.prev() : this.next();
+            }, { passive: true });
+        }
     }
 
-    _checkThumbOverflow() {
-        if (!this.thumbsEl || !this.thumbScrollL || !this.thumbScrollR) return;
-        const { scrollLeft, scrollWidth, clientWidth } = this.thumbsEl;
-        this.thumbScrollL.classList.toggle('visible', scrollLeft > 4);
-        this.thumbScrollR.classList.toggle('visible', scrollLeft + clientWidth < scrollWidth - 4);
-    }
-
-    _preloadAdjacent() {
-        [-1, 1].forEach(offset => {
-            const i = (this.idx + offset + this.photos.length) % this.photos.length;
-            if (i !== this.idx) new Image().src = this.photos[i].url;
-        });
-    }
-
-    _onKey(e) {
-        if (!this.lbOpen) return;
-        if (e.key === 'Escape') this.closeLightbox();
-        else if (e.key === 'ArrowLeft') this.prev();
-        else if (e.key === 'ArrowRight') this.next();
-    }
-
-    _addTouch(el) {
-        let startX = 0;
-        el.addEventListener('touchstart', (e) => { startX = e.changedTouches[0].clientX; }, { passive: true });
-        el.addEventListener('touchend', (e) => {
-            const dx = e.changedTouches[0].clientX - startX;
-            if (Math.abs(dx) > 40) dx > 0 ? this.prev() : this.next();
-        }, { passive: true });
-    }
-}
-
-// Build photo array from Jinja data and init gallery
-const _photos = [
-    {% for p in (photos_fb if photos_fb else photos) %}
-    { url: {{ (p.url if p is mapping else p)|tojson }}, fallback: {{ (p.cdn_fallback if p is mapping and p.cdn_fallback else none)|tojson }} },
+    // Build photo array from Jinja data and init gallery
+    const _photos = [
+        {% for p in (photos_fb if photos_fb else photos) %}
+    { url: { { (p.url if p is mapping else p)| tojson } }, fallback: { { (p.cdn_fallback if p is mapping and p.cdn_fallback else none)| tojson } } },
     {% endfor %}
 ];
-const gallery = new PropertyGallery(_photos);
-</script>
-{% endblock %}
+    const gallery = new PropertyGallery(_photos);
+        </script>
+    {% endblock %}

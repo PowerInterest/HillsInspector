@@ -161,6 +161,7 @@ The `docs/` folder contains comprehensive guides and technical design artifacts,
 
 ### 🔧 Maintenance & Audits
 - [System Audit Fixes (2026-03-08)](docs/AUDIT_FIXES_2026_03_08.md) - 11 confirmed bugs fixed from multi-reviewer system audit: JSONB key typos, COALESCE direction bugs, encumbrance misclassification, concurrency locks, and more.
+- [System Audit Final Pass (2026-03-08)](docs/AUDIT_FIXES_2026_03_08_FINAL.md) - Final 3 deferred issues: title chain gap metric, judgment loader unification, zestimate UI labels. Includes post-deploy data repair command.
 
 ### 📖 Guides
 - [Operations Runbook](docs/guides/RUNBOOK.md) - Standard operational procedures and recurring scripts.

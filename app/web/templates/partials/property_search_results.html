@@ -3,482 +3,510 @@
    Section keys: "Parcel Info", "Tax Info", "Foreclosures", "Market Data",
      "Sales History", "Encumbrances", "Title Chain", "Permits", "Clerk Events"
 #}
-
 {% if total == 0 %}
-<div class="no-results">
-    No results found for "{{ query }}"
-</div>
+    <div class="no-results">No results found for "{{ query }}"</div>
 {% else %}
-
-<div class="result-header">
-    <h2>Property Results for "{{ query }}"</h2>
-    <span class="total-badge">{{ total }} record{{ 's' if total != 1 }}</span>
-</div>
-
-{# ── Macro: format money ── #}
-{% macro money(val) %}
-{% if val is not none and val != '' %}
-<span class="money">${{ "{:,.0f}".format(val|float) }}</span>
-{% else %}-{% endif %}
-{% endmacro %}
-
-{# ── Macro: status format ── #}
-{% macro status_fmt(s) %}
-{% if s %}
-{% set su = s|upper %}
-{% if 'OPEN' in su or 'ACTIVE' in su %}
-<span class="status-open">{{ s }}</span>
-{% elif 'CLOSED' in su or 'DISPOSED' in su or 'CANCELLED' in su %}
-<span class="status-closed">{{ s }}</span>
-{% else %}{{ s }}{% endif %}
-{% else %}-{% endif %}
-{% endmacro %}
-
-
-{# ──────────────────────────────────────────── #}
-{# Section 1: Parcel Info                        #}
-{# ──────────────────────────────────────────── #}
-{% set rows = sections.get("Parcel Info", []) %}
-{% set n = counts.get("Parcel Info", 0) %}
-{% if n > 0 %}
-<details open>
-    <summary class="section-header">
-        Parcel Info <span class="count-badge">{{ n }}</span>
-    </summary>
-    <div class="table-container">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Folio</th>
-                    <th>Strap</th>
-                    <th>Owner</th>
-                    <th>Address</th>
-                    <th>Land Use</th>
-                    <th>Yr Built</th>
-                    <th>Bed/Bath</th>
-                    <th>Sq Ft</th>
-                    <th>Just Value</th>
-                    <th>Market Value</th>
-                    <th>Assessed</th>
-                    <th>Last Sale</th>
-                    <th>Sale Price</th>
-                    <th>Homestead</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for r in rows %}
-                <tr>
-                    <td><a href="/property/{{ r.folio }}">{{ r.folio or '-' }}</a></td>
-                    <td>{{ r.strap or '-' }}</td>
-                    <td>{{ r.owner_name or '-' }}</td>
-                    <td>{{ r.property_address or '' }}{% if r.city %}, {{ r.city }}{% endif %} {{ r.zip_code or '' }}</td>
-                    <td>{{ r.land_use_desc or '-' }}</td>
-                    <td>{{ r.year_built or '-' }}</td>
-                    <td>{{ r.beds or '-' }}/{{ r.baths or '-' }}</td>
-                    <td>{% if r.heated_area is not none and r.heated_area != '' %}{{ "{:,.0f}".format(r.heated_area|float) }}{% else %}-{% endif %}</td>
-                    <td>{{ money(r.just_value) }}</td>
-                    <td>{{ money(r.market_value) }}</td>
-                    <td>{{ money(r.assessed_value) }}</td>
-                    <td>{{ r.last_sale_date or '-' }}</td>
-                    <td>{{ money(r.last_sale_price) }}</td>
-                    <td>{{ r.homestead_flag or '-' }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <div class="result-header">
+        <h2>Property Results for "{{ query }}"</h2>
+        <span class="total-badge">{{ total }} record{{ 's' if total != 1 }}</span>
     </div>
-</details>
-{% endif %}
-
-
-{# ──────────────────────────────────────────── #}
-{# Section 2: Tax Info                           #}
-{# ──────────────────────────────────────────── #}
-{% set rows = sections.get("Tax Info", []) %}
-{% set n = counts.get("Tax Info", 0) %}
-{% if n > 0 %}
-<details open>
-    <summary class="section-header">
-        Tax Info <span class="count-badge">{{ n }}</span>
-    </summary>
-    <div class="table-container">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Folio</th>
-                    <th>Strap</th>
-                    <th>Owner</th>
-                    <th>Address</th>
-                    <th>Tax Year</th>
-                    <th>Just Value</th>
-                    <th>Assessed School</th>
-                    <th>Assessed Non-School</th>
-                    <th>Taxable School</th>
-                    <th>Taxable Non-School</th>
-                    <th>Use Code</th>
-                    <th>Homestead</th>
-                    <th>Est. Tax</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for r in rows %}
-                <tr>
-                    <td><a href="/property/{{ r.folio }}">{{ r.folio or '-' }}</a></td>
-                    <td>{{ r.strap or '-' }}</td>
-                    <td>{{ r.owner_name or '-' }}</td>
-                    <td>{{ r.property_address or '-' }}</td>
-                    <td>{{ r.tax_year or '-' }}</td>
-                    <td>{{ money(r.just_value) }}</td>
-                    <td>{{ money(r.assessed_value_school) }}</td>
-                    <td>{{ money(r.assessed_value_nonschool) }}</td>
-                    <td>{{ money(r.taxable_value_school) }}</td>
-                    <td>{{ money(r.taxable_value_nonschool) }}</td>
-                    <td>{{ r.property_use_code or '-' }}</td>
-                    <td>{% if r.homestead_exempt is sameas true %}Yes{% elif r.homestead_exempt is sameas false %}No{% else %}-{% endif %}</td>
-                    <td>{{ money(r.estimated_annual_tax) }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</details>
-{% endif %}
-
-
-{# ──────────────────────────────────────────── #}
-{# Section 3: Foreclosures                      #}
-{# ──────────────────────────────────────────── #}
-{% set rows = sections.get("Foreclosures", []) %}
-{% set n = counts.get("Foreclosures", 0) %}
-{% if n > 0 %}
-<details open>
-    <summary class="section-header">
-        Foreclosures <span class="count-badge">{{ n }}</span>
-    </summary>
-    <div class="table-container">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Case #</th>
-                    <th>Auction Date</th>
-                    <th>Type</th>
-                    <th>Status</th>
-                    <th>Address</th>
-                    <th>Owner</th>
-                    <th>Buyer Type</th>
-                    <th>Sold To</th>
-                    <th>Judgment Amt</th>
-                    <th>Winning Bid</th>
-                    <th>Market Value</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for r in rows %}
-                <tr>
-                    <td>{{ r.case_number_raw or '-' }}</td>
-                    <td>{{ r.auction_date or '-' }}</td>
-                    <td>{{ r.auction_type or '-' }}</td>
-                    <td>{{ status_fmt(r.auction_status) }}</td>
-                    <td>
-                        {% if r.folio %}<a href="/property/{{ r.folio }}">{{ r.property_address or '-' }}</a>
-                        {% else %}{{ r.property_address or '-' }}{% endif %}
-                    </td>
-                    <td>{{ r.owner_name or '-' }}</td>
-                    <td>{{ r.buyer_type or '-' }}</td>
-                    <td>{{ r.sold_to or '-' }}</td>
-                    <td>{{ money(r.final_judgment_amount) }}</td>
-                    <td>{{ money(r.winning_bid) }}</td>
-                    <td>{{ money(r.market_value) }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</details>
-{% endif %}
-
-
-{# ──────────────────────────────────────────── #}
-{# Section 4: Market Data                        #}
-{# ──────────────────────────────────────────── #}
-{% set rows = sections.get("Market Data", []) %}
-{% set n = counts.get("Market Data", 0) %}
-{% if n > 0 %}
-<details open>
-    <summary class="section-header">
-        Market Data <span class="count-badge">{{ n }}</span>
-    </summary>
-    <div class="table-container">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Folio</th>
-                    <th>Address</th>
-                    <th>Owner</th>
-                    <th>Type</th>
-                    <th>Beds/Baths</th>
-                    <th>Sq Ft</th>
-                    <th>Yr Built</th>
-                    <th>Zestimate</th>
-                    <th>Rental Zest.</th>
-                    <th>List Price</th>
-                    <th>Listing Status</th>
-                    <th>Last Sold</th>
-                    <th>Last Price</th>
-                    <th>Fetched</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for r in rows %}
-                <tr>
-                    <td><a href="/property/{{ r.folio }}">{{ r.folio or '-' }}</a></td>
-                    <td>{{ r.address or '-' }}</td>
-                    <td>{{ r.owner or '-' }}</td>
-                    <td>{{ r.property_type or '-' }}</td>
-                    <td>{{ r.bedrooms or '-' }}/{{ r.bathrooms or '-' }}</td>
-                    <td>{% if r.living_area is not none and r.living_area != '' %}{{ "{:,.0f}".format(r.living_area|float) }}{% else %}-{% endif %}</td>
-                    <td>{{ r.year_built or '-' }}</td>
-                    <td>{{ money(r.zestimate) }}</td>
-                    <td>{{ money(r.rental_zestimate) }}</td>
-                    <td>{{ money(r.list_price) }}</td>
-                    <td>{{ status_fmt(r.listing_status) }}</td>
-                    <td>{{ r.last_sold_date or '-' }}</td>
-                    <td>{{ money(r.last_sold_price) }}</td>
-                    <td>{{ r.fetched_at or '-' }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</details>
-{% endif %}
-
-
-{# ──────────────────────────────────────────── #}
-{# Section 5: Sales History                      #}
-{# ──────────────────────────────────────────── #}
-{% set rows = sections.get("Sales History", []) %}
-{% set n = counts.get("Sales History", 0) %}
-{% if n > 0 %}
-<details>
-    <summary class="section-header">
-        Sales History <span class="count-badge">{{ n }}</span>
-    </summary>
-    <div class="table-container">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Folio</th>
-                    <th>Grantor</th>
-                    <th>Grantee</th>
-                    <th>Date</th>
-                    <th>Amount</th>
-                    <th>Type</th>
-                    <th>Book/Page</th>
-                    <th>Doc #</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for r in rows %}
-                <tr>
-                    <td><a href="/property/{{ r.folio }}">{{ r.folio or '-' }}</a></td>
-                    <td>{{ r.grantor or '-' }}</td>
-                    <td>{{ r.grantee or '-' }}</td>
-                    <td>{{ r.sale_date or '-' }}</td>
-                    <td>{{ money(r.sale_amount) }}</td>
-                    <td>{{ r.sale_type or '-' }}</td>
-                    <td>{{ r.or_book or '' }}/{{ r.or_page or '' }}</td>
-                    <td>{{ r.doc_num or '-' }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</details>
-{% endif %}
-
-
-{# ──────────────────────────────────────────── #}
-{# Section 6: Encumbrances                      #}
-{# ──────────────────────────────────────────── #}
-{% set rows = sections.get("Encumbrances", []) %}
-{% set n = counts.get("Encumbrances", 0) %}
-{% if n > 0 %}
-<details open>
-    <summary class="section-header">
-        Encumbrances <span class="count-badge">{{ n }}</span>
-    </summary>
-    <div class="table-container">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Recorded</th>
-                    <th>Type</th>
-                    <th>Party 1</th>
-                    <th>Party 2</th>
-                    <th>Amount</th>
-                    <th>Instrument #</th>
-                    <th>Book/Page</th>
-                    <th>Folio</th>
-                    <th>Survival</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for r in rows %}
-                <tr>
-                    <td>{{ r.recording_date or '-' }}</td>
-                    <td>{{ r.encumbrance_type or '-' }}</td>
-                    <td>{{ r.party1 or '-' }}</td>
-                    <td>{{ r.party2 or '-' }}</td>
-                    <td>{{ money(r.amount) }}</td>
-                    <td>{{ r.instrument_number or '-' }}</td>
-                    <td>{{ r.book or '' }}/{{ r.page or '' }}</td>
-                    <td>{% if r.folio %}<a href="/property/{{ r.folio }}">{{ r.folio }}</a>{% else %}-{% endif %}</td>
-                    <td>{{ r.survival_status or '-' }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</details>
-{% endif %}
-
-
-{# ──────────────────────────────────────────── #}
-{# Section 7: Title Chain                        #}
-{# ──────────────────────────────────────────── #}
-{% set rows = sections.get("Title Chain", []) %}
-{% set n = counts.get("Title Chain", 0) %}
-{% if n > 0 %}
-<details>
-    <summary class="section-header">
-        Title Chain <span class="count-badge">{{ n }}</span>
-    </summary>
-    <div class="table-container">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Acquired</th>
-                    <th>Disposed</th>
-                    <th>Sale Type</th>
-                    <th>Owner</th>
-                    <th>Grantor</th>
-                    <th>Grantee</th>
-                    <th>Amount</th>
-                    <th>Link</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for r in rows %}
-                <tr>
-                    <td>{{ r.acquired_date or '-' }}</td>
-                    <td>{{ r.disposed_date or '-' }}</td>
-                    <td>{{ r.acquired_sale_type or '-' }}</td>
-                    <td>{{ r.owner_name or '-' }}</td>
-                    <td>{{ r.grantor or '-' }}</td>
-                    <td>{{ r.grantee or '-' }}</td>
-                    <td>{{ money(r.acquired_amount) }}</td>
-                    <td>{{ r.link_status or '-' }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</details>
-{% endif %}
-
-
-{# ──────────────────────────────────────────── #}
-{# Section 8: Permits                            #}
-{# ──────────────────────────────────────────── #}
-{% set rows = sections.get("Permits", []) %}
-{% set n = counts.get("Permits", 0) %}
-{% if n > 0 %}
-<details>
-    <summary class="section-header">
-        Permits <span class="count-badge">{{ n }}</span>
-    </summary>
-    <div class="table-container">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Source</th>
-                    <th>Permit/Record #</th>
-                    <th>Type</th>
-                    <th>Status</th>
-                    <th>Description</th>
-                    <th>Issue/Open Date</th>
-                    <th>Final/Close Date</th>
-                    <th>Job Value</th>
-                    <th>Group</th>
-                    <th>Address</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for r in rows %}
-                <tr>
-                    <td>{{ r.get('permit_source') or '-' }}</td>
-                    <td>{{ r.get('record_number') or '-' }}</td>
-                    <td>{{ r.get('permit_type') or '-' }}</td>
-                    <td>{{ status_fmt(r.get('status') or '') }}</td>
-                    <td>{{ r.get('description') or '-' }}</td>
-                    <td>{{ r.get('start_date') or '-' }}</td>
-                    <td>{{ r.get('end_date') or '-' }}</td>
-                    <td>{% if r.get('work_value') is not none %}{{ money(r['work_value']) }}{% else %}-{% endif %}</td>
-                    <td>{{ r.get('record_group') or '-' }}</td>
-                    <td>{{ r.get('address') or r.get('folio') or '-' }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</details>
-{% endif %}
-
-
-{# ──────────────────────────────────────────── #}
-{# Section 9: Clerk Events                      #}
-{# ──────────────────────────────────────────── #}
-{% set rows = sections.get("Clerk Events", []) %}
-{% set n = counts.get("Clerk Events", 0) %}
-{% if n > 0 %}
-<details>
-    <summary class="section-header">
-        Clerk Events <span class="count-badge">{{ n }}</span>
-    </summary>
-    <div class="table-container">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Date</th>
-                    <th>Source</th>
-                    <th>Subtype</th>
-                    <th>Description</th>
-                    <th>Book/Page</th>
-                    <th>Instrument #</th>
-                    <th>Grantor</th>
-                    <th>Grantee</th>
-                    <th>Amount</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for r in rows %}
-                <tr>
-                    <td>{{ r.event_date or '-' }}</td>
-                    <td>{{ r.event_source or '-' }}</td>
-                    <td>{{ r.event_subtype or '-' }}</td>
-                    <td>{{ r.description or '-' }}</td>
-                    <td>{{ r.or_book or '' }}/{{ r.or_page or '' }}</td>
-                    <td>{{ r.instrument_number or '-' }}</td>
-                    <td>{{ r.grantor or '-' }}</td>
-                    <td>{{ r.grantee or '-' }}</td>
-                    <td>{{ money(r.amount) }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</details>
-{% endif %}
-
+    {# ── Macro: format money ── #}
+    {% macro money(val) %}
+        {% if val is not none and val != '' %}
+            <span class="money">${{ "{:,.0f}".format(val|float) }}</span>
+        {% else %}
+            -
+        {% endif %}
+    {% endmacro %}
+    {# ── Macro: status format ── #}
+    {% macro status_fmt(s) %}
+        {% if s %}
+            {% set su = s|upper %}
+            {% if 'OPEN' in su or 'ACTIVE' in su %}
+                <span class="status-open">{{ s }}</span>
+            {% elif 'CLOSED' in su or 'DISPOSED' in su or 'CANCELLED' in su %}
+                <span class="status-closed">{{ s }}</span>
+            {% else %}
+                {{ s }}
+            {% endif %}
+        {% else %}
+            -
+        {% endif %}
+    {% endmacro %}
+    {# ──────────────────────────────────────────── #}
+    {# Section 1: Parcel Info                        #}
+    {# ──────────────────────────────────────────── #}
+    {% set rows = sections.get("Parcel Info", []) %}
+    {% set n = counts.get("Parcel Info", 0) %}
+    {% if n > 0 %}
+        <details open>
+            <summary class="section-header">
+                Parcel Info <span class="count-badge">{{ n }}</span>
+            </summary>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Folio</th>
+                            <th>Strap</th>
+                            <th>Owner</th>
+                            <th>Address</th>
+                            <th>Land Use</th>
+                            <th>Yr Built</th>
+                            <th>Bed/Bath</th>
+                            <th>Sq Ft</th>
+                            <th>Just Value</th>
+                            <th>Market Value</th>
+                            <th>Assessed</th>
+                            <th>Last Sale</th>
+                            <th>Sale Price</th>
+                            <th>Homestead</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in rows %}
+                            <tr>
+                                <td>
+                                    <a href="/property/{{ r.folio }}">{{ r.folio or '-' }}</a>
+                                </td>
+                                <td>{{ r.strap or '-' }}</td>
+                                <td>{{ r.owner_name or '-' }}</td>
+                                <td>
+                                    {{ r.property_address or '' }}
+                                    {% if r.city %}, {{ r.city }}{% endif %}
+                                    {{ r.zip_code or '' }}
+                                </td>
+                                <td>{{ r.land_use_desc or '-' }}</td>
+                                <td>{{ r.year_built or '-' }}</td>
+                                <td>{{ r.beds or '-' }}/{{ r.baths or '-' }}</td>
+                                <td>
+                                    {% if r.heated_area is not none and r.heated_area != '' %}
+                                        {{ "{:,.0f}".format(r.heated_area|float) }}
+                                    {% else %}
+                                        -
+                                    {% endif %}
+                                </td>
+                                <td>{{ money(r.just_value) }}</td>
+                                <td>{{ money(r.market_value) }}</td>
+                                <td>{{ money(r.assessed_value) }}</td>
+                                <td>{{ r.last_sale_date or '-' }}</td>
+                                <td>{{ money(r.last_sale_price) }}</td>
+                                <td>{{ r.homestead_flag or '-' }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    {% endif %}
+    {# ──────────────────────────────────────────── #}
+    {# Section 2: Tax Info                           #}
+    {# ──────────────────────────────────────────── #}
+    {% set rows = sections.get("Tax Info", []) %}
+    {% set n = counts.get("Tax Info", 0) %}
+    {% if n > 0 %}
+        <details open>
+            <summary class="section-header">
+                Tax Info <span class="count-badge">{{ n }}</span>
+            </summary>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Folio</th>
+                            <th>Strap</th>
+                            <th>Owner</th>
+                            <th>Address</th>
+                            <th>Tax Year</th>
+                            <th>Just Value</th>
+                            <th>Assessed School</th>
+                            <th>Assessed Non-School</th>
+                            <th>Taxable School</th>
+                            <th>Taxable Non-School</th>
+                            <th>Use Code</th>
+                            <th>Homestead</th>
+                            <th>Est. Tax</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in rows %}
+                            <tr>
+                                <td>
+                                    <a href="/property/{{ r.folio }}">{{ r.folio or '-' }}</a>
+                                </td>
+                                <td>{{ r.strap or '-' }}</td>
+                                <td>{{ r.owner_name or '-' }}</td>
+                                <td>{{ r.property_address or '-' }}</td>
+                                <td>{{ r.tax_year or '-' }}</td>
+                                <td>{{ money(r.just_value) }}</td>
+                                <td>{{ money(r.assessed_value_school) }}</td>
+                                <td>{{ money(r.assessed_value_nonschool) }}</td>
+                                <td>{{ money(r.taxable_value_school) }}</td>
+                                <td>{{ money(r.taxable_value_nonschool) }}</td>
+                                <td>{{ r.property_use_code or '-' }}</td>
+                                <td>
+                                    {% if r.homestead_exempt is sameas true %}
+                                        Yes
+                                    {% elif r.homestead_exempt is sameas false %}
+                                        No
+                                    {% else %}
+                                        -
+                                    {% endif %}
+                                </td>
+                                <td>{{ money(r.estimated_annual_tax) }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    {% endif %}
+    {# ──────────────────────────────────────────── #}
+    {# Section 3: Foreclosures                      #}
+    {# ──────────────────────────────────────────── #}
+    {% set rows = sections.get("Foreclosures", []) %}
+    {% set n = counts.get("Foreclosures", 0) %}
+    {% if n > 0 %}
+        <details open>
+            <summary class="section-header">
+                Foreclosures <span class="count-badge">{{ n }}</span>
+            </summary>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Case #</th>
+                            <th>Auction Date</th>
+                            <th>Type</th>
+                            <th>Status</th>
+                            <th>Address</th>
+                            <th>Owner</th>
+                            <th>Buyer Type</th>
+                            <th>Sold To</th>
+                            <th>Judgment Amt</th>
+                            <th>Winning Bid</th>
+                            <th>Market Value</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in rows %}
+                            <tr>
+                                <td>{{ r.case_number_raw or '-' }}</td>
+                                <td>{{ r.auction_date or '-' }}</td>
+                                <td>{{ r.auction_type or '-' }}</td>
+                                <td>{{ status_fmt(r.auction_status) }}</td>
+                                <td>
+                                    {% if r.folio %}
+                                        <a href="/property/{{ r.folio }}">{{ r.property_address or '-' }}</a>
+                                    {% else %}
+                                        {{ r.property_address or '-' }}
+                                    {% endif %}
+                                </td>
+                                <td>{{ r.owner_name or '-' }}</td>
+                                <td>{{ r.buyer_type or '-' }}</td>
+                                <td>{{ r.sold_to or '-' }}</td>
+                                <td>{{ money(r.final_judgment_amount) }}</td>
+                                <td>{{ money(r.winning_bid) }}</td>
+                                <td>{{ money(r.market_value) }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    {% endif %}
+    {# ──────────────────────────────────────────── #}
+    {# Section 4: Market Data                        #}
+    {# ──────────────────────────────────────────── #}
+    {% set rows = sections.get("Market Data", []) %}
+    {% set n = counts.get("Market Data", 0) %}
+    {% if n > 0 %}
+        <details open>
+            <summary class="section-header">
+                Market Data <span class="count-badge">{{ n }}</span>
+            </summary>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Folio</th>
+                            <th>Address</th>
+                            <th>Owner</th>
+                            <th>Type</th>
+                            <th>Beds/Baths</th>
+                            <th>Sq Ft</th>
+                            <th>Yr Built</th>
+                            <th>Est. Value</th>
+                            <th>Est. Rent</th>
+                            <th>List Price</th>
+                            <th>Listing Status</th>
+                            <th>Last Sold</th>
+                            <th>Last Price</th>
+                            <th>Fetched</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in rows %}
+                            <tr>
+                                <td>
+                                    <a href="/property/{{ r.folio }}">{{ r.folio or '-' }}</a>
+                                </td>
+                                <td>{{ r.address or '-' }}</td>
+                                <td>{{ r.owner or '-' }}</td>
+                                <td>{{ r.property_type or '-' }}</td>
+                                <td>{{ r.bedrooms or '-' }}/{{ r.bathrooms or '-' }}</td>
+                                <td>
+                                    {% if r.living_area is not none and r.living_area != '' %}
+                                        {{ "{:,.0f}".format(r.living_area|float) }}
+                                    {% else %}
+                                        -
+                                    {% endif %}
+                                </td>
+                                <td>{{ r.year_built or '-' }}</td>
+                                <td>{{ money(r.zestimate) }}</td>
+                                <td>{{ money(r.rental_zestimate) }}</td>
+                                <td>{{ money(r.list_price) }}</td>
+                                <td>{{ status_fmt(r.listing_status) }}</td>
+                                <td>{{ r.last_sold_date or '-' }}</td>
+                                <td>{{ money(r.last_sold_price) }}</td>
+                                <td>{{ r.fetched_at or '-' }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    {% endif %}
+    {# ──────────────────────────────────────────── #}
+    {# Section 5: Sales History                      #}
+    {# ──────────────────────────────────────────── #}
+    {% set rows = sections.get("Sales History", []) %}
+    {% set n = counts.get("Sales History", 0) %}
+    {% if n > 0 %}
+        <details>
+            <summary class="section-header">
+                Sales History <span class="count-badge">{{ n }}</span>
+            </summary>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Folio</th>
+                            <th>Grantor</th>
+                            <th>Grantee</th>
+                            <th>Date</th>
+                            <th>Amount</th>
+                            <th>Type</th>
+                            <th>Book/Page</th>
+                            <th>Doc #</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in rows %}
+                            <tr>
+                                <td>
+                                    <a href="/property/{{ r.folio }}">{{ r.folio or '-' }}</a>
+                                </td>
+                                <td>{{ r.grantor or '-' }}</td>
+                                <td>{{ r.grantee or '-' }}</td>
+                                <td>{{ r.sale_date or '-' }}</td>
+                                <td>{{ money(r.sale_amount) }}</td>
+                                <td>{{ r.sale_type or '-' }}</td>
+                                <td>{{ r.or_book or '' }}/{{ r.or_page or '' }}</td>
+                                <td>{{ r.doc_num or '-' }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    {% endif %}
+    {# ──────────────────────────────────────────── #}
+    {# Section 6: Encumbrances                      #}
+    {# ──────────────────────────────────────────── #}
+    {% set rows = sections.get("Encumbrances", []) %}
+    {% set n = counts.get("Encumbrances", 0) %}
+    {% if n > 0 %}
+        <details open>
+            <summary class="section-header">
+                Encumbrances <span class="count-badge">{{ n }}</span>
+            </summary>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Recorded</th>
+                            <th>Type</th>
+                            <th>Party 1</th>
+                            <th>Party 2</th>
+                            <th>Amount</th>
+                            <th>Instrument #</th>
+                            <th>Book/Page</th>
+                            <th>Folio</th>
+                            <th>Survival</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in rows %}
+                            <tr>
+                                <td>{{ r.recording_date or '-' }}</td>
+                                <td>{{ r.encumbrance_type or '-' }}</td>
+                                <td>{{ r.party1 or '-' }}</td>
+                                <td>{{ r.party2 or '-' }}</td>
+                                <td>{{ money(r.amount) }}</td>
+                                <td>{{ r.instrument_number or '-' }}</td>
+                                <td>{{ r.book or '' }}/{{ r.page or '' }}</td>
+                                <td>
+                                    {% if r.folio %}
+                                        <a href="/property/{{ r.folio }}">{{ r.folio }}</a>
+                                    {% else %}
+                                        -
+                                    {% endif %}
+                                </td>
+                                <td>{{ r.survival_status or '-' }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    {% endif %}
+    {# ──────────────────────────────────────────── #}
+    {# Section 7: Title Chain                        #}
+    {# ──────────────────────────────────────────── #}
+    {% set rows = sections.get("Title Chain", []) %}
+    {% set n = counts.get("Title Chain", 0) %}
+    {% if n > 0 %}
+        <details>
+            <summary class="section-header">
+                Title Chain <span class="count-badge">{{ n }}</span>
+            </summary>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Acquired</th>
+                            <th>Disposed</th>
+                            <th>Sale Type</th>
+                            <th>Owner</th>
+                            <th>Grantor</th>
+                            <th>Grantee</th>
+                            <th>Amount</th>
+                            <th>Link</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in rows %}
+                            <tr>
+                                <td>{{ r.acquired_date or '-' }}</td>
+                                <td>{{ r.disposed_date or '-' }}</td>
+                                <td>{{ r.acquired_sale_type or '-' }}</td>
+                                <td>{{ r.owner_name or '-' }}</td>
+                                <td>{{ r.grantor or '-' }}</td>
+                                <td>{{ r.grantee or '-' }}</td>
+                                <td>{{ money(r.acquired_amount) }}</td>
+                                <td>{{ r.link_status or '-' }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    {% endif %}
+    {# ──────────────────────────────────────────── #}
+    {# Section 8: Permits                            #}
+    {# ──────────────────────────────────────────── #}
+    {% set rows = sections.get("Permits", []) %}
+    {% set n = counts.get("Permits", 0) %}
+    {% if n > 0 %}
+        <details>
+            <summary class="section-header">
+                Permits <span class="count-badge">{{ n }}</span>
+            </summary>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Source</th>
+                            <th>Permit/Record #</th>
+                            <th>Type</th>
+                            <th>Status</th>
+                            <th>Description</th>
+                            <th>Issue/Open Date</th>
+                            <th>Final/Close Date</th>
+                            <th>Job Value</th>
+                            <th>Group</th>
+                            <th>Address</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in rows %}
+                            <tr>
+                                <td>{{ r.get("permit_source") or '-' }}</td>
+                                <td>{{ r.get("record_number") or '-' }}</td>
+                                <td>{{ r.get("permit_type") or '-' }}</td>
+                                <td>{{ status_fmt(r.get('status') or '') }}</td>
+                                <td>{{ r.get("description") or '-' }}</td>
+                                <td>{{ r.get("start_date") or '-' }}</td>
+                                <td>{{ r.get("end_date") or '-' }}</td>
+                                <td>
+                                    {% if r.get('work_value') is not none %}
+                                        {{ money(r['work_value']) }}
+                                    {% else %}
+                                        -
+                                    {% endif %}
+                                </td>
+                                <td>{{ r.get("record_group") or '-' }}</td>
+                                <td>{{ r.get("address") or r.get('folio') or '-' }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    {% endif %}
+    {# ──────────────────────────────────────────── #}
+    {# Section 9: Clerk Events                      #}
+    {# ──────────────────────────────────────────── #}
+    {% set rows = sections.get("Clerk Events", []) %}
+    {% set n = counts.get("Clerk Events", 0) %}
+    {% if n > 0 %}
+        <details>
+            <summary class="section-header">
+                Clerk Events <span class="count-badge">{{ n }}</span>
+            </summary>
+            <div class="table-container">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Source</th>
+                            <th>Subtype</th>
+                            <th>Description</th>
+                            <th>Book/Page</th>
+                            <th>Instrument #</th>
+                            <th>Grantor</th>
+                            <th>Grantee</th>
+                            <th>Amount</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in rows %}
+                            <tr>
+                                <td>{{ r.event_date or '-' }}</td>
+                                <td>{{ r.event_source or '-' }}</td>
+                                <td>{{ r.event_subtype or '-' }}</td>
+                                <td>{{ r.description or '-' }}</td>
+                                <td>{{ r.or_book or '' }}/{{ r.or_page or '' }}</td>
+                                <td>{{ r.instrument_number or '-' }}</td>
+                                <td>{{ r.grantor or '-' }}</td>
+                                <td>{{ r.grantee or '-' }}</td>
+                                <td>{{ money(r.amount) }}</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    {% endif %}
 {% endif %}

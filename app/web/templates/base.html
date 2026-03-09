@@ -1,67 +1,116 @@
 <!DOCTYPE html>
 <html lang="en">
-
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}HillsInspector{% endblock %}</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260227-photo-fit">
-    <link rel="stylesheet" href="/static/leaflet/leaflet.css">
-    <script src="/static/leaflet/leaflet.js"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-    <script>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>
+            {% block title %}HillsInspector{% endblock %}
+        </title>
+        <link rel="stylesheet"
+              href="{{ url_for('static', path='styles.css') }}?v=20260227-photo-fit">
+        <link rel="stylesheet"
+              href="{{ url_for('static', path='leaflet/leaflet.css') }}">
+        <script src="/static/leaflet/leaflet.js"></script>
+        <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+        <script>
         // Allow HTMX to swap content on error responses (4xx/5xx)
         // so server-rendered error fragments display instead of silent failures.
-        document.addEventListener('htmx:beforeSwap', function(evt) {
+        document.addEventListener('htmx:beforeSwap', function (evt) {
             var status = evt.detail.xhr.status;
             if (status >= 400) {
                 evt.detail.shouldSwap = true;
                 evt.detail.isError = false;
             }
         });
-    </script>
-    <style>
-        .search-item { display:block; padding:8px 12px; text-decoration:none; color:#333; border-bottom:1px solid #eee; }
-        .search-item:hover { background:#f0f4ff; }
-        .search-item strong { display:block; font-size:0.95em; }
-        .search-item .search-meta { font-size:0.8em; color:#888; }
-        .search-item.muted { color:#999; font-style:italic; }
-        .nav-link.is-active { background:#f5f5f5; color:#1f2937; font-weight:600; }
-    </style>
-    {% block extra_head %}{% endblock %}
-</head>
+        </script>
+        <style>
+        .search-item {
+            display: block;
+            padding: 8px 12px;
+            text-decoration: none;
+            color: #333;
+            border-bottom: 1px solid #eee;
+        }
 
-<body>
-    <header class="header">
-        <div class="header-content">
-            <a href="/" class="logo">HillsInspector</a>
-            <nav class="nav">
-                <a href="/" class="nav-link{% if request.url.path == '/' %} is-active{% endif %}">Dashboard</a>
-                <a href="/auctions" class="nav-link{% if request.url.path.startswith('/auctions') %} is-active{% endif %}">Auctions</a>
-                <a href="/auction-intel" class="nav-link{% if request.url.path.startswith('/auction-intel') %} is-active{% endif %}">Intel</a>
-                <a href="/review/hcpa-failures" class="nav-link{% if request.url.path.startswith('/review') %} is-active{% endif %}">Review Queue</a>
-                <a href="/history" class="nav-link{% if request.url.path.startswith('/history') %} is-active{% endif %}">History</a>
-                <a href="/database" class="nav-link{% if request.url.path.startswith('/database') %} is-active{% endif %}">Database</a>
-            </nav>
-            <div class="search-box" style="position:relative;">
-                <input type="text" name="q" placeholder="Search address, folio, or owner..." hx-get="/api/search"
-                    hx-trigger="keyup changed delay:500ms" hx-target="#search-results" hx-indicator="#search-spinner"
-                    autocomplete="off">
-                <span id="search-spinner" class="htmx-indicator">...</span>
-                <div id="search-results" class="search-results" style="position:absolute;top:100%;left:0;right:0;z-index:1000;background:#fff;border:1px solid #ddd;border-radius:0 0 6px 6px;max-height:400px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.15);"></div>
+        .search-item:hover {
+            background: #f0f4ff;
+        }
+
+        .search-item strong {
+            display: block;
+            font-size: 0.95em;
+        }
+
+        .search-item .search-meta {
+            font-size: 0.8em;
+            color: #888;
+        }
+
+        .search-item.muted {
+            color: #999;
+            font-style: italic;
+        }
+
+        .nav-link.is-active {
+            background: #f5f5f5;
+            color: #1f2937;
+            font-weight: 600;
+        }
+        </style>
+        {% block extra_head %}{% endblock %}
+    </head>
+    <body>
+        <header class="header">
+            <div class="header-content">
+                <a href="/" class="logo">HillsInspector</a>
+                <nav class="nav">
+                    <a href="/"
+                       class="nav-link{% if request.url.path == '/' %} is-active{% endif %}">Dashboard</a>
+                    <a href="/auctions"
+                       class="nav-link{% if request.url.path.startswith('/auctions') %} is-active{% endif %}">Auctions</a>
+                    <a href="/auction-intel"
+                       class="nav-link{% if request.url.path.startswith('/auction-intel') %} is-active{% endif %}">Intel</a>
+                    <a href="/review/hcpa-failures"
+                       class="nav-link{% if request.url.path.startswith('/review') %} is-active{% endif %}">Review
+                    Queue</a>
+                    <a href="/history"
+                       class="nav-link{% if request.url.path.startswith('/history') %} is-active{% endif %}">History</a>
+                    <a href="/database"
+                       class="nav-link{% if request.url.path.startswith('/database') %} is-active{% endif %}">Database</a>
+                </nav>
+                <div class="search-box" style="position:relative;">
+                    <input type="text"
+                           name="q"
+                           placeholder="Search address, folio, or owner..."
+                           hx-get="/api/search"
+                           hx-trigger="keyup changed delay:500ms"
+                           hx-target="#search-results"
+                           hx-indicator="#search-spinner"
+                           autocomplete="off">
+                    <span id="search-spinner" class="htmx-indicator">...</span>
+                    <div id="search-results"
+                         class="search-results"
+                         style="position:absolute;
+                                top:100%;
+                                left:0;
+                                right:0;
+                                z-index:1000;
+                                background:#fff;
+                                border:1px solid #ddd;
+                                border-radius:0 0 6px 6px;
+                                max-height:400px;
+                                overflow-y:auto;
+                                box-shadow:0 4px 12px rgba(0,0,0,0.15)"></div>
+                </div>
             </div>
-        </div>
-    </header>
-
-    <main class="main-content">
-        {% block content %}{% endblock %}
-    </main>
-
-    <footer class="footer">
-        <p>HillsInspector - Hillsborough County Property Auction Analysis</p>
-    </footer>
-
-    <script>
+        </header>
+        <main class="main-content">
+            {% block content %}{% endblock %}
+        </main>
+        <footer class="footer">
+            <p>HillsInspector - Hillsborough County Property Auction Analysis</p>
+        </footer>
+        <script>
         function openTab(evt, tabName) {
             var i, tabcontent, tablinks;
             tabcontent = document.getElementsByClassName("tab-content");
@@ -86,7 +135,6 @@
                 firstTab.click();
             }
         });
-    </script>
-</body>
-
+        </script>
+    </body>
 </html>
