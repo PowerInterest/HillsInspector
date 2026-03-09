@@ -6,6 +6,7 @@ from typing import Any, Self
 
 import pytest
 
+from src.services import market_data_service
 from src.services import pg_market_data_scrapling
 from src.services.pg_market_data_scrapling import PgMarketDataScraplingService
 from src.utils.step_result import is_failed_payload
@@ -360,6 +361,55 @@ class TestIsUsefulRealtorPayload:
     def test_none_values_not_useful(self) -> None:
         svc = object.__new__(PgMarketDataScraplingService)
         assert svc._is_useful_realtor_payload({"list_price": None, "beds": None}) is False
+
+
+def test_run_batch_merges_scrapling_counts_into_parent_summary(monkeypatch: Any) -> None:
+    svc = object.__new__(PgMarketDataScraplingService)
+    svc._has_realtor_column = True  # type: ignore[attr-defined]
+    svc._force = False  # type: ignore[attr-defined]
+
+    async def _fake_safe_site_run(
+        site: str,
+        _runner: Any,
+        _properties: list[dict[str, Any]],
+    ) -> int:
+        return {"realtor": 2, "redfin": 1}.get(site, 0)
+
+    async def _fake_parent_run_batch(
+        self: Any,
+        properties: list[dict[str, Any]],
+        sources: list[str] | None = None,
+    ) -> dict[str, Any]:
+        assert len(properties) == 2
+        assert sources == ["realtor", "redfin"]
+        return {"realtor": 1, "redfin": 0, "photos": 3}
+
+    monkeypatch.setattr(
+        svc,
+        "_build_site_needs",
+        lambda properties, _sources: {"realtor": properties, "redfin": properties},
+    )
+    monkeypatch.setattr(svc, "_safe_site_run", _fake_safe_site_run)
+    monkeypatch.setattr(
+        market_data_service.MarketDataService,
+        "run_batch",
+        _fake_parent_run_batch,
+    )
+
+    result = asyncio.run(
+        svc.run_batch(
+            [
+                {"strap": "A", "property_address": "1 Main St"},
+                {"strap": "B", "property_address": "2 Main St"},
+            ],
+            sources=["realtor", "redfin"],
+        )
+    )
+
+    assert result["realtor"] == 3
+    assert result["redfin"] == 1
+    assert result["photos"] == 3
+    assert result["scrapling"] == {"realtor": 2, "redfin": 1}
 
 
 def test_run_redfin_scrapling_rejects_mismatched_payload(monkeypatch: Any) -> None:

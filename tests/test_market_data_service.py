@@ -169,3 +169,13 @@ def test_repair_stale_detail_urls_updates_rows_with_verified_fallbacks() -> None
     assert "detail_url LIKE 'https://www.redfin.com/%'" in sql_text
     assert "zillow_json->>'detail_url'" in sql_text
     assert "realtor_json->>'detail_url'" in sql_text
+
+
+def test_detail_url_upsert_sql_validates_zillow_fallback_for_realtor_and_homeharvest() -> None:
+    realtor_sql = market_data_service._detail_url_upsert_sql("realtor")  # noqa: SLF001
+    homeharvest_sql = market_data_service._detail_url_upsert_sql("homeharvest")  # noqa: SLF001
+
+    assert "property_market.zillow_json->>'detail_url'" in realtor_sql
+    assert "LIKE 'https://www.zillow.com/%'" in realtor_sql
+    assert "property_market.zillow_json->>'detail_url'" in homeharvest_sql
+    assert "LIKE 'https://www.zillow.com/%'" in homeharvest_sql

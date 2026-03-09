@@ -142,3 +142,12 @@ def test_ran_recently_only_checks_running_and_success_rows() -> None:
     assert recent is False
     assert "status IN ('running', 'success')" in conn.sql
     assert "skipped" not in conn.sql
+
+
+def test_payload_status_supports_step_result_summary_dicts() -> None:
+    payload_status = pg_job_control_service.PgJobControlService._payload_status  # noqa: SLF001
+
+    assert payload_status({"status": "skipped"}) == "skipped"
+    assert payload_status({"status": "degraded"}) == "degraded"
+    assert payload_status({"status": "failed"}) == "failed"
+    assert payload_status({"status": "success"}) == "success"

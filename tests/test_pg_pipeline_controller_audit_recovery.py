@@ -157,6 +157,64 @@ def test_run_encumbrance_recovery_passes_cached_report_and_clears_state(
     assert controller._encumbrance_audit_report is None  # noqa: SLF001
 
 
+def test_run_encumbrance_recovery_marks_partial_errors_degraded(
+    monkeypatch: Any,
+) -> None:
+    controller = _build_controller(monkeypatch)
+    controller._encumbrance_audit_report = _report()  # noqa: SLF001
+
+    class _FakeRecoveryService:
+        def __init__(self, dsn: str | None = None) -> None:
+            _ = dsn
+
+        def run(self, *, report: Any | None = None) -> dict[str, Any]:
+            assert report is not None
+            return {
+                "recovered_foreclosure_ids": [1],
+                "degraded": True,
+                "errors": 1,
+            }
+
+    monkeypatch.setattr(
+        "src.services.audit.encumbrance_recovery.EncumbranceRecoveryService",
+        _FakeRecoveryService,
+    )
+
+    result = controller._run_encumbrance_recovery()  # noqa: SLF001
+
+    assert result.status == "degraded"
+    assert result.errors == 1
+    assert result.updated == 1
+
+
+def test_run_title_chain_counts_chain_summary_and_event_rows(monkeypatch: Any) -> None:
+    controller = _build_controller(monkeypatch)
+
+    class _FakeTitleChainController:
+        def __init__(self, _config: Any) -> None:
+            pass
+
+        def run(self) -> dict[str, int]:
+            return {
+                "chain_rows": 7,
+                "summary_rows": 2,
+                "events_inserted": 11,
+            }
+
+    monkeypatch.setattr(
+        pg_pipeline_controller,
+        "TitleChainController",
+        _FakeTitleChainController,
+    )
+
+    result = controller._run_title_chain()  # noqa: SLF001
+
+    assert result.status == "success"
+    assert result.inserted == 20
+    assert result.details["update"]["chain_rows"] == 7
+    assert result.details["update"]["summary_rows"] == 2
+
+
 def test_run_executes_recovery_after_audit_with_shared_state(monkeypatch: Any) -> None:
     controller = _build_controller(monkeypatch, audit_only=True)
     shared_report = {"targets": [101, 202]}

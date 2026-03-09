@@ -20,7 +20,9 @@ the three duplicate ``_payload_failed()`` functions formerly in
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 
@@ -57,7 +59,7 @@ class StepResult:
             "duration_ms": self.duration_ms,
         }
         if self.details:
-            d["details"] = self.details
+            d["details"] = _json_safe(self.details)
         return d
 
     def log_line(self) -> str:
@@ -72,12 +74,16 @@ class StepResult:
         )
 
 
-def is_failed_payload(payload: dict[str, Any]) -> bool:
+def is_failed_payload(payload: StepResult | dict[str, Any]) -> bool:
     """Check whether a raw service-result dict signals failure.
 
     This is the single source of truth replacing the three identical
     ``_payload_failed()`` functions that were duplicated across worker modules.
     """
+    if isinstance(payload, StepResult):
+        return payload.is_failure
+    if payload.get("status") == "failed":
+        return True
     if payload.get("success") is False:
         return True
     if payload.get("error") not in {None, ""}:
@@ -90,3 +96,17 @@ def is_failed_payload(payload: dict[str, Any]) -> bool:
         if update.get("error") not in {None, ""}:
             return True
     return False
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (dt.date, dt.datetime)):
+        return value.isoformat()
+    return value

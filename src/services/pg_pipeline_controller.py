@@ -18,7 +18,7 @@ from typing import Any
 from loguru import logger
 from sqlalchemy import text
 
-from src.utils.step_result import StepResult
+from src.utils.step_result import StepResult, is_failed_payload
 
 from src.services.CountyPermit import CountyPermitService
 from src.services.TampaPermit import TampaPermitService
@@ -903,7 +903,11 @@ class PgPipelineController:
             similarity_threshold=self.settings.similarity_threshold,
         )
         result = TitleChainController(config).run()
-        built = int(result.get("built", 0)) + int(result.get("chains_built", 0))
+        built = (
+            int(result.get("chain_rows", 0))
+            + int(result.get("summary_rows", 0))
+            + int(result.get("events_inserted", 0))
+        )
         return StepResult(
             step_name="title_chain",
             status="success" if built > 0 else "noop",
@@ -970,15 +974,45 @@ class PgPipelineController:
                 force=self.settings.force_all,
             )
 
-        total_enriched = (
-            int(scrapling_result.get("enriched", 0))
-            + int(worker_result.get("update", {}).get("enriched", 0) if isinstance(worker_result, dict) else 0)
+        scrapling_work = self._market_work_units(scrapling_result)
+        worker_work = self._market_work_units(worker_result)
+        total_work = scrapling_work + worker_work
+        worker_dispatched = bool(
+            isinstance(worker_result, dict)
+            and (
+                worker_result.get("dispatched") is True
+                or worker_result.get("reason")
+                == "market_data_worker_dispatched_background"
+            )
         )
+        any_failed = (
+            isinstance(scrapling_result, dict)
+            and is_failed_payload(scrapling_result)
+        ) or (
+            isinstance(worker_result, dict)
+            and is_failed_payload(worker_result)
+        )
+
+        if any_failed and total_work == 0:
+            status = "failed"
+        elif any_failed:
+            status = "degraded"
+        elif total_work > 0:
+            status = "success"
+        elif worker_dispatched:
+            status = "skipped"
+        else:
+            status = "noop"
+
+        details: dict[str, Any] = {"scrapling": scrapling_result, "worker": worker_result}
+        if worker_dispatched and total_work == 0:
+            details["reason"] = "market_data_worker_dispatched_background"
         return StepResult(
             step_name="market_data",
-            status="success" if total_enriched > 0 else "noop",
-            updated=total_enriched,
-            details={"scrapling": scrapling_result, "worker": worker_result},
+            status=status,
+            updated=total_work,
+            errors=int(any_failed),
+            details=details,
         )
 
     def _should_dispatch_bulk_step(self, name: str) -> bool:
@@ -1192,10 +1226,20 @@ class PgPipelineController:
                     )
                     conn.commit()
             recovered = int(result.get("recovered", 0)) + len(augmented_ids)
+            errors = int(result.get("errors", 0) or 0)
+            if result.get("skipped"):
+                status = "skipped"
+            elif errors > 0 and recovered == 0:
+                status = "failed"
+            elif result.get("degraded") or errors > 0:
+                status = "degraded"
+            else:
+                status = "success" if recovered > 0 else "noop"
             return StepResult(
                 step_name="encumbrance_recovery",
-                status="success" if recovered > 0 else "noop",
+                status=status,
                 updated=recovered,
+                errors=errors,
                 details=result,
             )
         finally:
@@ -1610,6 +1654,29 @@ class PgPipelineController:
         if isinstance(value, (dt.date, dt.datetime)):
             return value.isoformat()
         return value
+
+    @staticmethod
+    def _market_work_units(payload: Any) -> int:
+        """Count observable market-data work from worker/service payloads."""
+        if not isinstance(payload, dict):
+            return 0
+        update = payload.get("update")
+        result = update if isinstance(update, dict) else payload
+        keys = (
+            "redfin",
+            "zillow",
+            "realtor",
+            "homeharvest",
+            "photos",
+            "detail_url_repaired",
+        )
+        total = 0
+        for key in keys:
+            try:
+                total += int(result.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+        return total
 
     @staticmethod
     def _dsn_tag(dsn: str) -> str:

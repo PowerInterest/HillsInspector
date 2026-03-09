@@ -1544,7 +1544,15 @@ class PgMarketDataScraplingService(MarketDataService):
 
         # Phase 2: Delegate to the parent MarketDataService for *all* sources
         # (browser-based fallback for any sites scrapling missed).
-        return await super().run_batch(properties, sources=sources)
+        summary = await super().run_batch(properties, sources=sources)
+        for site, count in scrapling_results.items():
+            try:
+                summary[site] = int(summary.get(site, 0) or 0) + int(count or 0)
+            except (TypeError, ValueError):
+                continue
+        if scrapling_results:
+            summary["scrapling"] = scrapling_results
+        return summary
 
     async def _safe_site_run(
         self,

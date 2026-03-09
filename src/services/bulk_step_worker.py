@@ -10,7 +10,7 @@ from loguru import logger
 
 from src.services.pg_pipeline_controller import ControllerSettings
 from src.services.pg_pipeline_controller import PgPipelineController
-from src.utils.step_result import is_failed_payload
+from src.utils.step_result import StepResult, is_failed_payload
 
 
 STEP_METHODS: dict[str, str] = {
@@ -39,7 +39,10 @@ def run_bulk_step(
     settings = ControllerSettings(dsn=dsn, force_all=force_all)
     controller = PgPipelineController(settings)
     method = getattr(controller, method_name)
-    return method()
+    payload = method()
+    if isinstance(payload, StepResult):
+        return payload.to_summary_dict()
+    return payload
 
 
 def _env_true(value: str | None) -> bool:

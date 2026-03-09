@@ -1469,7 +1469,13 @@ def _detail_url_upsert_sql(source: str) -> str:
     elif source == "realtor":
         fallback = """
             COALESCE(
-                property_market.zillow_json->>'detail_url',
+                CASE
+                    WHEN property_market.zillow_json IS NOT NULL
+                     AND property_market.zillow_json->>'detail_url'
+                           LIKE 'https://www.zillow.com/%'
+                    THEN property_market.zillow_json->>'detail_url'
+                    ELSE NULL
+                END,
                 CASE
                     WHEN EXCLUDED.detail_url LIKE 'https://www.realtor.com/realestateandhomes-detail/%'
                     THEN EXCLUDED.detail_url
@@ -1480,7 +1486,13 @@ def _detail_url_upsert_sql(source: str) -> str:
     elif source == "homeharvest":
         fallback = """
             COALESCE(
-                property_market.zillow_json->>'detail_url',
+                CASE
+                    WHEN property_market.zillow_json IS NOT NULL
+                     AND property_market.zillow_json->>'detail_url'
+                           LIKE 'https://www.zillow.com/%'
+                    THEN property_market.zillow_json->>'detail_url'
+                    ELSE NULL
+                END,
                 CASE
                     WHEN property_market.realtor_json IS NOT NULL
                      AND property_market.realtor_json->>'detail_url'

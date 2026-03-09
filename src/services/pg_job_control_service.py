@@ -442,6 +442,12 @@ class PgJobControlService:
 
     @staticmethod
     def _payload_status(payload: dict[str, Any]) -> str:
+        if payload.get("status") == "skipped":
+            return "skipped"
+        if payload.get("status") == "degraded":
+            return "degraded"
+        if payload.get("status") == "failed":
+            return "failed"
         if payload.get("skipped"):
             return "skipped"
         if payload.get("success") is False:
@@ -451,6 +457,10 @@ class PgJobControlService:
 
         update = payload.get("update")
         if isinstance(update, dict):
+            if update.get("status") == "degraded":
+                return "degraded"
+            if update.get("status") == "failed":
+                return "failed"
             if update.get("success") is False:
                 return "failed"
             if update.get("error") not in {None, ""}:
