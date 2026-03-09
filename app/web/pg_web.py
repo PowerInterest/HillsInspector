@@ -10,7 +10,9 @@ from __future__ import annotations
 import datetime as dt
 from datetime import date, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from loguru import logger
 from sqlalchemy import text
@@ -51,6 +53,17 @@ def _sql_first_valid_photo(jsonb_expr: str) -> str:
             ORDER BY ord
             LIMIT 1
         )
+    """
+
+
+def _sql_first_local_photo_path(jsonb_expr: str) -> str:
+    return f"""
+        CASE
+            WHEN jsonb_typeof({jsonb_expr}) = 'array'
+                 AND jsonb_array_length({jsonb_expr}) > 0
+            THEN {jsonb_expr}->>0
+            ELSE NULL
+        END
     """
 
 
@@ -128,7 +141,21 @@ def _jsonable(val: Any) -> Any:
 
 
 def _rows_to_dicts(rows: list[Any]) -> list[dict[str, Any]]:
-    return [{k: _jsonable(v) for k, v in r._mapping.items()} for r in rows]  # noqa: SLF001
+    dict_rows = [{k: _jsonable(v) for k, v in r._mapping.items()} for r in rows]  # noqa: SLF001
+    for row in dict_rows:
+        photo_local_path = str(row.get("photo_local_path") or "").strip()
+        if photo_local_path and not row.get("photo_local_url"):
+            filename = Path(photo_local_path).name
+            path_parts = Path(photo_local_path).parts
+            path_case_number = None
+            if len(path_parts) >= 3 and path_parts[0] == "Foreclosure":
+                path_case_number = path_parts[1]
+            identifier = path_case_number or str(row.get("case_number") or "").strip()
+            if filename and identifier:
+                row["photo_local_url"] = (
+                    f"/property/{quote(identifier)}/photos/{quote(filename)}"
+                )
+    return dict_rows
 
 
 def get_upcoming_auctions(
@@ -191,7 +218,8 @@ def get_upcoming_auctions(
             COALESCE(enc.liens_total, 0)::integer AS liens_total,
             COALESCE(f.latitude, bp.latitude) AS latitude,
             COALESCE(f.longitude, bp.longitude) AS longitude,
-            {_sql_first_valid_photo("pm.photo_cdn_urls")} AS photo_url
+            {_sql_first_valid_photo("pm.photo_cdn_urls")} AS photo_url,
+            {_sql_first_local_photo_path("pm.photo_local_paths")} AS photo_local_path
         FROM foreclosures f
         LEFT JOIN LATERAL (
             SELECT
@@ -212,7 +240,7 @@ def get_upcoming_auctions(
             LIMIT 1
         ) bp ON TRUE
         LEFT JOIN LATERAL (
-            SELECT pm2.photo_cdn_urls
+            SELECT pm2.photo_cdn_urls, pm2.photo_local_paths
             FROM property_market pm2
             WHERE (f.strap IS NOT NULL AND pm2.strap = f.strap)
                OR (f.folio IS NOT NULL AND pm2.folio = f.folio)
@@ -274,7 +302,8 @@ def get_upcoming_auctions(
                         COALESCE(enc.liens_total, 0)::integer AS liens_total,
                         COALESCE(f.latitude, bp.latitude) AS latitude,
                         COALESCE(f.longitude, bp.longitude) AS longitude,
-                        {_sql_first_valid_photo("pm.photo_cdn_urls")} AS photo_url
+                        {_sql_first_valid_photo("pm.photo_cdn_urls")} AS photo_url,
+                        {_sql_first_local_photo_path("pm.photo_local_paths")} AS photo_local_path
                     FROM foreclosures_history f
                     LEFT JOIN LATERAL (
                         SELECT
@@ -295,7 +324,7 @@ def get_upcoming_auctions(
                             LIMIT 1
                         ) bp ON TRUE
                     LEFT JOIN LATERAL (
-                        SELECT pm2.photo_cdn_urls
+                        SELECT pm2.photo_cdn_urls, pm2.photo_local_paths
                         FROM property_market pm2
                         WHERE (f.strap IS NOT NULL AND pm2.strap = f.strap)
                            OR (f.folio IS NOT NULL AND pm2.folio = f.folio)
@@ -1242,6 +1271,7 @@ def get_auction_intel_for_date(
             ) AS net_equity,
             -- Photo (exclude site logos / branding placeholders)
             {_sql_first_valid_photo("pm.photo_cdn_urls")} AS photo_url,
+            {_sql_first_local_photo_path("pm.photo_local_paths")} AS photo_local_path,
             -- LP filing date
             lp.lp_filing_date,
             (CURRENT_DATE - lp.lp_filing_date)::integer AS days_in_foreclosure,
@@ -1271,7 +1301,7 @@ def get_auction_intel_for_date(
             LIMIT 1
         ) bp ON TRUE
         LEFT JOIN LATERAL (
-            SELECT pm2.photo_cdn_urls
+            SELECT pm2.photo_cdn_urls, pm2.photo_local_paths
             FROM property_market pm2
             WHERE (f.strap IS NOT NULL AND pm2.strap = f.strap)
                OR (f.folio IS NOT NULL AND pm2.folio = f.folio)

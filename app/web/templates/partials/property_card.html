@@ -15,15 +15,26 @@
 <div class="property-card {% if auction.is_toxic_title %}toxic{% endif %}" data-folio="{{ auction.folio }}">
     <!-- Photo / Placeholder — guard against logo/branding URLs that are not property photos -->
     <div class="card-image">
-        {% if auction.photo_url
-            and '/logos/' not in auction.photo_url
-            and 'redfin-logo' not in auction.photo_url
-            and 'no_image' not in auction.photo_url
-            and 'placeholder' not in auction.photo_url
-            and 'default_photo' not in auction.photo_url
-            and '/images/logos/' not in auction.photo_url
-            and '/static/images/' not in auction.photo_url %}
-        <img src="{{ auction.photo_url }}" alt="{{ auction.property_address }}" loading="lazy">
+        {% set primary_photo = auction.photo_local_url or auction.photo_url %}
+        {% set fallback_photo = auction.photo_url if auction.photo_local_url else '' %}
+        {% if auction.photo_local_url
+            or (auction.photo_url
+                and '/logos/' not in auction.photo_url
+                and 'redfin-logo' not in auction.photo_url
+                and 'no_image' not in auction.photo_url
+                and 'placeholder' not in auction.photo_url
+                and 'default_photo' not in auction.photo_url
+                and '/images/logos/' not in auction.photo_url
+                and '/static/images/' not in auction.photo_url) %}
+        <img src="{{ primary_photo }}"
+             {% if fallback_photo %}data-fallback="{{ fallback_photo }}"{% endif %}
+             alt="{{ auction.property_address }}"
+             loading="lazy"
+             onerror="if (this.dataset.fallback && this.src !== this.dataset.fallback) { this.src = this.dataset.fallback; } else { this.style.display='none'; this.nextElementSibling.style.display='flex'; }">
+        <div class="card-image-placeholder" style="display:none;">
+            <span class="placeholder-icon">🏠</span>
+            <span class="placeholder-text">No Photo</span>
+        </div>
         {% else %}
         <div class="card-image-placeholder">
             <span class="placeholder-icon">🏠</span>

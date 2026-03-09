@@ -1,12 +1,14 @@
 # ruff: noqa: SLF001
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Self
 
 import pytest
 
 from src.services import pg_market_data_scrapling
 from src.services.pg_market_data_scrapling import PgMarketDataScraplingService
+from src.utils.step_result import is_failed_payload
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +237,12 @@ class TestExtractRealtorPayloadFromNode:
             "sqft": 1500,
             "year_built": 1990,
             "homeStatus": "FOR_SALE",
+            "location": {
+                "line": "123 Main St",
+                "city": "Tampa",
+                "state_code": "FL",
+                "postal_code": "33602",
+            },
         }
         result = PgMarketDataScraplingService._extract_realtor_payload_from_node(
             node, "123 Main St", "http://realtor.com/detail"
@@ -242,6 +250,7 @@ class TestExtractRealtorPayloadFromNode:
         assert result["list_price"] == 250000
         assert result["beds"] == 3
         assert result["listing_status"] == "FOR_SALE"
+        assert result["address"] == "123 Main St, Tampa, FL, 33602"
         assert result["_source_address"] == "123 Main St"
 
     def test_price_fallback_from_offers(self) -> None:
@@ -296,6 +305,40 @@ class TestExtractRealtorPayloadFromJsonld:
         assert result is None
 
 
+class TestCoerceAddressString:
+    def test_joins_structured_address(self) -> None:
+        result = PgMarketDataScraplingService._coerce_address_string(
+            {
+                "streetAddress": "2535 Middleton Grove Dr",
+                "city": "Brandon",
+                "state": "FL",
+                "zipcode": "33511",
+            }
+        )
+
+        assert result == "2535 Middleton Grove Dr, Brandon, FL, 33511"
+
+
+class TestExtractZillowFromJson:
+    def test_preserves_property_address(self) -> None:
+        raw = {
+            "property": {
+                "zpid": "123",
+                "price": 255000,
+                "address": {
+                    "streetAddress": "2535 Middleton Grove Dr",
+                    "city": "Brandon",
+                    "state": "FL",
+                    "zipcode": "33511",
+                },
+            }
+        }
+
+        result = PgMarketDataScraplingService._extract_zillow_from_json(raw, "2535 MIDDLETON GROVE DR")
+
+        assert result["address"] == "2535 Middleton Grove Dr, Brandon, FL, 33511"
+
+
 # ---------------------------------------------------------------------------
 # Usefulness check tests
 # ---------------------------------------------------------------------------
@@ -317,6 +360,61 @@ class TestIsUsefulRealtorPayload:
     def test_none_values_not_useful(self) -> None:
         svc = object.__new__(PgMarketDataScraplingService)
         assert svc._is_useful_realtor_payload({"list_price": None, "beds": None}) is False
+
+
+def test_run_redfin_scrapling_rejects_mismatched_payload(monkeypatch: Any) -> None:
+    svc = object.__new__(PgMarketDataScraplingService)
+    attempted: list[tuple[str, str | None, str, str]] = []
+    upserts: list[tuple[str, str | None, str, dict[str, Any]]] = []
+
+    async def _resolve_redfin_url(_address: str, *, city: str = "") -> str:
+        assert city == "Brandon"
+        return "https://www.redfin.com/FL/Brandon/604-Julie-Ln-33511/home/47212003"
+
+    async def _fetch_site_html(_url: str, *, scroll: bool = False) -> tuple[str, str]:
+        assert scroll is True
+        return ("resolved", "<html></html>")
+
+    async def _noop_sleep(_delay: float) -> None:
+        return None
+
+    def _reject_payload(_site: str, _address: str, _payload: dict[str, Any]) -> bool:
+        return False
+
+    svc._resolve_redfin_url = _resolve_redfin_url  # type: ignore[method-assign]
+    svc._fetch_site_html = _fetch_site_html  # type: ignore[method-assign]
+    svc._parse_redfin_html = lambda _html, _address, url: {  # type: ignore[method-assign]
+        "list_price": 350000,
+        "detail_url": url,
+        "address": "604 Julie Ln, Brandon, FL 33511",
+    }
+    svc._payload_matches_query = _reject_payload  # type: ignore[method-assign]
+    svc._mark_source_attempted = lambda strap, folio, case, site: attempted.append(  # type: ignore[method-assign]
+        (strap, folio, case, site)
+    )
+    svc._upsert_redfin = lambda strap, folio, case, payload: upserts.append(  # type: ignore[method-assign]
+        (strap, folio, case, payload)
+    )
+
+    monkeypatch.setattr(pg_market_data_scrapling.asyncio, "sleep", _noop_sleep)
+
+    matched = asyncio.run(
+        svc._run_redfin_scrapling(
+            [
+                {
+                    "strap": "STRAP1",
+                    "folio": "FOLIO1",
+                    "case_number": "CASE1",
+                    "property_address": "2535 MIDDLETON GROVE DR",
+                    "property_city": "Brandon",
+                }
+            ]
+        )
+    )
+
+    assert matched == 0
+    assert attempted == [("STRAP1", "FOLIO1", "CASE1", "redfin")]
+    assert upserts == []
 
 
 # ---------------------------------------------------------------------------
@@ -418,17 +516,17 @@ def test_run_market_data_update_tolerates_refresh_failure(monkeypatch: Any) -> N
 
 
 def test_payload_failed_detects_nested_update_error() -> None:
-    assert not pg_market_data_scrapling._payload_failed({"update": {"rows": 1}})
-    assert pg_market_data_scrapling._payload_failed({"update": {"error": "boom"}})
-    assert pg_market_data_scrapling._payload_failed({"update": {"success": False}})
+    assert not is_failed_payload({"update": {"rows": 1}})
+    assert is_failed_payload({"update": {"error": "boom"}})
+    assert is_failed_payload({"update": {"success": False}})
 
 
 def test_payload_failed_top_level_error() -> None:
-    assert pg_market_data_scrapling._payload_failed({"error": "top-level"})
+    assert is_failed_payload({"error": "top-level"})
 
 
 def test_payload_failed_top_level_success_false() -> None:
-    assert pg_market_data_scrapling._payload_failed({"success": False})
+    assert is_failed_payload({"success": False})
 
 
 # ---------------------------------------------------------------------------

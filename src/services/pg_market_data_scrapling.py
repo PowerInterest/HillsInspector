@@ -39,6 +39,7 @@ from sqlalchemy import text
 
 from src.services.market_data_service import MarketDataService
 from src.scripts.refresh_foreclosures import refresh as refresh_foreclosures
+from src.utils.step_result import is_failed_payload
 from dataclasses import dataclass
 
 from sunbiz.db import get_engine, resolve_pg_dsn
@@ -272,6 +273,36 @@ class PgMarketDataScraplingService(MarketDataService):
         return out
 
     @staticmethod
+    def _coerce_address_string(raw_value: Any) -> str | None:
+        if isinstance(raw_value, str):
+            text_value = raw_value.strip()
+            return text_value or None
+        if not isinstance(raw_value, dict):
+            return None
+
+        line = (
+            raw_value.get("line")
+            or raw_value.get("streetAddress")
+            or raw_value.get("addressLine")
+            or raw_value.get("street")
+        )
+        city = raw_value.get("city")
+        state = raw_value.get("state") or raw_value.get("state_code")
+        postal_code = (
+            raw_value.get("postal_code")
+            or raw_value.get("zipcode")
+            or raw_value.get("zip")
+        )
+        parts = [
+            str(part).strip()
+            for part in (line, city, state, postal_code)
+            if str(part or "").strip()
+        ]
+        if parts:
+            return ", ".join(parts)
+        return None
+
+    @staticmethod
     def _to_realtor_url(address: str, city: str = "") -> str:
         slug = re.sub(r"[^A-Za-z0-9]+", "-", address.strip().lower())
         slug = slug.strip("-")
@@ -375,6 +406,10 @@ class PgMarketDataScraplingService(MarketDataService):
 
         # Facts/features
         details = node.get("details") or node.get("features") or node.get("property_details")
+        parsed_address = (
+            PgMarketDataScraplingService._coerce_address_string(node.get("address"))
+            or PgMarketDataScraplingService._coerce_address_string(node.get("location"))
+        )
 
         payload = {
             "listing_status": node.get("homeStatus") or node.get("status") or node.get("listing_status"),
@@ -387,6 +422,7 @@ class PgMarketDataScraplingService(MarketDataService):
             "year_built": node.get("year_built") or node.get("yearBuilt"),
             "lot_size": node.get("lot_size") or node.get("lotSize") or node.get("lotSqft") or node.get("lot_sqft"),
             "property_type": node.get("homeType") or node.get("property_type") or node.get("home_type"),
+            "address": parsed_address,
             "photos": photos,
             "detail_url": node.get("detailUrl") or node.get("url") or detail_url,
         }
@@ -424,6 +460,7 @@ class PgMarketDataScraplingService(MarketDataService):
                     "listing_status": node.get("eventStatus") or node.get("name") or node.get("status"),
                     "detail_url": node.get("url") or detail_url,
                     "property_type": node.get("additionalType") or node.get("@type"),
+                    "address": PgMarketDataScraplingService._coerce_address_string(node.get("address")),
                     "photos": PgMarketDataScraplingService._safe_list(node.get("image")),
                 }
 
@@ -566,6 +603,9 @@ class PgMarketDataScraplingService(MarketDataService):
         # 3) Fallback regex extraction for human-readable fields.
         if not payload:
             text = soup.get_text(" ", strip=True)
+            heading = soup.find("h1")
+            if heading:
+                payload["address"] = heading.get_text(" ", strip=True)
 
             # Price patterns: $1,234,567
             price_match = re.search(r"\$\s*([0-9][0-9,]{2,})", text)
@@ -724,6 +764,9 @@ class PgMarketDataScraplingService(MarketDataService):
                         payload.setdefault("sqft", self._normalize_int(node["floorSize"]["value"]))
 
         # Try Redfin-specific data attributes
+        address_el = soup.select_one('[data-rf-test-id="abp-homeinfo-homeAddress"], .street-address')
+        if address_el:
+            payload.setdefault("address", address_el.get_text(" ", strip=True))
         for el in soup.select("[data-rf-test-id='abp-price'] .statsValue"):
             payload.setdefault("list_price", self._normalize_float(el.get_text(strip=True)))
         for el in soup.select("[data-rf-test-id='abp-beds'] .statsValue"):
@@ -974,6 +1017,10 @@ class PgMarketDataScraplingService(MarketDataService):
             elif prop == "zillow_fb:baths" and content:
                 payload.setdefault("baths", self._normalize_int_or_float(content))
 
+        heading = soup.find("h1")
+        if heading:
+            payload.setdefault("address", heading.get_text(" ", strip=True))
+
         # Photos
         photos = []
         for meta in soup.find_all("meta", {"property": "og:image"}):
@@ -1088,7 +1135,11 @@ class PgMarketDataScraplingService(MarketDataService):
                 return
             # Zillow property data keys
             if obj.get("zpid") or obj.get("zestimate") or obj.get("price"):
+                parsed_address = PgMarketDataScraplingService._coerce_address_string(
+                    obj.get("address")
+                )
                 result.setdefault("zpid", obj.get("zpid"))
+                result.setdefault("address", parsed_address)
                 result.setdefault("zestimate", obj.get("zestimate"))
                 result.setdefault("rent_estimate", obj.get("rentZestimate"))
                 result.setdefault("list_price", obj.get("price"))
@@ -1260,6 +1311,19 @@ class PgMarketDataScraplingService(MarketDataService):
                     logger.info("{} scrapling progress: {}/{} attempted, {} matched", site.capitalize(), attempted, len(properties), matched)
                 continue
 
+            if not self._payload_matches_query(site, address, payload):
+                self._mark_source_attempted(strap, folio, case_number, site)
+                logger.warning(
+                    "{} scrapling: rejecting mismatched listing for '{}' -> {} ({})",
+                    site.capitalize(),
+                    address,
+                    payload.get("detail_url"),
+                    payload.get("address"),
+                )
+                if attempted % 10 == 0:
+                    logger.info("{} scrapling progress: {}/{} attempted, {} matched", site.capitalize(), attempted, len(properties), matched)
+                continue
+
             upsert_fn(strap, folio, case_number, payload)
             matched += 1
             logger.success("{} scrapling: saved for {}", site.capitalize(), strap)
@@ -1364,6 +1428,23 @@ class PgMarketDataScraplingService(MarketDataService):
                 self._mark_source_attempted(strap, folio, case_number, _REDFIN_SOURCE)
                 if attempted % 10 == 0:
                     logger.info("Redfin scrapling progress: {}/{} attempted, {} matched", attempted, len(properties), matched)
+                continue
+
+            if not self._payload_matches_query(_REDFIN_SOURCE, address, payload):
+                self._mark_source_attempted(strap, folio, case_number, _REDFIN_SOURCE)
+                logger.warning(
+                    "Redfin scrapling: rejecting mismatched listing for '{}' -> {} ({})",
+                    address,
+                    payload.get("detail_url"),
+                    payload.get("address"),
+                )
+                if attempted % 10 == 0:
+                    logger.info(
+                        "Redfin scrapling progress: {}/{} attempted, {} matched",
+                        attempted,
+                        len(properties),
+                        matched,
+                    )
                 continue
 
             self._upsert_redfin(strap, folio, case_number, payload)
@@ -1514,22 +1595,6 @@ def run_market_data_update(
     return {"properties_queried": len(properties), "update": result}
 
 
-def _payload_failed(payload: dict[str, Any]) -> bool:
-    if payload.get("success") is False:
-        return True
-    if payload.get("error") not in {None, ""}:
-        return True
-
-    update = payload.get("update")
-    if isinstance(update, dict):
-        if update.get("success") is False:
-            return True
-        if update.get("error") not in {None, ""}:
-            return True
-
-    return False
-
-
 def main() -> None:
     import argparse
 
@@ -1542,7 +1607,7 @@ def main() -> None:
     result = run_market_data_update(limit=args.limit, use_windows_chrome=args.use_windows_chrome, force=args.force)
     logger.info("Scrapling market worker complete: {}", result)
     print(json.dumps(result, indent=2, default=str))
-    if _payload_failed(result):
+    if is_failed_payload(result):
         raise SystemExit(1)
 
 

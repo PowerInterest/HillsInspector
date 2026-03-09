@@ -5,6 +5,7 @@ from sqlalchemy.sql.elements import TextClause
 
 from app.web.pg_web import _build_bank_escrow_profiles
 from app.web.pg_web import _compute_intel_flags
+from app.web.pg_web import _rows_to_dicts
 
 
 class _FakeResult:
@@ -21,6 +22,11 @@ class _FakeRow:
 
     def __getitem__(self, index: int) -> Any:
         return list(self.__dict__.values())[index]
+
+
+class _MappingRow:
+    def __init__(self, mapping: dict[str, Any]) -> None:
+        self._mapping = mapping
 
 
 class _FakeConn:
@@ -100,3 +106,20 @@ def test_build_bank_escrow_profiles_excludes_unknown_counterparties() -> None:
     assert profile["median_deposit"] == 15000.0
     assert profile["bank_wins"] == 1
     assert profile["third_party_wins"] == 1
+
+
+def test_rows_to_dicts_builds_local_photo_url_from_stored_path() -> None:
+    rows = [
+        _MappingRow(
+            {
+                "case_number": "292025CA008465A001HC",
+                "photo_local_path": "Foreclosure/292024CA003253A001HC/photos/000_house.jpg",
+            }
+        )
+    ]
+
+    result = _rows_to_dicts(rows)
+
+    assert result[0]["photo_local_url"] == (
+        "/property/292024CA003253A001HC/photos/000_house.jpg"
+    )

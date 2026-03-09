@@ -101,10 +101,13 @@ class MarketDataService:
         Returns summary: {redfin: N, zillow: N, homeharvest: N, photos: N}
         """
         sources = list(sources or ["redfin", "zillow", "realtor", "homeharvest"])
+        repaired_detail_urls = self._repair_stale_detail_urls()
         if not self._has_realtor_column and "realtor" in sources:
             logger.warning("Ignoring Realtor source because property_market.realtor_json is not available.")
             sources = [s for s in sources if s != "realtor"]
         summary = {"redfin": 0, "zillow": 0, "realtor": 0, "homeharvest": 0, "photos": 0}
+        if repaired_detail_urls:
+            summary["detail_url_repaired"] = repaired_detail_urls
         browser_phase_error: str | None = None
 
         # Check existing PG state per-property to decide which sources to run.
@@ -343,6 +346,74 @@ class MarketDataService:
             logger.debug(f"Market state check failed for strap={strap}: {exc}")
             return None
 
+    def _repair_stale_detail_urls(self) -> int:
+        """Repair rows where Redfin data was cleared but its detail URL remained.
+
+        We only promote verified Zillow and Realtor detail URLs here. When no
+        verified fallback exists, we null the stale Redfin link instead of
+        preserving misleading source attribution.
+        """
+        sql = text("""
+            WITH repaired AS (
+                UPDATE property_market
+                SET detail_url = COALESCE(
+                        CASE
+                            WHEN zillow_json->>'detail_url' LIKE 'https://www.zillow.com/%'
+                            THEN zillow_json->>'detail_url'
+                            ELSE NULL
+                        END,
+                        CASE
+                            WHEN realtor_json->>'detail_url'
+                                   LIKE 'https://www.realtor.com/realestateandhomes-detail/%'
+                            THEN realtor_json->>'detail_url'
+                            ELSE NULL
+                        END
+                    ),
+                    updated_at = NOW()
+                WHERE detail_url LIKE 'https://www.redfin.com/%'
+                  AND redfin_json IS NULL
+                RETURNING strap
+            )
+            SELECT COUNT(*) FROM repaired
+        """)
+        try:
+            with self._engine.begin() as conn:
+                repaired = int(conn.execute(sql).scalar() or 0)
+            if repaired:
+                logger.info("Repaired {} stale market detail URLs", repaired)
+            return repaired
+        except Exception as exc:
+            logger.warning(f"Failed to repair stale market detail URLs: {exc}")
+            return 0
+
+    def _listing_matches_query(
+        self,
+        site: str,
+        requested_address: str,
+        *,
+        listing_address: str | None = None,
+        detail_url: str | None = None,
+    ) -> bool:
+        return _market_result_matches_query(
+            site,
+            requested_address,
+            listing_address=listing_address,
+            detail_url=detail_url,
+        )
+
+    def _payload_matches_query(
+        self,
+        site: str,
+        requested_address: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        return self._listing_matches_query(
+            site,
+            requested_address,
+            listing_address=str(payload.get("address") or "").strip() or None,
+            detail_url=str(payload.get("detail_url") or "").strip() or None,
+        )
+
     def _upsert_redfin(self, strap: str, folio: str | None, case_number: str, payload: dict) -> None:
         """Upsert Redfin data into PG property_market.
 
@@ -454,8 +525,7 @@ class MarketDataService:
                 "year_built": text("COALESCE(property_market.year_built, EXCLUDED.year_built)"),
                 "lot_size": text("COALESCE(property_market.lot_size, EXCLUDED.lot_size)"),
                 "property_type": text("COALESCE(property_market.property_type, EXCLUDED.property_type)"),
-                # Keep existing detail_url (Redfin > Zillow)
-                "detail_url": text("COALESCE(property_market.detail_url, EXCLUDED.detail_url)"),
+                "detail_url": text(_detail_url_upsert_sql("zillow")),
                 # Update photo CDN URLs: keep whichever array has more photos
                 "photo_cdn_urls": text(_photo_cdn_urls_upsert_sql()),
                 "photo_local_paths": text(_photo_local_paths_reset_sql()),
@@ -522,8 +592,7 @@ class MarketDataService:
                 "year_built": text("COALESCE(EXCLUDED.year_built, property_market.year_built)"),
                 "lot_size": text("COALESCE(EXCLUDED.lot_size, property_market.lot_size)"),
                 "property_type": text("COALESCE(EXCLUDED.property_type, property_market.property_type)"),
-                # Keep existing detail_url (Redfin/Zillow > HomeHarvest)
-                "detail_url": text("COALESCE(property_market.detail_url, EXCLUDED.detail_url)"),
+                "detail_url": text(_detail_url_upsert_sql("homeharvest")),
                 # Update photo CDN URLs: keep whichever array has more photos
                 "photo_cdn_urls": text(_photo_cdn_urls_upsert_sql()),
                 "photo_local_paths": text(_photo_local_paths_reset_sql()),
@@ -586,7 +655,7 @@ class MarketDataService:
                 "year_built": text("COALESCE(property_market.year_built, EXCLUDED.year_built)"),
                 "lot_size": text("COALESCE(property_market.lot_size, EXCLUDED.lot_size)"),
                 "property_type": text("COALESCE(property_market.property_type, EXCLUDED.property_type)"),
-                "detail_url": text("COALESCE(property_market.detail_url, EXCLUDED.detail_url)"),
+                "detail_url": text(_detail_url_upsert_sql("realtor")),
                 "photo_cdn_urls": text(_photo_cdn_urls_upsert_sql()),
                 "photo_local_paths": text(_photo_local_paths_reset_sql()),
                 "realtor_json": stmt.excluded.realtor_json,
@@ -868,6 +937,20 @@ class MarketDataService:
                         strap = prop.get("strap", "")
                         folio = prop.get("folio")
                         case = prop.get("case_number", "")
+                        prop_addr = (prop.get("property_address") or "").strip()
+                        if not self._listing_matches_query(
+                            "redfin",
+                            prop_addr,
+                            listing_address=listing.address,
+                            detail_url=listing.detail_url,
+                        ):
+                            self._mark_source_attempted(strap, folio, case, "redfin")
+                            logger.warning(
+                                "Redfin Tier 1: rejecting mismatched listing for '{}' -> {}",
+                                prop_addr,
+                                listing.detail_url,
+                            )
+                            continue
                         if strap and strap not in matched and strap not in already_matched:
                             self._upsert_redfin(strap, folio, case, payload)
                             matched.add(strap)
@@ -904,6 +987,20 @@ class MarketDataService:
                     nav_status, listing = "blocked", None
 
                 if nav_status == "ok" and listing and (listing.list_price or listing.redfin_estimate):
+                    if not self._listing_matches_query(
+                        "redfin",
+                        addr,
+                        listing_address=listing.address,
+                        detail_url=listing.detail_url,
+                    ):
+                        self._mark_source_attempted(strap, folio, case, "redfin")
+                        logger.warning(
+                            "Redfin Tier 2: rejecting mismatched listing for '{}' -> {}",
+                            addr,
+                            listing.detail_url,
+                        )
+                        await scraper.delay(scraper.DETAIL_PAGE_DELAY)
+                        continue
                     payload = RedfinScraper.listing_to_market_payload(listing)
                     self._upsert_redfin(strap, folio, case, payload)
                     matched.add(strap)
@@ -1004,10 +1101,26 @@ class MarketDataService:
             consecutive_blocks = 0
 
             if listing.zestimate or listing.price or listing.rent_zestimate:
-                payload = listing_to_market_payload(listing)
-                self._upsert_zillow(strap, folio, case, payload)
-                matched.add(strap)
-                logger.success(f"Zillow: saved for {strap} (zest={listing.zestimate}, photos={len(listing.photos)})")
+                if not self._listing_matches_query(
+                    "zillow",
+                    addr,
+                    listing_address=listing.address,
+                    detail_url=listing.detail_url,
+                ):
+                    self._mark_source_attempted(strap, folio, case, "zillow")
+                    logger.warning(
+                        "Zillow: rejecting mismatched listing for '{}' -> {} ({})",
+                        addr,
+                        listing.detail_url,
+                        listing.address,
+                    )
+                else:
+                    payload = listing_to_market_payload(listing)
+                    self._upsert_zillow(strap, folio, case, payload)
+                    matched.add(strap)
+                    logger.success(
+                        f"Zillow: saved for {strap} (zest={listing.zestimate}, photos={len(listing.photos)})"
+                    )
             else:
                 self._mark_source_attempted(strap, folio, case, "zillow")
                 logger.debug(f"Zillow: no useful data for '{addr}'")
@@ -1093,10 +1206,26 @@ class MarketDataService:
             consecutive_blocks = 0
 
             if listing.estimate or listing.price or listing.beds or listing.photos:
-                payload = listing_to_market_payload(listing)
-                self._upsert_realtor(strap, folio, case, payload)
-                matched.add(strap)
-                logger.success(f"Realtor: saved for {strap} (est={listing.estimate}, photos={len(listing.photos)})")
+                if not self._listing_matches_query(
+                    "realtor",
+                    addr,
+                    listing_address=listing.address,
+                    detail_url=listing.detail_url,
+                ):
+                    self._mark_source_attempted(strap, folio, case, "realtor")
+                    logger.warning(
+                        "Realtor: rejecting mismatched listing for '{}' -> {} ({})",
+                        addr,
+                        listing.detail_url,
+                        listing.address,
+                    )
+                else:
+                    payload = listing_to_market_payload(listing)
+                    self._upsert_realtor(strap, folio, case, payload)
+                    matched.add(strap)
+                    logger.success(
+                        f"Realtor: saved for {strap} (est={listing.estimate}, photos={len(listing.photos)})"
+                    )
             else:
                 self._mark_source_attempted(strap, folio, case, "realtor")
                 logger.debug(f"Realtor: no useful data for '{addr}'")
@@ -1220,6 +1349,85 @@ def _safe_json(value: Any) -> Any:
     return None
 
 
+def _address_tokens_for_match(value: str | None) -> list[str]:
+    normalized = normalize_address_for_match(value or "")
+    if not normalized:
+        return []
+    tokens = normalized.split()
+    if len(tokens) >= 4 and tokens[-1].isdigit():
+        tokens = tokens[:-1]
+    canonical = {
+        "north": "n",
+        "south": "s",
+        "east": "e",
+        "west": "w",
+        "northeast": "ne",
+        "northwest": "nw",
+        "southeast": "se",
+        "southwest": "sw",
+        "street": "st",
+        "avenue": "ave",
+        "road": "rd",
+        "drive": "dr",
+        "lane": "ln",
+        "court": "ct",
+        "circle": "cir",
+        "boulevard": "blvd",
+        "place": "pl",
+        "parkway": "pkwy",
+        "terrace": "ter",
+        "trail": "trl",
+        "highway": "hwy",
+    }
+    return [canonical.get(token, token) for token in tokens]
+
+
+def _addresses_match(requested_address: str, candidate_address: str | None) -> bool:
+    requested_tokens = _address_tokens_for_match(requested_address)
+    candidate_tokens = _address_tokens_for_match(candidate_address)
+    if not requested_tokens or not candidate_tokens:
+        return False
+    return requested_tokens == candidate_tokens
+
+
+def _redfin_url_matches_address(url: str | None, requested_address: str) -> bool:
+    if not url:
+        return False
+    match = re.search(r"/[A-Z]{2}/[^/]+/([^/]+)/home/", url)
+    if not match:
+        return False
+    slug = match.group(1)
+    slug = re.sub(r"-\d{5}(?:-\d{4})?$", "", slug)
+    candidate_address = slug.replace("-", " ")
+    return _addresses_match(requested_address, candidate_address)
+
+
+def _realtor_url_matches_address(url: str | None, requested_address: str) -> bool:
+    if not url:
+        return False
+    match = re.search(r"/realestateandhomes-detail/([^_/]+(?:-[^_/]+)*)", url)
+    if not match:
+        return False
+    candidate_address = match.group(1).replace("-", " ")
+    return _addresses_match(requested_address, candidate_address)
+
+
+def _market_result_matches_query(
+    site: str,
+    requested_address: str,
+    *,
+    listing_address: str | None = None,
+    detail_url: str | None = None,
+) -> bool:
+    if _addresses_match(requested_address, listing_address):
+        return True
+    if site == "redfin":
+        return _redfin_url_matches_address(detail_url, requested_address)
+    if site == "realtor":
+        return _realtor_url_matches_address(detail_url, requested_address)
+    return False
+
+
 def _sql_placeholder_photo_condition(url_expr: str) -> str:
     """Return SQL that treats logos/placeholders as invalid property photos."""
     return f"""
@@ -1236,6 +1444,65 @@ def _sql_placeholder_photo_condition(url_expr: str) -> str:
 def _sql_first_photo_placeholder_condition(jsonb_expr: str) -> str:
     """Return SQL that checks whether the first JSONB photo entry is invalid."""
     return _sql_placeholder_photo_condition(f"{jsonb_expr}->>0")
+
+
+def _detail_url_upsert_sql(source: str) -> str:
+    """Prefer existing detail URLs, but heal stale Redfin links when Redfin data is gone.
+
+    Only promote verified Zillow/Realtor detail pages automatically. HomeHarvest
+    URLs are intentionally excluded from automatic fallback because that source
+    does not yet persist a trustworthy matched address.
+    """
+    if source == "zillow":
+        fallback = """
+            COALESCE(
+                EXCLUDED.detail_url,
+                CASE
+                    WHEN property_market.realtor_json IS NOT NULL
+                     AND property_market.realtor_json->>'detail_url'
+                           LIKE 'https://www.realtor.com/realestateandhomes-detail/%'
+                    THEN property_market.realtor_json->>'detail_url'
+                    ELSE NULL
+                END
+            )
+        """
+    elif source == "realtor":
+        fallback = """
+            COALESCE(
+                property_market.zillow_json->>'detail_url',
+                CASE
+                    WHEN EXCLUDED.detail_url LIKE 'https://www.realtor.com/realestateandhomes-detail/%'
+                    THEN EXCLUDED.detail_url
+                    ELSE NULL
+                END
+            )
+        """
+    elif source == "homeharvest":
+        fallback = """
+            COALESCE(
+                property_market.zillow_json->>'detail_url',
+                CASE
+                    WHEN property_market.realtor_json IS NOT NULL
+                     AND property_market.realtor_json->>'detail_url'
+                           LIKE 'https://www.realtor.com/realestateandhomes-detail/%'
+                    THEN property_market.realtor_json->>'detail_url'
+                    ELSE NULL
+                END
+            )
+        """
+    else:
+        msg = f"Unsupported detail_url source: {source}"
+        raise ValueError(msg)
+
+    return f"""
+        CASE
+            WHEN property_market.detail_url IS NULL THEN EXCLUDED.detail_url
+            WHEN property_market.detail_url LIKE 'https://www.redfin.com/%'
+             AND property_market.redfin_json IS NULL
+            THEN {fallback}
+            ELSE COALESCE(property_market.detail_url, EXCLUDED.detail_url)
+        END
+    """
 
 
 def _photo_cdn_urls_upsert_sql() -> str:

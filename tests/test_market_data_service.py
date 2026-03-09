@@ -9,6 +9,11 @@ class _FakeRow:
     def __init__(self, mapping: dict[str, Any]) -> None:
         self._mapping = mapping
 
+    def scalar_value(self) -> Any:
+        if len(self._mapping) == 1:
+            return next(iter(self._mapping.values()))
+        return self._mapping
+
 
 class _FakeResult:
     def __init__(self, rows: list[_FakeRow]) -> None:
@@ -16,6 +21,14 @@ class _FakeResult:
 
     def fetchall(self) -> list[_FakeRow]:
         return self._rows
+
+    def scalar(self) -> Any:
+        if not self._rows:
+            return None
+        first = self._rows[0]
+        if isinstance(first, _FakeRow):
+            return first.scalar_value()
+        return first
 
 
 class _FakeConnection:
@@ -34,6 +47,13 @@ class _FakeConnection:
         return _FakeResult(self._rows)
 
 
+class _FakeTxnConnection(_FakeConnection):
+    def execute(self, sql: Any, params: Any = None) -> _FakeResult:
+        self._captured["sql"] = str(sql)
+        self._captured["params"] = params
+        return _FakeResult(self._rows)
+
+
 class _FakeEngine:
     def __init__(self, captured: dict[str, Any], rows: list[_FakeRow]) -> None:
         self._captured = captured
@@ -41,6 +61,11 @@ class _FakeEngine:
 
     def connect(self) -> _FakeConnection:
         return _FakeConnection(self._captured, self._rows)
+
+
+class _FakeBeginEngine(_FakeEngine):
+    def begin(self) -> _FakeTxnConnection:
+        return _FakeTxnConnection(self._captured, self._rows)
 
 
 def test_query_properties_needing_market_includes_photo_backfill_clause(
@@ -88,3 +113,59 @@ def test_filter_photos_drops_placeholder_urls_and_preserves_real_ones() -> None:
         "https://photos.zillowstatic.com/fp/real-house-1.webp",
         "https://example.com/property/front.jpg",
     ]
+
+
+def test_market_result_matches_query_accepts_matching_listing_address() -> None:
+    assert market_data_service._market_result_matches_query(  # noqa: SLF001
+        "zillow",
+        "2535 MIDDLETON GROVE DR 2001",
+        listing_address="2535 Middleton Grove Dr, Brandon, FL 33511",
+        detail_url=None,
+    )
+
+
+def test_market_result_matches_query_rejects_mismatched_redfin_url() -> None:
+    assert not market_data_service._market_result_matches_query(  # noqa: SLF001
+        "redfin",
+        "2535 MIDDLETON GROVE DR",
+        listing_address=None,
+        detail_url="https://www.redfin.com/FL/Brandon/604-Julie-Ln-33511/home/47212003",
+    )
+
+
+def test_market_result_matches_query_accepts_matching_realtor_url() -> None:
+    assert market_data_service._market_result_matches_query(  # noqa: SLF001
+        "realtor",
+        "2535 MIDDLETON GROVE DR",
+        listing_address=None,
+        detail_url=(
+            "https://www.realtor.com/realestateandhomes-detail/"
+            "2535-Middleton-Grove-Dr_Brandon_FL_33511_M57452-66305"
+        ),
+    )
+
+
+def test_addresses_match_canonicalizes_directionals_and_street_types() -> None:
+    assert market_data_service._addresses_match(  # noqa: SLF001
+        "123 W Oak Ave",
+        "123 West Oak Avenue",
+    )
+    assert market_data_service._addresses_match(  # noqa: SLF001
+        "456 Main St",
+        "456 Main Street",
+    )
+
+
+def test_repair_stale_detail_urls_updates_rows_with_verified_fallbacks() -> None:
+    captured: dict[str, Any] = {}
+    svc = object.__new__(market_data_service.MarketDataService)
+    svc.__dict__["_engine"] = _FakeBeginEngine(captured, [_FakeRow({"rowcount": 1})])
+
+    repaired = svc._repair_stale_detail_urls()  # noqa: SLF001
+
+    assert repaired == 1
+    sql_text = captured["sql"]
+    assert "UPDATE property_market" in sql_text
+    assert "detail_url LIKE 'https://www.redfin.com/%'" in sql_text
+    assert "zillow_json->>'detail_url'" in sql_text
+    assert "realtor_json->>'detail_url'" in sql_text

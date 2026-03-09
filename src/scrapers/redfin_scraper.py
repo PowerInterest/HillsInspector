@@ -305,6 +305,9 @@ class RedfinScraper:
         Bypasses navigation blocks by typing the address like a human and hitting Enter.
         Returns ("ok", listing), ("not_found", None), or ("blocked", None).
         """
+        # Record URL before search so we can detect stale-page results
+        url_before = self.page.url
+
         # Ensure focus is somewhat clear
         await self._force_remove_dialogs()
 
@@ -348,8 +351,19 @@ class RedfinScraper:
         await self.page.wait_for_timeout(self.PAGE_SETTLE_SECS)
         current_url = self.page.url
 
+        # Guard: if the page didn't navigate away, the search failed silently
+        if current_url == url_before and "/home/" in current_url:
+            logger.warning(f"Redfin: page stayed on previous listing, rejecting stale result for '{address}'")
+            return "not_found", None
+
+        # Build address slug for verification
+        addr_slug = normalize_address_for_match(address)
+
         # Check if we landed directly on a details page
         if "/home/" in current_url:
+            if not _url_matches_address(current_url, addr_slug):
+                logger.warning(f"Redfin: result URL doesn't match '{address}' — got {current_url}")
+                return "not_found", None
             return await self.scrape_detail_page(current_url)
 
         # Still on a search interface but maybe there are results?
@@ -358,6 +372,9 @@ class RedfinScraper:
             href = await first_result.get_attribute("href")
             if href:
                 full_url = href if href.startswith("http") else f"https://www.redfin.com{href}"
+                if not _url_matches_address(full_url, addr_slug):
+                    logger.warning(f"Redfin: first result doesn't match '{address}' — got {full_url}")
+                    return "not_found", None
                 return await self.scrape_detail_page(full_url)
 
         logger.info(f"Redfin: no results for '{address}' — URL: {current_url}")
@@ -532,3 +549,32 @@ def normalize_address_for_match(addr: str) -> str:
     addr = re.sub(r"[^\w\s]", "", addr)
     # Collapse whitespace
     return re.sub(r"\s+", " ", addr).strip()
+
+
+def _url_matches_address(url: str, normalized_address: str) -> bool:
+    """Check if a Redfin URL's address slug matches the queried address.
+
+    Redfin URLs follow the pattern: /FL/City/123-Street-Name-Zip/home/ID
+    We extract the address slug and compare against the normalized address.
+    """
+    if not normalized_address:
+        return False
+    # Extract the address slug from the URL path
+    m = re.search(r"/FL/[^/]+/([^/]+)/home/", url)
+    if not m:
+        return False
+    url_slug = m.group(1).lower().replace("-", " ")
+    # Extract just the street number + name from the normalized address
+    # (normalized_address is already lowercase, no punctuation)
+    # Compare: the URL slug should contain the key parts of the address
+    addr_parts = normalized_address.split()
+    if len(addr_parts) < 2:
+        return False
+    # Check if street number is in the URL slug
+    street_num = addr_parts[0]
+    if street_num not in url_slug.split():
+        return False
+    # Check if at least 2 of the remaining address words are in the URL
+    remaining = addr_parts[1:]
+    matches = sum(1 for word in remaining if word in url_slug.split())
+    return matches >= min(2, len(remaining))
