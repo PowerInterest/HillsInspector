@@ -243,9 +243,16 @@ _PARCEL_LEGAL_SQL = text(
         raw_legal1, raw_legal2, raw_legal3, raw_legal4,
         source_file_id
     FROM hcpa_bulk_parcels
-    WHERE (:folio IS NOT NULL AND folio = :folio)
-       OR (:strap IS NOT NULL AND strap = :strap)
-    ORDER BY source_file_id DESC NULLS LAST
+    WHERE folio = CAST(:folio AS text)
+       OR strap = CAST(:strap AS text)
+    ORDER BY
+        CASE
+            WHEN folio = CAST(:folio AS text) AND strap = CAST(:strap AS text) THEN 0
+            WHEN strap = CAST(:strap AS text) THEN 1
+            WHEN folio = CAST(:folio AS text) THEN 2
+            ELSE 3
+        END,
+        source_file_id DESC NULLS LAST
     LIMIT 1
     """
 )
@@ -363,7 +370,50 @@ class PgForeclosureIdentifierRecoveryService:
                 stats["rows_scanned"] += 1
                 case_number = row.get("case_number_raw") or "<unknown>"
                 try:
-                    decision = self._resolve_one(conn, row)
+                    with conn.begin_nested():
+                        decision = self._resolve_one(conn, row)
+
+                        if not decision.candidate or not decision.method:
+                            if decision.ambiguous:
+                                stats["ambiguous"] += 1
+                            else:
+                                stats["unresolved"] += 1
+                            self._append_unresolved_sample(
+                                stats=stats,
+                                case_number=case_number,
+                                reason=decision.reason,
+                            )
+                            continue
+
+                        updated = conn.execute(
+                            _UPDATE_FORECLOSURE_SQL,
+                            {
+                                "foreclosure_id": row["foreclosure_id"],
+                                "strap": decision.candidate.strap,
+                                "folio": decision.candidate.folio,
+                                "property_address": decision.candidate.property_address,
+                            },
+                        ).mappings().fetchone()
+
+                        if not updated:
+                            stats["unresolved"] += 1
+                            self._append_unresolved_sample(
+                                stats=stats,
+                                case_number=case_number,
+                                reason="update_returned_no_row",
+                            )
+                            continue
+
+                        stats["rows_updated"] += 1
+                        stats[decision.method] = (stats.get(decision.method, 0) or 0) + 1
+
+                        if not updated.get("strap") or not updated.get("folio"):
+                            stats["rows_still_missing_after_update"] += 1
+                            self._append_unresolved_sample(
+                                stats=stats,
+                                case_number=case_number,
+                                reason="updated_but_missing_identifier",
+                            )
                 except Exception as exc:
                     stats["errors"] += 1
                     logger.opt(exception=True).error(
@@ -377,48 +427,6 @@ class PgForeclosureIdentifierRecoveryService:
                         reason=f"error: {exc}",
                     )
                     continue
-
-                if not decision.candidate or not decision.method:
-                    if decision.ambiguous:
-                        stats["ambiguous"] += 1
-                    else:
-                        stats["unresolved"] += 1
-                    self._append_unresolved_sample(
-                        stats=stats,
-                        case_number=case_number,
-                        reason=decision.reason,
-                    )
-                    continue
-
-                updated = conn.execute(
-                    _UPDATE_FORECLOSURE_SQL,
-                    {
-                        "foreclosure_id": row["foreclosure_id"],
-                        "strap": decision.candidate.strap,
-                        "folio": decision.candidate.folio,
-                        "property_address": decision.candidate.property_address,
-                    },
-                ).mappings().fetchone()
-
-                if not updated:
-                    stats["unresolved"] += 1
-                    self._append_unresolved_sample(
-                        stats=stats,
-                        case_number=case_number,
-                        reason="update_returned_no_row",
-                    )
-                    continue
-
-                stats["rows_updated"] += 1
-                stats[decision.method] = (stats.get(decision.method, 0) or 0) + 1
-
-                if not updated.get("strap") or not updated.get("folio"):
-                    stats["rows_still_missing_after_update"] += 1
-                    self._append_unresolved_sample(
-                        stats=stats,
-                        case_number=case_number,
-                        reason="updated_but_missing_identifier",
-                    )
 
         if stats["ambiguous"] or stats["unresolved"]:
             samples = stats.get("unresolved_samples") or []
