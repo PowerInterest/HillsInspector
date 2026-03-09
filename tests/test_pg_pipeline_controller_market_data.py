@@ -38,9 +38,9 @@ def test_run_market_data_runs_inline_by_default(monkeypatch: Any) -> None:
 
     result = controller._run_market_data()  # noqa: SLF001
 
-    assert result["worker"]["mode"] == "inline"
-    assert result["worker"]["dsn"] == controller.dsn
-    assert "scrapling" in result
+    assert result.details["worker"]["mode"] == "inline"
+    assert result.details["worker"]["dsn"] == controller.dsn
+    assert "scrapling" in result.details
 
 
 def test_run_market_data_uses_background_dispatch_when_enabled(monkeypatch: Any) -> None:
@@ -54,10 +54,10 @@ def test_run_market_data_uses_background_dispatch_when_enabled(monkeypatch: Any)
 
     result = controller._run_market_data()  # noqa: SLF001
 
-    assert result["worker"]["dispatched"] is True
-    assert result["worker"]["mode"] == "background"
-    assert result["worker"]["dsn"] == controller.dsn
-    assert "scrapling" in result
+    assert result.details["worker"]["dispatched"] is True
+    assert result.details["worker"]["mode"] == "background"
+    assert result.details["worker"]["dsn"] == controller.dsn
+    assert "scrapling" in result.details
 
 
 def test_run_market_data_propagates_force_all(monkeypatch: Any) -> None:
@@ -81,4 +81,4 @@ def test_run_market_data_propagates_force_all(monkeypatch: Any) -> None:
 
     assert captured["dsn"] == controller.dsn
     assert captured["force"] is True
-    assert result["worker"]["force"] is True
+    assert result.details["worker"]["force"] is True

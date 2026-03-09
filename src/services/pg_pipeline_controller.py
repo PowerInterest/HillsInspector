@@ -18,6 +18,8 @@ from typing import Any
 from loguru import logger
 from sqlalchemy import text
 
+from src.utils.step_result import StepResult
+
 from src.services.CountyPermit import CountyPermitService
 from src.services.TampaPermit import TampaPermitService
 from src.services.pg_permit_single_pin_service import PgPermitSinglePinService
@@ -239,27 +241,26 @@ class PgPipelineController:
 
         for name, skip, fn in steps:
             result = self._execute_step(name=name, skip=skip, fn=fn)
-            summary["steps"].append(result)
-            if result["status"] == "failed":
+            summary["steps"].append(result.to_summary_dict())
+            if result.status == "failed":
                 summary["failed_steps"] += 1
                 if self.settings.fail_fast:
                     break
-            elif result["status"] == "degraded":
+            elif result.status == "degraded":
                 summary["degraded_steps"] += 1
 
         summary["elapsed_seconds"] = round(time.monotonic() - started, 2)
         summary["completed_at"] = dt.datetime.now(dt.UTC).isoformat()
         return summary
 
-    def _execute_step(self, name: str, skip: bool, fn: Any) -> dict[str, Any]:
+    def _execute_step(self, name: str, skip: bool, fn: Any) -> StepResult:
         started = time.monotonic()
         if skip:
-            return {
-                "name": name,
-                "status": "skipped",
-                "reason": "flagged_skip",
-                "elapsed_seconds": 0.0,
-            }
+            return StepResult(
+                step_name=name,
+                status="skipped",
+                details={"reason": "flagged_skip"},
+            )
 
         logger.info(f"Step start: {name}")
         try:
@@ -271,85 +272,103 @@ class PgPipelineController:
                     dsn=self.dsn,
                     force_all=self.settings.force_all,
                 )
+                # Background dispatch returns a raw dict; convert to StepResult.
+                result = self._step_result_from_payload(name, payload)
             else:
-                payload = fn()
-            payload_dict = payload if isinstance(payload, dict) else {"result": payload}
-            failed, failure_reason = self._is_failed_payload(payload_dict)
-            degraded = self._is_degraded_payload(payload_dict)
-            status = (
-                "failed"
-                if failed
-                else "skipped"
-                if payload_dict.get("skipped")
-                else "degraded"
-                if degraded
-                else "ok"
-            )
-            result = {
-                "name": name,
-                "status": status,
-                "elapsed_seconds": round(time.monotonic() - started, 2),
-                "payload": self._json_safe(payload_dict),
-            }
-            if failure_reason:
-                result["reason"] = failure_reason
-            elif isinstance(payload_dict.get("reason"), str) and payload_dict.get("reason"):
-                result["reason"] = payload_dict["reason"]
+                result = fn()
+                if not isinstance(result, StepResult):
+                    # Safety net for any step not yet migrated.
+                    result = self._step_result_from_payload(name, result)
 
-            if status == "failed":
+            elapsed = int((time.monotonic() - started) * 1000)
+            result.duration_ms = elapsed
+
+            logger.info(result.log_line())
+            if result.status == "failed":
                 logger.error(
-                    "Step failed (payload): {} reason={} payload={}",
+                    "Step failed (payload): {} details={}",
                     name,
-                    failure_reason or "unknown",
-                    self._json_safe(payload_dict),
+                    self._json_safe(result.details),
                 )
-            elif status == "degraded":
+            elif result.status == "degraded":
                 logger.warning(
-                    "Step degraded: {} payload={}",
+                    "Step degraded: {} details={}",
                     name,
-                    self._json_safe(payload_dict),
+                    self._json_safe(result.details),
                 )
-            else:
-                logger.info(f"Step complete: {name} ({result['status']})")
             return result
         except Exception as exc:
             tb = traceback.format_exc(limit=8)
             logger.error(f"Step failed: {name}: {exc}\n{tb}")
-            return {
-                "name": name,
-                "status": "failed",
-                "elapsed_seconds": round(time.monotonic() - started, 2),
-                "error": str(exc),
-            }
+            elapsed = int((time.monotonic() - started) * 1000)
+            return StepResult(
+                step_name=name,
+                status="failed",
+                duration_ms=elapsed,
+                errors=1,
+                details={"error": str(exc)},
+            )
 
     @staticmethod
-    def _is_failed_payload(payload: dict[str, Any]) -> tuple[bool, str | None]:
-        if payload.get("success") is False:
-            return True, "success_false"
-        if payload.get("error") not in {None, ""}:
-            return True, "error_present"
+    def _step_result_from_payload(name: str, payload: Any) -> StepResult:
+        """Convert a legacy raw-dict payload into a StepResult.
 
-        update = payload.get("update")
-        if isinstance(update, dict):
-            if update.get("success") is False:
-                return True, "update_success_false"
-            if update.get("error") not in {None, ""}:
-                return True, "update_error_present"
+        Used for background-dispatched bulk steps (which return JSON dicts)
+        and as a safety net for any ``_run_*`` method not yet returning
+        ``StepResult`` natively.
+        """
+        from src.utils.step_result import is_failed_payload
 
-        return False, None
+        payload_dict = payload if isinstance(payload, dict) else {"result": payload}
 
-    @staticmethod
-    def _is_degraded_payload(payload: dict[str, Any]) -> bool:
-        if payload.get("degraded") is True or payload.get("status") == "degraded":
-            return True
+        if is_failed_payload(payload_dict):
+            return StepResult(
+                step_name=name,
+                status="failed",
+                errors=1,
+                details=payload_dict,
+            )
+        if payload_dict.get("skipped"):
+            return StepResult(
+                step_name=name,
+                status="skipped",
+                details=payload_dict,
+            )
+        if (
+            payload_dict.get("degraded") is True
+            or payload_dict.get("status") == "degraded"
+        ):
+            update = payload_dict.get("update")
+            if isinstance(update, dict) and (
+                update.get("degraded") is True
+                or update.get("status") == "degraded"
+            ):
+                pass  # already matched at top level
+            return StepResult(
+                step_name=name,
+                status="degraded",
+                details=payload_dict,
+            )
 
-        update = payload.get("update")
-        if isinstance(update, dict):
-            return update.get("degraded") is True or update.get("status") == "degraded"
+        # Check nested update for degraded too
+        update = payload_dict.get("update")
+        if isinstance(update, dict) and (
+            update.get("degraded") is True
+            or update.get("status") == "degraded"
+        ):
+            return StepResult(
+                step_name=name,
+                status="degraded",
+                details=payload_dict,
+            )
 
-        return False
+        return StepResult(
+            step_name=name,
+            status="success",
+            details=payload_dict,
+        )
 
-    def _run_hcpa_suite(self) -> dict[str, Any]:
+    def _run_hcpa_suite(self) -> StepResult:
         state = self._get_hcpa_state()
         if not self._should_run(
             force=self.settings.force_all,
@@ -357,7 +376,10 @@ class PgPipelineController:
             latest=state["latest_loaded_at"],
             stale_days=self.settings.hcpa_stale_days,
         ):
-            return {"skipped": True, "reason": "fresh", "state": state}
+            return StepResult(
+                step_name="hcpa_suite", status="skipped",
+                details={"reason": "fresh", "state": state},
+            )
 
         from sunbiz.pg_loader import load_hcpa_suite
 
@@ -375,13 +397,22 @@ class PgPipelineController:
             batch_size=5000,
             limit_rows=None,
         )
-        # load_hcpa_suite now includes lat/lon cross-fill from hcpa_latlon
-        return {"state_before": state, "update": stats}
+        inserted = int(stats.get("parcels_inserted", 0))
+        updated = int(stats.get("parcels_updated", 0))
+        return StepResult(
+            step_name="hcpa_suite",
+            status="success" if (inserted + updated) > 0 else "noop",
+            inserted=inserted, updated=updated,
+            details={"state_before": state, "update": stats},
+        )
 
-    def _run_clerk_bulk(self) -> dict[str, Any]:
+    def _run_clerk_bulk(self) -> StepResult:
         svc = PgClerkBulkService(dsn=self.dsn)
         if not svc.available:
-            return {"skipped": True, "reason": "service_unavailable"}
+            return StepResult(
+                step_name="clerk_bulk", status="skipped",
+                details={"reason": "service_unavailable"},
+            )
         state = svc.get_current_state()
         if not self._should_run(
             force=self.settings.force_all,
@@ -389,16 +420,27 @@ class PgPipelineController:
             latest=state.get("latest_loaded_at"),
             stale_days=self.settings.clerk_stale_days,
         ):
-            return {"skipped": True, "reason": "fresh", "state": state}
+            return StepResult(
+                step_name="clerk_bulk", status="skipped",
+                details={"reason": "fresh", "state": state},
+            )
         stats = svc.update(force_download=self.settings.force_all)
-        return {"state_before": state, "update": stats}
+        rows = int(stats.get("rows_written", 0)) + int(stats.get("cases_upserted", 0))
+        return StepResult(
+            step_name="clerk_bulk",
+            status="success" if rows > 0 else "noop",
+            inserted=rows,
+            details={"state_before": state, "update": stats},
+        )
 
-    def _run_clerk_criminal(self) -> dict[str, Any]:
+    def _run_clerk_criminal(self) -> StepResult:
         svc = PgClerkCriminalService(dsn=self.dsn)
         if not svc.available:
-            return {"skipped": True, "reason": "service_unavailable"}
+            return StepResult(
+                step_name="clerk_criminal", status="skipped",
+                details={"reason": "service_unavailable"},
+            )
 
-        # Quick staleness check: row count + latest ingest timestamp
         count = 0
         latest = None
         try:
@@ -425,16 +467,27 @@ class PgPipelineController:
             latest=latest,
             stale_days=self.settings.clerk_criminal_stale_days,
         ):
-            return {"skipped": True, "reason": "fresh", "count": count}
+            return StepResult(
+                step_name="clerk_criminal", status="skipped",
+                details={"reason": "fresh", "count": count},
+            )
         stats = svc.update(force_download=self.settings.force_all)
-        return {"update": stats}
+        rows = int(stats.get("rows_written", 0))
+        return StepResult(
+            step_name="clerk_criminal",
+            status="success" if rows > 0 else "noop",
+            inserted=rows,
+            details={"update": stats},
+        )
 
-    def _run_clerk_civil_alpha(self) -> dict[str, Any]:
+    def _run_clerk_civil_alpha(self) -> StepResult:
         svc = PgClerkCivilAlphaService(dsn=self.dsn)
         if not svc.available:
-            return {"skipped": True, "reason": "service_unavailable"}
+            return StepResult(
+                step_name="clerk_civil_alpha", status="skipped",
+                details={"reason": "service_unavailable"},
+            )
 
-        # Quick staleness check: latest ingest timestamp for civil alpha files
         count = 0
         latest = None
         try:
@@ -464,14 +517,26 @@ class PgPipelineController:
             latest=latest,
             stale_days=self.settings.clerk_civil_alpha_stale_days,
         ):
-            return {"skipped": True, "reason": "fresh", "count": count}
+            return StepResult(
+                step_name="clerk_civil_alpha", status="skipped",
+                details={"reason": "fresh", "count": count},
+            )
         stats = svc.update(force_download=self.settings.force_all)
-        return {"update": stats}
+        rows = int(stats.get("rows_written", 0))
+        return StepResult(
+            step_name="clerk_civil_alpha",
+            status="success" if rows > 0 else "noop",
+            inserted=rows,
+            details={"update": stats},
+        )
 
-    def _run_nal(self) -> dict[str, Any]:
+    def _run_nal(self) -> StepResult:
         svc = PgNalService(dsn=self.dsn)
         if not svc.available:
-            return {"skipped": True, "reason": "service_unavailable"}
+            return StepResult(
+                step_name="dor_nal", status="skipped",
+                details={"reason": "service_unavailable"},
+            )
 
         state = svc.get_current_state()
         expected_year = self._expected_nal_year()
@@ -485,24 +550,33 @@ class PgPipelineController:
                 self.settings.nal_stale_days,
             )
         if not should_run:
-            return {
-                "skipped": True,
-                "reason": "fresh",
-                "state": state,
-                "expected_tax_year": expected_year,
-            }
+            return StepResult(
+                step_name="dor_nal", status="skipped",
+                details={
+                    "reason": "fresh", "state": state,
+                    "expected_tax_year": expected_year,
+                },
+            )
 
         stats = svc.update(force_download=self.settings.force_all)
-        return {
-            "state_before": state,
-            "expected_tax_year": expected_year,
-            "update": stats,
-        }
+        rows = int(stats.get("rows_written", 0)) + int(stats.get("parcels_upserted", 0))
+        return StepResult(
+            step_name="dor_nal",
+            status="success" if rows > 0 else "noop",
+            inserted=rows,
+            details={
+                "state_before": state, "expected_tax_year": expected_year,
+                "update": stats,
+            },
+        )
 
-    def _run_flr(self) -> dict[str, Any]:
+    def _run_flr(self) -> StepResult:
         svc = PgFlrService(dsn=self.dsn)
         if not svc.available:
-            return {"skipped": True, "reason": "service_unavailable"}
+            return StepResult(
+                step_name="sunbiz_flr", status="skipped",
+                details={"reason": "service_unavailable"},
+            )
         state = svc.get_current_state()
         if not self._should_run(
             force=self.settings.force_all,
@@ -510,11 +584,20 @@ class PgPipelineController:
             latest=state.get("latest_loaded_at"),
             stale_days=self.settings.flr_stale_days,
         ):
-            return {"skipped": True, "reason": "fresh", "state": state}
+            return StepResult(
+                step_name="sunbiz_flr", status="skipped",
+                details={"reason": "fresh", "state": state},
+            )
         stats = svc.update(skip_sftp=False, force_download=self.settings.force_all)
-        return {"state_before": state, "update": stats}
+        rows = int(stats.get("rows_written", 0)) + int(stats.get("filings_upserted", 0))
+        return StepResult(
+            step_name="sunbiz_flr",
+            status="success" if rows > 0 else "noop",
+            inserted=rows,
+            details={"state_before": state, "update": stats},
+        )
 
-    def _run_sunbiz_entity(self) -> dict[str, Any]:
+    def _run_sunbiz_entity(self) -> StepResult:
         state = self._get_sunbiz_entity_state()
         if not self._should_run(
             force=self.settings.force_all,
@@ -522,7 +605,10 @@ class PgPipelineController:
             latest=state["latest_loaded_at"],
             stale_days=self.settings.sunbiz_entity_stale_days,
         ):
-            return {"skipped": True, "reason": "fresh", "state": state}
+            return StepResult(
+                step_name="sunbiz_entity", status="skipped",
+                details={"reason": "fresh", "state": state},
+            )
 
         from sunbiz.pg_loader import load_sunbiz_entity
         from src.scripts.sunbiz_sync_service import (
@@ -566,9 +652,15 @@ class PgPipelineController:
             raise RuntimeError(
                 f"sunbiz_entity sync completed but no entity files were scanned under {entity_root}"
             )
-        return {"state_before": state, "update": load_stats}
+        rows = int(load_stats.get("rows_written", 0)) + int(load_stats.get("filings_inserted", 0))
+        return StepResult(
+            step_name="sunbiz_entity",
+            status="success" if rows > 0 else "noop",
+            inserted=rows,
+            details={"state_before": state, "update": load_stats},
+        )
 
-    def _run_county_permits(self) -> dict[str, Any]:
+    def _run_county_permits(self) -> StepResult:
         state = self._get_table_state("county_permits", "source_ingested_at")
         if not self._should_run(
             force=self.settings.force_all,
@@ -576,9 +668,11 @@ class PgPipelineController:
             latest=state["latest_at"],
             stale_days=self.settings.county_permit_stale_days,
         ):
-            return {"skipped": True, "reason": "fresh", "state": state}
+            return StepResult(
+                step_name="county_permits", status="skipped",
+                details={"reason": "fresh", "state": state},
+            )
 
-        # Incremental: only fetch ArcGIS records newer than what we already have.
         where = self.settings.county_where or "1=1"
         max_oid = self._get_county_max_object_id()
         if max_oid is not None and not self.settings.force_all:
@@ -600,9 +694,15 @@ class PgPipelineController:
             clear_existing=False,
             page_size=self.settings.county_page_size,
         )
-        return {"state_before": state, "max_oid_before": max_oid, "update": stats}
+        rows = int(stats.get("written", 0)) + int(stats.get("rows_written", 0))
+        return StepResult(
+            step_name="county_permits",
+            status="success" if rows > 0 else "noop",
+            inserted=rows,
+            details={"state_before": state, "max_oid_before": max_oid, "update": stats},
+        )
 
-    def _run_tampa_permits(self) -> dict[str, Any]:
+    def _run_tampa_permits(self) -> StepResult:
         state = self._get_table_state("tampa_accela_records", "source_ingested_at")
         if not self._should_run(
             force=self.settings.force_all,
@@ -610,7 +710,10 @@ class PgPipelineController:
             latest=state["latest_at"],
             stale_days=self.settings.tampa_stale_days,
         ):
-            return {"skipped": True, "reason": "fresh", "state": state}
+            return StepResult(
+                step_name="tampa_permits", status="skipped",
+                details={"reason": "fresh", "state": state},
+            )
 
         start_date, end_date = self._resolve_tampa_window()
         svc = TampaPermitService(pg_dsn=self.dsn, headless=True)
@@ -620,8 +723,6 @@ class PgPipelineController:
             keep_csv=self.settings.tampa_keep_csv,
         )
 
-        # Guardrail: a multi-day window should not silently "succeed" with zero
-        # ingested rows unless it truly had no records (handled by service logs).
         if (
             (end_date - start_date).days >= 7
             and int(sync_stats.get("csv_rows_total") or 0) == 0
@@ -636,16 +737,25 @@ class PgPipelineController:
             limit = self.settings.tampa_enrich_limit
             enrich_stats = svc.enrich_missing_details(limit=limit if limit > 0 else None)
 
-        return {
-            "state_before": state,
-            "window": {"start_date": start_date, "end_date": end_date},
-            "sync": sync_stats,
-            "enrich": enrich_stats,
-        }
+        rows = int(sync_stats.get("written_total", 0))
+        return StepResult(
+            step_name="tampa_permits",
+            status="success" if rows > 0 else "noop",
+            inserted=rows,
+            details={
+                "state_before": state,
+                "window": {"start_date": start_date, "end_date": end_date},
+                "sync": sync_stats,
+                "enrich": enrich_stats,
+            },
+        )
 
-    def _run_single_pin_permits(self) -> dict[str, Any]:
+    def _run_single_pin_permits(self) -> StepResult:
         if self.settings.single_pin_permit_limit <= 0:
-            return {"skipped": True, "reason": "disabled_limit"}
+            return StepResult(
+                step_name="single_pin_permits", status="skipped",
+                details={"reason": "disabled_limit"},
+            )
 
         missing_tables = self._missing_tables([
             "foreclosures",
@@ -658,12 +768,18 @@ class PgPipelineController:
 
         candidates = self._select_single_pin_permit_candidates(limit=self.settings.single_pin_permit_limit)
         if not candidates:
-            return {"skipped": True, "reason": "no_gaps_detected"}
+            return StepResult(
+                step_name="single_pin_permits", status="skipped",
+                details={"reason": "no_gaps_detected"},
+            )
 
         pins = [str(row.get("pin")).strip() for row in candidates if row.get("pin") is not None and str(row.get("pin")).strip()]
         pins = list(dict.fromkeys(pins))
         if not pins:
-            return {"skipped": True, "reason": "no_valid_pins"}
+            return StepResult(
+                step_name="single_pin_permits", status="skipped",
+                details={"reason": "no_valid_pins"},
+            )
 
         max_permits = self.settings.single_pin_permit_max_permits if self.settings.single_pin_permit_max_permits > 0 else None
         svc = PgPermitSinglePinService(
@@ -693,16 +809,19 @@ class PgPipelineController:
             )
             if pins_failed == pins_targeted and pins_targeted > 0:
                 logger.error("All {} targeted pins failed. Marking step as failed.", pins_targeted)
-                return {
-                    "candidate_count": len(candidates),
-                    "pins_targeted": len(pins),
-                    "pins_failed": pins_failed,
-                    "failed_pins": failed_pins,
-                    "candidate_sample": candidates[:10],
-                    "update": sync_stats,
-                    "success": False,
-                    "error": f"All {pins_targeted} targeted pins failed to sync permits",
-                }
+                return StepResult(
+                    step_name="single_pin_permits", status="failed",
+                    errors=pins_failed,
+                    details={
+                        "candidate_count": len(candidates),
+                        "pins_targeted": len(pins),
+                        "pins_failed": pins_failed,
+                        "failed_pins": failed_pins,
+                        "candidate_sample": candidates[:10],
+                        "update": sync_stats,
+                        "error": f"All {pins_targeted} targeted pins failed to sync permits",
+                    },
+                )
 
         permits_observed = int(sync_stats.get("permits_observed_total") or 0)
         total_writes = int(sync_stats.get("total_writes") or 0)
@@ -711,7 +830,7 @@ class PgPipelineController:
                 "single_pin_permits observed permit rows but wrote nothing to permit tables; failing to avoid silent no-op."
             )
 
-        result = {
+        detail = {
             "candidate_count": len(candidates),
             "pins_targeted": len(pins),
             "pins_failed": pins_failed,
@@ -720,36 +839,61 @@ class PgPipelineController:
             "update": sync_stats,
         }
         if 0 < pins_failed < pins_targeted:
-            result["status"] = "degraded"
-            result["degraded"] = True
-            result["reason"] = "partial_pin_failures"
-        return result
+            return StepResult(
+                step_name="single_pin_permits", status="degraded",
+                inserted=total_writes, errors=pins_failed,
+                details={**detail, "reason": "partial_pin_failures"},
+            )
+        return StepResult(
+            step_name="single_pin_permits",
+            status="success" if total_writes > 0 else "noop",
+            inserted=total_writes,
+            details=detail,
+        )
 
     def run_single_pin_permits_job(self) -> dict[str, Any]:
         """Public scheduled-job entrypoint for the single-pin permit step."""
-        return self._run_single_pin_permits()
+        return self._run_single_pin_permits().to_summary_dict()
 
-    def _run_foreclosure_refresh(self) -> dict[str, Any]:
+    def _run_foreclosure_refresh(self) -> StepResult:
         svc = PgForeclosureService(dsn=self.dsn)
         if not svc.available:
-            return {"skipped": True, "reason": "service_unavailable"}
+            return StepResult(
+                step_name="foreclosure_refresh", status="skipped",
+                details={"reason": "service_unavailable"},
+            )
         stats = svc.refresh()
-        return {"update": stats}
+        rows = int(stats.get("refreshed", 0)) + int(stats.get("inserted", 0)) + int(stats.get("updated", 0))
+        return StepResult(
+            step_name="foreclosure_refresh",
+            status="success" if rows > 0 else "noop",
+            inserted=int(stats.get("inserted", 0)),
+            updated=int(stats.get("updated", 0)) + int(stats.get("refreshed", 0)),
+            details={"update": stats},
+        )
 
-    def _run_trust_accounts(self) -> dict[str, Any]:
+    def _run_trust_accounts(self) -> StepResult:
         from src.services.pg_trust_accounts import PgTrustAccountsService
 
         svc = PgTrustAccountsService(dsn=self.dsn)
         if not svc.available:
-            return {
-                "skipped": True,
-                "reason": "service_unavailable",
-                "details": svc.unavailable_reason,
-            }
+            return StepResult(
+                step_name="trust_accounts", status="skipped",
+                details={
+                    "reason": "service_unavailable",
+                    "unavailable_reason": svc.unavailable_reason,
+                },
+            )
         stats = svc.run(force_reprocess=self.settings.force_all)
-        return {"update": stats}
+        rows = int(stats.get("updated", 0)) + int(stats.get("inserted", 0))
+        return StepResult(
+            step_name="trust_accounts",
+            status="success" if rows > 0 else "noop",
+            updated=rows,
+            details={"update": stats},
+        )
 
-    def _run_title_chain(self) -> dict[str, Any]:
+    def _run_title_chain(self) -> StepResult:
         config = TitleChainConfig(
             dsn=self.dsn,
             foreclosure_id=self.settings.foreclosure_id,
@@ -759,17 +903,28 @@ class PgPipelineController:
             similarity_threshold=self.settings.similarity_threshold,
         )
         result = TitleChainController(config).run()
-        return {"update": result}
+        built = int(result.get("built", 0)) + int(result.get("chains_built", 0))
+        return StepResult(
+            step_name="title_chain",
+            status="success" if built > 0 else "noop",
+            inserted=built,
+            details={"update": result},
+        )
 
-    def _run_title_breaks(self) -> dict[str, Any]:
+    def _run_title_breaks(self) -> StepResult:
         from src.services.pg_title_break_service import PgTitleBreakService
 
         svc = PgTitleBreakService(dsn=self.dsn)
-        return svc.run(limit=self.settings.title_breaks_limit)
+        result = svc.run(limit=self.settings.title_breaks_limit)
+        analyzed = int(result.get("analyzed", 0))
+        return StepResult(
+            step_name="title_breaks",
+            status="success" if analyzed > 0 else "noop",
+            updated=analyzed,
+            details=result,
+        )
 
-    def _run_market_data(self) -> dict[str, Any]:
-        # Phase 1: Run scrapling-backed Realtor enrichment (fast, no browser).
-        # This pre-fills realtor_json so the heavier browser path can skip those properties.
+    def _run_market_data(self) -> StepResult:
         scrapling_result: dict[str, Any] = {}
         try:
             from src.services.pg_market_data_scrapling import (
@@ -798,7 +953,6 @@ class PgPipelineController:
         except Exception:
             logger.exception("Scrapling market enrichment failed; continuing with browser worker")
 
-        # Phase 2: Run the browser-based worker for remaining sources.
         if self.settings.background_market_data:
             from src.services.market_data_dispatcher import dispatch_market_data_worker
 
@@ -816,7 +970,16 @@ class PgPipelineController:
                 force=self.settings.force_all,
             )
 
-        return {"scrapling": scrapling_result, "worker": worker_result}
+        total_enriched = (
+            int(scrapling_result.get("enriched", 0))
+            + int(worker_result.get("update", {}).get("enriched", 0) if isinstance(worker_result, dict) else 0)
+        )
+        return StepResult(
+            step_name="market_data",
+            status="success" if total_enriched > 0 else "noop",
+            updated=total_enriched,
+            details={"scrapling": scrapling_result, "worker": worker_result},
+        )
 
     def _should_dispatch_bulk_step(self, name: str) -> bool:
         return self.settings.background_bulk_steps and name in self.BACKGROUND_BULK_STEPS
@@ -825,61 +988,125 @@ class PgPipelineController:
     # Phase B: per-auction enrichment
     # ------------------------------------------------------------------
 
-    def _run_auction_scrape(self) -> dict[str, Any]:
+    def _run_auction_scrape(self) -> StepResult:
         from src.services.pg_auction_service import PgAuctionService
 
         svc = PgAuctionService(dsn=self.dsn)
-        return svc.run(limit=self.settings.auction_limit)
+        result = svc.run(limit=self.settings.auction_limit)
+        scraped = int(result.get("scraped", 0)) + int(result.get("rows_scraped", 0))
+        return StepResult(
+            step_name="auction_scrape",
+            status="success" if scraped > 0 else "noop",
+            inserted=scraped,
+            details=result,
+        )
 
-    def _run_judgment_extract(self) -> dict[str, Any]:
+    def _run_judgment_extract(self) -> StepResult:
         from src.services.pg_judgment_service import PgJudgmentService
 
         svc = PgJudgmentService(dsn=self.dsn)
-        return svc.run(limit=self.settings.judgment_limit)
+        result = svc.run(limit=self.settings.judgment_limit)
+        updated = int(result.get("updated", 0)) + int(result.get("extracted", 0))
+        errs = int(result.get("errors", 0))
+        return StepResult(
+            step_name="judgment_extract",
+            status="failed" if errs > 0 and updated == 0 else (
+                "success" if updated > 0 else "noop"
+            ),
+            updated=updated, errors=errs,
+            details=result,
+        )
 
-    def _run_identifier_recovery(self) -> dict[str, Any]:
+    def _run_identifier_recovery(self) -> StepResult:
         from src.services.pg_foreclosure_identifier_recovery_service import (
             PgForeclosureIdentifierRecoveryService,
         )
 
         svc = PgForeclosureIdentifierRecoveryService(dsn=self.dsn)
         if not svc.available:
-            return {"skipped": True, "reason": "service_unavailable"}
-        return svc.run(limit=self.settings.identifier_recovery_limit)
+            return StepResult(
+                step_name="identifier_recovery", status="skipped",
+                details={"reason": "service_unavailable"},
+            )
+        result = svc.run(limit=self.settings.identifier_recovery_limit)
+        recovered = int(result.get("recovered", 0))
+        return StepResult(
+            step_name="identifier_recovery",
+            status="success" if recovered > 0 else "noop",
+            updated=recovered,
+            details=result,
+        )
 
-    def _run_ori_search(self) -> dict[str, Any]:
+    def _run_ori_search(self) -> StepResult:
         from src.services.pg_ori_service import PgOriService
 
         svc = PgOriService(dsn=self.dsn)
-        return svc.run(limit=self.settings.ori_limit)
+        result = svc.run(limit=self.settings.ori_limit)
+        searched = int(result.get("searched", 0)) + int(result.get("targets", 0))
+        errs = int(result.get("errors", 0))
+        return StepResult(
+            step_name="ori_search",
+            status="failed" if errs > 0 and searched == 0 else (
+                "success" if searched > 0 else "noop"
+            ),
+            updated=searched, errors=errs,
+            details=result,
+        )
 
-    def _run_municipal_liens_phase0(self) -> dict[str, Any]:
+    def _run_municipal_liens_phase0(self) -> StepResult:
         from src.services.pg_municipal_lien_service import PgMunicipalLienService
 
         svc = PgMunicipalLienService(dsn=self.dsn)
-        return svc.run_phase0(
+        result = svc.run_phase0(
             limit=self.settings.limit,
             foreclosure_id=self.settings.foreclosure_id,
             case_number=self.settings.case_number,
             active_only=self.settings.active_only,
         )
+        found = int(result.get("found", 0)) + int(result.get("processed", 0))
+        return StepResult(
+            step_name="municipal_liens_phase0",
+            status="success" if found > 0 else "noop",
+            inserted=found,
+            details=result,
+        )
 
-    def _run_mortgage_extract(self) -> dict[str, Any]:
+    def _run_mortgage_extract(self) -> StepResult:
         from src.services.pg_mortgage_extraction_service import PgMortgageExtractionService
 
         svc = PgMortgageExtractionService(dsn=self.dsn)
-        return svc.run(limit=self.settings.mortgage_limit)
+        result = svc.run(limit=self.settings.mortgage_limit)
+        extracted = int(result.get("extracted", 0)) + int(result.get("updated", 0))
+        errs = int(result.get("errors", 0))
+        return StepResult(
+            step_name="mortgage_extract",
+            status="failed" if errs > 0 and extracted == 0 else (
+                "success" if extracted > 0 else "noop"
+            ),
+            updated=extracted, errors=errs,
+            details=result,
+        )
 
-    def _run_survival_analysis(self) -> dict[str, Any]:
+    def _run_survival_analysis(self) -> StepResult:
         from src.services.pg_survival_service import PgSurvivalService
 
         svc = PgSurvivalService(dsn=self.dsn)
-        return svc.run(
+        result = svc.run(
             limit=self.settings.survival_limit,
             force_reanalysis=True,
         )
+        analyzed = int(result.get("analyzed", 0))
+        errs = int(result.get("errors", 0))
+        return StepResult(
+            step_name="survival_analysis",
+            status="failed" if errs > 0 and analyzed == 0 else (
+                "success" if analyzed > 0 else "noop"
+            ),
+            updated=analyzed, errors=errs,
+            details=result,
+        )
 
-    def _run_encumbrance_audit(self) -> dict[str, Any]:
+    def _run_encumbrance_audit(self) -> StepResult:
         from src.services.audit.pg_audit_encumbrance import run_audit
 
         report = run_audit(dsn=self.dsn)
@@ -906,7 +1133,7 @@ class PgPipelineController:
             with_strap,
         )
 
-        return {
+        audit_details = {
             "active_count": int(report.active_count),
             "judged_count": int(report.judged_count),
             "with_strap_count": with_strap,
@@ -926,8 +1153,13 @@ class PgPipelineController:
                 and survival_coverage_pct >= 80.0
             ),
         }
+        return StepResult(
+            step_name="encumbrance_audit",
+            status="success",
+            details=audit_details,
+        )
 
-    def _run_encumbrance_recovery(self) -> dict[str, Any]:
+    def _run_encumbrance_recovery(self) -> StepResult:
         from src.services.audit.encumbrance_recovery import (
             EncumbranceRecoveryService,
         )
@@ -935,12 +1167,13 @@ class PgPipelineController:
         report = self._encumbrance_audit_report
         if report is None:
             logger.warning("Encumbrance recovery skipped: no audit report available (was audit step skipped?)")
-            return {"skipped": True, "reason": "no_audit_report"}
+            return StepResult(
+                step_name="encumbrance_recovery", status="skipped",
+                details={"reason": "no_audit_report"},
+            )
         try:
             svc = EncumbranceRecoveryService(dsn=self.dsn)
             result = svc.run(report=report)
-            # Clear step_survival_analyzed for foreclosures that received new
-            # encumbrances so the subsequent survival pass re-analyzes them.
             augmented_ids: list[int] = result.get("recovered_foreclosure_ids") or []
             if augmented_ids:
                 logger.info(
@@ -958,16 +1191,28 @@ class PgPipelineController:
                         {"ids": augmented_ids},
                     )
                     conn.commit()
-            return result
+            recovered = int(result.get("recovered", 0)) + len(augmented_ids)
+            return StepResult(
+                step_name="encumbrance_recovery",
+                status="success" if recovered > 0 else "noop",
+                updated=recovered,
+                details=result,
+            )
         finally:
             self._encumbrance_audit_report = None
 
-    def _run_final_refresh(self) -> dict[str, Any]:
+    def _run_final_refresh(self) -> StepResult:
         """Re-run foreclosure refresh to pick up Phase B data."""
         from src.scripts.refresh_foreclosures import refresh as _refresh
 
         counts = _refresh(dsn=self.dsn)
-        return {"update": counts}
+        rows = int(counts.get("refreshed", 0)) + int(counts.get("updated", 0))
+        return StepResult(
+            step_name="final_refresh",
+            status="success" if rows > 0 else "noop",
+            updated=rows,
+            details={"update": counts},
+        )
 
     # ------------------------------------------------------------------
     # Helpers

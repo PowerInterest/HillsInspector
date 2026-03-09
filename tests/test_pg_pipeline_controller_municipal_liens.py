@@ -84,7 +84,7 @@ def test_run_executes_municipal_step_between_ori_and_mortgage(monkeypatch: Any) 
     step_status = {step["name"]: step["status"] for step in result["steps"]}
 
     assert call_order == ["ori_search", "municipal_liens_phase0", "mortgage_extract"]
-    assert step_status["ori_search"] == "ok"
-    assert step_status["municipal_liens_phase0"] == "ok"
-    assert step_status["mortgage_extract"] == "ok"
+    assert step_status["ori_search"] == "success"
+    assert step_status["municipal_liens_phase0"] == "success"
+    assert step_status["mortgage_extract"] == "success"
 

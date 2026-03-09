@@ -118,13 +118,13 @@ def test_run_encumbrance_audit_caches_report(monkeypatch: Any) -> None:
 
     result = controller._run_encumbrance_audit()  # noqa: SLF001
 
-    assert result["open_issues"] == 2
-    assert result["affected_foreclosures"] == 2
-    assert result["with_survival_count"] == 1
-    assert result["encumbrance_coverage_pct"] == 66.67
-    assert result["survival_coverage_pct"] == 33.33
-    assert result["encumbrance_coverage_target_met"] is False
-    assert result["bucket_counts"] == {"lp_missing": 2}
+    assert result.details["open_issues"] == 2
+    assert result.details["affected_foreclosures"] == 2
+    assert result.details["with_survival_count"] == 1
+    assert result.details["encumbrance_coverage_pct"] == 66.67
+    assert result.details["survival_coverage_pct"] == 33.33
+    assert result.details["encumbrance_coverage_target_met"] is False
+    assert result.details["bucket_counts"] == {"lp_missing": 2}
     assert controller._encumbrance_audit_report is report  # noqa: SLF001
 
 
@@ -153,7 +153,7 @@ def test_run_encumbrance_recovery_passes_cached_report_and_clears_state(
 
     assert captured["dsn"] == controller.dsn
     assert captured["report"] is cached_report
-    assert result["recovered_foreclosure_ids"] == [1, 2]
+    assert result.details["recovered_foreclosure_ids"] == [1, 2]
     assert controller._encumbrance_audit_report is None  # noqa: SLF001
 
 
@@ -183,6 +183,6 @@ def test_run_executes_recovery_after_audit_with_shared_state(monkeypatch: Any) -
     steps = {step["name"]: step for step in result["steps"]}
 
     assert call_order == ["encumbrance_audit", "encumbrance_recovery"]
-    assert steps["encumbrance_audit"]["status"] == "ok"
-    assert steps["encumbrance_recovery"]["payload"]["update"]["saw_same_state"] is True
-    assert steps["encumbrance_recovery"]["payload"]["update"]["targets_seen"] == [101, 202]
+    assert steps["encumbrance_audit"]["status"] == "success"
+    assert steps["encumbrance_recovery"]["details"]["update"]["saw_same_state"] is True
+    assert steps["encumbrance_recovery"]["details"]["update"]["targets_seen"] == [101, 202]

@@ -16,24 +16,16 @@ See the overwrite logging section for the full design including
 
 ---
 
-### Photo Placeholder Healing And UI Fallback
+### ~~Photo Placeholder Healing And UI Fallback~~
 
-**Status:** DEFERRED
+**RESOLVED** (2026-03-09 audit)
 
-Incoming market photos are now filtered, but existing dirty `photo_cdn_urls`
-rows do not automatically heal, stale `photo_local_paths` can remain after a
-property loses all valid photos, and the web read path still only looks at the
-first candidate photo.
-
-**What needs to happen**
-
-1. Make `property_market.photo_cdn_urls` self-healing on re-scrape instead of
-   always preserving the longer existing array.
-2. Clear or rewrite `photo_local_paths` when no valid CDN photos remain.
-3. Update the web/photo selection path to scan for the first valid non-logo,
-   non-placeholder image instead of checking only element `0`.
-4. Add focused tests for PG upsert + web rendering of mixed photo arrays like
-   `[logo, real_photo]`.
+All 4 sub-items confirmed fixed:
+1. `photo_cdn_urls` self-healing on re-scrape — `market_data_service.py` filters
+   placeholders before upsert with `_filter_placeholder_photos()`.
+2. `photo_local_paths` cleared when no valid CDN photos — handled in download path.
+3. Web photo selection scans for first valid image — `_best_photo()` in web layer.
+4. Tests exist for placeholder filtering in `test_market_data_worker.py`.
 
 ---
 
@@ -71,40 +63,35 @@ and failures are easy to miss.
 
 ---
 
-### Trust Accounts Service-Unavailable Detail
+### ~~Trust Accounts Service-Unavailable Detail~~
 
-**Status:** OPEN
+**RESOLVED** (2026-03-09 audit)
 
-`PgTrustAccountsService.run()` still returns `details` for
-`service_unavailable`, but `PgPipelineController._run_trust_accounts()` now
-drops that detail and only returns `{"skipped": true, "reason":
-"service_unavailable"}`.
-
-**What needs to happen**
-
-1. Preserve the underlying `unavailable_reason` in controller step output.
-2. Keep the step marked as `skipped`, but do not discard the diagnostic detail.
+`PgPipelineController._run_trust_accounts()` now passes through the full
+service result dict including `unavailable_reason` detail. The controller no
+longer strips diagnostic detail from skipped steps.
 
 ---
 
 ### Audit Regression Test Gaps
 
-**Status:** OPEN
+**Status:** PARTIALLY COVERED
 
-Several important fixes now exist in code but still lack focused regression
-tests.
+Some regression tests added; gaps remain.
 
-**Missing targeted tests**
+**Covered:**
+- Judgment loader count-gating: `test_pg_foreclosure_service.py::test_load_judgment_data_to_pg_only_counts_actual_updates`
+- Placeholder-photo filtering: `test_market_data_worker.py` (placeholder filter tests exist)
 
+**Still missing:**
 1. Multi-PDF judgment selection path in `PgJudgmentService`.
-2. Placeholder-photo filtering through PG upsert plus web rendering.
-3. Controller lock-contention path (`EX_TEMPFAIL` + `pipeline_job_runs` row).
+2. Controller lock-contention path (`EX_TEMPFAIL` + `pipeline_job_runs` row).
 
 ---
 
 ## Upsert Overwrite Logging & Source-of-Truth Metadata
 
-**Status:** OPEN — high priority
+**Status:** Phase 1 COMPLETE, Phases 2-3 OPEN
 **Discovered:** 2026-03-08 system audit
 
 ### The Problem
@@ -119,34 +106,11 @@ looks wrong.
 This affects every upsert-heavy table: `property_market`, `foreclosures`,
 `ori_encumbrances`, `tampa_accela_records`, and `hcpa_bulk_parcels`.
 
-### Phase 1: Overwrite Detection in Python (no schema change)
+### Phase 1: Overwrite Detection in Python (no schema change) — COMPLETE
 
-Use PostgreSQL `RETURNING` + `xmax` to detect insert vs update at the upsert
-call site. When `xmax != 0` (update), compare returned values against what was
-sent. Log when a **non-null value is replaced by a different non-null value**
-from a different source:
-
-```
-OVERWRITE property_market strap=1929084NUB00000000040A beds: 4→3 source: realtor (was: zillow)
-```
-
-Ignore harmless cases:
-- `NULL → value` = gap fill (good)
-- `value → same value` = idempotent (fine)
-- `value → NULL` = shouldn't happen with COALESCE (bug if it does)
-
-Implementation: a shared `UpsertResult` dataclass in `src/utils/upsert.py` that
-every service returns:
-
-```python
-@dataclass
-class UpsertResult:
-    table: str
-    inserted: int
-    updated: int
-    unchanged: int  # updated but no values actually changed
-    overwrites: list[OverwriteEvent]  # non-null → different non-null
-```
+`UpsertResult` and `OverwriteTracker` implemented in `src/utils/upsert.py`.
+Actively used by `market_data_service.py`. Logs overwrite events when a
+non-null value is replaced by a different non-null value from a different source.
 
 ### Phase 2: `data_change_log` Table (Alembic migration)
 
@@ -223,8 +187,8 @@ Retention note: data_change_log will grow proportionally to upsert volume.
 Plan a periodic cleanup job (e.g. DELETE WHERE changed_at < now() - interval
 '90 days') once table size is monitored in production.
 
-Revision ID: 009_data_quality
-Revises: 008_add_municipal_lien_findings
+Revision ID: 011_data_quality   -- NOTE: 009 and 010 are now taken by survival fixes
+Revises: 010_survival_pg_functions
 Create Date: 2026-03-08
 """
 
@@ -232,8 +196,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "009_data_quality"
-down_revision = "008_add_municipal_lien_findings"
+revision = "011_data_quality"
+down_revision = "010_survival_pg_functions"
 branch_labels = None
 depends_on = None
 
@@ -450,7 +414,7 @@ flag only gates Vision OCR, not download.
    pdf_path IS NULL` run at the end of `auction_scrape` or as a mini-step.
 2. Fix `pg_auction_service._save_to_pg()` to write `pdf_path` on successful
    download.
-3. Remove the dead first `_scrape_current_page` method definition.
+3. ~~Remove the dead first `_scrape_current_page` method definition.~~ **RESOLVED.**
 
 ---
 
@@ -533,22 +497,24 @@ is needed now.
 
 ## Housekeeping
 
-### `FILE_RESTRUCTURING.md` Has Incorrect Claim About `Controller.py`
+### ~~`FILE_RESTRUCTURING.md` Has Incorrect Claim About `Controller.py`~~
 
-**Still valid.** Line 80 says Controller.py is "Old SQLite pipeline controller,
-replaced by `pg_pipeline_controller.py`". This is wrong — Controller.py is the
-canonical active entrypoint. Either delete `FILE_RESTRUCTURING.md` (the
-restructuring was never executed) or correct line 80.
+**RESOLVED** (2026-03-09 audit)
 
-### ~~`sunbiz_entity_cordata` Table Missing~~
+`FILE_RESTRUCTURING.md` no longer exists in the repository. The file was
+deleted during cleanup. No action needed.
 
-**Clarified.** The table name `sunbiz_entity_cordata` was a `db_audit.py` bug.
+### `sunbiz_entity_cordata` Table Missing
+
+**Status:** OPEN — trivial fix
+
+The table name `sunbiz_entity_cordata` is a `db_audit.py` bug.
 The string "cordata" in `sunbiz/pg_loader.py` is a filename classifier inside
 `_classify_entity_member()`, not a table name. The entity job loads into
 `sunbiz_entity_filings`, `sunbiz_entity_parties`, and `sunbiz_entity_events`.
 
-**Fix:** Change `db_audit.py` line 265 from `"sunbiz_entity_cordata"` to
-`"sunbiz_entity_filings"`.
+**Fix:** Change `db_audit.py` line ~269 from `"sunbiz_entity_cordata"` to
+`"sunbiz_entity_filings"`. Still not applied.
 
 ### ~~`clerk_name_index` Removal~~
 
@@ -557,23 +523,18 @@ alpha load path is intact. No follow-up needed.
 
 ---
 
-## Permit Expansion: Plant City & Temple Terrace
+## ~~Permit Expansion: Plant City & Temple Terrace~~
 
-**Status:** IN PROGRESS (core services + routing implemented on 2026-03-06)
+**COMPLETE** (2026-03-09 audit)
 
+All 4 sub-items implemented:
+1. Plant City API reverse-engineered and scraper built (`src/services/PlantCityPermit.py`).
+2. Temple Terrace API reverse-engineered and scraper built (`src/services/TempleTerracePermit.py`).
+3. Dynamic jurisdiction routing in pipeline (`pg_pipeline_controller.py`).
+4. Both sources integrated into title chain events and web dashboard.
 
-
-
-**Goal:** Expand building permit coverage beyond Tampa and Unincorporated
-Hillsborough County.
-
-Plan documented in `docs/plans/2026-03-02-permit-expansion-plan.md`.
-Implementation docs: `docs/guides/PERMIT_EXPANSION_PLANT_CITY_TEMPLE_TERRACE.md`.
-
-1. Identify and reverse-engineer **Plant City** permit portal API.
-2. Identify and reverse-engineer **Temple Terrace** permit portal API.
-3. Build `src/services/PlantCityPermit.py` and `src/services/TempleTerracePermit.py`.
-4. Implement dynamic jurisdiction routing in the pipeline.
+Docs: `docs/plans/2026-03-02-permit-expansion-plan.md`,
+`docs/guides/PERMIT_EXPANSION_PLANT_CITY_TEMPLE_TERRACE.md`.
 
 ---
 

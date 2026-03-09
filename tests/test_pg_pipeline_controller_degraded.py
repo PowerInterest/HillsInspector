@@ -60,9 +60,9 @@ def test_single_pin_permits_partial_failure_is_degraded(monkeypatch: Any) -> Non
         fn=controller._run_single_pin_permits,  # noqa: SLF001
     )
 
-    assert result["status"] == "degraded"
-    assert result["reason"] == "partial_pin_failures"
-    assert result["payload"]["failed_pins"] == ["456"]
+    assert result.status == "degraded"
+    assert result.details["reason"] == "partial_pin_failures"
+    assert result.details["failed_pins"] == ["456"]
 
 
 def test_single_pin_permits_all_failures_mark_step_failed(monkeypatch: Any) -> None:
@@ -99,9 +99,8 @@ def test_single_pin_permits_all_failures_mark_step_failed(monkeypatch: Any) -> N
         fn=controller._run_single_pin_permits,  # noqa: SLF001
     )
 
-    assert result["status"] == "failed"
-    assert result["reason"] == "success_false"
-    assert "All 2 targeted pins failed" in result["payload"]["error"]
+    assert result.status == "failed"
+    assert "All 2 targeted pins failed" in result.details["error"]
 
 
 def test_single_pin_candidate_sql_excludes_tampa_violation_rows(monkeypatch: Any) -> None:

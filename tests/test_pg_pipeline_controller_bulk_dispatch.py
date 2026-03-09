@@ -42,8 +42,8 @@ def test_execute_step_runs_bulk_steps_inline_by_default(monkeypatch: Any) -> Non
         fn=lambda: {"update": {"ran_inline": True}},
     )
 
-    assert result["status"] == "ok"
-    assert result["payload"]["update"]["ran_inline"] is True
+    assert result.status == "success"
+    assert result.details["update"]["ran_inline"] is True
 
 
 def test_execute_step_dispatches_bulk_steps_when_background_enabled(monkeypatch: Any) -> None:
@@ -71,10 +71,10 @@ def test_execute_step_dispatches_bulk_steps_when_background_enabled(monkeypatch:
         fn=_unexpected_inline,
     )
 
-    assert result["status"] == "skipped"
-    assert result["reason"] == "step_worker_dispatched_background"
-    assert result["payload"]["dispatched"] is True
-    assert result["payload"]["step_name"] == "hcpa_suite"
+    assert result.status == "skipped"
+    assert result.details["reason"] == "step_worker_dispatched_background"
+    assert result.details["dispatched"] is True
+    assert result.details["step_name"] == "hcpa_suite"
 
 
 def test_execute_step_runs_inline_for_non_bulk_steps(monkeypatch: Any) -> None:
@@ -91,8 +91,8 @@ def test_execute_step_runs_inline_for_non_bulk_steps(monkeypatch: Any) -> None:
         fn=lambda: {"update": {"ran_inline": True}},
     )
 
-    assert result["status"] == "ok"
-    assert result["payload"]["update"]["ran_inline"] is True
+    assert result.status == "success"
+    assert result.details["update"]["ran_inline"] is True
 
 
 def test_run_trust_accounts_marks_unavailable_service_as_skipped(monkeypatch: Any) -> None:
@@ -109,6 +109,6 @@ def test_run_trust_accounts_marks_unavailable_service_as_skipped(monkeypatch: An
 
     result = controller._run_trust_accounts()  # noqa: SLF001
 
-    assert result["skipped"] is True
-    assert result["reason"] == "service_unavailable"
-    assert result["details"] == "db down"
+    assert result.status == "skipped"
+    assert result.details["reason"] == "service_unavailable"
+    assert result.details["unavailable_reason"] == "db down"

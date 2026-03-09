@@ -11,6 +11,7 @@ from sqlalchemy import text
 
 from src.scripts.refresh_foreclosures import refresh as refresh_foreclosures
 from src.services.market_data_service import MarketDataService
+from src.utils.step_result import is_failed_payload
 from sunbiz.db import get_engine, resolve_pg_dsn
 
 
@@ -83,21 +84,6 @@ def run_market_data_update(
     return {"properties_queried": len(properties), "update": result}
 
 
-def _payload_failed(payload: dict[str, Any]) -> bool:
-    if payload.get("success") is False:
-        return True
-    if payload.get("error") not in {None, ""}:
-        return True
-
-    update = payload.get("update")
-    if isinstance(update, dict):
-        if update.get("success") is False:
-            return True
-        if update.get("error") not in {None, ""}:
-            return True
-    return False
-
-
 def main() -> None:
     import argparse
 
@@ -112,7 +98,7 @@ def main() -> None:
     )
     logger.info(f"Market data worker complete: {result}")
     print(json.dumps(result, indent=2, default=str))
-    if _payload_failed(result):
+    if is_failed_payload(result):
         raise SystemExit(1)
 
 

@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from src.services import market_data_worker
+from src.utils.step_result import is_failed_payload
 
 
 def test_run_market_data_update_skips_when_no_properties(monkeypatch: Any) -> None:
@@ -185,9 +186,9 @@ def test_run_market_data_update_passes_force_to_query(monkeypatch: Any) -> None:
 
 
 def test_payload_failed_detects_nested_update_error() -> None:
-    assert not market_data_worker._payload_failed({"update": {"rows": 1}})  # noqa: SLF001
-    assert market_data_worker._payload_failed({"update": {"error": "boom"}})  # noqa: SLF001
-    assert market_data_worker._payload_failed({"update": {"success": False}})  # noqa: SLF001
+    assert not is_failed_payload({"update": {"rows": 1}})
+    assert is_failed_payload({"update": {"error": "boom"}})
+    assert is_failed_payload({"update": {"success": False}})
 
 
 def test_main_exits_nonzero_when_nested_update_fails(monkeypatch: Any) -> None:

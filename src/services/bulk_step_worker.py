@@ -10,6 +10,7 @@ from loguru import logger
 
 from src.services.pg_pipeline_controller import ControllerSettings
 from src.services.pg_pipeline_controller import PgPipelineController
+from src.utils.step_result import is_failed_payload
 
 
 STEP_METHODS: dict[str, str] = {
@@ -47,21 +48,6 @@ def _env_true(value: str | None) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
-def _payload_failed(payload: dict[str, Any]) -> bool:
-    if payload.get("success") is False:
-        return True
-    if payload.get("error") not in (None, ""):
-        return True
-
-    update = payload.get("update")
-    if isinstance(update, dict):
-        if update.get("success") is False:
-            return True
-        if update.get("error") not in (None, ""):
-            return True
-    return False
-
-
 def main() -> None:
     step_name = (os.getenv("HI_BULK_STEP_NAME") or "").strip()
     if not step_name:
@@ -77,7 +63,7 @@ def main() -> None:
     payload = run_bulk_step(step_name, dsn=dsn, force_all=force_all)
     logger.info(f"Bulk step worker complete: {step_name} payload={payload}")
     print(json.dumps(payload, indent=2, default=str))
-    if _payload_failed(payload):
+    if is_failed_payload(payload):
         raise SystemExit(1)
 
 
