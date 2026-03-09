@@ -2,23 +2,34 @@
 
 ## Pipeline Success Criteria (READ THIS FIRST)
 
-A successful `Controller.py` pipeline run is measured by **data completeness**, not by steps completing without errors. The pipeline's purpose is to produce actionable foreclosure analysis. If the output data is missing, the run has failed regardless of whether the code ran without exceptions.
+A successful `Controller.py` pipeline run is measured by **data completeness and classification quality**, not by steps completing without errors. The pipeline's purpose is to produce actionable foreclosure analysis. If the output data is missing, or if the system is classifying title/encumbrance outcomes inconsistently, the run has failed regardless of whether the code ran without exceptions.
 
-**After any `Controller.py` run, you MUST validate these thresholds:**
+Some properties are legitimately broken or unresolved. A low rate of fully complete title chains is not, by itself, proof of pipeline failure. The pipeline fails when it does not build summaries, does not classify gaps consistently, or misclassifies encumbrance outcomes.
+
+**After any `Controller.py` run, you MUST validate these hard gates:**
 
 | Metric | Target | Validation Query |
 |--------|--------|-----------------|
-| Final Judgment PDFs | 90%+ of foreclosures | Count `data/Foreclosure/*/documents/*.pdf` vs total auctions |
-| Extracted judgment data | 90%+ of PDFs | `SELECT COUNT(*) FROM auctions WHERE extracted_judgment_data IS NOT NULL` |
-| Chain of title | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT foreclosure_id) FROM foreclosure_title_chain` (PostgreSQL) |
-| Encumbrances identified | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT f.foreclosure_id) FROM foreclosures f JOIN ori_encumbrances oe ON oe.strap = f.strap WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL` (PostgreSQL) |
-| Lien survival analysis | **80%+ of foreclosures with judgments** | `SELECT COUNT(DISTINCT f.foreclosure_id) FROM foreclosures f JOIN ori_encumbrances oe ON oe.strap = f.strap WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL AND oe.survival_status IS NOT NULL` (PostgreSQL) |
+| Final Judgment PDFs | 90%+ of active foreclosures | Count `data/Foreclosure/*/documents/*.pdf` and compare to `SELECT COUNT(*) FROM foreclosures WHERE archived_at IS NULL` |
+| Extracted judgment data | 90%+ of active PDF-backed foreclosures | `SELECT COUNT(*) FROM foreclosures WHERE archived_at IS NULL AND judgment_data IS NOT NULL` |
+| Title summaries built | **80%+ of active foreclosures with judgments** | `SELECT COUNT(DISTINCT f.foreclosure_id) FROM foreclosures f JOIN foreclosure_title_summary ts ON ts.foreclosure_id = f.foreclosure_id WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL` |
+| Title gap consistency | **0 contradictions** | `SELECT COUNT(*) FROM ((SELECT 1 FROM foreclosure_title_chain tc JOIN foreclosures f ON f.foreclosure_id = tc.foreclosure_id WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL AND tc.link_status IN ('MISSING_PARTY', 'CHAINED_BY_FOLIO') AND COALESCE(tc.is_gap, FALSE) = FALSE) UNION ALL (SELECT 1 FROM foreclosure_title_summary ts JOIN foreclosures f ON f.foreclosure_id = ts.foreclosure_id WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL AND COALESCE(ts.gap_count, 0) > 0 AND ts.chain_status <> 'BROKEN')) AS q` |
+| Encumbrances identified | **80%+ of active foreclosures with judgments** | `SELECT COUNT(DISTINCT f.foreclosure_id) FROM foreclosures f JOIN ori_encumbrances oe ON oe.strap = f.strap WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL AND oe.encumbrance_type != 'noc'` |
+| Lien survival analysis | **80%+ of active foreclosures with judgments** | `SELECT COUNT(DISTINCT f.foreclosure_id) FROM foreclosures f JOIN ori_encumbrances oe ON oe.strap = f.strap LEFT JOIN foreclosure_encumbrance_survival fes ON fes.foreclosure_id = f.foreclosure_id AND fes.encumbrance_id = oe.id WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL AND oe.encumbrance_type != 'noc' AND COALESCE(fes.survival_status, oe.survival_status) IS NOT NULL` |
+| Foreclosing lien uniqueness | **Exactly 1 `FORECLOSING` row per analyzed foreclosure with encumbrances** | `SELECT COUNT(*) FROM (SELECT f.foreclosure_id, COUNT(*) FILTER (WHERE COALESCE(fes.survival_status, oe.survival_status) = 'FORECLOSING') AS foreclosing_count FROM foreclosures f JOIN ori_encumbrances oe ON oe.strap = f.strap AND oe.encumbrance_type != 'noc' LEFT JOIN foreclosure_encumbrance_survival fes ON fes.foreclosure_id = f.foreclosure_id AND fes.encumbrance_id = oe.id WHERE f.archived_at IS NULL AND f.judgment_data IS NOT NULL GROUP BY f.foreclosure_id) q WHERE foreclosing_count <> 1` |
+| Procedural doc sanity | **0 misclassified LP / assignment / same-case judgment rows** | See `docs/domain/PIPELINE_QUALITY_THRESHOLDS.md` for the exact validation SQL pack |
 
-**If any threshold is not met, the run is a FAILURE.** Do not report success. Instead:
+**If any hard gate is not met, the run is a FAILURE.** Do not report success. Instead:
 1. Diagnose why the data is missing (query the `status` table, check logs, read the relevant step code)
 2. Fix the root cause
 3. Re-run the affected steps
 4. Keep iterating until thresholds are met
+
+You must also report the detailed diagnostics in [docs/domain/PIPELINE_QUALITY_THRESHOLDS.md](docs/domain/PIPELINE_QUALITY_THRESHOLDS.md), especially:
+- fully complete title chains with `chain_status = 'COMPLETE'` and `gap_count = 0`
+- broken / missing-folio / no-sales title outcomes
+- lis pendens, assignment, and same-case judgment misclassification counts
+- satisfied-mortgage linkage completeness
 
 The chain of title and encumbrance data are the core deliverable. Without them, the pipeline produces no investment-grade analysis. Judgment PDFs and enrichment data are intermediate steps toward that goal.
 
