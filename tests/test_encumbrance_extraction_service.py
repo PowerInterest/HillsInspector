@@ -35,16 +35,17 @@ class TestDispatchTable:
     )
     def test_dispatch_maps_type_to_model(self, enc_type, expected_model):
         from src.services.pg_encumbrance_extraction_service import EXTRACTION_DISPATCH
-        vision_method, model_cls = EXTRACTION_DISPATCH[enc_type]
+        prompt, model_cls = EXTRACTION_DISPATCH[enc_type]
         assert model_cls is expected_model
-        assert isinstance(vision_method, str)
+        assert isinstance(prompt, str)
+        assert len(prompt) > 50, f"Prompt for {enc_type} looks too short to be a real prompt"
 
-    def test_all_dispatch_vision_methods_exist_on_vision_service(self):
+    def test_all_dispatch_prompts_contain_instructions(self):
         from src.services.pg_encumbrance_extraction_service import EXTRACTION_DISPATCH
-        from src.services.vision_service import VisionService
-        for enc_type, (method_name, _) in EXTRACTION_DISPATCH.items():
-            assert hasattr(VisionService, method_name), (
-                f"VisionService missing {method_name} for {enc_type}"
+        for enc_type, (prompt, _) in EXTRACTION_DISPATCH.items():
+            lower = prompt.lower()
+            assert "extract" in lower or "analyz" in lower, (
+                f"Prompt for {enc_type} missing extraction/analysis instructions"
             )
 
 

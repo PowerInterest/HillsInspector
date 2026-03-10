@@ -9,17 +9,19 @@ Architecture
 The core idea is a **dispatch table** (``EXTRACTION_DISPATCH``) that maps each
 ``encumbrance_type`` enum value to:
 
-1. A VisionService method name (e.g. ``"extract_mortgage"``)
+1. A prompt constant from ``vision_service`` (e.g. ``MORTGAGE_PROMPT``)
 2. A Pydantic model class that validates the LLM's JSON output
 
-This eliminates the need for per-type service classes.  The ``run()`` method:
+The extraction flow follows the same pattern as ``FinalJudgmentProcessor``:
 
 1. Queries ``ori_encumbrances`` for rows missing ``extracted_data``
 2. For each row, checks the on-disk JSON cache (``{stem}_extracted.json``)
-3. If no cache hit, downloads the PDF, renders pages to images, and calls
-   the appropriate VisionService method via the dispatch table
-4. Validates the result against the Pydantic model
-5. Writes the JSON cache and persists to PG
+3. If no cache hit, downloads the PDF, renders pages to PNG (PyMuPDF)
+4. **pytesseract** OCRs each page image to raw text
+5. Combines OCR text with the doc-type prompt and sends to the LLM via
+   ``VisionService.analyze_text()`` (text-only, NOT image-based)
+6. Parses JSON from the LLM response, validates against the Pydantic model
+7. Writes the JSON cache and persists to PG
 
 Cache helpers (``_cache_path_for``, ``_load_cache``, ``_write_cache``) follow
 the same ``{stem}_extracted.json`` convention used by ``FinalJudgmentProcessor``
@@ -42,7 +44,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import fitz as _fitz
+import pytesseract
 from loguru import logger
+from PIL import Image
 from pydantic import ValidationError
 from sqlalchemy import text
 
@@ -54,7 +58,17 @@ from src.models.mortgage_extraction import MortgageExtraction
 from src.models.noc_extraction import NOCExtraction
 from src.models.satisfaction_extraction import SatisfactionExtraction
 from src.services.scraper_storage import ScraperStorage
-from src.services.vision_service import VisionService
+from src.services.vision_service import (
+    ASSIGNMENT_PROMPT,
+    DEED_PROMPT,
+    LIS_PENDENS_PROMPT,
+    LIEN_PROMPT,
+    MORTGAGE_PROMPT,
+    NOC_PROMPT,
+    SATISFACTION_PROMPT,
+    VisionService,
+    robust_json_parse,
+)
 from sunbiz.db import get_engine, resolve_pg_dsn
 
 if TYPE_CHECKING:
@@ -73,22 +87,22 @@ _MAX_PAGES = 3
 _RENDER_DPI = 150
 
 # ---------------------------------------------------------------------------
-# Dispatch table: encumbrance_type → (VisionService method name, Pydantic model)
+# Dispatch table: encumbrance_type → (prompt constant, Pydantic model)
 #
-# Each entry tells the service which VisionService method to call and which
-# Pydantic model to validate the returned JSON against.  Adding a new doc
-# type is a one-line addition here (plus the model + vision prompt).
+# Each entry tells the service which LLM prompt to use and which Pydantic
+# model to validate the returned JSON against.  Adding a new doc type is a
+# one-line addition here (plus the model + prompt in vision_service.py).
 # ---------------------------------------------------------------------------
 
 EXTRACTION_DISPATCH: dict[str, tuple[str, type[BaseDocumentExtraction]]] = {
-    "mortgage": ("extract_mortgage", MortgageExtraction),
-    "lis_pendens": ("extract_lis_pendens", LisPendensExtraction),
-    "lien": ("extract_lien", LienExtraction),
-    "satisfaction": ("extract_satisfaction", SatisfactionExtraction),
-    "assignment": ("extract_assignment", AssignmentExtraction),
-    "noc": ("extract_noc", NOCExtraction),
-    "easement": ("extract_deed", DeedExtraction),
-    "other": ("extract_deed", DeedExtraction),
+    "mortgage": (MORTGAGE_PROMPT, MortgageExtraction),
+    "lis_pendens": (LIS_PENDENS_PROMPT, LisPendensExtraction),
+    "lien": (LIEN_PROMPT, LienExtraction),
+    "satisfaction": (SATISFACTION_PROMPT, SatisfactionExtraction),
+    "assignment": (ASSIGNMENT_PROMPT, AssignmentExtraction),
+    "noc": (NOC_PROMPT, NOCExtraction),
+    "easement": (DEED_PROMPT, DeedExtraction),
+    "other": (DEED_PROMPT, DeedExtraction),
 }
 
 
@@ -343,34 +357,73 @@ class PgEncumbranceExtractionService:
         return images
 
     # ------------------------------------------------------------------
-    # Vision extraction + validation
+    # OCR + text-based LLM extraction
     # ------------------------------------------------------------------
 
-    async def _extract_from_images(
-        self, images: list[str], enc_type: str
-    ) -> dict[str, Any] | None:
-        """Send page images to vision and merge results across pages."""
-        method_name, _model_cls = EXTRACTION_DISPATCH[enc_type]
-        vision_fn = getattr(self.vision, method_name)
+    @staticmethod
+    def _ocr_images_to_text(image_paths: list[str]) -> str:
+        """OCR all page images with pytesseract and combine into one string.
 
-        result: dict[str, Any] | None = None
-        for img in images:
+        Each page is prefixed with ``--- PAGE N ---`` for context, matching
+        the same convention used by ``FinalJudgmentProcessor``.
+        """
+        page_texts: list[str] = []
+        for idx, image_path in enumerate(image_paths, start=1):
             try:
-                page_result = vision_fn(img)
-                if not isinstance(page_result, dict):
-                    continue
-                if result is None:
-                    result = page_result
-                else:
-                    # Fill in missing fields from subsequent pages
-                    for k, v in page_result.items():
-                        if v and not result.get(k):
-                            result[k] = v
-            except Exception:
-                logger.exception("Vision call failed for {}", img)
-            await asyncio.sleep(1)
+                with Image.open(image_path) as image:
+                    page_text = pytesseract.image_to_string(image).strip()
+            except Exception as exc:
+                logger.warning(
+                    "Tesseract OCR failed for page {} ({}): {}",
+                    idx,
+                    image_path,
+                    exc,
+                )
+                continue
+            if not page_text:
+                logger.warning(
+                    "Tesseract OCR returned no text for page {} ({})",
+                    idx,
+                    image_path,
+                )
+                continue
+            page_texts.append(f"--- PAGE {idx} ---\n{page_text}")
 
-        return result
+        return "\n\n".join(page_texts)
+
+    def _extract_from_ocr_text(
+        self, ocr_text: str, enc_type: str
+    ) -> dict[str, Any] | None:
+        """Send combined OCR text to the LLM with the doc-type prompt.
+
+        All pages are sent in a single LLM call so the model has full
+        document context (e.g. parties on page 1, amounts on page 3).
+        """
+        if not ocr_text.strip():
+            return None
+
+        prompt_template, _model_cls = EXTRACTION_DISPATCH[enc_type]
+
+        # Build the full prompt: doc-type prompt + OCR text
+        full_prompt = (
+            f"{prompt_template}\n\n"
+            f"## DOCUMENT TEXT (OCR)\n\n{ocr_text}\n\n"
+            "Return a JSON object matching the schema above. "
+            "Use null for any field you cannot determine from the text."
+        )
+
+        raw_response = self.vision.analyze_text(full_prompt, max_tokens=4000)
+        if not raw_response:
+            logger.warning("LLM returned empty response for {} extraction", enc_type)
+            return None
+
+        parsed = robust_json_parse(raw_response, f"{enc_type}_extraction")
+        if parsed is None:
+            logger.warning("Failed to parse JSON from {} extraction response", enc_type)
+            return None
+
+        parsed["raw_text"] = ocr_text
+        return parsed
 
     @staticmethod
     def _validate(
@@ -434,8 +487,13 @@ class PgEncumbranceExtractionService:
             return None
 
         try:
-            # 4. Extract
-            raw = await self._extract_from_images(images, enc_type)
+            # 4. OCR all pages → combined text → single LLM call
+            ocr_text = self._ocr_images_to_text(images)
+            if not ocr_text.strip():
+                logger.warning("OCR produced no text for id={}", row["id"])
+                return None
+
+            raw = self._extract_from_ocr_text(ocr_text, enc_type)
             if not raw:
                 return None
 
