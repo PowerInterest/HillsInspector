@@ -469,9 +469,24 @@ class PgEncumbranceExtractionService:
         return parsed
 
     @staticmethod
+    def _validation_messages(exc: ValidationError) -> list[str]:
+        """Flatten Pydantic validation errors into readable log strings."""
+        messages: list[str] = []
+        for err in exc.errors():
+            msg = str(err.get("msg") or "validation error")
+            if msg.startswith("Value error, "):
+                msg = msg.removeprefix("Value error, ")
+            messages.append(msg)
+        return messages
+
+    @staticmethod
     def _validate(
-        data: dict[str, Any], enc_type: str
-    ) -> dict[str, Any] | None:
+        data: dict[str, Any],
+        enc_type: str,
+        *,
+        row_context: dict[str, Any] | None = None,
+        source: str = "extraction",
+    ) -> tuple[dict[str, Any] | None, list[str]]:
         """Validate extraction against the Pydantic model.
 
         Returns cleaned dict on success. Validation failures are treated as real
@@ -482,22 +497,23 @@ class PgEncumbranceExtractionService:
         _, model_cls = EXTRACTION_DISPATCH[enc_type]
         try:
             validated = model_cls.model_validate(data)
-            return validated.model_dump(mode="json")
+            return validated.model_dump(mode="json"), []
         except ValidationError as exc:
-            messages = []
-            for err in exc.errors():
-                msg = str(err.get("msg") or "validation error")
-                if msg.startswith("Value error, "):
-                    msg = msg.removeprefix("Value error, ")
-                messages.append(msg)
-            preview = "; ".join(messages[:3]) if messages else "unknown validation failure"
+            messages = PgEncumbranceExtractionService._validation_messages(exc)
+            preview = "; ".join(messages[:5]) if messages else "unknown validation failure"
+            if len(messages) > 5:
+                preview = f"{preview}; ... ({len(messages) - 5} more)"
             logger.warning(
-                "Validation failed for {} extraction with {} issue(s): {}",
+                "Validation failed for {} {} id={} type={} inst={} with {} issue(s): {}",
+                source,
                 enc_type,
+                (row_context or {}).get("id"),
+                enc_type,
+                (row_context or {}).get("instrument_number"),
                 exc.error_count(),
                 preview,
             )
-            return None
+            return None, messages
 
     # ------------------------------------------------------------------
     # Database persistence
@@ -528,13 +544,20 @@ class PgEncumbranceExtractionService:
         # 1. Check cache
         cached = _load_cache(pdf_path)
         if cached:
-            validated_cache = self._validate(cached, enc_type)
+            validated_cache, cache_errors = self._validate(
+                cached,
+                enc_type,
+                row_context=row,
+                source="cache",
+            )
             if validated_cache is None:
                 logger.warning(
-                    "Ignoring invalid cache for id={} type={} path={} and re-extracting",
+                    "Ignoring invalid cache for id={} type={} inst={} path={} and re-extracting after validation errors: {}",
                     row["id"],
                     enc_type,
+                    row.get("instrument_number"),
                     pdf_path,
+                    "; ".join(cache_errors[:3]) if cache_errors else "unknown validation failure",
                 )
             else:
                 self._save_to_pg(row["id"], validated_cache)
@@ -601,13 +624,19 @@ class PgEncumbranceExtractionService:
                 }
 
             # 5. Validate
-            validated = self._validate(raw, enc_type)
+            validated, validation_errors = self._validate(
+                raw,
+                enc_type,
+                row_context=row,
+                source="fresh extraction",
+            )
             if not validated:
                 logger.warning(
-                    "Skipping persistence for invalid extraction id={} type={} inst={}",
+                    "Skipping persistence for invalid extraction id={} type={} inst={} because validation failed: {}",
                     row["id"],
                     enc_type,
                     row.get("instrument_number"),
+                    "; ".join(validation_errors[:3]) if validation_errors else "unknown validation failure",
                 )
                 return {
                     "_status": "error",

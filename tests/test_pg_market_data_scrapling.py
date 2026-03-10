@@ -151,9 +151,27 @@ class TestNormalizeIntOrFloat:
 
 
 class TestToRealtorUrl:
-    def test_basic_address(self) -> None:
+    def test_basic_address_no_city_uses_search_url(self) -> None:
         url = PgMarketDataScraplingService._to_realtor_url("123 Main St Tampa FL 33602")
-        assert url == "https://www.realtor.com/realestateandhomes-search/123-main-st-tampa-fl-33602"
+        assert url.startswith("https://www.realtor.com/realestateandhomes-search/")
+        # Title-cased slug
+        assert "123-Main-St-Tampa-Fl-33602" in url
+
+    def test_with_city_and_zip_uses_detail_url(self) -> None:
+        url = PgMarketDataScraplingService._to_realtor_url(
+            "13908 PEPPERRELL DR", city="TAMPA", zip_code="33624"
+        )
+        assert url == (
+            "https://www.realtor.com/realestateandhomes-detail/"
+            "13908-Pepperrell-Dr_Tampa_FL_33624"
+        )
+
+    def test_with_city_only_uses_detail_url(self) -> None:
+        url = PgMarketDataScraplingService._to_realtor_url(
+            "123 Main St", city="Tampa"
+        )
+        assert "/realestateandhomes-detail/" in url
+        assert "_Tampa_FL" in url
 
     def test_special_chars_replaced(self) -> None:
         url = PgMarketDataScraplingService._to_realtor_url("123 Main St #4, Tampa")

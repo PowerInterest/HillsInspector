@@ -210,15 +210,30 @@ class PgMarketDataScraplingService(MarketDataService):
     @staticmethod
     def _html_looks_blocked(html: str) -> bool:
         lowered = html.lower()
-        blocked_markers = (
-            "captcha",
+        # Strong markers: active challenge infrastructure, not incidental mentions.
+        # "captcha" alone fires on JS bundles / privacy text that appear on
+        # perfectly valid pages (including the realtor.com homepage).
+        strong_markers = (
             "verify you are human",
-            "access denied",
             "are you a robot",
             "cf-chl",
             "/challenge-platform/",
+            "access denied",
+            "px-captcha",              # PerimeterX challenge container
+            "g-recaptcha",             # reCAPTCHA widget div
+            "h-captcha",               # hCaptcha widget div
+            "cf-turnstile",            # Cloudflare Turnstile widget
         )
-        return any(marker in lowered for marker in blocked_markers)
+        return any(marker in lowered for marker in strong_markers)
+
+    @staticmethod
+    def _looks_like_homepage(url: str) -> bool:
+        """Return True if the URL is a site's root/homepage (no property path)."""
+        from urllib.parse import urlparse
+
+        path = urlparse(url).path.rstrip("/")
+        # Empty path or very short path = homepage
+        return not path or path in ("/", "/homes")
 
     @staticmethod
     def _normalize_float(raw_value: Any) -> float | None:
@@ -338,14 +353,29 @@ class PgMarketDataScraplingService(MarketDataService):
         return None
 
     @staticmethod
-    def _to_realtor_url(address: str, city: str = "") -> str:
-        slug = re.sub(r"[^A-Za-z0-9]+", "-", address.strip().lower())
-        slug = slug.strip("-")
+    def _to_realtor_url(address: str, city: str = "", zip_code: str = "") -> str:
+        # Realtor.com detail URLs are case-sensitive and use Title-Case slugs:
+        #   /realestateandhomes-detail/13908-Pepperrell-Dr_Tampa_FL_33624
+        addr_title = address.strip().title()
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", addr_title).strip("-")
         if not slug:
             raise ValueError("empty address")
-        city_slug = re.sub(r"[^A-Za-z0-9]+", "-", city.strip().lower()).strip("-") if city else ""
+        city_title = city.strip().title() if city else ""
+        city_slug = re.sub(r"[^A-Za-z0-9]+", "-", city_title).strip("-") if city_title else ""
+        zip_clean = re.sub(r"[^0-9]", "", zip_code.strip())[:5] if zip_code else ""
+        # Use detail URL pattern when we have city — this goes directly to the
+        # property page instead of a search-results page that may redirect to
+        # the homepage when the slug doesn't match a known location.
+        if city_slug and zip_clean:
+            return (
+                f"https://www.realtor.com/realestateandhomes-detail/"
+                f"{slug}_{city_slug}_FL_{zip_clean}"
+            )
         if city_slug:
-            return f"https://www.realtor.com/realestateandhomes-search/{slug}_{city_slug}_FL"
+            return (
+                f"https://www.realtor.com/realestateandhomes-detail/"
+                f"{slug}_{city_slug}_FL"
+            )
         return f"https://www.realtor.com/realestateandhomes-search/{slug}"
 
     @staticmethod
@@ -1257,13 +1287,16 @@ class PgMarketDataScraplingService(MarketDataService):
                 response = await loop.run_in_executor(None, lambda: fetcher.fetch(url))
 
             status = getattr(response, "status", None)
-            if status and status >= 400:
+            if status and status >= 400 and status != 404:
                 raise ValueError(f"HTTP {status} from {url}")
+            # 404 = property not listed; return the HTML so the parser can
+            # decide (it will produce an empty payload, not a false block).
 
+            final_url = getattr(response, "url", url) or url
             html = self._response_text(response)
             if not html:
                 raise ValueError("empty response")
-            return url, html
+            return str(final_url), html
         finally:
             close = getattr(fetcher, "close", None)
             if close is not None:
@@ -1329,13 +1362,26 @@ class PgMarketDataScraplingService(MarketDataService):
 
             try:
                 url = url_builder(address, city=city, zip_code=zip_code)
-                _, html = await self._fetch_site_html(url, scroll=scroll)
+                final_url, html = await self._fetch_site_html(url, scroll=scroll)
             except Exception:
                 logger.exception("{} scrapling fetch failed for {}", site.capitalize(), address)
                 self._mark_source_attempted(strap, folio, case_number, site)
                 consecutive_failures += 1
                 if attempted % 10 == 0:
                     logger.info("{} scrapling progress: {}/{} attempted, {} matched", site.capitalize(), attempted, len(properties), matched)
+                continue
+
+            # Detect homepage redirects — the site didn't block us, it just
+            # couldn't resolve the address slug and bounced to the homepage.
+            if final_url != url and self._looks_like_homepage(final_url):
+                logger.warning(
+                    "{} scrapling: redirected to homepage for '{}' (requested {})",
+                    site.capitalize(),
+                    address,
+                    url,
+                )
+                self._mark_source_attempted(strap, folio, case_number, site)
+                consecutive_failures += 1
                 continue
 
             if self._html_looks_blocked(html):
@@ -1396,7 +1442,9 @@ class PgMarketDataScraplingService(MarketDataService):
         return await self._run_site_loop(
             site=_REALTOR_SOURCE,
             properties=properties,
-            url_builder=lambda addr, *, city="", **_kw: self._to_realtor_url(addr, city=city),
+            url_builder=lambda addr, *, city="", zip_code="", **_kw: self._to_realtor_url(
+                addr, city=city, zip_code=zip_code
+            ),
             html_parser=self._parse_realtor_html,
             upsert_fn=self._upsert_realtor,
             is_useful_fn=self._is_useful_realtor_payload,

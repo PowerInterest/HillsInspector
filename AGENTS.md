@@ -36,6 +36,7 @@ The chain of title and encumbrance data are the core deliverable. Without them, 
 ## Project Structure & Module Organization
 - Entry point: `Controller.py`; orchestration in `src/services/pg_pipeline_controller.py`.
 - Scrapers in `src/scrapers/`; ingest helpers in `src/ingest/`; transforms/enrichment in `src/services/`; shared utilities in `src/utils/`.
+- **Extraction models & prompts** in `src/models/` — Pydantic v2 schemas that define both the LLM prompt contract and the output validation for courthouse PDF extraction. Each document type (judgment, mortgage, deed, lien, lis pendens, satisfaction, assignment, NOC) has its own schema module inheriting from `extraction_base.py:BaseDocumentExtraction`.
 - Database schema and scripts in `src/db/`; FastAPI + Jinja app in `app/web/` with API helpers in `app/services/` and DB wiring in `app/web/database.py`.
 - **Operational + Analytical Database**: PostgreSQL (`hills_sunbiz`) for pipeline state, enrichment, and analytics.
 - **Data Flow**:
@@ -43,6 +44,16 @@ The chain of title and encumbrance data are the core deliverable. Without them, 
     - Controller/services ingest and enrich directly into PostgreSQL.
 - Logs in `logs/`; docs in `docs/`; maintenance scripts in `scripts/`.
 - Tests belong in `tests/` mirroring module paths; fixtures in `tests/fixtures/`.
+
+## Document Extraction Pipeline (OCR → LLM → Pydantic)
+- **Source PDFs**: Courthouse recording images downloaded to `data/Foreclosure/{case_number}/documents/`.
+- **OCR**: `pytesseract` converts scanned PDF pages to raw text.
+- **LLM Extraction**: Raw OCR text is sent to **Qwen 3.5 9B** (local) with the Pydantic model's `model_json_schema()` embedded in the prompt, instructing the LLM to return structured JSON matching the schema.
+- **Validation**: LLM JSON output is validated and coerced via `PydanticModel.model_validate(raw_dict)` — bad dates, non-numeric amounts, and unknown enums are caught before database insertion.
+- **Models location**: `src/models/` — one module per document type, all inheriting `extraction_base.py:StrictExtractionModel` / `BaseDocumentExtraction`. Document types: judgment, mortgage, deed, lien, lis pendens, satisfaction, assignment, NOC.
+- **Schema contract**: All fields are required in JSON output (nullable when unknown). `StrictExtractionModel` enforces `extra="forbid"` and rejects partial objects missing declared keys.
+- **Domain knowledge in prompts**: Field descriptions embed Hillsborough County specifics (judge names, common servicers, legal description patterns) so the LLM prompt itself carries domain expertise.
+- **Cached results**: Extracted JSON is cached as `{stem}_extracted.json` next to the source PDF to survive DB rebuilds.
 
 ## Build, Test, and Development Commands
 - `uv sync` installs locked dependencies; avoid pip/poetry.

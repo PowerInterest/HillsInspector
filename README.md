@@ -2,102 +2,20 @@
 
 A data ingestion and analysis pipeline for Hillsborough County real estate, focusing on foreclosure and tax deed auctions. This tool aggregates data from multiple sources to help assess property equity and risk. https://publicrec.hillsclerk.com/Civil/
 
-## Project Structure
+## 1. Project Overview & Structure
+* `src/scrapers/*`: get the data, and then call a service to store what they found
+* `src/services/*`: Analyze the data, transforming it and writing it into the database
+* `src/db/*`: has everything to start a new database, and db scripts
+* `src/ingest/*`: has to do with bringing in data before we start scraping websites
+* `docs/*`: is where we keep documentation for the project
+* `data/properties/*`: holds all the raw data (pictures, parquet files, json, pdfs, etc.)
+* `app/*`: holds the web application code
+* `logs/`: one log file for the whole project using loguru
+* `utils/`: utility functions for the project
+* `Controller.py`: the PG-first pipeline entry point for the project
 
-    src/scrapers/* get the data, and then call a service to store what they found, sometimes they get all the data, others can give us a link to the data
-    src/services/* Analyze the data, transforming it and writing it into the database
-    src/db/*  has everything to start a new database, and db scripts
-    src/ingest/* has to do with bringing in data before we start scraping websites
-    docs/*  is where we keep documentation for the project, each scraper has its own documentation in docs/scrapers/*
-    data/properties/*  holds all the raw data like, pictures, parquet files, json, pdfs, etc. , each directory is a property using the folio number 
-    app/*  holds the web application code, any heavy data manipulation should be done under /src/services
-    logs/  one log file for the whole project using loguru
-    utils/  has utility functions for the project
-    Controller.py  the PG-first pipeline entry point for the project
+## 2. Setup
 
-
-## Usage
-
-**Pipeline startup is handled via `Controller.py` (PG-first).**
-
-### 1. Run Full Pipeline
-Runs Phase A (bulk refresh) + Phase B (per-auction enrichment).
-```powershell
-uv run Controller.py
-```
-`Controller.py` now enforces schema sync at startup by running `alembic upgrade head`
-against the active PostgreSQL DSN before any pipeline steps.
-
-### 2. Quick Sanity Run
-Runs the controller with narrow limits for auction/judgment/ORI/survival steps.
-```powershell
-uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --survival-limit 5 --limit 5
-```
-
-### 3. Run Phase A Only (bulk refresh)
-```powershell
-uv run Controller.py --skip-auction-scrape --skip-judgment-extract --skip-identifier-recovery --skip-ori-search --skip-encumbrance-extraction --skip-survival --skip-encumbrance-audit --skip-encumbrance-recovery --skip-final-refresh --skip-market-data
-```
-
-### 4. Run Phase B Only (enrichment)
-```powershell
-uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-clerk-criminal --skip-clerk-civil-alpha --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits --skip-single-pin-permits --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain --skip-title-breaks --skip-market-data
-```
-
-### 5. Start Web Server
-Launches the local web dashboard to view results.
-```powershell
-uv run python -m app.web.main
-```
-Start the same web app with a public `ngrok` tunnel:
-```powershell
-uv run python -m app.web.main --ngrok
-```
-`ngrok` auth can come from either:
-- `ngrok config add-authtoken <token>`
-- `NGROK_AUTHTOKEN=<token>`
-
-Database tab (CloudBeaver):
-- `CLOUDBEAVER_PG_URL` (or fallback `CLOUDBEAVER_URL`, default `http://localhost:8978`) controls PostgreSQL embed.
-- `CLOUDBEAVER_EMBED=0` disables iframe embed and leaves only the "Open In New Tab" link.
-The `/database` page targets PostgreSQL (primary workflow).
-
-### 6. Reset/Initialize PG Schema
-```powershell
-uv run python -m src.db.migrations.create_foreclosures --dsn <postgres-dsn>
-uv run alembic upgrade head
-```
-Migration policy is forward-only; this project does not support `alembic downgrade`.
-
-## Technical Stack & Rules
-
-### Package Management
-- **ONLY use `uv`** for package management. Never use `pip` or `poetry`.
-- Run scripts with `uv run python <script.py>`
-
-### Data Processing
-- **ONLY use `Polars`** for DataFrames. Never use `pandas`.
-- **Store bulk data as Parquet files** for efficient columnar storage.
-
-### Database: PostgreSQL
-
-**PostgreSQL** is the single runtime database for pipeline state, bulk data, and analytics.
-Raw artifacts (PDF/JSON/Parquet) are still stored on disk under `data/`.
-
-#### PostgreSQL Extensions (Installed)
-- `pg_search`: Full-text/hybrid search extension for fast property and party search workflows.
-- `pg_trgm`: Trigram similarity + GIN support for fuzzy name/address matching.
-- `fuzzystrmatch`: Phonetic/string-distance helpers for entity resolution.
-- `citext`: Case-insensitive text type for equality/grouping on names.
-  Columns now using `citext`: `foreclosures.sold_to`, `foreclosures_history.sold_to`, `sunbiz_flr_parties.name`, `sunbiz_entity_parties.party_name`.
-- `unaccent`: Accent/diacritic normalization support (useful with `lower(...)` + `pg_trgm`).
-- `pgcrypto`: Hashing and crypto-safe random/UUID helper functions for IDs/dedup workflows.
-
-### Tooling Requirements
-
-**Only `uv`, `ruff`, and `ty` are approved developer tools.** No pip, flake8, or mypy.
-
-## Setup
 ### Quick Start (Linux/WSL/MacOS)
 We provide a `Makefile` to streamline the setup process.
 
@@ -106,7 +24,6 @@ We provide a `Makefile` to streamline the setup process.
     git clone https://github.com/PowerInterest/HillsInspector
     cd HillsInspector
     ```
-
 2.  **Run Setup**:
     This will install system dependencies, sync Python packages, and install Playwright browsers.
     ```bash
@@ -115,155 +32,105 @@ We provide a `Makefile` to streamline the setup process.
 
 ### Manual Setup / Windows Powershell
 
-1.  **Install `uv`**:
-    Follow instructions at [https://github.com/astral-sh/uv](https://github.com/astral-sh/uv)
+1.  **Install `uv`**: Follow instructions at [https://github.com/astral-sh/uv](https://github.com/astral-sh/uv)
+2.  **Install Dependencies**: `uv sync`
+3.  **Install Playwright Browsers**: `uv run playwright install chromium`
+4.  **Verify Installation**: `uv run Controller.py --help`
 
-2.  **Install Dependencies**:
-    ```powershell
-    uv sync
-    ```
+## 3. Usage
 
-3.  **Install Playwright Browsers**:
-    ```powershell
-    uv run playwright install chromium
-    ```
+**Pipeline startup is handled via `Controller.py` (PG-first).**
 
-4.  **Verify Installation**:
-    ```powershell
-    uv run Controller.py --help
-    ```
+*   **Run Full Pipeline**: Runs Phase A (bulk refresh) + Phase B (per-auction enrichment).
+    `uv run Controller.py` (enforces schema sync at startup by running `alembic upgrade head`)
+*   **Quick Sanity Run**: Runs the controller with narrow limits.
+    `uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --survival-limit 5 --limit 5`
+*   **Run Phase A Only (bulk refresh)**:
+    `uv run Controller.py --skip-auction-scrape --skip-judgment-extract --skip-identifier-recovery --skip-ori-search --skip-encumbrance-extraction --skip-survival --skip-encumbrance-audit --skip-encumbrance-recovery --skip-final-refresh --skip-market-data`
+*   **Run Phase B Only (enrichment)**:
+    `uv run Controller.py --skip-hcpa --skip-clerk-bulk --skip-clerk-criminal --skip-clerk-civil-alpha --skip-nal --skip-flr --skip-sunbiz-entity --skip-county-permits --skip-tampa-permits --skip-single-pin-permits --skip-foreclosure-refresh --skip-trust-accounts --skip-title-chain --skip-title-breaks --skip-market-data`
+*   **Start Web Server**:
+    `uv run python -m app.web.main`
+    (Start with a public `ngrok` tunnel: `uv run python -m app.web.main --ngrok`)
+*   **Reset/Initialize PG Schema**:
+    `uv run python -m src.db.migrations.create_foreclosures --dsn <postgres-dsn>`
+    `uv run alembic upgrade head`
 
-## Documentation Index
+## 4. Technical Stack & Rules
+
+*   **Language**: Python 3.12
+*   **Package Manager**: `uv` **ONLY**. Never use `pip` or `poetry`.
+*   **Data Processing**: `Polars` **ONLY** for DataFrames. Never use `pandas`. Store bulk data as Parquet.
+*   **Web Framework**: `FastAPI` + `Jinja2` (SSR). **No React/SPA.** HTMX is permitted only if strictly necessary. Standard HTML forms and links are the priority (Zero-JS Philosophy).
+*   **Database**: PostgreSQL (Version 15+) single runtime database for pipeline state and analytics. Migrations are forward-only.
+    *   *Extensions*: `pg_search`, `pg_trgm`, `fuzzystrmatch`, `citext`, `unaccent`, `pgcrypto`
+*   **Scraping**: `Playwright` (Browser Automation) + `playwright-stealth`
+*   **AI/Vision & OCR**: Qwen-VL (`Qwen/Qwen3-VL-8B-Instruct`) via VisionService. **No EasyOCR.**
+*   **QA & Tooling Requirements**:
+    *   **Linter/Formatter**: `ruff` (`uv run ruff check .` / `uv run ruff format .`)
+    *   **Type Checker**: `ty` (`uv run ty check`)
+    *   *No flake8 or mypy.*
+*   **Logging**: `loguru` (`logs/inspector_{time}.log`)
+
+## 5. Documentation Index
 
 The `docs/` folder contains comprehensive guides and technical design artifacts, systematically broken down into domains:
 
 ### 📐 Architecture & Infrastructure
 - [Ingestion Guide](docs/guides/INGESTION_GUIDE.md) - End-to-end data pipeline logic and ingestion states.
-- [LLM Extraction Schema Contract](docs/domain/LLM_EXTRACTION_SCHEMA_CONTRACT.md) - Hard JSON-schema and validation rules for OCR-to-LLM document extraction, including required-key semantics and final-judgment hard gates.
-- [Final Judgment Text-First Extraction](docs/domain/FINAL_JUDGMENT_TEXT_EXTRACTION.md) - Why final judgments now use Tesseract OCR text as the primary extraction source, with image prompting only as fallback.
+- [LLM Extraction Schema Contract](docs/domain/LLM_EXTRACTION_SCHEMA_CONTRACT.md) - Hard JSON-schema and validation rules for OCR-to-LLM document extraction.
+- [Final Judgment Text-First Extraction](docs/domain/FINAL_JUDGMENT_TEXT_EXTRACTION.md) - Why final judgments use Tesseract OCR text as the primary extraction source.
 
 ### ⚖️ Real Estate Domain Logic
-- [Encumbrance Audit Buckets](docs/domain/ENCUMBRANCE_AUDIT_BUCKETS.md) - Taxonomy for separating ORI discovery gaps, survival-risk gaps, and identity/title-break gaps on active foreclosures.
+- [Encumbrance Audit Buckets](docs/domain/ENCUMBRANCE_AUDIT_BUCKETS.md) - Taxonomy for separating ORI discovery gaps, survival-risk gaps, and identity gaps.
 - [Lien Survival Analysis](docs/domain/LIEN_SURVIVAL.md) - Exact logic for modeling Florida statues covering extinguished/surviving liens and foreclosures.
-- [Per-Foreclosure Survival Persistence](docs/domain/PER_FORECLOSURE_SURVIVAL.md) - Why shared-strap cases need survival results keyed by `(foreclosure_id, encumbrance_id)` instead of only parcel-scoped encumbrance rows.
-- [Pipeline Quality Thresholds](docs/domain/PIPELINE_QUALITY_THRESHOLDS.md) - Hard gates and diagnostics for judging title-chain and encumbrance quality after every controller run.
+- [Per-Foreclosure Survival Persistence](docs/domain/PER_FORECLOSURE_SURVIVAL.md) - Shared-strap survival results keyed by `(foreclosure_id, encumbrance_id)`.
+- [Pipeline Quality Thresholds](docs/domain/PIPELINE_QUALITY_THRESHOLDS.md) - Hard gates and diagnostics for judging title-chain and encumbrance quality.
 - [Auction Expiration Rules](docs/domain/AUCTION_EXPIRE.md) - Modeling property forfeiture and expiration mechanics.
-- [Chain of Title Recovery](docs/domain/TITLE_CHAIN_RECOVERY.md) - The mechanism of scraping and verifying a complete chain of title.
-- [NOC & Permit Linking](docs/domain/NOC_PERMIT_LINKING.md) - How we link notices of commencement to active building permits.
-- [ORI Property Matching](docs/domain/ORI_PROPERTY_MATCHING.md) - How discovered ORI documents are filtered to prevent cross-property contamination in subdivisions and condominiums.
-- [ORI SQL Parameter Typing](docs/domain/ORI_SQL_PARAMETER_TYPING.md) - Why `_save_documents()` casts bind parameters in change-detection predicates to prevent psycopg `AmbiguousParameter` skips.
-- [Workflow Retry Contracts](docs/domain/WORKFLOW_RETRY_CONTRACTS.md) - Persistence and retry semantics for `identifier_recovery`, `ori_search`, and `title_breaks`, including cooldown markers, degraded accounting, and sentinel TTLs.
-- [Upsert Source Tracking](docs/domain/UPSERT_SOURCE_TRACKING.md) - Change-log persistence and priority-aware market upserts for mixed-source property data.
-- [Party Matching Strategy](docs/domain/PARTY_MATCHING_STRATEGY.md) - Entity resolution logic for fuzzy matching property owners across completely different data silos.
+- [Chain of Title Recovery](docs/domain/TITLE_CHAIN_RECOVERY.md) - Scraping and verifying a complete chain of title.
+- [NOC & Permit Linking](docs/domain/NOC_PERMIT_LINKING.md) - Notice of commencement linking to active building permits.
+- [ORI Property Matching](docs/domain/ORI_PROPERTY_MATCHING.md) - ORI document filter to prevent cross-property contamination.
+- [ORI SQL Parameter Typing](docs/domain/ORI_SQL_PARAMETER_TYPING.md) - Preventing psycopg `AmbiguousParameter` skips.
+- [Workflow Retry Contracts](docs/domain/WORKFLOW_RETRY_CONTRACTS.md) - Persistence and retry semantics for identifier recovery and search.
+- [Upsert Source Tracking](docs/domain/UPSERT_SOURCE_TRACKING.md) - Change-log persistence and priority-aware market upserts.
+- [Party Matching Strategy](docs/domain/PARTY_MATCHING_STRATEGY.md) - Entity resolution logic for fuzzy matching property owners.
 - [Legal Issues Overview](docs/domain/LEGAL_ISSUES.md) - Real estate law nuances codified into algorithms.
 - [Auction Buyer Resolution](docs/domain/AUCTION_BUYER_RESOLUTION.md) - Utilizing post-auction Property Appraiser Deeds to backwards resolve unknown auction winners.
-- [Encumbrance Linking](docs/domain/ENCUMBRANCE_LINKING.md) - Satisfaction, modification, and lifecycle document linking algorithms plus Phase 0 seed doc-type filtering.
+- [Encumbrance Linking](docs/domain/ENCUMBRANCE_LINKING.md) - Satisfaction, modification, and lifecycle document linking algorithms.
 
 ### 🌐 External Systems & Scraping
 - [Deep Search Implementation](docs/DEEP_SEARCH_IMPLEMENTATION.md) - Bypassing ORI rate limits and complex search logic.
-- [Hyland PAV NOC Discovery](docs/external/HYLAND_PAV_NOC_DISCOVERY.md) - Live query IDs, keyword fields, and the search order that actually finds NOCs in the Clerk's Hyland public-access stack.
-- [Sunbiz Data Dictionary](docs/external/SUNBIZ_DATA_DICTIONARY.md) - Layout definition and tables for the Florida Division of Corporations bulk open datasets.
-- [Tax Data Research](docs/external/TAX_DATA_RESEARCH.md) - Scraping instructions for the DOR (Department of Revenue) property millage layers.
+- [Hyland PAV NOC Discovery](docs/external/HYLAND_PAV_NOC_DISCOVERY.md) - Search order and keywords for finding NOCs.
+- [Sunbiz Data Dictionary](docs/external/SUNBIZ_DATA_DICTIONARY.md) - Layout definition and tables for Florida Division of Corporations bulk open datasets.
+- [Tax Data Research](docs/external/TAX_DATA_RESEARCH.md) - Scraping instructions for the DOR property millage layers.
 - [Case Fallback Scraping](docs/domain/CASE_FALLBACK.md) - Fail-safe mechanisms when primary URLs vanish.
-
-### 🔧 Maintenance & Audits
-- [System Audit Fixes (2026-03-08)](docs/AUDIT_FIXES_2026_03_08.md) - 11 confirmed bugs fixed from multi-reviewer system audit: JSONB key typos, COALESCE direction bugs, encumbrance misclassification, concurrency locks, and more.
-- [Massive Audit Resolution (2026-03-10)](docs/AUDIT_FIXES_2026_03_10.md) - Resolution status for High/Medium findings from `docs/MASSIVE_AUDIT.md`, plus triage guidance for Low findings.
-- [Controller Run Post-Mortem (2026-03-10)](docs/STILL.md) - Persistence-focused analysis of the 2026-03-10 controller run, including why `identifier_recovery`, `ori_search`, and `title_breaks` failed to improve downstream data quality.
-- [System Audit Final Pass (2026-03-08)](docs/AUDIT_FIXES_2026_03_08_FINAL.md) - Final 3 deferred issues: title chain gap metric, judgment loader unification, zestimate UI labels. Includes post-deploy data repair command.
 
 ### 📖 Guides
 - [Operations Runbook](docs/guides/RUNBOOK.md) - Standard operational procedures and recurring scripts.
-- [Encumbrance Audit Web UI](docs/guides/ENCUMBRANCE_AUDIT_WEB_UI.md) - Read-only implementation guide for surfacing encumbrance audit issues in the property view and global review inbox.
-- [Municipal Utility Lien Plan](docs/guides/MUNICIPAL_UTILITY_LIEN_PLAN.md) - Provider-aware closure plan for Hillsborough Water Resources, Tampa Conduits, and TECO municipal-lien risk handling.
-- [Plant City + Temple Terrace Permit Expansion](docs/guides/PERMIT_EXPANSION_PLANT_CITY_TEMPLE_TERRACE.md) - Jurisdiction-aware municipal permit routing and ingestion design for incorporated cities outside Tampa.
-- [ORI Lis Pendens Recovery](docs/guides/ORI_LIS_PENDENS_RECOVERY.md) - How active foreclosure LP gaps are retried without adding new PostgreSQL schema.
-- [Foreclosure Identifier Repair](docs/guides/FORECLOSURE_IDENTIFIER_REPAIR.md) - How the pipeline repairs non-null but invalid HCPA straps from folio-backed parcel data.
-- [Tampa Permit Value And Enforcement](docs/guides/TAMPA_PERMIT_VALUE_AND_ENFORCEMENT.md) - Why enforcement rows stay stored, but are excluded from permit-gap scoring, and how Tampa valuation parsing works.
-- [Scheduled Jobs](docs/guides/SCHEDULED_JOBS.md) - PG-controlled job config/run tracking with cron-triggered Python workers.
-- [Scheduled Jobs Walkthrough](docs/guides/WALKTHROUGH_SCHEDULED_JOBS.md) - Notes captured from the initial bulk-job scheduler integration pass.
-- [Clerk Civil Alpha Merge](docs/CLERK_CIVIL_ALPHA_MERGE.md) - Merging 1958-present civil alpha index into normalised clerk tables with automated download.
+- [Encumbrance Audit Web UI](docs/guides/ENCUMBRANCE_AUDIT_WEB_UI.md) - Read-only implementation guide for surfacing encumbrance audit issues.
+- [Municipal Utility Lien Plan](docs/guides/MUNICIPAL_UTILITY_LIEN_PLAN.md) - Provider-aware closure plan for municipal-lien risk handling.
+- [Plant City + Temple Terrace Permit Expansion](docs/guides/PERMIT_EXPANSION_PLANT_CITY_TEMPLE_TERRACE.md) - Jurisdiction-aware municipal permit routing.
+- [ORI Lis Pendens Recovery](docs/guides/ORI_LIS_PENDENS_RECOVERY.md) - How active foreclosure LP gaps are retried.
+- [Foreclosure Identifier Repair](docs/guides/FORECLOSURE_IDENTIFIER_REPAIR.md) - How the pipeline repairs invalid HCPA straps.
+- [Tampa Permit Value And Enforcement](docs/guides/TAMPA_PERMIT_VALUE_AND_ENFORCEMENT.md) - Why enforcement rows stay stored but excluded from permit-gap scoring.
+- [Scheduled Jobs](docs/guides/SCHEDULED_JOBS.md) - PG-controlled job config/run tracking.
+- [Scheduled Jobs Walkthrough](docs/guides/WALKTHROUGH_SCHEDULED_JOBS.md) - Initial bulk-job scheduler integration pass.
+- [Clerk Civil Alpha Merge](docs/CLERK_CIVIL_ALPHA_MERGE.md) - Merging 1958-present civil alpha index.
 
-## Roadmap / TODO
-*   **System Identification**: The backend is **Hyland OnBase**.
-    *   *Action*: Leverage [OnBase Documentation](https://support.hyland.com/r/OnBase/Public-Sector-Constituency-Web-Access/English/Foundation-22.1/Public-Sector-Constituency-Web-Access/Configuration/Front-End-Client-Configuration/Search-Panel-Settings/Configuring-Custom-Queries/Predefine-Keyword-Values-to-Search/Dynamic-Keyword-Values) to discover more advanced search capabilities and potential API endpoints.
+## 6. Code Fixes & Improvements
+
+This section tracks detailed documentation, post-mortem analyses, and system audit resolutions for code fixes and improvements that have been applied.
+
+### System Audits
+- [Massive Audit Resolution (2026-03-10)](docs/AUDIT_FIXES_2026_03_10.md) - Resolution status for High/Medium findings from `docs/MASSIVE_AUDIT.md`, plus triage guidance for Low findings.
+- [System Audit Final Pass (2026-03-08)](docs/AUDIT_FIXES_2026_03_08_FINAL.md) - Final 3 deferred issues: title chain gap metric, judgment loader unification, zestimate UI labels.
+- [System Audit Fixes (2026-03-08)](docs/AUDIT_FIXES_2026_03_08.md) - 11 confirmed bugs fixed from multi-reviewer system audit (JSONB key typos, COALESCE direction bugs, encumbrance misclassification, etc.).
+
+### Post-Mortems & Session Notes
+- [Controller Run Post-Mortem (2026-03-10)](docs/STILL.md) - Persistence-focused analysis of the 2026-03-10 controller run, including why `identifier_recovery`, `ori_search`, and `title_breaks` failed to improve downstream data quality.
+
+## 7. Roadmap / TODO
+*   **System Identification**: The backend is **Hyland OnBase**. Leverage [OnBase Documentation](https://support.hyland.com/r/OnBase/Public-Sector-Constituency-Web-Access/English/Foundation-22.1/Public-Sector-Constituency-Web-Access/Configuration/Front-End-Client-Configuration/Search-Panel-Settings/Configuring-Custom-Queries/Predefine-Keyword-Values-to-Search/Dynamic-Keyword-Values) to discover more advanced search capabilities and potential API endpoints.
 *   **Permit Analysis**: Integrate `HillsGovHubScraper` to verify NOCs against actual permits.
 *   **Court Case Search**: Implement scraping for CQIDs 324-348 to find foreclosure and probate cases.
-*   **Avoid rework**: If data (judgments, liens, geocodes) already exists, skip reprocessing; only fill gaps (e.g., geocode missing lat/lon, skip PDFs already extracted).
-
-## 1. Core Package Management & Runtime
-**STRICT RULE:** Do **NOT** use `pip`. Do **NOT** use `poetry`.
-We exclusively use **[uv](https://github.com/astral-sh/uv)** for all Python package management.
-
-* **Why:** Instant dependency resolution, Rust-based speed, and seamless lockfile management.
-* **Commands:**
-    * `uv sync` - Install dependencies from `uv.lock`.
-    * `uv add <package>` - Add a new library.
-    * `uv run <script.py>` - Run a script within the virtual environment.
-
-## 2. Web Server & UI (Zero-JS Philosophy)
-**STRICT RULE:** The web interface must function without client-side JavaScript.
-* **Framework:** `FastAPI`
-* **Templating:** `Jinja2` (Server-Side Rendering).
-* **Interaction Model:**
-    * Use standard HTML `<form>` elements (POST/GET) for all data actions.
-    * Use standard `<a>` links for navigation.
-    * **No React, Vue, or SPAs.**
-    * *exception:* `HTMX` is permitted **only** if strictly necessary to avoid full page reloads for minor updates, but standard HTML is the priority.
-
-## 3. Data Storage & Processing
-**STRICT RULE:** Use **PostgreSQL** for operational + analytical database state.
-**STRICT RULE:** Do **NOT** use `pandas`. Use `polars`.
-
-### **Dataframes: Polars**
-* **Tool:** `polars`
-* **Why:** Multithreaded, lazy evaluation, and handles larger-than-memory datasets efficiently.
-
-### **Databases**
-* **Operational + Analytical:** PostgreSQL (Version 15+) for pipeline state and high-volume historical data.
-* **Storage Pattern:**
-    * Raw scrapes -> Saved as `Parquet` or `JSON` (structured).
-    * Active Pipeline + Historical/Bulk -> PostgreSQL.
-
-## 4. Quality Assurance (Linting & Typing)
-We enforce strict code quality using the [Astral](https://astral.sh) suite.
-
-### **Linter & Formatter: Ruff**
-* **Tool:** `ruff`
-* **Config:** `pyproject.toml`
-* **Usage:**
-    * `uv run ruff check .` (Lint)
-    * `uv run ruff format .` (Format)
-
-### **Type Checking: Ty**
-* **Tool:** `ty` (Astral's new type checker)
-* **Why:** Significantly faster than MyPy.
-* **Usage:**
-    * `uv run ty check`
-
-## 5. Logging
-* **Tool:** `loguru`
-* **Why:** Thread-safe, colorized output for Windows, and removes standard logging boilerplate.
-* **Config:**
-    ```python
-    from loguru import logger
-    logger.add("logs/inspector_{time}.log", rotation="10 MB")
-    ```
-
-## 6. Scraping & Browser Automation
-* **Tool:** `playwright` (Python Sync/Async API)
-* **Visual Extraction & OCR:** Qwen-VL via `src/services/vision_service.py` hitting `http://10.10.1.5:6969`
-  - Model: `Qwen/Qwen3-VL-8B-Instruct`
-  - Used for: Screenshot parsing (Accela/Realtor.com), PDF text extraction (ORI documents)
-  - **Note:** Do NOT use EasyOCR. All vision/OCR tasks go through the Qwen service.
-
-
-
-## 3. Technical Stack (Strict)
-* **Language:** Python 3.12
-* **Package Manager:** `uv` (No pip/poetry).
-* **Data Storage:** `PostgreSQL` (Operational + Analytical) + `Parquet` (Raw).
-* **Data Processing:** `Polars` (Lazyframes). **No Pandas.**
-* **Web Framework:** `FastAPI` + `Jinja2` (SSR) + `HTMX` (Interactivity). **No React/SPA.**
-* **Scraping:** `Playwright` (Browser Automation) + `playwright-stealth`.
-* **AI/Vision:** `Qwen-VL` via VisionService (Visual extraction & OCR). No EasyOCR.
+*   **Avoid rework**: If data (judgments, liens, geocodes) already exists, skip reprocessing; only fill gaps.

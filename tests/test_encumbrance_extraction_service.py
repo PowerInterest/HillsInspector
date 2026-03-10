@@ -136,7 +136,8 @@ class TestEndToEnd:
             "has_condo_rider": False,
         }
 
-        result = PgEncumbranceExtractionService._validate(data, "mortgage")  # noqa: SLF001
+        result, messages = PgEncumbranceExtractionService._validate(data, "mortgage")  # noqa: SLF001
+        assert messages == []
         assert result is not None
         assert result["principal_amount"] == 250000.0
         assert result["mortgagee"] == "WELLS FARGO BANK"
@@ -155,9 +156,10 @@ class TestEndToEnd:
             "confidence": "high",
         }
 
-        result = PgEncumbranceExtractionService._validate(prompt_shaped, "mortgage")  # noqa: SLF001
+        result, messages = PgEncumbranceExtractionService._validate(prompt_shaped, "mortgage")  # noqa: SLF001
 
         assert result is None
+        assert messages
 
     def test_extract_from_ocr_text_passes_json_schema_response_format(
         self,

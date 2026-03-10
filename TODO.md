@@ -723,3 +723,187 @@ in the COALESCE direction would be hard to prove from logs alone.
 
 **Guard:** Add `xmax = 0` counting after upsert to distinguish inserts from
 updates, or log status-change counts when `is_open` flips.
+
+https://hillsborough.realforeclose.com/index.cfm?ZACTION=HOME&ZMETHOD=RESETPW&urlrc=7AC2F22AFF6F4AA491AC604D9B07B62A
+Dear Bidder:
+
+Welcome to the Hillsborough County Clerk of Court’s online sale of foreclosed properties. We appreciate your participation in this revolutionary auction process, which allows us to ensure fairness and increase the number of potential buyers for each property. We believe this will be a benefit to bidders and property owners alike.
+
+Please review the information on how the proceedings work before getting started. It’s a good idea to read through the Frequently Asked Questions section. You are required to register before placing your bid, so be sure to complete the administrative portion first.
+
+The online sale offers you the opportunity to review relevant property information from the comfort of your home or office or wherever you have access to the Internet. Updated property information will be added to the website as it becomes available, and you may place your bid at a time that is convenient to you.
+
+Again, thank you for joining us as we become one of the counties in Florida to offer online bidding for foreclosed property sales. If you have any questions about the online sales, please contact customer service at 877-361-7325 or by email to customerservice@realauction.com.  If you have questions about the Clerk of Courts or court cases, please contact our office at 813-276-8100 Extension 4789 or email to Foreclos@hillsclerk.com.
+
+Sincerely,
+
+Victor Crist
+Clerk of the Circuit and County Courts
+Hillsborough County, Florida
+
+
+ 
+This User Agreement governs the relationships between the User (hereinafter “User”, “You”, “Your", or “Applicant”), Realauction.com, L.L.C. (hereinafter “Realauction”) and the Hillsborough County Clerk of Court, (hereinafter “Clerk”), concerning the online purchase of foreclosure property offered by the Clerk of Courts of Hillsborough County.  The term, "User", includes any individual or entity using this website, including but not limited to all bidders, property owners and their employees, agents, and legal representatives.   Before using this site to access or change information about and/or purchase or attempt to purchase real property, you must agree that you have read, understand and agree to be legally bound by the terms and conditions of this User Agreement by clicking on the “I Agree” button above.
+
+License for Use of Information. By completing the registration process and agreeing to the terms and conditions of this User Agreement, the User will be granted a non-exclusive license to access and use the information that appears on this website for the sole purpose of purchasing or attempting to purchase real property foreclosed upon and offered for sale by the Clerk. This license is granted to the User personally and to the User’s employees and agents, and may not be transferred to any third party other than the Clerk and Realauction. The software used to create and maintain information on Realauction is the sole and exclusive property of Realauction, and neither the software nor the information presented by Realauction may be used, altered, sold or distributed by the User in any way, without the express written consent of Realauction.
+User Representations and Warranties
+User shall be solely responsible for the protection and use of the User IDs and passwords obtained from Realauction, and will notify Realauction immediately in the event of theft or unauthorized use of IDs and passwords.
+
+User will follow all instructions for use posted on the website and agrees to all instructions for registraton and participation in auctions and all bidding rules posted on the website as well as all state and federal laws and county ordinances pertainng to the foreclosure process.  User agrees that said instructions, bidding rules, and state and federal laws and county ordinances pertaiing to the foreclosure sale process are terms and conditions of this agreement and are made a part of this agreement.
+
+User acknowledges that all properties are sold without warranties and that User is solely responsible for performing any and all research necessary regarding the condition, marketability, existing or potential users, title, or encumbrances of the existence of any condition, zoning regulations or law that may affect current or future use of the property, regarding any property and structures or fixtures thereon offered for sale by the Clerk and Realauction.
+
+User acknowledges and understands that there is no guarantee that any given property offered for sale by the Clerk will actually be sold by the Clerk and that there is no guarantee that the User will be the successful purchaser of such property.
+
+User warrants that they are of legal age to enter into binding contracts, and/or that they are legaly authorized to act as an agent on behalf of any employer or principal to whom a license for use of the informaton presented by Realauction has been granted.
+
+User represents and warrants that all information provided by User to the Clerk and to Realauction for the purpose of attempting to purchase real property offered for sale by the Clerk is truthful and accurate to the best of their knowledge.  User agrees to request changes to any registraton information by submitting and request to Realaucton as needed.  Clerk and Realauction are entitled to rely on User's registration information as provided for all transactions and notices unless and until changes are made.
+
+User will not violate any laws or regulations in participating as a registrant or bidder in any auction or in the transfer of any funds required to register as a user or complete any sale.  User will not engage in any process, practice or conduct that manipulates, influences or controls any auction including but not limited to collusion or agreements with other bidders or the use of any automated means, technology or devices such as robot , spiders, or scrapers to place bids or prevent others from placing bids.
+
+User acknowledges that all User registration records and records of sales are public records pursuant to Chapter 119, Florida statutes unless exempt as provided in Florida or Federal law.  User acknowledges that they must notify the Clerk or Realauction if their information on realauction is to be maintained as exempt from disclosure as a public record pursuant to Florida or Federal law.
+
+User warrants that they have read all information provided by the Clerk and Realauction pertaining to the process of attempting to purchase real property, and that they understand and accept the obligatons described herein, before User participates in the application process.
+
+USER AGREES TO ABIDE BY ALL TERMS AND CONDITIONS OF SALE CONTAINED HEREIN AND ON ANY OTHER PAGE OR SITE CONNECTED WITH THE SALE OF REAL PROPERTY OFFERED FOR BY THE CLERK.  SUCH TERMS AND CONDITIONS INCLUDE, BUT ARE NOT LIMITED TO:
+
+ Foreclosure Sales:  Prior to the start of the sale, each participant (except Plaintiff) wishing to place a successful bid on a property must post with the Clerk a deposit of 5 percent of the anticipated high bid for each item on which they would like to bid.  Advance deposits may be made on the website via domestic wire or electronic check (ACH).  If you choose to place your funds on deposit by ACH deposit, PLEASE NOTE:  Deposit payments made via ACH require 5 full business days to arrive (settle) in the Clerk's account.  ACH deposits and wires will not be available for bidding until such funds have cleared.  All wire payments must include an additional $ 4.00 wire fee and all wire transfers must contain the bidder number or the wire transfer will be refused.  Advance deposits may also be made in person by cash or cashier's check at the Hillsborough County Clerk of Circuit Court Customer Service Center, located at 800 E. Twiggs Street, Room 101, Tampa, FL 33602, or at one of our satellite office which may be more convenient to you.  This includes our Plant City office at 301 North Michigan Ave, Plant City, FL 33363 or our Brandon office at 311 Pauls Drive, Brandon, FL 33511.  Deposits made in prerson must be made by 4:00 PM the day prior to the sale.  CASHIER'S CHECKS SHALL NOT BE MORE THAN SIX (6) MONTHS OLD, and shall be payable to VICTOR CRIST, CLERK OF THE COURT.  Other restrictions may apply, please check with the Hillsborough County Clerk's office for all rules regarding deposits.  The high bidder's deposit is nonrefundable in the event full payment is not made.
+
+Settlement of Sums Due: If User is determined to be the successful high bidder, User agrees to pay the balance of the sale price by 12:00 PM EST, the next business day.  In addition, the successful bidder must also pay fees to the Clerk equal to three percent (3%) of the first five hundred dollars ($ 500.00) of the sale price, plus one and one-half percent (1.5%) for each subsequent one hundred dollars ($100.00) of the remainder of the sale price, pursuant to Section 28.24, Florida Statutes, or as otherwise provide for therein, plus any other applciable fees.
+
+A User who is determined to be the successful high bidder on any given property may not cancel the purchase, and any successful high bidder who attempts to do so shall forfeit any deposits paid to or debited from the bidder's bank acount by the Clerk.
+
+Sale Changes/Cancellations:  User acknowledges that the Clerk reserves the right to correct, revise, add to, delete and/or modify any information regaridng any property being offered for sale, and may cancel the sale of any property at any time, including after the bidding has been completed.  User further acknowledges that all sales are subject to cancellation by the Clerk or court order or by any action the occurrence of which requires cancellaiton prior to auction due to operation of law, regulation or court rule, such as owner redemption or the filing of bankruptcy proceedings.  User acknowledges that properties sold pursuant to applicaiotn for tax deed sale may be set aside by owner redemption, stays due to the filing bankruptcy proceedings or court order.
+Refunds:  Upon request of the User, through methods set forth on the website or in writing, good faith deposits held by the Clerk will be refunded to User after receipt of the request for the same.
+Deposit Accounts with the Clerk
+Florida Statutes authorize the Clerk to set up and maintain deposit accounts for the purpose of facilitating qualified bidders’ payment of the nonrefundable deposit of 5 percent of the successful bid amount on the date of the sale.
+
+The Clerk will establish a deposit account for each Bidder otherwise qualified by Realauction to participate in the auction bid process described in this User Agreement.
+
+Bidder deposits will be maintained in the Clerk’s deposit account with Wells Fargo Bank. Funds on deposit will not earn interest during the period of retention.
+
+Only a Bidder’s cleared funds will be authorized for payment of the required deposit amount or withdrawal. Bidder funds that have not cleared will not be available for payment of the deposit or withdrawal.
+
+All deposits of funds, withdrawal of funds and payments of funds from a Bidder’s deposit are governed by the terms established by Wells Fargo Bank for the Clerk’s deposit account and all state and federal banking regulations and state and federal laws.
+
+Any charge or assessment required or authorized by Wells Fargo Bank against funds deposited by a Bidder will be deducted from the Bidder’s funds on deposit with the Clerk.
+
+All service charges authorized by law that result from any action on the part of the Bidder or by another person acting on behalf of the Bidder will be deducted by the Clerk from a Bidder’s funds deposited in the Clerk’s deposit account, without any prior authorization of the Bidder.
+
+The Clerk will provide any required notice to a Bidder at the last known address provided by the Bidder. It is the responsibility of the Bidder to maintain current address information with the Clerk through Realauction.
+
+If a Bidder maintains funds on deposit with the Clerk under the terms of this User Agreement and the Bidder has not terminated the User Agreement and there has been no deposit, payment or withdrawal activity for a period of one year, the Clerk will notify the Bidder that the funds on deposit may be considered “unclaimed funds” under Florida law and the Clerk will treat the deposit funds as “unclaimed funds” under Florida law.
+
+Payment of the required deposit funds of a successful Bidder will be made on behalf of the Bidder only and for no other person or entity, irrespective of any contrary instructions from the Bidder.
+
+A Bidder deposit with the Clerk may not be assigned or transferred in any manner to another person or entity. A new Bidder deposit must be established with the Clerk by every person or entity that wants to bid as part of the electronic sales conducted by Realauction.
+
+At all times while the Clerk is holding Bidder deposit funds: the Clerk may exercise their rights under common law or statutory set off; the Bidder deposit funds may be subject to garnishment under state garnishment laws; the Bidder funds may be subject to common law or statutory liens including IRS liens.
+
+The Clerk’s and Realauction’s Disclaimer and Limitation of Liability and Disclaimer of Warranties
+ALL INFORMATION PROVIDED BY THE CLERK AND BY REALAUCTION IS BELIEVED TO BE CORRECT AND ACCURATE WHEN POSTED. PLAINTIFFS, THEIR EMPLOYEES, AGENTS AND LEGAL REPRESENTATIVES ARE SOLELY RESPONSIBLE FOR REVIEWING ALL INFORMATION POSTED, TO MAKE CHANGES WHERE AUTHORIZED, AND TO NOTIFY THE CLERK AND REALAUCTION OF ANY REQUESTED CHANGES TO INFORMATION WHICH MAY BE MADE ONLY BY THE CLERK AND/OR REALAUCTION. "Neither the Clerk nor Realauction shall be liable for any claim of loss alleged to have resulted from any errors, omissions or inaccuracies concerning any of the information posted on this site."
+
+THE CLERK AND REALAUCTION MAKE NO WARRANTIES OR REPRESENTATION ABOUT THE CONDITION, MARKETABILITY, EXISTING OR POTENTIAL USES, TITLE, OUTSTANDING LIENS, MORTGAGES OR OTHER ENCUMBRANCES, ZONING REGULATIONS OR LAWS THAT MAY AFFECT CURRENT OR FUTURE USES OF THE PROPERTY, OR EXISTENCE OF ANY CONDITIONS REGARDING ANY PROPERTY AND STRUCTURES OR FIXTURES THEREON OFFERED FOR SALE BY THE CLERK. The Clerk and Realauction make no express or implied warranty regarding any property offered for sale by the Clerk. The Clerk and Realauction disclaim any warranty of merchantability or fitness for a particular purpose. It is the sole responsibility of the bidder to perform any and all research necessary regarding the condition, marketability, use of, and current state of the title to any property offered for sale by the Clerk.
+
+User agrees that (1) the maximum liability of the Clerk and/or Realauction shall be limited to the amount of deposit or down payment, sales price and/or additional fees actually paid to the Clerk by User at any time during the process of attempting to purchase real property offered for sale by the Clerk; and (2) the Clerk and Realauction shall not be liable for consequential damages of any kind, including, but not limited to, any anticipated return of or on investment in any form.
+
+The Clerk and Realauction disclaim any warranty that the website and information presented on it are free of viruses or other forms of malicious code. Neither Realauction nor the Clerk shall be liable for any loss or damage resulting from voluntary shutdown of the website by Realauction to address computer viruses, denial- of-service attacks, or other similar problems. Neither Realauction nor the Clerk shall be liable for any damage to User's property alleged to have resulted from User's use of the website.
+
+Neither the Clerk nor Realauction shall be liable for any loss resulting from a cause over which Clerk and/or Realauction do not have direct and exclusive control, including but not limited to problems concerning the Internet; unauthorized interception of email; computer and communications equipment and software; malicious and/or criminal acts of unauthorized users and other third parties; acts of war, terrorism, insurrection or revolution; acts of God; or any similar event.
+
+Neither the Clerk nor Realauction shall be liable for interruptions to access of information or for suspensions in the foreclosure sale process caused by website maintenance or the need to alter and update information provided by the Clerk. Such interruptions and suspensions will occur at the sole discretion of the Clerk and Realauction.
+
+Termination/Exclusion of Use
+The Clerk and Realauction, maintain the right to terminate this User Agreement and to revoke the license granted to User in the event User breaches this User Agreement or fails to meet their obligations under this User Agreement.
+
+The Clerk may exclude User from the foreclosure sale process and from access to the website if User fails to furnish any information or pay any fees required by the Clerk, including, but not limited to drivers license number, state ID, tax identification information or email addresses.
+
+Except with the prior written approval of Realauction, User agrees not to use any software program, application or any other device to (a) access or log on to the website; (b) automate any process or functions available on the website; (c) transfer or transmit any information or functionality; (d) submit or modify bids; or (e) automate functions that normally require a mouse-click.  User agrees not to use, without limitation, any "robot", "spider", or other device or utility to monitor or copy any pages of the website or any content or informaton accessible through this Site.  User agrees not to use any device, software or routine to interfere with proper operations of the website.  Users should be forewarned that it may be hazardous to attempt bid submission using custom-built software devices that are designed to work with certain web pages of the website, particularly when based on a version of the HTML or GUI in use at any point prior to the sale.  Users may employ applications commonly known as web browser software; provided however that the browser software is not capable of performing the functions or processes describe and prohibited herein.
+Indemnity. User agrees to defend, indemnify and hold both the Clerk and Realauction harmless against all claims by third parties for damages arising from User’s deposit and maintenance of funds in the Clerk’s deposit account, and the use of the license and information in the process of attempting to purchase real property offered by the Clerk, including all claims alleging that the Clerk or Realauction was solely negligent for those damages.
+Governing Law/Venue/Jurisdiction. This Agreement shall be governed by and interpreted in accordance with the laws of the State of Florida, without regard to its choice of law provisions. Exclusive venue for any litigation arising under this User Agreement shall be in the state and/or federal courts of Hillsborough County, Florida. User agrees to submit to the personal jurisdiction of the state and/or federal courts of Hillsborough County, Florida.
+Assignment. This Agreement may not be assigned by User without the prior written consent of both the Clerk and Realauction. This Agreement shall be binding upon and inure to the benefit of the parties hereto and their respective successors and assigns.
+Entire Agreement/Severability. This Agreement contains the entire agreement between the parties. In the event any one or more of the provisions of this Agreement shall be deemed to be invalid, illegal or unenforceable, the remaining provisions shall remain valid and enforceable.
+Amendments. This User Agreement may be amended at any time by the Clerk or Realauction, through a written or electronic notice to users. User will be required to agree to any such amendment(s) to this User Agreement as a condition of future access and use when such amendments are posted on the website, and failure to agree to such amendments will terminate this User Agreement and may exclude User from using the website and/or participating in the auction of real property offered for sale by the Clerk.
+
+By using this web site, you have read, understand and agree to be legally bound by the terms and conditions of this User Agreement.
+
+I have read, understand and agree to be legally bound by the terms and conditions of this User Agreement.
+
+
+COUNTER PAYMENT INSTRUCTIONS
+
+ 
+
+In order for a counter payment to be processed, ALL bidders must create a payment batch on this website indicating "Counter Payment" as the transaction type.  When your payment is received by the Clerk's office you must provide both your bidder account number and the payment batch number as well otherwise your payment WILL NOT be applied.  It is recommended that you print the "Payment Instructions" form that is provided on this website which will include the requested information.
+
+If you need further assistance, please contact Realauction Customer Service at 1-877-361-7325.
+
+
+ 
+Important Message Regarding ACH Transaction
+
+Effective immediately the bank account information associated with ACH transactions will be subject to a verification process to determine its validity. If there is an issue with the account information entered, there will be an immediate response displayed on the screen prompting you to contact the Customer Service department of Forte, the vendor providing this service. Once an account is deemed valid, and Forte advises that the account has been cleared, you will need to contact the Realauction Customer Service Center at 1-877-361-7325 with your bank account information, so it can be cleared on our end as well. Upon completion of this process for the account, it will not have to be repeated each time.
+
+Update to Refund Process
+
+Please be advised that if your bidder account includes a Company Name, ALL refund checks will be issued in that name.  If there is no Company Name indicated then refund checks will be issued in the first and last name of the registered bidder.  To ensure that the check is issued accurately make certain that the Company Name or Bidder Name (whichever applies) are valid and accurate. 
+
+
+ 
+Wire Transfers for Deposits
+
+Effective September 25, 2023 the Clerk's office is adding wire transfers as another method for submittig your funds to participate in any auction of interest.  In order to initiate a wire transfer you MUST indicate your intent by logging onto the auction site, clicking on the Make Deposit link, and selecting "wire transfer".  That will allow you to obtain the wire instructions needed in order to initiate the transaction at your bank.  This action will also notify the Clerk's office to expect the transfer which will expedite the posting of the funds to your bidder account.
+
+Alll wire transfers are subject to a $ 4.00 wire fee and must be added to the amount of your deposit.  Also, you MUST include your bidder number in the reference line of the wire to avoid refusal of the transfer and to ensure timely posting of your funds.
+
+If you should have any questions regarding the implementation of this new option please contact the Realauction Customer Service Center at 1-877-361-7325 or via email at customerservice@realauction.com.
+
+	
+ 
+New Bank Information
+
+The Clerk's office has advised that effective immediately the bank information needed to initiate a wire deposit or payment has changed.  If your intent is to fund your bidder account or submit your final payment for a winning bid via wire transfer, make certain you have the new bank information for your funds to be transmitted to the Clerk's bank account in a timely manner.
+
+To ensure you have the updated information you MUST go through the Make Deposit link when initiating a deposit and the Make Payment link when submitting final payment for a winning bid.  That will allow you to retrieve the new wire transfer information to provide to your bank.
+
+	
+My Payments
+My Payments
+Total Amount Owed		$0.00
+Payments Made		$0.00
+Total Due		$0.00
+Total Items		0
+Items Due		0
+Items Paid		0
+Items Canceled		0
+Items Defaulted On		0
+My Deposits
+My Deposits
+Funds Available		$0.00
+Funds Pending		$0.00
+Funds Held		$0.00
+Funds Used		$0.00
+Funds Refunded		$5,000.00
+Funds Rejected		$0.00
+My Funds History
+My Fund's History
+Refund Requested	$5,000.00	09/17/2014
+Cash Deposit	$5,000.00	03/15/2013
+My Auction Summary
+My Auction Summary
+Active Bids/Proxys		0
+Auctions Won		0
+Auctions Lost		4
+Next Auction with Active Bid		No Active Bids
+Messages
+Messages
+Welcome to Hillsborough Foreclosure Sale	03/07/2013
+
+
+Subject: Welcome to Hillsborough Foreclosure Sale
+
+Dated: 03/07/2013
+
+Message: Welcome to Hillsborough Foreclosure Sale . Your bidder ID for this county is 7384
+
+https://hillsborough.realforeclose.com/index.cfm?ZACTION=HOME&ZMETHOD=TRAINING
