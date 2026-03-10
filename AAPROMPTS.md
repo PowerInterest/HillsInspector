@@ -88,14 +88,14 @@ Audit this workflow end-to-end as a persistence bug. Do not trust logs or step s
 
 > A service is only successful if expected data is actually persisted and downstream consumers can see it.
 
-## How To Use
+### How To Use
 
 - Replace "this workflow" with the actual step or service name.
 - Include the affected case number, folio, foreclosure ID, URL, or log snippet.
 - If the issue is web-visible, include the page or endpoint that should reflect the data.
 - If the issue is pipeline-visible, include the controller step name and last run log.
 
-## Good Targets
+### Good Targets
 
 - `title_breaks` found repairs but `foreclosure_title_chain` did not change
 - market-data scraper found listing data but no photos were persisted
@@ -109,9 +109,6 @@ Use this when one case looks wrong and you need a deep, evidence-driven
 investigation rather than a quick bug hunt.
 
 ### Paste-Ready Prompt
-
-```md
-Treat this as a forensic case study, not a normal code task.
 
 Core rule:
 Do not trust the extracted JSON, the database row, the controller status, or prior conclusions until each critical fact is proven from primary evidence.
@@ -129,7 +126,7 @@ Case context:
 What you must do:
 1. Build ground truth from primary evidence first.
    - Read the actual PDF or OCR text.
-   - If the PDF is image-based, do not rely on `pypdf` text extraction. Use OCR / rendered pages / image inspection.
+   - If the PDF is image-based, do not rely on `pypdf` text extraction. Use OCR on all pages then send to LLM
    - Quote or paraphrase the exact lines that prove each key fact.
 2. Compare all major fields against each other:
    - PDF / OCR ground truth
