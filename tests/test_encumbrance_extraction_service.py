@@ -71,3 +71,60 @@ class TestCacheLogic:
         from src.services.pg_encumbrance_extraction_service import _load_cache
         result = _load_cache(Path("/tmp/nonexistent_abc123.pdf"))  # noqa: S108
         assert result is None
+
+
+class TestEndToEnd:
+    """Integration: query -> cache miss -> extract -> validate -> save."""
+
+    def test_run_with_no_unextracted_returns_zeros(self):
+        """When DB has no unextracted rows, run() returns all-zero stats."""
+        from unittest.mock import patch
+
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService()
+        with patch.object(svc, "_find_unextracted", return_value=[]):
+            result = svc.run()
+        assert result["extracted"] == 0
+        assert result["errors"] == 0
+
+    def test_validate_accepts_valid_mortgage(self):
+        """Pydantic validation passes for a well-formed mortgage dict."""
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        data = {
+            # BaseDocumentExtraction fields
+            "instrument_number": "2024-0012345",
+            "recording_book": None,
+            "recording_page": None,
+            "recording_date": "2024-01-15",
+            "execution_date": "2024-01-10",
+            "property_address": "123 Main St, Tampa, FL 33601",
+            "legal_description": "LOT 5, BLOCK 3, TAMPA PALMS UNIT 1",
+            "parcel_id": "1929084000",
+            "confidence_score": 0.9,
+            "unclear_sections": [],
+            # MortgageExtraction fields
+            "mortgage_type": "MTG",
+            "mortgagor": "JOHN SMITH",
+            "mortgagee": "WELLS FARGO BANK",
+            "principal_amount": 250000.0,
+            "interest_rate": 6.5,
+            "maturity_date": "2054-01-15",
+            "is_adjustable_rate": False,
+            "mers_min": None,
+            "is_mers_nominee": False,
+            "association_name": None,
+            "has_pud_rider": False,
+            "has_condo_rider": False,
+        }
+
+        result = PgEncumbranceExtractionService._validate(data, "mortgage")  # noqa: SLF001
+        assert result is not None
+        assert result["principal_amount"] == 250000.0
+        assert result["mortgagee"] == "WELLS FARGO BANK"
+        assert result["mortgagor"] == "JOHN SMITH"
