@@ -28,7 +28,9 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import fitz  # PyMuPDF
+import pytesseract
 from loguru import logger
+from PIL import Image
 from pydantic import ValidationError
 
 from src.models.judgment_extraction import JudgmentExtraction
@@ -38,8 +40,9 @@ from src.services.vision_service import VisionService, robust_json_parse
 class FinalJudgmentProcessor:
     """Process final-judgment PDFs into validated structured candidates."""
 
-    _CACHE_FORMAT_VERSION = 2
+    _CACHE_FORMAT_VERSION = 3
     _BATCH_SIZE = 3
+    _TEXT_BATCH_SIZE = 6
     _SCHEMA_NAME = "JudgmentExtraction"
     _CASE_FIELDS = (
         "case_number",
@@ -157,6 +160,7 @@ class FinalJudgmentProcessor:
                 logger.warning(f"Bad cache file {cache_path}, re-extracting: {e}")
 
         page_images: list[str] = []
+        ocr_page_texts: list[str] = []
         try:
             logger.info(f"Processing Final Judgment PDF for case {case_number}...")
 
@@ -180,16 +184,51 @@ class FinalJudgmentProcessor:
             merged_json: Optional[dict[str, Any]] = None
             strategies: list[str] = []
 
-            # First pass: prioritize first 3 pages + last 5 pages (often contains Exhibit A)
+            # Primary pass: OCR the full document to text, then extract from text.
+            ocr_page_texts = self._ocr_images_to_page_texts(page_images)
+            priority_texts = self._select_priority_pages(ocr_page_texts)
+            if priority_texts:
+                strategies.append("ocr_text_priority")
+                logger.info(
+                    "Extracting from OCR text of {} prioritized pages...",
+                    len(priority_texts),
+                )
+                merged_json = self._extract_candidate_from_text(
+                    self._combine_page_texts(priority_texts),
+                )
+
+            if self._needs_full_pass(merged_json) and ocr_page_texts:
+                strategies.append("ocr_text_full")
+                logger.info(
+                    "Running OCR text extraction across {} pages...",
+                    len(ocr_page_texts),
+                )
+                full_text_result = self._extract_text_batches(
+                    ocr_page_texts,
+                    batch_size=self._TEXT_BATCH_SIZE,
+                )
+                if merged_json and full_text_result:
+                    merged_json = self._merge_page_data([merged_json, full_text_result])
+                else:
+                    merged_json = merged_json or full_text_result
+
+            # Fallback: image extraction if OCR text extraction is incomplete.
             priority_images = self._select_priority_pages(page_images)
-            if priority_images:
+            if self._needs_full_pass(merged_json) and priority_images:
                 strategies.append("priority_pages")
                 logger.info(
                     f"Extracting from {len(priority_images)} prioritized pages..."
                 )
-                merged_json = self._extract_in_batches(priority_images, batch_size=self._BATCH_SIZE)
+                image_priority = self._extract_in_batches(
+                    priority_images,
+                    batch_size=self._BATCH_SIZE,
+                )
+                if merged_json and image_priority:
+                    merged_json = self._merge_page_data([merged_json, image_priority])
+                else:
+                    merged_json = merged_json or image_priority
 
-            # Second pass: chunk the entire document if critical fields are missing
+            # Second fallback: chunk the entire document if critical fields are missing
             if self._needs_full_pass(merged_json):
                 strategies.append("chunked_full")
                 logger.info(
@@ -234,11 +273,19 @@ class FinalJudgmentProcessor:
                     case_number,
                     "; ".join(assessment["failures"]),
                 )
-                repaired_json = self._repair_candidate(
-                    page_images,
-                    merged_json,
-                    assessment["failures"],
-                )
+                repaired_json = None
+                if ocr_page_texts:
+                    repaired_json = self._extract_candidate_from_text(
+                        self._combine_page_texts(ocr_page_texts),
+                        current_candidate=merged_json,
+                        validation_failures=assessment["failures"],
+                    )
+                if repaired_json is None:
+                    repaired_json = self._repair_candidate(
+                        page_images,
+                        merged_json,
+                        assessment["failures"],
+                    )
                 if repaired_json:
                     repaired_assessment = self.validation_summary(repaired_json)
                     if self._candidate_rank(repaired_json, repaired_assessment) > self._candidate_rank(
@@ -255,7 +302,12 @@ class FinalJudgmentProcessor:
                         )
 
             # Save raw OCR text to disk for troubleshooting
-            raw_text = merged_json.get("raw_text", "")
+            raw_text = (
+                merged_json.get("raw_text", "")
+                or self._combine_page_texts(ocr_page_texts)
+            )
+            if raw_text and "raw_text" not in merged_json:
+                merged_json["raw_text"] = raw_text
             if raw_text and case_number:
                 try:
                     docs_dir = Path(f"data/Foreclosure/{case_number}/documents")
@@ -340,6 +392,48 @@ JSON Schema:
             )
         return prompt
 
+    def _build_text_extraction_prompt(
+        self,
+        ocr_text: str,
+        *,
+        current_candidate: dict[str, Any] | None = None,
+        validation_failures: list[str] | None = None,
+    ) -> str:
+        prompt = f"""
+You are extracting a Hillsborough County Florida Final Judgment of Foreclosure from raw OCR text.
+Respond with exactly one JSON object that conforms to the provided JSON Schema.
+
+Critical rules:
+- Include every declared key exactly once. Use null when unknown. Do not emit extra keys.
+- Never output markdown fences or explanatory text.
+- The OCR text may contain spacing or character noise. Resolve obvious OCR artifacts, but do not invent facts.
+- legal_description must be verbatim from the OCR text. If Exhibit A / Schedule A contains a fuller legal, use that version.
+- property_address often appears in the sale paragraph or legal-description exhibit. Capture it if stated.
+- judgment_date means the entered/filed date of the judgment order, not the hearing date, unless no filed/entered date appears.
+- judge_name means the signing judge on the order, not a judge mentioned only in procedural history.
+- attorney_fees is the awarded fee total, not the hourly rate.
+- court_costs should include filing, service, publication, and online-sale fees when those are itemized as court costs.
+- Use other_costs for residual named monetary items that do not fit the explicit fields.
+- If the OCR text states a total_judgment_amount, review the line items until they reconcile to that total within about one dollar. If a separate accrued per-diem carry amount is stated, put it in per_diem_interest.
+- If the sale is at hillsborough.realforeclose.com or another web URL, set is_online_sale=true.
+
+JSON Schema:
+{self._schema_json}
+
+OCR Text:
+{ocr_text}
+""".strip()
+        if current_candidate is not None and validation_failures:
+            prompt += (
+                "\n\nCurrent candidate to repair:\n"
+                f"{json.dumps(self._strip_private_keys(current_candidate), ensure_ascii=True)}"
+                "\n\nValidation failures that must be corrected if the OCR text supports it:\n"
+                f"{json.dumps(validation_failures, ensure_ascii=True)}"
+                "\n\nReturn a corrected full JSON object. "
+                "Do not preserve a prior value if the OCR text contradicts it."
+            )
+        return prompt
+
     def _extract_candidate_from_images(
         self,
         image_paths: list[str],
@@ -364,6 +458,34 @@ JSON Schema:
         parsed = robust_json_parse(raw, "final_judgment_structured")
         if parsed is None:
             logger.warning("Judgment extraction returned non-JSON output")
+        return parsed
+
+    def _extract_candidate_from_text(
+        self,
+        ocr_text: str,
+        *,
+        current_candidate: dict[str, Any] | None = None,
+        validation_failures: list[str] | None = None,
+    ) -> Optional[dict[str, Any]]:
+        if not ocr_text.strip():
+            return None
+        prompt = self._build_text_extraction_prompt(
+            ocr_text,
+            current_candidate=current_candidate,
+            validation_failures=validation_failures,
+        )
+        raw = self.vision_service.analyze_text(
+            prompt,
+            max_tokens=6000,
+            response_format=self._response_format,
+        )
+        if not raw:
+            return None
+        parsed = robust_json_parse(raw, "final_judgment_text_structured")
+        if parsed is None:
+            logger.warning("Judgment text extraction returned non-JSON output")
+            return None
+        parsed.setdefault("raw_text", ocr_text)
         return parsed
 
     @staticmethod
@@ -625,6 +747,23 @@ JSON Schema:
 
         return merged
 
+    def _extract_text_batches(
+        self,
+        page_texts: list[str],
+        batch_size: int = 6,
+    ) -> Optional[dict[str, Any]]:
+        if not page_texts:
+            return None
+        page_data_list: list[dict[str, Any]] = []
+        for i in range(0, len(page_texts), batch_size):
+            batch = page_texts[i:i + batch_size]
+            batch_result = self._extract_candidate_from_text(
+                self._combine_page_texts(batch),
+            )
+            if batch_result:
+                page_data_list.append(batch_result)
+        return self._merge_page_data(page_data_list) if page_data_list else None
+
     def _extract_in_batches(
         self,
         image_paths: list[str],
@@ -711,6 +850,34 @@ JSON Schema:
             for k in ("instrument_number", "recording_book", "recording_page")
         )
         return not legal_desc and not has_mortgage_ref
+
+    @staticmethod
+    def _combine_page_texts(page_texts: list[str]) -> str:
+        return "\n\n".join(text.strip() for text in page_texts if text.strip())
+
+    def _ocr_images_to_page_texts(self, image_paths: list[str]) -> list[str]:
+        page_texts: list[str] = []
+        for idx, image_path in enumerate(image_paths, start=1):
+            try:
+                with Image.open(image_path) as image:
+                    text = pytesseract.image_to_string(image).strip()
+            except Exception as exc:
+                logger.warning(
+                    "Tesseract OCR failed for judgment page {} ({}): {}",
+                    idx,
+                    image_path,
+                    exc,
+                )
+                continue
+            if not text:
+                logger.warning(
+                    "Tesseract OCR returned no text for judgment page {} ({})",
+                    idx,
+                    image_path,
+                )
+                continue
+            page_texts.append(f"--- PAGE {idx} ---\n{text}")
+        return page_texts
 
     @staticmethod
     def dump_pdf_text(pdf_path: str, case_number: str) -> Optional[str]:

@@ -1742,6 +1742,35 @@ class VisionService:
             logger.exception("Vision API Error (multi-image): {}", e)
             return None
 
+    def analyze_text(
+        self,
+        prompt: str,
+        max_tokens: int = 4000,
+        response_format: dict[str, Any] | None = None,
+    ) -> Optional[str]:
+        """Analyze text-only input with the configured chat-completions endpoints."""
+        try:
+            payload = {
+                "model": "",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "temperature": 0.1,
+            }
+            if response_format is not None:
+                payload["response_format"] = response_format
+
+            response = self._try_all_endpoints(payload, timeout=120)
+            if response is None:
+                logger.error("All vision endpoints failed for text-only request")
+                return None
+
+            result = response.json()
+            return _extract_response_text(result, context="text-only request")
+
+        except Exception as e:
+            logger.exception("Vision API Error (text-only): {}", e)
+            return None
+
     def extract_text(self, image_path: str) -> str:
         """
         Extract all visible text from the image (OCR).

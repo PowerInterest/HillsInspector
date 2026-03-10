@@ -140,6 +140,7 @@ The `docs/` folder contains comprehensive guides and technical design artifacts,
 ### 📐 Architecture & Infrastructure
 - [Ingestion Guide](docs/guides/INGESTION_GUIDE.md) - End-to-end data pipeline logic and ingestion states.
 - [LLM Extraction Schema Contract](docs/domain/LLM_EXTRACTION_SCHEMA_CONTRACT.md) - Hard JSON-schema and validation rules for OCR-to-LLM document extraction, including required-key semantics and final-judgment hard gates.
+- [Final Judgment Text-First Extraction](docs/domain/FINAL_JUDGMENT_TEXT_EXTRACTION.md) - Why final judgments now use Tesseract OCR text as the primary extraction source, with image prompting only as fallback.
 
 ### ⚖️ Real Estate Domain Logic
 - [Encumbrance Audit Buckets](docs/domain/ENCUMBRANCE_AUDIT_BUCKETS.md) - Taxonomy for separating ORI discovery gaps, survival-risk gaps, and identity/title-break gaps on active foreclosures.

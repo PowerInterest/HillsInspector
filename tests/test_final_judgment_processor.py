@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from typing import Any
 
@@ -154,3 +155,33 @@ def test_canonicalize_candidate_dedupes_duplicate_defendants() -> None:
     canonical = FinalJudgmentProcessor.canonicalize_candidate(candidate)
 
     assert len(canonical["defendants"]) == 1
+
+
+def test_extract_candidate_from_text_uses_text_endpoint_and_keeps_raw_text(
+    monkeypatch: Any,
+) -> None:
+    processor = FinalJudgmentProcessor()
+    captured: dict[str, Any] = {}
+
+    def _fake_analyze_text(
+        prompt: str,
+        *,
+        max_tokens: int,
+        response_format: dict[str, Any],
+    ) -> str:
+        captured["prompt"] = prompt
+        captured["max_tokens"] = max_tokens
+        captured["response_format"] = response_format
+        return json.dumps(_valid_candidate())
+
+    monkeypatch.setattr(processor.vision_service, "analyze_text", _fake_analyze_text)
+
+    ocr_text = "--- PAGE 1 ---\nFINAL JUDGMENT OF FORECLOSURE"
+    result = processor._extract_candidate_from_text(ocr_text)  # noqa: SLF001
+
+    assert result is not None
+    assert result["raw_text"] == ocr_text
+    assert captured["max_tokens"] == 6000
+    assert captured["response_format"]["type"] == "json_schema"
+    assert "OCR Text:" in captured["prompt"]
+    assert ocr_text in captured["prompt"]

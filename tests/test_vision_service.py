@@ -87,3 +87,38 @@ def test_try_all_endpoints_preserves_response_format_for_local_endpoint(
     assert response is not None
     assert captured["json"]["response_format"] == payload["response_format"]
     assert captured["headers"] == {}
+
+
+def test_analyze_text_uses_text_only_chat_payload(monkeypatch: Any) -> None:
+    class _FakeResponse:
+        def json(self) -> dict[str, Any]:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"ok": true}',
+                        }
+                    }
+                ]
+            }
+
+    service = VisionService()
+    captured: dict[str, Any] = {}
+
+    def _fake_try_all_endpoints(payload: dict[str, Any], timeout: int = 120) -> _FakeResponse:
+        captured["payload"] = payload
+        captured["timeout"] = timeout
+        return _FakeResponse()
+
+    monkeypatch.setattr(service, "_try_all_endpoints", _fake_try_all_endpoints)
+
+    result = service.analyze_text(
+        "Extract this",
+        max_tokens=321,
+        response_format={"type": "json_schema"},
+    )
+
+    assert result == '{"ok": true}'
+    assert captured["payload"]["messages"] == [{"role": "user", "content": "Extract this"}]
+    assert captured["payload"]["response_format"] == {"type": "json_schema"}
+    assert captured["payload"]["max_tokens"] == 321
