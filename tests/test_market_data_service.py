@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import sys
+import types
 from typing import Any, Self
 
 from src.services import market_data_service
@@ -22,6 +25,14 @@ class _FakeResult:
     def fetchall(self) -> list[_FakeRow]:
         return self._rows
 
+    def fetchone(self) -> Any:
+        if not self._rows:
+            return None
+        first = self._rows[0]
+        if isinstance(first, _FakeRow):
+            return types.SimpleNamespace(**first.scalar_value())
+        return first
+
     def scalar(self) -> Any:
         if not self._rows:
             return None
@@ -42,8 +53,10 @@ class _FakeConnection:
     def __exit__(self, *_args: object) -> None:
         return None
 
-    def execute(self, sql: Any) -> _FakeResult:
+    def execute(self, sql: Any, params: Any = None) -> _FakeResult:
         self._captured["sql"] = str(sql)
+        if params is not None:
+            self._captured["params"] = params
         return _FakeResult(self._rows)
 
 
@@ -181,6 +194,21 @@ def test_detail_url_upsert_sql_validates_zillow_fallback_for_realtor_and_homehar
     assert "LIKE 'https://www.zillow.com/%'" in homeharvest_sql
 
 
+def test_payload_has_market_content_rejects_tombstones_and_thin_payloads() -> None:
+    assert not market_data_service._payload_has_market_content(  # noqa: SLF001
+        "redfin",
+        {"_attempted": True, "_found": False},
+    )
+    assert not market_data_service._payload_has_market_content(  # noqa: SLF001
+        "redfin",
+        {"address": "1 Main St"},
+    )
+    assert market_data_service._payload_has_market_content(  # noqa: SLF001
+        "redfin",
+        {"list_price": 325000},
+    )
+
+
 def test_specs_priority_sql_allows_same_source_refresh_and_higher_priority_upgrade() -> None:
     redfin_sql = market_data_service._specs_priority_sql("beds", source="redfin")  # noqa: SLF001
     realtor_sql = market_data_service._specs_priority_sql("beds", source="realtor")  # noqa: SLF001
@@ -199,6 +227,13 @@ def test_specs_source_upsert_sql_does_not_downgrade_existing_higher_priority_sou
     assert "WHEN 10 > (" in sql
 
 
+def test_specs_updated_at_upsert_sql_advances_for_null_gap_fills() -> None:
+    sql = market_data_service._specs_updated_at_upsert_sql("realtor")  # noqa: SLF001
+
+    assert "property_market.beds IS NULL AND EXCLUDED.beds IS NOT NULL" in sql
+    assert "THEN NOW()" in sql
+
+
 def test_specs_seed_values_only_sets_source_when_spec_data_present() -> None:
     assert market_data_service._specs_seed_values("zillow", {"beds": None, "sqft": None}) == {  # noqa: SLF001
         "specs_source": None,
@@ -208,3 +243,98 @@ def test_specs_seed_values_only_sets_source_when_spec_data_present() -> None:
     seeded = market_data_service._specs_seed_values("zillow", {"beds": 3, "sqft": None})  # noqa: SLF001
     assert seeded["specs_source"] == "zillow"
     assert seeded["specs_updated_at"] is not None
+
+
+def test_get_market_state_treats_thin_payloads_as_incomplete(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    svc = object.__new__(market_data_service.MarketDataService)
+    svc.__dict__["_has_realtor_column"] = True
+    svc.__dict__["_engine"] = _FakeEngine(
+        captured,
+        [
+            _FakeRow(
+                {
+                    "redfin_json": {"address": "1 Main St"},
+                    "zillow_json": {"zestimate": 250000},
+                    "realtor_json": {"_attempted": True, "_found": False},
+                    "homeharvest_json": {"estimated_value": 260000},
+                }
+            )
+        ],
+    )
+
+    state = svc._get_market_state("STRAP1")  # noqa: SLF001
+
+    assert state == {
+        "has_redfin": False,
+        "has_zillow": True,
+        "has_hh": True,
+        "has_realtor": False,
+    }
+
+
+def test_run_batch_marks_degraded_when_photo_download_has_errors(monkeypatch: Any) -> None:
+    svc = object.__new__(market_data_service.MarketDataService)
+    svc.__dict__["_has_realtor_column"] = False
+    svc.__dict__["_engine"] = None
+    monkeypatch.setattr(svc, "_repair_stale_detail_urls", lambda: 0)
+    monkeypatch.setattr(
+        svc,
+        "_get_market_state",
+        lambda _strap: {"has_redfin": True, "has_zillow": True, "has_hh": True, "has_realtor": False},
+    )
+    monkeypatch.setattr(
+        svc,
+        "_download_all_photos_with_stats",
+        lambda _properties: {"downloaded": 2, "errors": 3},
+    )
+
+    result = asyncio.run(
+        svc.run_batch(
+            [{"strap": "STRAP1", "property_address": "1 Main St"}],
+            sources=["redfin", "zillow", "homeharvest"],
+        )
+    )
+
+    assert result["photos"] == 2
+    assert result["photo_errors"] == 3
+    assert result["degraded"] is True
+    assert result["status"] == "degraded"
+
+
+def test_run_homeharvest_does_not_count_failed_upsert(monkeypatch: Any) -> None:
+    svc = object.__new__(market_data_service.MarketDataService)
+
+    class _FakeDataFrame:
+        empty = False
+
+        class _ILoc:
+            @staticmethod
+            def __getitem__(_index: int) -> Any:
+                return types.SimpleNamespace(
+                    to_dict=lambda: {
+                        "estimated_value": 250000,
+                        "list_price": 245000,
+                        "beds": 3,
+                        "full_baths": 2,
+                        "sqft": 1800,
+                        "year_built": 2004,
+                        "property_url": "https://example.com/home",
+                    }
+                )
+
+        iloc = _ILoc()
+
+    monkeypatch.setitem(sys.modules, "homeharvest", types.SimpleNamespace(scrape_property=lambda **_kwargs: _FakeDataFrame()))
+    monkeypatch.setattr(market_data_service, "_build_homeharvest_payload", lambda *_args, **_kwargs: {"list_price": 245000})
+    monkeypatch.setattr(svc, "_upsert_homeharvest", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(svc, "_mark_source_attempted", lambda *_args, **_kwargs: None)
+
+    matched, errors = asyncio.run(
+        svc._run_homeharvest(  # noqa: SLF001
+            [{"strap": "STRAP1", "folio": "FOLIO1", "case_number": "CASE1", "property_address": "1 Main St"}]
+        )
+    )
+
+    assert matched == 0
+    assert errors == 1

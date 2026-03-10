@@ -39,6 +39,53 @@ SOURCE_PRIORITY: dict[str, int] = {
     "redfin": 30,
     "homeharvest": 40,
 }
+SOURCE_CONTENT_KEYS: dict[str, tuple[str, ...]] = {
+    "redfin": (
+        "property_facts",
+        "list_price",
+        "zestimate",
+        "beds",
+        "baths",
+        "sqft",
+        "year_built",
+        "detail_url",
+        "photos",
+    ),
+    "zillow": (
+        "facts_and_features",
+        "zestimate",
+        "list_price",
+        "rent_estimate",
+        "rent_zestimate",
+        "beds",
+        "baths",
+        "sqft",
+        "year_built",
+        "detail_url",
+        "photos",
+    ),
+    "realtor": (
+        "list_price",
+        "zestimate",
+        "rent_estimate",
+        "beds",
+        "baths",
+        "sqft",
+        "year_built",
+        "detail_url",
+        "photos",
+    ),
+    "homeharvest": (
+        "estimated_value",
+        "list_price",
+        "beds",
+        "full_baths",
+        "sqft",
+        "year_built",
+        "property_url",
+        "photos",
+    ),
+}
 MARKET_SPEC_COLUMNS: tuple[str, ...] = (
     "beds",
     "baths",
@@ -47,6 +94,50 @@ MARKET_SPEC_COLUMNS: tuple[str, ...] = (
     "lot_size",
     "property_type",
 )
+
+
+def _value_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return True
+
+
+def _payload_has_market_content(source: str, payload: Any) -> bool:
+    if payload in (None, "", "null"):
+        return False
+    if not isinstance(payload, dict):
+        return _value_present(payload)
+    if payload.get("_attempted") is True and payload.get("_found") is False:
+        return False
+    for key in SOURCE_CONTENT_KEYS.get(source, ()):
+        if _value_present(payload.get(key)):
+            return True
+    return False
+
+
+def _sql_json_text_present(jsonb_expr: str, key: str) -> str:
+    return f"NULLIF(BTRIM(COALESCE({jsonb_expr}->>'{key}', '')), '') IS NOT NULL"
+
+
+def _sql_json_array_present(jsonb_expr: str, key: str) -> str:
+    return (
+        f"(jsonb_typeof({jsonb_expr}->'{key}') = 'array' "
+        f"AND jsonb_array_length({jsonb_expr}->'{key}') > 0)"
+    )
+
+
+def _sql_source_has_market_content(jsonb_expr: str, *, source: str) -> str:
+    clauses: list[str] = []
+    for key in SOURCE_CONTENT_KEYS[source]:
+        if key == "photos":
+            clauses.append(_sql_json_array_present(jsonb_expr, key))
+        else:
+            clauses.append(_sql_json_text_present(jsonb_expr, key))
+    return "(" + " OR ".join(clauses) + ")"
 
 
 class MarketDataService:
@@ -124,6 +215,8 @@ class MarketDataService:
         if repaired_detail_urls:
             summary["detail_url_repaired"] = repaired_detail_urls
         browser_phase_error: str | None = None
+        save_errors = 0
+        photo_errors = 0
 
         # Check existing PG state per-property to decide which sources to run.
         # A property is "done" only when all configured sources have been attempted.
@@ -179,11 +272,13 @@ class MarketDataService:
         if not total_need:
             # Even when no scraping is needed, download photos for properties
             # that have CDN URLs but missing local paths.
-            try:
-                photo_count = self._download_all_photos(properties)
-                summary["photos"] = photo_count
-            except Exception as exc:
-                logger.error(f"Photo download failed: {exc}")
+            photo_stats = self._download_all_photos_with_stats(properties)
+            summary["photos"] = photo_stats["downloaded"]
+            photo_errors = int(photo_stats.get("errors", 0) or 0)
+            if photo_errors:
+                summary["photo_errors"] = photo_errors
+                summary["degraded"] = True
+                summary["status"] = "degraded"
             return summary
 
         # --- Browser-based sources (Redfin + Zillow + Realtor) ---
@@ -248,13 +343,14 @@ class MarketDataService:
                     redfin_page_ref = redfin_page or page
                     logger.info(f"Redfin: using tab {redfin_page_ref.url}")
 
-                    redfin_matched = await self._run_redfin(
+                    redfin_matched, redfin_errors = await self._run_redfin(
                         context,
                         redfin_page_ref,
                         redfin_cdp,
                         need_redfin,
                         set(),
                     )
+                    save_errors += redfin_errors
                     summary["redfin"] = len(redfin_matched)
                     logger.info(f"Redfin done: {summary['redfin']} properties matched")
 
@@ -263,12 +359,13 @@ class MarketDataService:
                     z_page = zillow_page or page
                     logger.info(f"Zillow: using tab {z_page.url}")
 
-                    zillow_matched = await self._run_zillow(
+                    zillow_matched, zillow_errors = await self._run_zillow(
                         z_page,
                         zillow_cdp,
                         need_zillow,
                         already_have_zillow,
                     )
+                    save_errors += zillow_errors
                     summary["zillow"] = len(zillow_matched)
                     logger.info(f"Zillow done: {summary['zillow']} properties matched")
 
@@ -277,7 +374,13 @@ class MarketDataService:
                     r_page = realtor_page or page
                     logger.info(f"Realtor: using tab {r_page.url}")
 
-                    realtor_matched = await self._run_realtor(r_page, realtor_cdp, need_realtor, already_have_realtor)
+                    realtor_matched, realtor_errors = await self._run_realtor(
+                        r_page,
+                        realtor_cdp,
+                        need_realtor,
+                        already_have_realtor,
+                    )
+                    save_errors += realtor_errors
                     summary["realtor"] = len(realtor_matched)
                     logger.info(f"Realtor done: {summary['realtor']} properties matched")
 
@@ -298,19 +401,25 @@ class MarketDataService:
 
         # --- HomeHarvest (no browser) ---
         if "homeharvest" in sources and need_hh:
-            hh_count = await self._run_homeharvest(need_hh)
+            hh_count, hh_errors = await self._run_homeharvest(need_hh)
+            save_errors += hh_errors
             summary["homeharvest"] = hh_count
             logger.info(f"HomeHarvest done: {hh_count} properties matched")
 
         # --- Photo download (all input properties, not just need_market) ---
-        try:
-            photo_count = self._download_all_photos(properties)
-            summary["photos"] = photo_count
-        except Exception as exc:
-            logger.error(f"Photo download failed: {exc}")
+        photo_stats = self._download_all_photos_with_stats(properties)
+        summary["photos"] = photo_stats["downloaded"]
+        photo_errors = int(photo_stats.get("errors", 0) or 0)
 
         if browser_phase_error:
             summary["error"] = f"browser_phase_failed:{browser_phase_error}"
+        if save_errors:
+            summary["save_errors"] = save_errors
+        if photo_errors:
+            summary["photo_errors"] = photo_errors
+        if save_errors or photo_errors:
+            summary["degraded"] = True
+            summary["status"] = "degraded"
 
         logger.success(f"MarketDataService complete: {summary}")
         return summary
@@ -329,10 +438,7 @@ class MarketDataService:
                 if self._has_realtor_column:
                     row = conn.execute(
                         text(
-                            "SELECT redfin_json IS NOT NULL AND redfin_json::text != 'null' AS has_redfin, "
-                            "       zillow_json IS NOT NULL AND zillow_json::text != 'null' AS has_zillow, "
-                            "       realtor_json IS NOT NULL AND realtor_json::text != 'null' AS has_realtor, "
-                            "       homeharvest_json IS NOT NULL AND homeharvest_json::text != 'null' AS has_hh "
+                            "SELECT redfin_json, zillow_json, realtor_json, homeharvest_json "
                             "FROM property_market WHERE strap = :strap"
                         ),
                         {"strap": strap},
@@ -340,9 +446,7 @@ class MarketDataService:
                 else:
                     row = conn.execute(
                         text(
-                            "SELECT redfin_json IS NOT NULL AND redfin_json::text != 'null' AS has_redfin, "
-                            "       zillow_json IS NOT NULL AND zillow_json::text != 'null' AS has_zillow, "
-                            "       homeharvest_json IS NOT NULL AND homeharvest_json::text != 'null' AS has_hh "
+                            "SELECT redfin_json, zillow_json, homeharvest_json "
                             "FROM property_market WHERE strap = :strap"
                         ),
                         {"strap": strap},
@@ -350,10 +454,14 @@ class MarketDataService:
                 if not row:
                     return None
                 return {
-                    "has_redfin": row.has_redfin,
-                    "has_zillow": row.has_zillow,
-                    "has_hh": row.has_hh,
-                    "has_realtor": row.has_realtor if self._has_realtor_column else False,
+                    "has_redfin": _payload_has_market_content("redfin", row.redfin_json),
+                    "has_zillow": _payload_has_market_content("zillow", row.zillow_json),
+                    "has_hh": _payload_has_market_content("homeharvest", row.homeharvest_json),
+                    "has_realtor": (
+                        _payload_has_market_content("realtor", row.realtor_json)
+                        if self._has_realtor_column
+                        else False
+                    ),
                 }
         except Exception as exc:
             msg = str(exc).lower()
@@ -432,7 +540,7 @@ class MarketDataService:
             detail_url=str(payload.get("detail_url") or "").strip() or None,
         )
 
-    def _upsert_redfin(self, strap: str, folio: str | None, case_number: str, payload: dict) -> None:
+    def _upsert_redfin(self, strap: str, folio: str | None, case_number: str, payload: dict) -> bool:
         """Upsert Redfin data into PG property_market.
 
         Redfin is highest priority for: list_price, listing_status.
@@ -495,10 +603,12 @@ class MarketDataService:
                 result = tracker.compare_after(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
                 result.flush_to_log(conn)
             result.log_overwrites()
+            return True
         except Exception as e:
             logger.error(f"PG Redfin upsert failed for {strap}: {e}")
+            return False
 
-    def _upsert_zillow(self, strap: str, folio: str | None, case_number: str, payload: dict) -> None:
+    def _upsert_zillow(self, strap: str, folio: str | None, case_number: str, payload: dict) -> bool:
         """Upsert Zillow data into PG property_market.
 
         Zillow is highest priority for: zestimate, rent_zestimate.
@@ -567,10 +677,12 @@ class MarketDataService:
                 result = tracker.compare_after(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
                 result.flush_to_log(conn)
             result.log_overwrites()
+            return True
         except Exception as e:
             logger.error(f"PG Zillow upsert failed for {strap}: {e}")
+            return False
 
-    def _upsert_homeharvest(self, strap: str, folio: str | None, case_number: str, payload: dict) -> None:
+    def _upsert_homeharvest(self, strap: str, folio: str | None, case_number: str, payload: dict) -> bool:
         """Upsert HomeHarvest data into PG property_market.
 
         HomeHarvest is highest priority for: beds, baths, sqft, year_built.
@@ -637,13 +749,15 @@ class MarketDataService:
                 result = tracker.compare_after(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
                 result.flush_to_log(conn)
             result.log_overwrites()
+            return True
         except Exception as e:
             logger.error(f"PG HomeHarvest upsert failed for {strap}: {e}")
+            return False
 
-    def _upsert_realtor(self, strap: str, folio: str | None, case_number: str, payload: dict) -> None:
+    def _upsert_realtor(self, strap: str, folio: str | None, case_number: str, payload: dict) -> bool:
         """Upsert Realtor.com data into PG property_market."""
         if not self._has_realtor_column:
-            return
+            return False
         row = {
             "strap": strap,
             "folio": folio,
@@ -702,8 +816,10 @@ class MarketDataService:
                 result = tracker.compare_after(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
                 result.flush_to_log(conn)
             result.log_overwrites()
+            return True
         except Exception as e:
             logger.error(f"PG Realtor upsert failed for {strap}: {e}")
+            return False
 
     def _mark_source_attempted(
         self,
@@ -743,6 +859,10 @@ class MarketDataService:
     # ------------------------------------------------------------------
 
     def _download_all_photos(self, properties: list[dict]) -> int:
+        """Backward-compatible wrapper returning only the download count."""
+        return self._download_all_photos_with_stats(properties)["downloaded"]
+
+    def _download_all_photos_with_stats(self, properties: list[dict]) -> dict[str, int]:
         """Download photos for all properties that have CDN URLs in PG."""
         import hashlib
         import time as _time
@@ -771,7 +891,7 @@ class MarketDataService:
 
         straps = [p["strap"] for p in properties if p.get("strap")]
         if not straps:
-            return 0
+            return {"downloaded": 0, "errors": 0}
 
         # Fetch CDN URLs and case_number from PG
         try:
@@ -788,9 +908,10 @@ class MarketDataService:
                 ).fetchall()
         except Exception as e:
             logger.error(f"Failed to fetch photo CDN URLs from PG: {e}")
-            return 0
+            return {"downloaded": 0, "errors": 1}
 
         total_downloaded = 0
+        total_errors = 0
         for row in rows:
             strap, case_number, cdn_urls = row[0], row[1], row[2]
             if not case_number or not cdn_urls:
@@ -834,6 +955,7 @@ class MarketDataService:
                         _time.sleep(0.5)
 
                 except Exception as dl_err:
+                    total_errors += 1
                     logger.warning(
                         "Photo download failed for strap={} case={} idx={} url={}: {}",
                         strap,
@@ -856,9 +978,10 @@ class MarketDataService:
                             {"paths": json.dumps(local_paths), "strap": strap},
                         )
                 except Exception as e:
+                    total_errors += 1
                     logger.error(f"Failed to update photo paths for {strap}: {e}")
 
-        return total_downloaded
+        return {"downloaded": total_downloaded, "errors": total_errors}
 
     # ------------------------------------------------------------------
     # Browser lifecycle
@@ -926,9 +1049,10 @@ class MarketDataService:
         cdp,
         properties: list[dict],
         already_matched: set[str],
-    ) -> set[str]:
-        """Run Redfin Tier 1 + Tier 2. Returns set of newly matched straps."""
+    ) -> tuple[set[str], int]:
+        """Run Redfin Tier 1 + Tier 2. Returns (matched straps, save errors)."""
         matched: set[str] = set()
+        save_errors = 0
 
         # Build normalized address → property lookup
         addr_to_props: dict[str, list[dict]] = {}
@@ -982,9 +1106,12 @@ class MarketDataService:
                             )
                             continue
                         if strap and strap not in matched and strap not in already_matched:
-                            self._upsert_redfin(strap, folio, case, payload)
-                            matched.add(strap)
-                            logger.success(f"Redfin Tier 1: saved for {strap}")
+                            if self._upsert_redfin(strap, folio, case, payload):
+                                matched.add(strap)
+                                logger.success(f"Redfin Tier 1: saved for {strap}")
+                            else:
+                                save_errors += 1
+                                logger.warning(f"Redfin Tier 1: persist failed for {strap}")
 
                 await scraper.delay(scraper.DETAIL_PAGE_DELAY)
 
@@ -1032,10 +1159,13 @@ class MarketDataService:
                         await scraper.delay(scraper.DETAIL_PAGE_DELAY)
                         continue
                     payload = RedfinScraper.listing_to_market_payload(listing)
-                    self._upsert_redfin(strap, folio, case, payload)
-                    matched.add(strap)
-                    consecutive_failures = 0
-                    logger.success(f"Redfin Tier 2: saved for {strap}")
+                    if self._upsert_redfin(strap, folio, case, payload):
+                        matched.add(strap)
+                        consecutive_failures = 0
+                        logger.success(f"Redfin Tier 2: saved for {strap}")
+                    else:
+                        save_errors += 1
+                        logger.warning(f"Redfin Tier 2: persist failed for {strap}")
                 elif nav_status == "not_found":
                     # Property doesn't exist in Redfin — not a block
                     self._mark_source_attempted(strap, folio, case, "redfin")
@@ -1052,7 +1182,7 @@ class MarketDataService:
 
                 await scraper.delay(scraper.DETAIL_PAGE_DELAY)
 
-        return matched
+        return matched, save_errors
 
     # ------------------------------------------------------------------
     # Zillow
@@ -1064,7 +1194,7 @@ class MarketDataService:
         cdp,
         properties: list[dict],
         already_matched: set[str],
-    ) -> set[str]:
+    ) -> tuple[set[str], int]:
         """Run Zillow searches via CDP. Returns set of newly matched straps."""
         from src.scrapers.zillow_scraper import (
             search_property,
@@ -1074,11 +1204,12 @@ class MarketDataService:
 
         matched: set[str] = set()
         consecutive_blocks = 0
+        save_errors = 0
 
         # Check if homepage is already blocked
         if await _is_blocked(page):
             logger.warning("Zillow: blocked on homepage — skipping all searches")
-            return matched
+            return matched, save_errors
 
         for i, prop in enumerate(properties):
             if consecutive_blocks >= self.ZILLOW_BLOCK_LIMIT:
@@ -1146,11 +1277,14 @@ class MarketDataService:
                     )
                 else:
                     payload = listing_to_market_payload(listing)
-                    self._upsert_zillow(strap, folio, case, payload)
-                    matched.add(strap)
-                    logger.success(
-                        f"Zillow: saved for {strap} (zest={listing.zestimate}, photos={len(listing.photos)})"
-                    )
+                    if self._upsert_zillow(strap, folio, case, payload):
+                        matched.add(strap)
+                        logger.success(
+                            f"Zillow: saved for {strap} (zest={listing.zestimate}, photos={len(listing.photos)})"
+                        )
+                    else:
+                        save_errors += 1
+                        logger.warning(f"Zillow: persist failed for {strap}")
             else:
                 self._mark_source_attempted(strap, folio, case, "zillow")
                 logger.debug(f"Zillow: no useful data for '{addr}'")
@@ -1170,7 +1304,7 @@ class MarketDataService:
             except Exception as nav_err:
                 logger.debug(f"Zillow: homepage navigation failed: {nav_err}")
 
-        return matched
+        return matched, save_errors
 
     # ------------------------------------------------------------------
     # Realtor
@@ -1182,7 +1316,7 @@ class MarketDataService:
         cdp,
         properties: list[dict],
         already_matched: set[str],
-    ) -> set[str]:
+    ) -> tuple[set[str], int]:
         """Run Realtor.com searches via CDP."""
         from src.scrapers.realtor_scraper import (
             search_property,
@@ -1192,10 +1326,11 @@ class MarketDataService:
 
         matched: set[str] = set()
         consecutive_blocks = 0
+        save_errors = 0
 
         if await _is_blocked(page):
             logger.warning("Realtor: blocked on homepage — skipping all searches")
-            return matched
+            return matched, save_errors
 
         for i, prop in enumerate(properties):
             if consecutive_blocks >= self.ZILLOW_BLOCK_LIMIT:  # Reusing block limit parameter
@@ -1251,11 +1386,14 @@ class MarketDataService:
                     )
                 else:
                     payload = listing_to_market_payload(listing)
-                    self._upsert_realtor(strap, folio, case, payload)
-                    matched.add(strap)
-                    logger.success(
-                        f"Realtor: saved for {strap} (est={listing.estimate}, photos={len(listing.photos)})"
-                    )
+                    if self._upsert_realtor(strap, folio, case, payload):
+                        matched.add(strap)
+                        logger.success(
+                            f"Realtor: saved for {strap} (est={listing.estimate}, photos={len(listing.photos)})"
+                        )
+                    else:
+                        save_errors += 1
+                        logger.warning(f"Realtor: persist failed for {strap}")
             else:
                 self._mark_source_attempted(strap, folio, case, "realtor")
                 logger.debug(f"Realtor: no useful data for '{addr}'")
@@ -1273,17 +1411,18 @@ class MarketDataService:
             except Exception as nav_err:
                 logger.debug(f"Realtor: homepage navigation failed: {nav_err}")
 
-        return matched
+        return matched, save_errors
 
     # ------------------------------------------------------------------
     # HomeHarvest
     # ------------------------------------------------------------------
 
-    async def _run_homeharvest(self, properties: list[dict]) -> int:
-        """Run HomeHarvest API for remaining properties. Returns count matched."""
+    async def _run_homeharvest(self, properties: list[dict]) -> tuple[int, int]:
+        """Run HomeHarvest API for remaining properties. Returns (matched, save errors)."""
         from homeharvest import scrape_property
 
         count = 0
+        save_errors = 0
 
         for i, prop in enumerate(properties):
             strap = prop.get("strap", "")
@@ -1316,9 +1455,12 @@ class MarketDataService:
                     # Convert pandas row to dict at boundary
                     row_data = df.iloc[0].to_dict()
                     hh_payload = _build_homeharvest_payload(folio or strap, row_data)
-                    self._upsert_homeharvest(strap, folio, case, hh_payload)
-                    count += 1
-                    logger.success(f"HomeHarvest: saved for {strap}")
+                    if self._upsert_homeharvest(strap, folio, case, hh_payload):
+                        count += 1
+                        logger.success(f"HomeHarvest: saved for {strap}")
+                    else:
+                        save_errors += 1
+                        logger.warning(f"HomeHarvest: persist failed for {strap}")
 
             except SystemExit:
                 logger.warning("HomeHarvest: upgrade triggered — stopping batch")
@@ -1335,7 +1477,7 @@ class MarketDataService:
                 delay = random.uniform(15.0, 30.0)  # noqa: S311
                 await asyncio.sleep(delay)
 
-        return count
+        return count, save_errors
 
 
 # ---------------------------------------------------------------------------
@@ -1539,10 +1681,15 @@ def _specs_updated_at_upsert_sql(source: str) -> str:
     source_priority = SOURCE_PRIORITY[source]
     existing_priority = _source_priority_case("property_market.specs_source")
     any_incoming = _specs_any_incoming_sql()
+    gap_fill = " OR ".join(
+        f"(property_market.{column_name} IS NULL AND EXCLUDED.{column_name} IS NOT NULL)"
+        for column_name in MARKET_SPEC_COLUMNS
+    )
     return f"""
         CASE
             WHEN NOT ({any_incoming}) THEN property_market.specs_updated_at
             WHEN property_market.specs_source IS NULL THEN NOW()
+            WHEN ({gap_fill}) THEN NOW()
             WHEN property_market.specs_source = '{source}' THEN NOW()
             WHEN {source_priority} > ({existing_priority}) THEN NOW()
             ELSE property_market.specs_updated_at
@@ -1760,6 +1907,8 @@ def _query_properties_needing_market(dsn: str | None = None, limit: int = 0) -> 
     """Query properties needing market data from PG foreclosures."""
     engine = get_engine(resolve_pg_dsn(dsn))
     first_photo_placeholder = _sql_first_photo_placeholder_condition("pm.photo_cdn_urls")
+    redfin_has_content = _sql_source_has_market_content("pm.redfin_json", source="redfin")
+    zillow_has_content = _sql_source_has_market_content("pm.zillow_json", source="zillow")
     query = f"""
         SELECT f.strap, f.folio, f.case_number_raw AS case_number, f.property_address
         FROM foreclosures f
@@ -1770,7 +1919,15 @@ def _query_properties_needing_market(dsn: str | None = None, limit: int = 0) -> 
               pm.strap IS NULL 
               OR pm.zestimate IS NULL
               OR pm.zillow_json IS NULL OR pm.zillow_json::text = 'null'
+              OR (
+                  COALESCE(pm.zillow_json->>'_found', 'true') <> 'false'
+                  AND NOT {zillow_has_content}
+              )
               OR pm.redfin_json IS NULL OR pm.redfin_json::text = 'null'
+              OR (
+                  COALESCE(pm.redfin_json->>'_found', 'true') <> 'false'
+                  AND NOT {redfin_has_content}
+              )
               OR (
                   pm.photo_cdn_urls IS NOT NULL
                   AND jsonb_typeof(pm.photo_cdn_urls) = 'array'

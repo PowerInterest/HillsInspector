@@ -372,8 +372,8 @@ def test_run_batch_merges_scrapling_counts_into_parent_summary(monkeypatch: Any)
         site: str,
         _runner: Any,
         _properties: list[dict[str, Any]],
-    ) -> int:
-        return {"realtor": 2, "redfin": 1}.get(site, 0)
+    ) -> tuple[int, int]:
+        return {"realtor": (2, 0), "redfin": (1, 0)}.get(site, (0, 0))
 
     async def _fake_parent_run_batch(
         self: Any,
@@ -448,7 +448,7 @@ def test_run_redfin_scrapling_rejects_mismatched_payload(monkeypatch: Any) -> No
 
     monkeypatch.setattr(pg_market_data_scrapling.asyncio, "sleep", _noop_sleep)
 
-    matched = asyncio.run(
+    matched, errors = asyncio.run(
         svc._run_redfin_scrapling(
             [
                 {
@@ -463,8 +463,58 @@ def test_run_redfin_scrapling_rejects_mismatched_payload(monkeypatch: Any) -> No
     )
 
     assert matched == 0
+    assert errors == 0
     assert attempted == [("STRAP1", "FOLIO1", "CASE1", "redfin")]
     assert upserts == []
+
+
+def test_run_redfin_scrapling_does_not_count_failed_upsert(monkeypatch: Any) -> None:
+    svc = object.__new__(PgMarketDataScraplingService)
+    attempted: list[tuple[str, str | None, str, str]] = []
+
+    async def _resolve_redfin_url(_address: str, *, city: str = "") -> str:
+        assert city == "Brandon"
+        return "https://www.redfin.com/FL/Brandon/2535-Middleton-Grove-Dr-33511/home/12345678"
+
+    async def _fetch_site_html(_url: str, *, scroll: bool = False) -> tuple[str, str]:
+        assert scroll is True
+        return ("resolved", "<html></html>")
+
+    async def _noop_sleep(_delay: float) -> None:
+        return None
+
+    svc._resolve_redfin_url = _resolve_redfin_url  # type: ignore[method-assign]
+    svc._fetch_site_html = _fetch_site_html  # type: ignore[method-assign]
+    svc._parse_redfin_html = lambda _html, _address, url: {  # type: ignore[method-assign]
+        "list_price": 350000,
+        "detail_url": url,
+        "address": "2535 Middleton Grove Dr, Brandon, FL 33511",
+    }
+    svc._payload_matches_query = lambda *_args, **_kwargs: True  # type: ignore[method-assign]
+    svc._mark_source_attempted = lambda strap, folio, case, site: attempted.append(  # type: ignore[method-assign]
+        (strap, folio, case, site)
+    )
+    svc._upsert_redfin = lambda *_args, **_kwargs: False  # type: ignore[method-assign]
+
+    monkeypatch.setattr(pg_market_data_scrapling.asyncio, "sleep", _noop_sleep)
+
+    matched, errors = asyncio.run(
+        svc._run_redfin_scrapling(
+            [
+                {
+                    "strap": "STRAP1",
+                    "folio": "FOLIO1",
+                    "case_number": "CASE1",
+                    "property_address": "2535 MIDDLETON GROVE DR",
+                    "property_city": "Brandon",
+                }
+            ]
+        )
+    )
+
+    assert matched == 0
+    assert errors == 1
+    assert attempted == []
 
 
 # ---------------------------------------------------------------------------
@@ -534,6 +584,38 @@ def test_run_market_data_update_propagates_batch_error(monkeypatch: Any) -> None
     result = pg_market_data_scrapling.run_market_data_update()
 
     assert result["error"] == "browser_phase_failed:timeout"
+
+
+def test_run_market_data_update_marks_degraded_when_batch_degraded(monkeypatch: Any) -> None:
+    props = [
+        {"strap": "A", "folio": "F-A", "case_number": "C-A", "property_address": "1 Main St"},
+    ]
+
+    class _FakeService:
+        def __init__(self, dsn: str | None = None, **_: Any) -> None:
+            assert dsn == "postgresql://x"
+
+        async def run_batch(self, properties: list[dict[str, Any]]) -> dict[str, Any]:
+            assert properties == props
+            return {
+                "redfin": 1,
+                "zillow": 0,
+                "realtor": 0,
+                "homeharvest": 0,
+                "photos": 0,
+                "degraded": True,
+                "photo_errors": 2,
+            }
+
+    monkeypatch.setattr(pg_market_data_scrapling, "resolve_pg_dsn", lambda _dsn: "postgresql://x")
+    monkeypatch.setattr(pg_market_data_scrapling, "_query_properties_needing_market", lambda **_kwargs: props)
+    monkeypatch.setattr(pg_market_data_scrapling, "PgMarketDataScraplingService", _FakeService)
+    monkeypatch.setattr(pg_market_data_scrapling, "refresh_foreclosures", lambda **_kwargs: {"foreclosures_updated": 1})
+
+    result = pg_market_data_scrapling.run_market_data_update()
+
+    assert result["status"] == "degraded"
+    assert result["update"]["degraded"] is True
 
 
 def test_run_market_data_update_tolerates_refresh_failure(monkeypatch: Any) -> None:

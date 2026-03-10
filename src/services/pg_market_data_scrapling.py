@@ -1251,15 +1251,16 @@ class PgMarketDataScraplingService(MarketDataService):
         is_useful_fn,
         *,
         scroll: bool = False,
-    ) -> int:
+    ) -> tuple[int, int]:
         """Generic per-site scraping loop with delay profile and progress reporting."""
         if not properties:
-            return 0
+            return 0, 0
 
         profile = DELAY_PROFILES.get(site, DELAY_PROFILES["realtor"])
         matched = 0
         attempted = 0
         consecutive_failures = 0
+        save_errors = 0
 
         for i, prop in enumerate(properties):
             strap = prop.get("strap", "")
@@ -1324,21 +1325,24 @@ class PgMarketDataScraplingService(MarketDataService):
                     logger.info("{} scrapling progress: {}/{} attempted, {} matched", site.capitalize(), attempted, len(properties), matched)
                 continue
 
-            upsert_fn(strap, folio, case_number, payload)
-            matched += 1
-            logger.success("{} scrapling: saved for {}", site.capitalize(), strap)
+            if upsert_fn(strap, folio, case_number, payload):
+                matched += 1
+                logger.success("{} scrapling: saved for {}", site.capitalize(), strap)
+            else:
+                save_errors += 1
+                logger.warning("{} scrapling: persist failed for {}", site.capitalize(), strap)
 
             if attempted % 10 == 0:
                 logger.info("{} scrapling progress: {}/{} attempted, {} matched", site.capitalize(), attempted, len(properties), matched)
 
         logger.info("{} scrapling complete: {}/{} matched", site.capitalize(), matched, attempted)
-        return matched
+        return matched, save_errors
 
     # ------------------------------------------------------------------
     # Per-site runners (delegate to generic loop)
     # ------------------------------------------------------------------
 
-    async def _run_realtor(self, properties: list[dict[str, Any]]) -> int:
+    async def _run_realtor(self, properties: list[dict[str, Any]]) -> tuple[int, int]:
         return await self._run_site_loop(
             site=_REALTOR_SOURCE,
             properties=properties,
@@ -1348,19 +1352,20 @@ class PgMarketDataScraplingService(MarketDataService):
             is_useful_fn=self._is_useful_realtor_payload,
         )
 
-    async def _run_redfin_scrapling(self, properties: list[dict[str, Any]]) -> int:
+    async def _run_redfin_scrapling(self, properties: list[dict[str, Any]]) -> tuple[int, int]:
         """Redfin two-step scraping: Google lookup → fetch detail page.
 
         Redfin detail URLs require an internal home ID that cannot be
         constructed from address alone.  We resolve via Google search first.
         """
         if not properties:
-            return 0
+            return 0, 0
 
         profile = DELAY_PROFILES.get(_REDFIN_SOURCE, DELAY_PROFILES["realtor"])
         matched = 0
         attempted = 0
         consecutive_failures = 0
+        save_errors = 0
         def is_useful(p: dict[str, Any]) -> bool:
             return any(p.get(k) for k in ("list_price", "zestimate", "beds", "sqft"))
 
@@ -1447,17 +1452,20 @@ class PgMarketDataScraplingService(MarketDataService):
                     )
                 continue
 
-            self._upsert_redfin(strap, folio, case_number, payload)
-            matched += 1
-            logger.success("Redfin scrapling: saved for {}", strap)
+            if self._upsert_redfin(strap, folio, case_number, payload):
+                matched += 1
+                logger.success("Redfin scrapling: saved for {}", strap)
+            else:
+                save_errors += 1
+                logger.warning("Redfin scrapling: persist failed for {}", strap)
 
             if attempted % 10 == 0:
                 logger.info("Redfin scrapling progress: {}/{} attempted, {} matched", attempted, len(properties), matched)
 
         logger.info("Redfin scrapling complete: {}/{} matched", matched, attempted)
-        return matched
+        return matched, save_errors
 
-    async def _run_zillow_scrapling(self, properties: list[dict[str, Any]]) -> int:
+    async def _run_zillow_scrapling(self, properties: list[dict[str, Any]]) -> tuple[int, int]:
         return await self._run_site_loop(
             site=_ZILLOW_SOURCE,
             properties=properties,
@@ -1509,6 +1517,7 @@ class PgMarketDataScraplingService(MarketDataService):
     ) -> dict[str, Any]:
         sources = list(sources or ["redfin", "zillow", "realtor", "homeharvest"])
         scrapling_results: dict[str, int] = {}
+        scrapling_errors = 0
 
         # Phase 1: Run scrapling-backed enrichment for all supported sites
         # concurrently before the heavy browser phase.
@@ -1537,7 +1546,10 @@ class PgMarketDataScraplingService(MarketDataService):
 
         if tasks:
             results = await asyncio.gather(*tasks)
-            scrapling_results = dict(zip(task_sites, results, strict=True))
+            for site, result in zip(task_sites, results, strict=True):
+                matched, errors = result
+                scrapling_results[site] = matched
+                scrapling_errors += int(errors or 0)
             logger.info("Scrapling phase complete: {}", scrapling_results)
         else:
             logger.info("Scrapling phase: nothing to do")
@@ -1552,6 +1564,10 @@ class PgMarketDataScraplingService(MarketDataService):
                 continue
         if scrapling_results:
             summary["scrapling"] = scrapling_results
+        if scrapling_errors:
+            summary["scrapling_errors"] = scrapling_errors
+            summary["degraded"] = True
+            summary["status"] = "degraded"
         return summary
 
     async def _safe_site_run(
@@ -1559,16 +1575,16 @@ class PgMarketDataScraplingService(MarketDataService):
         site: str,
         runner,
         properties: list[dict[str, Any]],
-    ) -> int:
+    ) -> tuple[int, int]:
         """Run a site scraper with exception isolation."""
         try:
             return await runner(properties)
         except _MissingScraplingError as exc:
             logger.warning("Scrapling not available for {}: {}", site, exc)
-            return 0
+            return 0, 1
         except Exception:
             logger.exception("Scrapling {} batch failed", site)
-            return 0
+            return 0, 1
 
 
 def run_market_data_update(
@@ -1593,6 +1609,9 @@ def run_market_data_update(
             "update": result,
             "error": result["error"],
         }
+    output: dict[str, Any] = {"properties_queried": len(properties), "update": result}
+    if result.get("degraded") is True or result.get("status") == "degraded":
+        output["status"] = "degraded"
 
     try:
         refresh_counts = refresh_foreclosures(dsn=resolved_dsn)
@@ -1600,7 +1619,7 @@ def run_market_data_update(
     except Exception as exc:
         logger.warning("Post-market foreclosure refresh failed: {}", exc)
 
-    return {"properties_queried": len(properties), "update": result}
+    return output
 
 
 def main() -> None:

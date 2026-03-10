@@ -1,11 +1,46 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import Self
 
 import pytest
 
 from src.services import market_data_worker
 from src.utils.step_result import is_failed_payload
+
+
+class _FakeResult:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[Any]:
+        return [type("_Row", (), {"_mapping": row})() for row in self._rows]
+
+
+class _FakeConnection:
+    def __init__(self, captured: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+        self._captured = captured
+        self._rows = rows
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, sql: Any, params: dict[str, Any]) -> _FakeResult:
+        self._captured["sql"] = str(sql)
+        self._captured["params"] = params
+        return _FakeResult(self._rows)
+
+
+class _FakeEngine:
+    def __init__(self, captured: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+        self._captured = captured
+        self._rows = rows
+
+    def connect(self) -> _FakeConnection:
+        return _FakeConnection(self._captured, self._rows)
 
 
 def test_run_market_data_update_skips_when_no_properties(monkeypatch: Any) -> None:
@@ -183,6 +218,58 @@ def test_run_market_data_update_passes_force_to_query(monkeypatch: Any) -> None:
         "limit": None,
         "force": True,
     }
+
+
+def test_query_properties_needing_market_reprocesses_thin_payloads(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    expected = [
+        {"strap": "A", "folio": "F-A", "case_number": "C-A", "property_address": "1 Main St"},
+    ]
+    monkeypatch.setattr(
+        market_data_worker,
+        "get_engine",
+        lambda _dsn: _FakeEngine(captured, expected),
+    )
+
+    result = market_data_worker._query_properties_needing_market("postgresql://x")  # noqa: SLF001
+
+    assert result == expected
+    sql_text = captured["sql"]
+    assert "pm.redfin_json->>'_found'" in sql_text
+    assert "pm.redfin_json->>'list_price'" in sql_text
+    assert "pm.zillow_json->>'zestimate'" in sql_text
+    assert "pm.homeharvest_json->>'estimated_value'" in sql_text
+
+
+def test_run_market_data_update_marks_degraded_when_batch_degraded(monkeypatch: Any) -> None:
+    props = [
+        {"strap": "A", "folio": "F-A", "case_number": "C-A", "property_address": "1 Main St"},
+    ]
+
+    class _FakeService:
+        def __init__(self, dsn: str, **_kwargs: Any) -> None:
+            self.dsn = dsn
+
+        async def run_batch(
+            self,
+            properties: list[dict[str, Any]],
+        ) -> dict[str, Any]:
+            assert properties == props
+            return {"redfin": 1, "zillow": 0, "homeharvest": 0, "photos": 0, "degraded": True}
+
+    monkeypatch.setattr(market_data_worker, "resolve_pg_dsn", lambda _dsn: "postgresql://x")
+    monkeypatch.setattr(
+        market_data_worker,
+        "_query_properties_needing_market",
+        lambda **_kwargs: props,
+    )
+    monkeypatch.setattr(market_data_worker, "MarketDataService", _FakeService)
+    monkeypatch.setattr(market_data_worker, "refresh_foreclosures", lambda _dsn: {"foreclosures_updated": 1})
+
+    result = market_data_worker.run_market_data_update()
+
+    assert result["status"] == "degraded"
+    assert result["update"]["degraded"] is True
 
 
 def test_payload_failed_detects_nested_update_error() -> None:

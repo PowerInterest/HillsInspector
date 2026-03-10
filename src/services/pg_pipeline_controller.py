@@ -992,10 +992,23 @@ class PgPipelineController:
             isinstance(worker_result, dict)
             and is_failed_payload(worker_result)
         )
+        any_degraded = False
+        for payload in (scrapling_result, worker_result):
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("degraded") is True or payload.get("status") == "degraded":
+                any_degraded = True
+                break
+            update = payload.get("update")
+            if isinstance(update, dict) and (
+                update.get("degraded") is True or update.get("status") == "degraded"
+            ):
+                any_degraded = True
+                break
 
         if any_failed and total_work == 0:
             status = "failed"
-        elif any_failed:
+        elif any_failed or any_degraded:
             status = "degraded"
         elif total_work > 0:
             status = "success"

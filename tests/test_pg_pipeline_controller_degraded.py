@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 from typing import Self
 
+from src.services import market_data_worker
+from src.services import pg_market_data_scrapling
 from src.services import pg_pipeline_controller
 
 
@@ -152,3 +154,46 @@ def test_single_pin_candidate_sql_excludes_tampa_violation_rows(monkeypatch: Any
     assert "coalesce(tr.module, '') <> 'business'" in sql_text
     assert "coalesce(tr.record_number, '') not like 'btx-%'" in sql_text
     assert "coalesce(tr.record_type, '') not ilike 'tax receipt%'" in sql_text
+
+
+def test_market_data_nested_degraded_marks_step_degraded(monkeypatch: Any) -> None:
+    controller = _build_controller(monkeypatch)
+
+    monkeypatch.setattr(
+        pg_market_data_scrapling,
+        "_query_properties_needing_market",
+        lambda **_kwargs: [{"strap": "A", "property_address": "1 Main St"}],
+    )
+
+    class _FakeScraplingService:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def run_batch(
+            self,
+            properties: list[dict[str, Any]],
+            sources: list[str] | None = None,
+        ) -> dict[str, Any]:
+            assert properties == [{"strap": "A", "property_address": "1 Main St"}]
+            assert sources == ["realtor"]
+            return {"realtor": 1}
+
+    monkeypatch.setattr(
+        pg_market_data_scrapling,
+        "PgMarketDataScraplingService",
+        _FakeScraplingService,
+    )
+    monkeypatch.setattr(
+        market_data_worker,
+        "run_market_data_update",
+        lambda **_kwargs: {
+            "properties_queried": 1,
+            "status": "degraded",
+            "update": {"redfin": 1, "degraded": True, "photo_errors": 2},
+        },
+    )
+
+    result = controller._run_market_data()  # noqa: SLF001
+
+    assert result.status == "degraded"
+    assert result.details["worker"]["update"]["photo_errors"] == 2

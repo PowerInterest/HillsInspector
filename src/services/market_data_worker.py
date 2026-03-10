@@ -10,7 +10,10 @@ from loguru import logger
 from sqlalchemy import text
 
 from src.scripts.refresh_foreclosures import refresh as refresh_foreclosures
-from src.services.market_data_service import MarketDataService
+from src.services.market_data_service import (
+    MarketDataService,
+    _sql_source_has_market_content,
+)
 from src.utils.step_result import is_failed_payload
 from sunbiz.db import get_engine, resolve_pg_dsn
 
@@ -21,6 +24,12 @@ def _query_properties_needing_market(
     *,
     force: bool = False,
 ) -> list[dict[str, Any]]:
+    redfin_has_content = _sql_source_has_market_content("pm.redfin_json", source="redfin")
+    zillow_has_content = _sql_source_has_market_content("pm.zillow_json", source="zillow")
+    homeharvest_has_content = _sql_source_has_market_content(
+        "pm.homeharvest_json",
+        source="homeharvest",
+    )
     query = """
         SELECT f.strap, f.folio, f.case_number_raw AS case_number, f.property_address
         FROM foreclosures f
@@ -30,11 +39,26 @@ def _query_properties_needing_market(
           AND f.archived_at IS NULL
     """
     if not force:
-        query += """
+        query += f"""
           AND (pm.strap IS NULL
-               OR NOT (pm.redfin_json IS NOT NULL AND pm.redfin_json::text != 'null'
-                       AND pm.zillow_json IS NOT NULL AND pm.zillow_json::text != 'null'
-                       AND pm.homeharvest_json IS NOT NULL AND pm.homeharvest_json::text != 'null'))
+               OR pm.redfin_json IS NULL
+               OR pm.redfin_json::text = 'null'
+               OR (
+                    COALESCE(pm.redfin_json->>'_found', 'true') <> 'false'
+                    AND NOT {redfin_has_content}
+                  )
+               OR pm.zillow_json IS NULL
+               OR pm.zillow_json::text = 'null'
+               OR (
+                    COALESCE(pm.zillow_json->>'_found', 'true') <> 'false'
+                    AND NOT {zillow_has_content}
+                  )
+               OR pm.homeharvest_json IS NULL
+               OR pm.homeharvest_json::text = 'null'
+               OR (
+                    COALESCE(pm.homeharvest_json->>'_found', 'true') <> 'false'
+                    AND NOT {homeharvest_has_content}
+                  ))
         """
     query += """
         ORDER BY f.auction_date DESC
@@ -74,6 +98,9 @@ def run_market_data_update(
             "update": result,
             "error": result["error"],
         }
+    output: dict[str, Any] = {"properties_queried": len(properties), "update": result}
+    if result.get("degraded") is True or result.get("status") == "degraded":
+        output["status"] = "degraded"
 
     try:
         refresh_counts = refresh_foreclosures(dsn=resolved_dsn)
@@ -81,7 +108,7 @@ def run_market_data_update(
     except Exception as exc:
         logger.warning(f"Post-market foreclosure refresh failed: {exc}")
 
-    return {"properties_queried": len(properties), "update": result}
+    return output
 
 
 def main() -> None:
