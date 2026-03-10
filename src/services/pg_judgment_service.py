@@ -150,7 +150,7 @@ class PgJudgmentService:
         """
         from src.services.final_judgment_processor import FinalJudgmentProcessor
 
-        candidates: list[tuple[Path, dict[str, Any], bool]] = []
+        candidates: list[tuple[Path, dict[str, Any], bool, dict[str, Any]]] = []
         for jp in json_paths:
             # Only consider final-judgment extractions
             if not jp.name.startswith("final_judgment_"):
@@ -161,20 +161,23 @@ class PgJudgmentService:
                 logger.warning(f"Skipping invalid judgment JSON {jp}: {exc}")
                 continue
             thin = FinalJudgmentProcessor.is_thin_extraction(jd)
-            candidates.append((jp, jd, thin))
+            validation = FinalJudgmentProcessor.validation_summary(jd)
+            candidates.append((jp, jd, thin, validation))
 
         if not candidates:
             return None
 
-        def _rank(item: tuple[Path, dict[str, Any], bool]) -> tuple[int, str, int, str]:
-            path, judgment_data, thin = item
+        def _rank(item: tuple[Path, dict[str, Any], bool, dict[str, Any]]) -> tuple[int, int, int, str, int, str]:
+            path, judgment_data, thin, validation = item
             recording_date = str(judgment_data.get("recording_date") or "").strip()
             instrument = str(judgment_data.get("instrument_number") or "").strip()
             stem_digits = re.sub(r"\D", "", path.stem)
             instrument_digits = re.sub(r"\D", "", instrument)
             instrument_rank = int(instrument_digits or stem_digits or "0")
             return (
+                1 if validation.get("is_valid") else 0,
                 1 if not thin else 0,
+                -len(validation.get("failures") or []),
                 recording_date,
                 instrument_rank,
                 path.stem,
@@ -183,6 +186,31 @@ class PgJudgmentService:
         best = max(candidates, key=_rank)
 
         return best[0], best[1]
+
+    @staticmethod
+    def _judgment_validation(judgment_data: dict[str, Any]) -> dict[str, Any]:
+        from src.services.final_judgment_processor import FinalJudgmentProcessor
+
+        validation = judgment_data.get("_validation")
+        if isinstance(validation, dict) and "is_valid" in validation:
+            return validation
+        return FinalJudgmentProcessor.validation_summary(judgment_data)
+
+    @staticmethod
+    def _canonical_judgment_payload(judgment_data: dict[str, Any]) -> dict[str, Any]:
+        from src.services.final_judgment_processor import FinalJudgmentProcessor
+
+        if not judgment_data:
+            return {}
+        public_payload = {
+            key: value
+            for key, value in judgment_data.items()
+            if not str(key).startswith("_")
+        }
+        validation = PgJudgmentService._judgment_validation(judgment_data)
+        if validation.get("is_valid"):
+            return FinalJudgmentProcessor.canonicalize_candidate(judgment_data)
+        return public_payload
 
     @staticmethod
     def persist_judgment(
@@ -207,7 +235,8 @@ class PgJudgmentService:
 
         Returns True if a row was updated, False otherwise.
         """
-        fja = judgment_data.get("total_judgment_amount")
+        canonical = PgJudgmentService._canonical_judgment_payload(judgment_data)
+        fja = canonical.get("total_judgment_amount")
         result = conn.execute(
             text(
                 "UPDATE foreclosures SET "
@@ -222,7 +251,7 @@ class PgJudgmentService:
                 "WHERE foreclosure_id = :fid"
             ),
             {
-                "jd": json.dumps(judgment_data),
+                "jd": json.dumps(canonical),
                 "pp": pdf_path,
                 "fja": fja,
                 "fid": foreclosure_id,
@@ -290,6 +319,20 @@ class PgJudgmentService:
                         f"Case {case_number}: {len(json_paths)} extracted JSONs, "
                         f"chose {chosen_json_path.name} (pdf={pdf_path})"
                     )
+
+                validation = self._judgment_validation(jd)
+                if "_validation" not in jd:
+                    logger.info(
+                        "Revalidated legacy judgment cache for case {} during PG load",
+                        case_number,
+                    )
+                if not validation.get("is_valid"):
+                    logger.warning(
+                        "Skipping canonical judgment persistence for case {} because chosen cache is invalid: {}",
+                        case_number,
+                        "; ".join(validation.get("failures") or ["unknown validation failure"]),
+                    )
+                    continue
 
                 if self.persist_judgment(
                     conn,

@@ -1632,7 +1632,13 @@ class VisionService:
             with open(image_path, "rb") as f:
                 return base64.b64encode(f.read()).decode()
 
-    def analyze_image(self, image_path: str, prompt: str, max_tokens: int = 1024) -> Optional[str]:
+    def analyze_image(
+        self,
+        image_path: str,
+        prompt: str,
+        max_tokens: int = 1024,
+        response_format: dict[str, Any] | None = None,
+    ) -> Optional[str]:
         """
         Analyze an image with a text prompt.
         Tries all available endpoints on failure.
@@ -1663,6 +1669,9 @@ class VisionService:
                 "temperature": 0.1,
             }
 
+            if response_format is not None:
+                payload["response_format"] = response_format
+
             response = self._try_all_endpoints(payload, timeout=120)
             if response is None:
                 logger.error("All vision endpoints failed for {}", image_path)
@@ -1679,7 +1688,13 @@ class VisionService:
             )
             return None
 
-    def analyze_images(self, image_paths: list[str], prompt: str, max_tokens: int = 4000) -> Optional[str]:
+    def analyze_images(
+        self,
+        image_paths: list[str],
+        prompt: str,
+        max_tokens: int = 4000,
+        response_format: dict[str, Any] | None = None,
+    ) -> Optional[str]:
         """
         Analyze multiple images with a single text prompt in one request.
         Tries all available endpoints on failure.
@@ -1707,6 +1722,8 @@ class VisionService:
                 "max_tokens": max_tokens,  # Use parameter (default 4000) - multi-page docs need more
                 "temperature": 0.1,
             }
+            if response_format is not None:
+                payload["response_format"] = response_format
 
             # Scale timeout with page count: 60s base + 60s per image (local GLM is slow)
             timeout = 60 + 60 * len(image_paths)

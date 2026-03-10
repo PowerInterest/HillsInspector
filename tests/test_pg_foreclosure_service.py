@@ -34,6 +34,94 @@ class _FakeConnection:
         return _FakeResult()
 
 
+def _valid_judgment_cache(
+    instrument_number: str,
+    *,
+    include_validation: bool = True,
+) -> dict[str, Any]:
+    payload = {
+        "instrument_number": instrument_number,
+        "recording_book": None,
+        "recording_page": None,
+        "recording_date": "2025-01-01",
+        "execution_date": None,
+        "property_address": "10217 GRANT CREEK DR TAMPA, FL 33647",
+        "legal_description": (
+            "LOT 6, BLOCK 3, CROSS CREEK PARCEL K PHASE 1D, "
+            "PLAT BOOK 89, PAGE 51, OF THE PUBLIC RECORDS OF "
+            "HILLSBOROUGH COUNTY, FLORIDA."
+        ),
+        "parcel_id": "172834985C00000000010U",
+        "confidence_score": 0.72,
+        "unclear_sections": [],
+        "case_number": "292024CA000333A001HC",
+        "court_circuit": "13th",
+        "county": "Hillsborough",
+        "judge_name": "CHERYL THOMAS",
+        "judgment_date": "2026-01-26",
+        "plaintiff": "NAVY FEDERAL CREDIT UNION",
+        "plaintiff_type": "bank",
+        "defendants": [
+            {
+                "name": "JOHN DOE",
+                "party_type": "borrower",
+                "is_federal_entity": False,
+                "is_deceased": False,
+                "lien_recording_reference": None,
+            }
+        ],
+        "subdivision": "CROSS CREEK PARCEL K PHASE 1D",
+        "lot": "6",
+        "block": "3",
+        "unit": None,
+        "plat_book": "89",
+        "plat_page": "51",
+        "is_condo": False,
+        "foreclosed_mortgage": {
+            "original_date": "2020-01-01",
+            "original_amount": 267080.05,
+            "recording_date": "2020-01-07",
+            "recording_book": "12345",
+            "recording_page": "678",
+            "instrument_number": "2020000001",
+            "original_lender": "NAVY FEDERAL CREDIT UNION",
+            "current_holder": "NAVY FEDERAL CREDIT UNION",
+        },
+        "lis_pendens": {
+            "recording_date": "2024-03-01",
+            "recording_book": "22345",
+            "recording_page": "100",
+            "instrument_number": "2024000001",
+        },
+        "principal_amount": 267080.05,
+        "interest_amount": 22784.32,
+        "interest_through_date": "2025-12-31",
+        "per_diem_rate": 27.93,
+        "per_diem_interest": None,
+        "late_charges": 53.66,
+        "escrow_advances": 18148.47,
+        "title_search_costs": 325.00,
+        "court_costs": 2608.50,
+        "attorney_fees": 8345.00,
+        "other_costs": 2337.80,
+        "total_judgment_amount": 321682.80,
+        "foreclosure_sale_date": "2026-04-01",
+        "sale_location": "https://www.hillsborough.realforeclose.com",
+        "is_online_sale": True,
+        "foreclosure_type": "FIRST MORTGAGE",
+        "hoa_safe_harbor_mentioned": False,
+        "superiority_language": None,
+        "plaintiff_maximum_bid": None,
+        "monthly_payment": None,
+        "default_date": "2024-01-01",
+        "service_by_publication": False,
+        "red_flags": [],
+    }
+    if include_validation:
+        payload["_validation"] = {"is_valid": True, "failures": [], "warnings": []}
+    return payload
+
+
 def test_persist_judgment_sets_all_step_flags() -> None:
     """persist_judgment must set step_pdf_downloaded and step_judgment_extracted."""
     captured: dict[str, Any] = {}
@@ -116,7 +204,7 @@ def test_load_judgment_data_to_pg_only_counts_actual_updates(
         doc_dir = tmp_path / case / "documents"
         doc_dir.mkdir(parents=True)
         (doc_dir / "final_judgment_2025001111_extracted.json").write_text(
-            json.dumps({"recording_date": "2025-01-01", "instrument_number": "2025001111"}),
+            json.dumps(_valid_judgment_cache("2025001111")),
             encoding="utf-8",
         )
 
@@ -180,3 +268,60 @@ def test_load_judgment_data_to_pg_only_counts_actual_updates(
 
     # Only fid=1 actually updated a row; fid=2 returned rowcount=0
     assert count == 1, f"Expected 1 actual update, got {count}"
+
+
+def test_load_judgment_data_to_pg_revalidates_legacy_cache_without_metadata(
+    tmp_path: Any,
+    monkeypatch: Any,
+) -> None:
+    """Legacy v1 caches without _validation should still persist when valid."""
+    import json
+
+    from src.services import pg_judgment_service
+
+    doc_dir = tmp_path / "25-CA-000001" / "documents"
+    doc_dir.mkdir(parents=True)
+    (doc_dir / "final_judgment_2025001111_extracted.json").write_text(
+        json.dumps(
+            _valid_judgment_cache(
+                "2025001111",
+                include_validation=False,
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(pg_judgment_service, "FORECLOSURE_DATA_DIR", tmp_path)
+
+    class _FakeConnCtx:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(self, sql: Any, params: Any = None) -> Any:
+            sql_str = str(sql)
+            if "DISTINCT ON" in sql_str:
+                class _Rows:
+                    @staticmethod
+                    def fetchall() -> list[tuple[int, str, str]]:
+                        return [(1, "25-CA-000001", "STRAP001")]
+
+                return _Rows()
+            return _FakeResult(rowcount=1)
+
+    class _FakeEngine:
+        def begin(self) -> _FakeConnCtx:
+            return _FakeConnCtx()
+
+    monkeypatch.setattr(
+        pg_judgment_service,
+        "resolve_pg_dsn",
+        lambda _dsn: "postgresql://user:pw@host:5432/db",
+    )
+    monkeypatch.setattr(pg_judgment_service, "get_engine", lambda _dsn: _FakeEngine())
+
+    svc = pg_judgment_service.PgJudgmentService()
+
+    assert svc._load_judgment_data_to_pg() == 1  # noqa: SLF001

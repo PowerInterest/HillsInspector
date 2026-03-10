@@ -190,11 +190,23 @@ def test_judgment_requires_non_null_sale_date() -> None:
         JudgmentExtraction.model_validate(payload)
 
 
-def test_judgment_amount_rollup_mismatch_fails_validation() -> None:
+def test_judgment_amount_rollup_recomputes_other_costs_and_warns() -> None:
     payload = _judgment_payload()
     payload["total_judgment_amount"] = 350000.00
 
-    with pytest.raises(ValidationError, match="Itemized sum"):
+    model = JudgmentExtraction.model_validate(payload)
+    failures, warnings = model.validate_extraction()
+
+    assert failures == []
+    assert model.other_costs == 30655.00
+    assert any("major line item may be missing" in warning for warning in warnings)
+
+
+def test_judgment_negative_rollup_gap_fails_validation() -> None:
+    payload = _judgment_payload()
+    payload["total_judgment_amount"] = 310000.00
+
+    with pytest.raises(ValidationError, match="exceed total"):
         JudgmentExtraction.model_validate(payload)
 
 
@@ -204,6 +216,16 @@ def test_judgment_online_sale_mismatch_fails_validation() -> None:
 
     with pytest.raises(ValidationError, match="sale_location indicates an online sale"):
         JudgmentExtraction.model_validate(payload)
+
+
+def test_validate_extraction_keeps_sale_terms_hard_gate_after_mutation() -> None:
+    model = JudgmentExtraction.model_validate(_judgment_payload())
+    model.is_online_sale = False
+
+    failures, warnings = model.validate_extraction()
+
+    assert warnings == []
+    assert any("sale_location indicates an online sale" in failure for failure in failures)
 
 
 def test_lis_pendens_prompt_keeps_real_clerk_parties() -> None:

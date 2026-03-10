@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import Any
+
+from src.services.vision_service import VisionService
 from src.services.vision_service import _extract_response_text
 
 
@@ -31,3 +34,56 @@ def test_extract_response_text_joins_text_blocks() -> None:
     }
 
     assert _extract_response_text(result, context="multi-page-doc") == "alpha\nbeta"
+
+
+def test_try_all_endpoints_preserves_response_format_for_local_endpoint(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeResponse:
+        ok = True
+        status_code = 200
+        text = ""
+
+    class _FakeSession:
+        def post(
+            self,
+            url: str,
+            *,
+            json: dict[str, Any],
+            headers: dict[str, Any],
+            timeout: Any,
+        ) -> _FakeResponse:
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            captured["timeout"] = timeout
+            return _FakeResponse()
+
+    monkeypatch.setattr(
+        VisionService,
+        "get_available_endpoints",
+        classmethod(
+            lambda cls: [  # noqa: ARG005
+                {
+                    "url": "http://127.0.0.1:1234/v1/chat/completions",
+                    "model": "qwen/qwen3-vl-8b",
+                }
+            ]
+        ),
+    )
+
+    service = VisionService()
+    service.session = _FakeSession()
+
+    payload = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": {"type": "json_schema", "json_schema": {"name": "x"}},
+    }
+
+    response = service._try_all_endpoints(payload, timeout=5)  # noqa: SLF001
+
+    assert response is not None
+    assert captured["json"]["response_format"] == payload["response_format"]
+    assert captured["headers"] == {}

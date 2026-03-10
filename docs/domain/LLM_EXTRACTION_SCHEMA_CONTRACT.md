@@ -46,13 +46,39 @@ quality review impossible.
 - missing `foreclosure_sale_date`
 - missing both `legal_description` and `property_address`
 - empty `defendants` without an explicit explanation in `unclear_sections`
-- itemized financial fields do not reconcile to `total_judgment_amount`
+- known itemized financial fields exceed `total_judgment_amount`
 - `sale_location` clearly indicates an online sale while `is_online_sale` is
   `false`
 
-The amount reconciliation is intentionally strict. Final judgments are
-itemization-heavy court orders, so a material drift is more likely to mean
-bad extraction than acceptable fuzz.
+## Final Judgment Arithmetic
+
+The local model is not trusted to add money fields correctly. The pipeline
+computes the rollup itself:
+
+- `principal_amount`, `interest_amount`, `per_diem_interest`,
+  `late_charges`, `escrow_advances`, `title_search_costs`, `court_costs`, and
+  `attorney_fees` are treated as the known line items
+- if those known items sum to less than the stated `total_judgment_amount`,
+  the validator recomputes `other_costs` as the residual
+- if the known items exceed the stated total, validation fails
+- if the residual is unusually large, validation emits a warning because a
+  major line item may still be missing or misread
+
+This lets the pipeline reject impossible arithmetic without failing merely
+because the model did not do the subtraction itself.
+
+## Canonical Persistence
+
+Only validated final-judgment caches are allowed to become canonical
+`foreclosures.judgment_data`.
+
+- invalid or partial caches may still exist on disk for review/retry
+- canonical PG persistence is reserved for caches whose `_validation.is_valid`
+  is true
+- legacy v1 caches that do not yet have `_validation` metadata are
+  revalidated during PG load instead of being silently skipped
+- canonicalization strips private metadata keys before persistence and writes
+  the normalized Pydantic payload, not the raw model response
 
 ## Prompt Guidance Safety
 
@@ -70,7 +96,9 @@ reviewed with the same care as validators.
 
 1. Generate the schema with `SomeExtractionModel.model_json_schema()`.
 2. Send OCR text plus that schema to the LLM using structured output /
-   constrained decoding.
+   constrained decoding. This applies to local OpenAI-compatible endpoints as
+   well as cloud endpoints; do not silently drop `response_format` on the
+   local path.
 3. Run `SomeExtractionModel.model_validate(...)` on the response.
 4. If validation fails, store the raw response and mark the extraction for
    retry or review. Do not silently persist a partial dict.

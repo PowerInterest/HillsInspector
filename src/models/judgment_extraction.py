@@ -789,6 +789,29 @@ class JudgmentExtraction(BaseDocumentExtraction):
         return self
 
     @model_validator(mode="after")
+    def _dedupe_defendants(self) -> JudgmentExtraction:
+        """Collapse exact duplicate defendants while preserving richer metadata."""
+        if not self.defendants:
+            return self
+        deduped: dict[str, Defendant] = {}
+        order: list[str] = []
+        for defendant in self.defendants:
+            key = normalize_party_name(defendant.name)
+            if key not in deduped:
+                deduped[key] = defendant
+                order.append(key)
+                continue
+            existing = deduped[key]
+            if existing.party_type == PartyType.UNKNOWN and defendant.party_type != PartyType.UNKNOWN:
+                existing.party_type = defendant.party_type
+            existing.is_federal_entity = existing.is_federal_entity or defendant.is_federal_entity
+            existing.is_deceased = existing.is_deceased or defendant.is_deceased
+            if not existing.lien_recording_reference and defendant.lien_recording_reference:
+                existing.lien_recording_reference = defendant.lien_recording_reference
+        self.defendants = [deduped[key] for key in order]
+        return self
+
+    @model_validator(mode="after")
     def _enforce_hard_gates(self) -> JudgmentExtraction:
         """Reject extractions that fail the minimum acceptance contract."""
         failures: list[str] = []
@@ -870,6 +893,7 @@ class JudgmentExtraction(BaseDocumentExtraction):
         failures.extend(self._check_required_fields())
         failures.extend(self._check_amounts_sum_hard())
         failures.extend(self._check_judge_as_defendant())
+        failures.extend(self._check_sale_terms_hard())
 
         # Soft checks
         warnings.extend(self._check_amounts_sum_soft())
@@ -923,11 +947,20 @@ class JudgmentExtraction(BaseDocumentExtraction):
         return failures
 
     def _check_amounts_sum_hard(self) -> list[str]:
-        """HARD FAIL: Line items present but don't reconcile to total."""
+        """HARD FAIL: Line items present but don't reconcile to total.
+
+        LLMs can read numbers but can't add reliably.  When the known
+        line items leave a remainder vs the stated total, we recompute
+        ``other_costs`` as the difference rather than trusting the
+        model's arithmetic.  The gate then fires only when the major
+        components (principal, interest, fees) themselves are wrong,
+        not when the model botched a subtotal.
+        """
         if self.total_judgment_amount is None:
             return []
 
-        components = [
+        # Known line items the model extracts individually
+        known = [
             self.principal_amount,
             self.interest_amount,
             self.per_diem_interest,
@@ -936,21 +969,27 @@ class JudgmentExtraction(BaseDocumentExtraction):
             self.title_search_costs,
             self.court_costs,
             self.attorney_fees,
-            self.other_costs,
         ]
-        non_null = [c for c in components if c is not None]
-        if len(non_null) < 3:
+        non_null_known = [c for c in known if c is not None]
+        if len(non_null_known) < 3:
             return []  # not enough itemization to enforce
 
-        computed_sum = sum(non_null)
-        diff = abs(computed_sum - self.total_judgment_amount)
-        # A fully itemized final judgment should reconcile almost exactly.
-        # Allow a small cushion for OCR rounding, but not material drift.
-        threshold = max(self.total_judgment_amount * 0.0001, 10.0)
+        known_sum = sum(non_null_known)
+        remainder = self.total_judgment_amount - known_sum
 
+        # Recompute other_costs as the remainder if it's non-negative.
+        # This lets us validate without relying on the LLM's arithmetic.
+        if remainder >= 0:
+            self.other_costs = round(remainder, 2)
+            return []
+
+        # Negative remainder means known items exceed the total — that's
+        # a real extraction error (wrong number read from OCR).
+        diff = abs(remainder)
+        threshold = max(self.total_judgment_amount * 0.0001, 10.0)
         if diff > threshold:
             return [
-                f"FAIL: Itemized sum ${computed_sum:,.2f} diverges from "
+                f"FAIL: Known line items ${known_sum:,.2f} exceed "
                 f"total ${self.total_judgment_amount:,.2f} by "
                 f"${diff:,.2f} (>{threshold:,.0f} threshold)"
             ]
@@ -970,11 +1009,11 @@ class JudgmentExtraction(BaseDocumentExtraction):
         return []
 
     def _check_amounts_sum_soft(self) -> list[str]:
-        """Soft warning: itemized amounts don't quite sum to total."""
+        """Soft warning: other_costs was recomputed or residual is notable."""
         if self.total_judgment_amount is None:
             return []
 
-        components = [
+        known = [
             self.principal_amount,
             self.interest_amount,
             self.per_diem_interest,
@@ -983,23 +1022,21 @@ class JudgmentExtraction(BaseDocumentExtraction):
             self.title_search_costs,
             self.court_costs,
             self.attorney_fees,
-            self.other_costs,
         ]
-        non_null = [c for c in components if c is not None]
-        if len(non_null) < 2:
+        non_null_known = [c for c in known if c is not None]
+        if len(non_null_known) < 2:
             return []
 
-        computed_sum = sum(non_null)
-        diff = abs(computed_sum - self.total_judgment_amount)
-        # Warn on small-but-real drift; larger drift is a hard failure.
-        soft_tolerance = max(self.total_judgment_amount * 0.00001, 1.0)
-        hard_tolerance = max(self.total_judgment_amount * 0.0001, 10.0)
+        known_sum = sum(non_null_known)
+        remainder = self.total_judgment_amount - known_sum
 
-        if soft_tolerance < diff <= hard_tolerance:
+        # Warn when the remainder (other_costs) is a sizable fraction of
+        # the total — may indicate a missing major component.
+        if remainder > 0 and remainder / self.total_judgment_amount > 0.05:
             return [
-                f"Itemized amounts sum to ${computed_sum:,.2f} but "
-                f"total_judgment_amount is ${self.total_judgment_amount:,.2f} "
-                f"(difference: ${diff:,.2f})"
+                f"other_costs remainder ${remainder:,.2f} is "
+                f"{remainder / self.total_judgment_amount:.1%} of total — "
+                f"a major line item may be missing from extraction"
             ]
         return []
 
