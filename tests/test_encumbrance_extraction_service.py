@@ -60,6 +60,51 @@ class TestDispatchTable:
         assert schema["additionalProperties"] is False
         assert "mortgage_type" in schema["required"]
 
+    def test_strip_legacy_output_format_removes_stale_json_examples(self):
+        from src.services.pg_encumbrance_extraction_service import (
+            _strip_legacy_output_format,
+        )
+
+        prompt = """
+## DOCUMENT PURPOSE
+Keep this.
+
+## OUTPUT FORMAT
+Return ONLY valid JSON:
+{"debtor": "old"}
+
+## CRITICAL
+Keep this too.
+"""
+
+        cleaned = _strip_legacy_output_format(prompt)
+
+        assert "debtor" not in cleaned
+        assert "## DOCUMENT PURPOSE" in cleaned
+        assert "## CRITICAL" in cleaned
+
+    def test_schema_contract_uses_live_lien_field_names(self):
+        from src.services.pg_encumbrance_extraction_service import _schema_contract_text
+
+        contract = _schema_contract_text(LienExtraction)
+
+        assert "lienor" in contract
+        assert "lienee" in contract
+        assert "confidence_score" in contract
+        assert '"debtor"' not in contract
+        assert '"creditor"' not in contract
+
+    def test_schema_contract_uses_live_assignment_field_names(self):
+        from src.services.pg_encumbrance_extraction_service import _schema_contract_text
+
+        contract = _schema_contract_text(AssignmentExtraction)
+
+        assert "assignor" in contract
+        assert "assignee" in contract
+        assert "parent_instrument" in contract
+        assert "confidence_score" in contract
+        assert '"original_mortgage"' not in contract
+
 
 class TestCacheLogic:
     def test_cache_path_from_pdf(self):
@@ -218,6 +263,64 @@ class TestEndToEnd:
         assert captured["response_format"]["type"] == "json_schema"
         assert captured["response_format"]["json_schema"]["name"] == "mortgage_extraction"
         assert "schema" in captured["response_format"]["json_schema"]
+        assert "## JSON CONTRACT" in captured["prompt"]
+        assert "mortgagor" in captured["prompt"]
+        assert "mortgagee" in captured["prompt"]
+        assert '"borrower"' not in captured["prompt"]
+        assert '"lender"' not in captured["prompt"]
+
+    def test_extract_from_ocr_text_strips_stale_easement_prompt_keys(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService()
+        captured: dict[str, Any] = {}
+
+        def _fake_analyze_text(
+            prompt: str,
+            *,
+            max_tokens: int,
+            response_format: dict[str, Any] | None = None,
+        ) -> str:
+            captured["prompt"] = prompt
+            captured["response_format"] = response_format
+            return json.dumps(
+                {
+                    "instrument_number": "2002449822",
+                    "recording_book": None,
+                    "recording_page": None,
+                    "recording_date": "2002-01-02",
+                    "execution_date": "2001-12-20",
+                    "property_address": "123 Main St, Tampa, FL 33601",
+                    "legal_description": "LOT 1, BLOCK 2, TEST SUBDIVISION",
+                    "parcel_id": None,
+                    "confidence_score": 0.85,
+                    "unclear_sections": [],
+                    "deed_type": "OTHER",
+                    "grantor": "A",
+                    "grantee": "B",
+                    "consideration": None,
+                    "documentary_stamps": None,
+                    "assumed_encumbrances": None,
+                    "assumed_encumbrance_refs": [],
+                    "related_case_number": None,
+                }
+            )
+
+        monkeypatch.setattr(svc.vision, "analyze_text", _fake_analyze_text)
+
+        result = svc._extract_from_ocr_text("--- PAGE 1 ---\nEasement text", "easement")  # noqa: SLF001
+
+        assert result is not None
+        assert "grantor" in captured["prompt"]
+        assert "grantee" in captured["prompt"]
+        assert "deed_type" in captured["prompt"]
+        assert '"party_1"' not in captured["prompt"]
+        assert '"party_2"' not in captured["prompt"]
 
     def test_render_pages_renders_entire_document(self) -> None:
         from src.services.pg_encumbrance_extraction_service import (

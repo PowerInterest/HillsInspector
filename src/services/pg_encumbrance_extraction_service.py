@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import tempfile as _tempfile
 import time
 import urllib.parse
@@ -103,6 +104,46 @@ EXTRACTION_DISPATCH: dict[str, tuple[str, type[BaseDocumentExtraction]]] = {
     "easement": (DEED_PROMPT, DeedExtraction),
     "other": (DEED_PROMPT, DeedExtraction),
 }
+
+
+_LEGACY_OUTPUT_FORMAT_RE = re.compile(
+    r"\n## OUTPUT FORMAT\b.*?(?=\n## [A-Z]|\Z)",
+    flags=re.DOTALL,
+)
+
+
+def _strip_legacy_output_format(prompt: str) -> str:
+    """Remove stale JSON examples that drifted away from the live schemas.
+
+    The old prompt constants in ``vision_service`` were written before the
+    strict Pydantic contracts existed. Some local OpenAI-compatible endpoints
+    follow the prompt examples more strongly than ``response_format``, which
+    caused them to emit keys like ``debtor``/``creditor`` instead of the live
+    schema keys ``lienee``/``lienor``. We keep the domain guidance but strip the
+    obsolete output examples so the schema contract becomes the single source of
+    truth.
+    """
+
+    cleaned = _LEGACY_OUTPUT_FORMAT_RE.sub("\n", prompt or "")
+    return cleaned.strip()
+
+
+def _schema_contract_text(model_cls: type[BaseDocumentExtraction]) -> str:
+    """Render the live Pydantic schema as prompt text for weak local endpoints."""
+
+    schema = model_cls.model_json_schema()
+    top_level_keys = ", ".join(schema.get("properties", {}).keys())
+    schema_json = json.dumps(schema, indent=2, ensure_ascii=True, sort_keys=True)
+    return (
+        "## JSON CONTRACT\n"
+        "Return exactly one JSON object that matches this schema.\n"
+        "Use the exact field names from the schema.\n"
+        "Do not invent aliases or shorthand keys from older prompts.\n"
+        "Include every required key even when the value is null.\n"
+        f"Top-level keys: {top_level_keys}\n\n"
+        "Schema:\n"
+        f"{schema_json}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -433,16 +474,20 @@ class PgEncumbranceExtractionService:
             return None
 
         prompt_template, model_cls = EXTRACTION_DISPATCH[enc_type]
+        schema = model_cls.model_json_schema()
+        schema_guidance = _schema_contract_text(model_cls)
+        prompt_guidance = _strip_legacy_output_format(prompt_template)
 
-        # Build the full prompt: doc-type prompt + OCR text. The prompt gives
-        # domain guidance; the response_format below is the actual schema
-        # contract. Both are necessary because prompt drift alone is not a safe
-        # structured-output strategy.
+        # Build the full prompt: preserve the doc-type domain guidance, but
+        # replace any stale example JSON with the live schema contract. Local
+        # endpoints have already shown they can follow the old examples more
+        # strongly than ``response_format`` alone, so both layers must agree.
         full_prompt = (
-            f"{prompt_template}\n\n"
+            f"{prompt_guidance}\n\n"
+            f"{schema_guidance}\n\n"
             f"## DOCUMENT TEXT (OCR)\n\n{ocr_text}\n\n"
-            "Return a JSON object matching the schema above. "
-            "Use null for any field you cannot determine from the text."
+            "Use null for any field you cannot determine from the text. "
+            "Do not omit required keys. Do not return commentary or markdown."
         )
 
         raw_response = self.vision.analyze_text(
@@ -452,7 +497,7 @@ class PgEncumbranceExtractionService:
                 "type": "json_schema",
                 "json_schema": {
                     "name": f"{enc_type}_extraction",
-                    "schema": model_cls.model_json_schema(),
+                    "schema": schema,
                 },
             },
         )
