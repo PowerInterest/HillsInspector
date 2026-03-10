@@ -149,6 +149,7 @@ The `docs/` folder contains comprehensive guides and technical design artifacts,
 - [Chain of Title Recovery](docs/domain/TITLE_CHAIN_RECOVERY.md) - The mechanism of scraping and verifying a complete chain of title.
 - [NOC & Permit Linking](docs/domain/NOC_PERMIT_LINKING.md) - How we link notices of commencement to active building permits.
 - [ORI Property Matching](docs/domain/ORI_PROPERTY_MATCHING.md) - How discovered ORI documents are filtered to prevent cross-property contamination in subdivisions and condominiums.
+- [Upsert Source Tracking](docs/domain/UPSERT_SOURCE_TRACKING.md) - Change-log persistence and priority-aware market upserts for mixed-source property data.
 - [Party Matching Strategy](docs/domain/PARTY_MATCHING_STRATEGY.md) - Entity resolution logic for fuzzy matching property owners across completely different data silos.
 - [Legal Issues Overview](docs/domain/LEGAL_ISSUES.md) - Real estate law nuances codified into algorithms.
 - [Auction Buyer Resolution](docs/domain/AUCTION_BUYER_RESOLUTION.md) - Utilizing post-auction Property Appraiser Deeds to backwards resolve unknown auction winners.

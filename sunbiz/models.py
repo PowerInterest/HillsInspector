@@ -712,6 +712,11 @@ class PropertyMarket(Base):
     year_built: Mapped[int | None] = mapped_column(Integer, nullable=True)
     lot_size: Mapped[str | None] = mapped_column(Text, nullable=True)
     property_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    specs_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    specs_updated_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     # Listing
     listing_status: Mapped[str | None] = mapped_column(String(32), nullable=True)

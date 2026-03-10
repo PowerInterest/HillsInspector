@@ -112,7 +112,7 @@ This affects every upsert-heavy table: `property_market`, `foreclosures`,
 Actively used by `market_data_service.py`. Logs overwrite events when a
 non-null value is replaced by a different non-null value from a different source.
 
-### Phase 2: `data_change_log` Table (Alembic migration)
+### Phase 2: `data_change_log` Table (Alembic migration) — COMPLETE
 
 For queryable audit trail beyond ephemeral logs:
 
@@ -139,7 +139,7 @@ per table and avoids trigger overhead on bulk loads.
 - "Which properties had beds/baths change more than once this month?"
 - "What source is most frequently overwriting others?"
 
-### Phase 3: `last_updated_by` + `updated_at` on Key Columns
+### Phase 3: `last_updated_by` + `updated_at` on Key Columns — COMPLETE
 
 Add source-tracking columns to high-value tables so the upsert itself can make
 priority decisions:

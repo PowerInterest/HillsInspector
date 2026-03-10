@@ -179,3 +179,32 @@ def test_detail_url_upsert_sql_validates_zillow_fallback_for_realtor_and_homehar
     assert "LIKE 'https://www.zillow.com/%'" in realtor_sql
     assert "property_market.zillow_json->>'detail_url'" in homeharvest_sql
     assert "LIKE 'https://www.zillow.com/%'" in homeharvest_sql
+
+
+def test_specs_priority_sql_allows_same_source_refresh_and_higher_priority_upgrade() -> None:
+    redfin_sql = market_data_service._specs_priority_sql("beds", source="redfin")  # noqa: SLF001
+    realtor_sql = market_data_service._specs_priority_sql("beds", source="realtor")  # noqa: SLF001
+
+    assert "property_market.specs_source = 'redfin'" in redfin_sql
+    assert "WHEN 30 > (" in redfin_sql
+    assert "property_market.beds IS NULL THEN EXCLUDED.beds" in redfin_sql
+    assert "WHEN 10 > (" in realtor_sql
+
+
+def test_specs_source_upsert_sql_does_not_downgrade_existing_higher_priority_source() -> None:
+    sql = market_data_service._specs_source_upsert_sql("realtor")  # noqa: SLF001
+
+    assert "property_market.specs_source IS NULL THEN 'realtor'" in sql
+    assert "property_market.specs_source = 'realtor' THEN 'realtor'" in sql
+    assert "WHEN 10 > (" in sql
+
+
+def test_specs_seed_values_only_sets_source_when_spec_data_present() -> None:
+    assert market_data_service._specs_seed_values("zillow", {"beds": None, "sqft": None}) == {  # noqa: SLF001
+        "specs_source": None,
+        "specs_updated_at": None,
+    }
+
+    seeded = market_data_service._specs_seed_values("zillow", {"beds": 3, "sqft": None})  # noqa: SLF001
+    assert seeded["specs_source"] == "zillow"
+    assert seeded["specs_updated_at"] is not None

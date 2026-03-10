@@ -28,6 +28,7 @@ from sqlalchemy import bindparam
 from sqlalchemy import column
 from sqlalchemy import select
 from sqlalchemy import table
+from sqlalchemy import text
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Connection
@@ -92,6 +93,50 @@ class UpsertResult:
                 row_source=ow.stored_source,
                 writer=ow.incoming_source,
             )
+
+    def flush_to_log(self, conn: Connection) -> int:
+        """Persist overwrite events to data_change_log. Best-effort only."""
+        if not self.overwrites:
+            return 0
+        try:
+            with conn.begin_nested():
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO data_change_log
+                            (table_name, row_key, column_name, old_value, new_value, source)
+                        VALUES
+                            (:table_name, :row_key, :column_name, :old_value, :new_value, :source)
+                        """
+                    ),
+                    [
+                        {
+                            "table_name": event.table,
+                            "row_key": event.row_key,
+                            "column_name": event.column,
+                            "old_value": (
+                                str(event.old_value)
+                                if event.old_value is not None
+                                else None
+                            ),
+                            "new_value": (
+                                str(event.new_value)
+                                if event.new_value is not None
+                                else None
+                            ),
+                            "source": event.incoming_source,
+                        }
+                        for event in self.overwrites
+                    ],
+                )
+            return len(self.overwrites)
+        except Exception:
+            logger.debug(
+                "flush_to_log failed for {} row_key={}",
+                self.table,
+                self.row_key,
+            )
+            return 0
 
 
 class OverwriteTracker:

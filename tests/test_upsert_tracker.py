@@ -5,12 +5,13 @@ Covers:
   - source string cleaning
   - SELECT statement construction
   - UpsertResult dataclass
+  - Phase 2 change-log persistence
   - OverwriteTracker: insert detection, value-change detection (regardless of
     source), null-skip, fault isolation from the enclosing transaction
 """
 
 import pytest
-from sqlalchemy import Column, Integer, MetaData, String, Table, create_engine, text
+from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, Text, create_engine, text
 from unittest.mock import patch
 
 from src.utils.upsert import (
@@ -50,6 +51,25 @@ def engine():
         Column("property_type", String),
         Column("detail_url", String),
         Column("primary_source", String),
+        Column("specs_source", String),
+        Column("specs_updated_at", DateTime(timezone=True)),
+    )
+    Table(
+        "data_change_log",
+        meta,
+        Column("id", Integer, primary_key=True, autoincrement=True),
+        Column("table_name", Text, nullable=False),
+        Column("row_key", Text, nullable=False),
+        Column("column_name", Text, nullable=False),
+        Column("old_value", Text, nullable=True),
+        Column("new_value", Text, nullable=True),
+        Column("source", Text, nullable=False),
+        Column(
+            "changed_at",
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
     )
     meta.create_all(eng)
     return eng
@@ -168,6 +188,124 @@ class TestUpsertResult:
         r = UpsertResult(table="t", source="s", row_key="k", was_insert=True)
         assert r.was_insert
         assert not r.has_overwrites
+
+    def test_flush_to_log_persists_overwrite_events(self, engine):
+        result = UpsertResult(table="property_market", source="redfin", row_key="TESTLOG1")
+        result.overwrites.append(
+            OverwriteEvent(
+                table="property_market",
+                row_key="TESTLOG1",
+                column="beds",
+                old_value=3,
+                new_value=4,
+                stored_source="zillow",
+                incoming_source="redfin",
+            )
+        )
+        result.overwrites.append(
+            OverwriteEvent(
+                table="property_market",
+                row_key="TESTLOG1",
+                column="sqft",
+                old_value=1500,
+                new_value=1800,
+                stored_source="zillow",
+                incoming_source="redfin",
+            )
+        )
+
+        with engine.begin() as conn:
+            inserted = result.flush_to_log(conn)
+
+        assert inserted == 2
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT table_name, row_key, column_name, old_value, new_value, source "
+                    "FROM data_change_log ORDER BY column_name"
+                )
+            ).mappings().fetchall()
+        assert [dict(row) for row in rows] == [
+            {
+                "table_name": "property_market",
+                "row_key": "TESTLOG1",
+                "column_name": "beds",
+                "old_value": "3",
+                "new_value": "4",
+                "source": "redfin",
+            },
+            {
+                "table_name": "property_market",
+                "row_key": "TESTLOG1",
+                "column_name": "sqft",
+                "old_value": "1500",
+                "new_value": "1800",
+                "source": "redfin",
+            },
+        ]
+
+    def test_flush_to_log_noop_when_no_overwrites(self, engine):
+        result = UpsertResult(table="property_market", source="redfin", row_key="TESTLOG2")
+
+        with engine.begin() as conn:
+            inserted = result.flush_to_log(conn)
+
+        assert inserted == 0
+
+    def test_flush_to_log_fault_isolation(self, engine):
+        result = UpsertResult(table="property_market", source="redfin", row_key="TESTLOG3")
+        result.overwrites.append(
+            OverwriteEvent(
+                table="property_market",
+                row_key="TESTLOG3",
+                column="beds",
+                old_value=3,
+                new_value=4,
+                stored_source="zillow",
+                incoming_source="redfin",
+            )
+        )
+
+        with engine.begin() as conn:
+            with patch.object(conn, "execute", side_effect=RuntimeError("boom")):
+                inserted = result.flush_to_log(conn)
+
+        assert inserted == 0
+
+    def test_flush_to_log_failure_does_not_abort_outer_transaction(self, engine):
+        _insert_row(engine, "TESTLOG4", "zillow", beds=3)
+        result = UpsertResult(table="property_market", source="redfin", row_key="TESTLOG4")
+        result.overwrites.append(
+            OverwriteEvent(
+                table="property_market",
+                row_key="TESTLOG4",
+                column="beds",
+                old_value=3,
+                new_value=4,
+                stored_source="zillow",
+                incoming_source="redfin",
+            )
+        )
+
+        with engine.begin() as conn:
+            original_execute = conn.execute
+
+            def _execute(statement, params=None):
+                if "INSERT INTO data_change_log" in str(statement):
+                    raise RuntimeError("boom")
+                if params is None:
+                    return original_execute(statement)
+                return original_execute(statement, params)
+
+            with patch.object(conn, "execute", side_effect=_execute):
+                inserted = result.flush_to_log(conn)
+                conn.execute(
+                    text("UPDATE property_market SET beds = 5 WHERE strap = :strap"),
+                    {"strap": "TESTLOG4"},
+                )
+
+        assert inserted == 0
+        assert _read_row(engine, "TESTLOG4")["beds"] == 5
 
 
 # ---------------------------------------------------------------------------

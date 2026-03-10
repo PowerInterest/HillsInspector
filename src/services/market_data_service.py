@@ -10,6 +10,7 @@ Can run independently: `uv run python -m src.services.market_data_service`
 
 import asyncio
 import contextlib
+import datetime as dt
 import json
 import random
 import re
@@ -32,6 +33,20 @@ from sunbiz.models import Base, PropertyMarket
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 PROFILE_DIR = PROJECT_ROOT / "data" / "browser_profiles" / "user_chrome"
+SOURCE_PRIORITY: dict[str, int] = {
+    "realtor": 10,
+    "zillow": 20,
+    "redfin": 30,
+    "homeharvest": 40,
+}
+MARKET_SPEC_COLUMNS: tuple[str, ...] = (
+    "beds",
+    "baths",
+    "sqft",
+    "year_built",
+    "lot_size",
+    "property_type",
+)
 
 
 class MarketDataService:
@@ -162,11 +177,14 @@ class MarketDataService:
             f"redfin={len(need_redfin)}, zillow={len(need_zillow)}, realtor={len(need_realtor)}, hh={len(need_hh)}"
         )
         if not total_need:
+            # Even when no scraping is needed, download photos for properties
+            # that have CDN URLs but missing local paths.
+            try:
+                photo_count = self._download_all_photos(properties)
+                summary["photos"] = photo_count
+            except Exception as exc:
+                logger.error(f"Photo download failed: {exc}")
             return summary
-
-        # Track straps that got new data this run (for photo download scope)
-        all_need = {p["strap"]: p for p in need_redfin + need_zillow + need_realtor + need_hh}
-        need_market = list(all_need.values())
 
         # --- Browser-based sources (Redfin + Zillow + Realtor) ---
         run_redfin = "redfin" in sources and need_redfin
@@ -284,9 +302,9 @@ class MarketDataService:
             summary["homeharvest"] = hh_count
             logger.info(f"HomeHarvest done: {hh_count} properties matched")
 
-        # --- Photo download ---
+        # --- Photo download (all input properties, not just need_market) ---
         try:
-            photo_count = self._download_all_photos(need_market)
+            photo_count = self._download_all_photos(properties)
             summary["photos"] = photo_count
         except Exception as exc:
             logger.error(f"Photo download failed: {exc}")
@@ -438,6 +456,7 @@ class MarketDataService:
             "redfin_json": payload,
             "primary_source": "redfin",
         }
+        row.update(_specs_seed_values("redfin", row))
 
         stmt = pg_insert(PropertyMarket).values([row])
         stmt = stmt.on_conflict_do_update(
@@ -450,13 +469,14 @@ class MarketDataService:
                 "listing_status": text("COALESCE(EXCLUDED.listing_status, property_market.listing_status)"),
                 # Zillow > Redfin for zestimate — keep existing if present
                 "zestimate": text("COALESCE(property_market.zestimate, EXCLUDED.zestimate)"),
-                # Specs: keep existing (HomeHarvest > Redfin)
-                "beds": text("COALESCE(property_market.beds, EXCLUDED.beds)"),
-                "baths": text("COALESCE(property_market.baths, EXCLUDED.baths)"),
-                "sqft": text("COALESCE(property_market.sqft, EXCLUDED.sqft)"),
-                "year_built": text("COALESCE(property_market.year_built, EXCLUDED.year_built)"),
-                "lot_size": text("COALESCE(property_market.lot_size, EXCLUDED.lot_size)"),
-                "property_type": text("COALESCE(property_market.property_type, EXCLUDED.property_type)"),
+                "beds": text(_specs_priority_sql("beds", source="redfin")),
+                "baths": text(_specs_priority_sql("baths", source="redfin")),
+                "sqft": text(_specs_priority_sql("sqft", source="redfin")),
+                "year_built": text(_specs_priority_sql("year_built", source="redfin")),
+                "lot_size": text(_specs_priority_sql("lot_size", source="redfin")),
+                "property_type": text(_specs_priority_sql("property_type", source="redfin")),
+                "specs_source": text(_specs_source_upsert_sql("redfin")),
+                "specs_updated_at": text(_specs_updated_at_upsert_sql("redfin")),
                 # Redfin wins for detail_url
                 "detail_url": text("COALESCE(EXCLUDED.detail_url, property_market.detail_url)"),
                 # Always update photo CDN URLs and raw JSON
@@ -473,6 +493,7 @@ class MarketDataService:
                 tracker.snapshot_before(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
                 conn.execute(stmt)
                 result = tracker.compare_after(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
+                result.flush_to_log(conn)
             result.log_overwrites()
         except Exception as e:
             logger.error(f"PG Redfin upsert failed for {strap}: {e}")
@@ -503,6 +524,7 @@ class MarketDataService:
             "zillow_json": payload,
             "primary_source": "zillow",
         }
+        row.update(_specs_seed_values("zillow", row))
 
         stmt = pg_insert(PropertyMarket).values([row])
         stmt = stmt.on_conflict_do_update(
@@ -518,13 +540,14 @@ class MarketDataService:
                 "tax_assessed_value": text("COALESCE(EXCLUDED.tax_assessed_value, property_market.tax_assessed_value)"),
                 # Keep existing listing_status (Redfin > Zillow)
                 "listing_status": text("COALESCE(property_market.listing_status, EXCLUDED.listing_status)"),
-                # Specs: keep existing (HomeHarvest > Zillow)
-                "beds": text("COALESCE(property_market.beds, EXCLUDED.beds)"),
-                "baths": text("COALESCE(property_market.baths, EXCLUDED.baths)"),
-                "sqft": text("COALESCE(property_market.sqft, EXCLUDED.sqft)"),
-                "year_built": text("COALESCE(property_market.year_built, EXCLUDED.year_built)"),
-                "lot_size": text("COALESCE(property_market.lot_size, EXCLUDED.lot_size)"),
-                "property_type": text("COALESCE(property_market.property_type, EXCLUDED.property_type)"),
+                "beds": text(_specs_priority_sql("beds", source="zillow")),
+                "baths": text(_specs_priority_sql("baths", source="zillow")),
+                "sqft": text(_specs_priority_sql("sqft", source="zillow")),
+                "year_built": text(_specs_priority_sql("year_built", source="zillow")),
+                "lot_size": text(_specs_priority_sql("lot_size", source="zillow")),
+                "property_type": text(_specs_priority_sql("property_type", source="zillow")),
+                "specs_source": text(_specs_source_upsert_sql("zillow")),
+                "specs_updated_at": text(_specs_updated_at_upsert_sql("zillow")),
                 "detail_url": text(_detail_url_upsert_sql("zillow")),
                 # Update photo CDN URLs: keep whichever array has more photos
                 "photo_cdn_urls": text(_photo_cdn_urls_upsert_sql()),
@@ -542,6 +565,7 @@ class MarketDataService:
                 tracker.snapshot_before(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
                 conn.execute(stmt)
                 result = tracker.compare_after(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
+                result.flush_to_log(conn)
             result.log_overwrites()
         except Exception as e:
             logger.error(f"PG Zillow upsert failed for {strap}: {e}")
@@ -572,6 +596,7 @@ class MarketDataService:
             "homeharvest_json": payload,
             "primary_source": "homeharvest",
         }
+        row.update(_specs_seed_values("homeharvest", row))
 
         stmt = pg_insert(PropertyMarket).values([row])
         stmt = stmt.on_conflict_do_update(
@@ -585,13 +610,14 @@ class MarketDataService:
                 "list_price": text("COALESCE(property_market.list_price, EXCLUDED.list_price)"),
                 "tax_assessed_value": text("COALESCE(property_market.tax_assessed_value, EXCLUDED.tax_assessed_value)"),
                 "listing_status": text("COALESCE(property_market.listing_status, EXCLUDED.listing_status)"),
-                # HomeHarvest wins for specs
-                "beds": text("COALESCE(EXCLUDED.beds, property_market.beds)"),
-                "baths": text("COALESCE(EXCLUDED.baths, property_market.baths)"),
-                "sqft": text("COALESCE(EXCLUDED.sqft, property_market.sqft)"),
-                "year_built": text("COALESCE(EXCLUDED.year_built, property_market.year_built)"),
-                "lot_size": text("COALESCE(EXCLUDED.lot_size, property_market.lot_size)"),
-                "property_type": text("COALESCE(EXCLUDED.property_type, property_market.property_type)"),
+                "beds": text(_specs_priority_sql("beds", source="homeharvest")),
+                "baths": text(_specs_priority_sql("baths", source="homeharvest")),
+                "sqft": text(_specs_priority_sql("sqft", source="homeharvest")),
+                "year_built": text(_specs_priority_sql("year_built", source="homeharvest")),
+                "lot_size": text(_specs_priority_sql("lot_size", source="homeharvest")),
+                "property_type": text(_specs_priority_sql("property_type", source="homeharvest")),
+                "specs_source": text(_specs_source_upsert_sql("homeharvest")),
+                "specs_updated_at": text(_specs_updated_at_upsert_sql("homeharvest")),
                 "detail_url": text(_detail_url_upsert_sql("homeharvest")),
                 # Update photo CDN URLs: keep whichever array has more photos
                 "photo_cdn_urls": text(_photo_cdn_urls_upsert_sql()),
@@ -609,6 +635,7 @@ class MarketDataService:
                 tracker.snapshot_before(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
                 conn.execute(stmt)
                 result = tracker.compare_after(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
+                result.flush_to_log(conn)
             result.log_overwrites()
         except Exception as e:
             logger.error(f"PG HomeHarvest upsert failed for {strap}: {e}")
@@ -637,6 +664,7 @@ class MarketDataService:
             # We treat realtor as backup if zillow/redfin are present
             "primary_source": "realtor",
         }
+        row.update(_specs_seed_values("realtor", row))
 
         stmt = pg_insert(PropertyMarket).values([row])
         stmt = stmt.on_conflict_do_update(
@@ -648,13 +676,14 @@ class MarketDataService:
                 "rent_zestimate": text("COALESCE(property_market.rent_zestimate, EXCLUDED.rent_zestimate)"),
                 "list_price": text("COALESCE(property_market.list_price, EXCLUDED.list_price)"),
                 "listing_status": text("COALESCE(property_market.listing_status, EXCLUDED.listing_status)"),
-                # Realtor is backup for specs — preserve existing Zillow/Redfin/HomeHarvest values
-                "beds": text("COALESCE(property_market.beds, EXCLUDED.beds)"),
-                "baths": text("COALESCE(property_market.baths, EXCLUDED.baths)"),
-                "sqft": text("COALESCE(property_market.sqft, EXCLUDED.sqft)"),
-                "year_built": text("COALESCE(property_market.year_built, EXCLUDED.year_built)"),
-                "lot_size": text("COALESCE(property_market.lot_size, EXCLUDED.lot_size)"),
-                "property_type": text("COALESCE(property_market.property_type, EXCLUDED.property_type)"),
+                "beds": text(_specs_priority_sql("beds", source="realtor")),
+                "baths": text(_specs_priority_sql("baths", source="realtor")),
+                "sqft": text(_specs_priority_sql("sqft", source="realtor")),
+                "year_built": text(_specs_priority_sql("year_built", source="realtor")),
+                "lot_size": text(_specs_priority_sql("lot_size", source="realtor")),
+                "property_type": text(_specs_priority_sql("property_type", source="realtor")),
+                "specs_source": text(_specs_source_upsert_sql("realtor")),
+                "specs_updated_at": text(_specs_updated_at_upsert_sql("realtor")),
                 "detail_url": text(_detail_url_upsert_sql("realtor")),
                 "photo_cdn_urls": text(_photo_cdn_urls_upsert_sql()),
                 "photo_local_paths": text(_photo_local_paths_reset_sql()),
@@ -671,6 +700,7 @@ class MarketDataService:
                 tracker.snapshot_before(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
                 conn.execute(stmt)
                 result = tracker.compare_after(conn, strap, MARKET_TRACKED_COLUMNS, source_column=MARKET_SOURCE_COLUMN)
+                result.flush_to_log(conn)
             result.log_overwrites()
         except Exception as e:
             logger.error(f"PG Realtor upsert failed for {strap}: {e}")
@@ -1444,6 +1474,80 @@ def _sql_placeholder_photo_condition(url_expr: str) -> str:
 def _sql_first_photo_placeholder_condition(jsonb_expr: str) -> str:
     """Return SQL that checks whether the first JSONB photo entry is invalid."""
     return _sql_placeholder_photo_condition(f"{jsonb_expr}->>0")
+
+
+def _specs_seed_values(source: str, row: dict[str, Any]) -> dict[str, Any]:
+    """Seed specs provenance on insert rows when any spec value is present."""
+    if not any(row.get(column_name) is not None for column_name in MARKET_SPEC_COLUMNS):
+        return {"specs_source": None, "specs_updated_at": None}
+    return {
+        "specs_source": source,
+        "specs_updated_at": dt.datetime.now(dt.UTC),
+    }
+
+
+def _source_priority_case(source_expr: str) -> str:
+    return (
+        f"CASE {source_expr} "
+        "WHEN 'homeharvest' THEN 40 "
+        "WHEN 'redfin' THEN 30 "
+        "WHEN 'zillow' THEN 20 "
+        "WHEN 'realtor' THEN 10 "
+        "ELSE 0 END"
+    )
+
+
+def _specs_priority_sql(column_name: str, *, source: str) -> str:
+    """Allow null-gap fills, same-source refreshes, and higher-priority upgrades."""
+    source_priority = SOURCE_PRIORITY[source]
+    existing_priority = _source_priority_case("property_market.specs_source")
+    return f"""
+        CASE
+            WHEN EXCLUDED.{column_name} IS NULL THEN property_market.{column_name}
+            WHEN property_market.{column_name} IS NULL THEN EXCLUDED.{column_name}
+            WHEN property_market.specs_source IS NULL THEN EXCLUDED.{column_name}
+            WHEN property_market.specs_source = '{source}' THEN EXCLUDED.{column_name}
+            WHEN {source_priority} > ({existing_priority}) THEN EXCLUDED.{column_name}
+            ELSE property_market.{column_name}
+        END
+    """
+
+
+def _specs_any_incoming_sql() -> str:
+    return " OR ".join(
+        f"EXCLUDED.{column_name} IS NOT NULL"
+        for column_name in MARKET_SPEC_COLUMNS
+    )
+
+
+def _specs_source_upsert_sql(source: str) -> str:
+    source_priority = SOURCE_PRIORITY[source]
+    existing_priority = _source_priority_case("property_market.specs_source")
+    any_incoming = _specs_any_incoming_sql()
+    return f"""
+        CASE
+            WHEN NOT ({any_incoming}) THEN property_market.specs_source
+            WHEN property_market.specs_source IS NULL THEN '{source}'
+            WHEN property_market.specs_source = '{source}' THEN '{source}'
+            WHEN {source_priority} > ({existing_priority}) THEN '{source}'
+            ELSE property_market.specs_source
+        END
+    """
+
+
+def _specs_updated_at_upsert_sql(source: str) -> str:
+    source_priority = SOURCE_PRIORITY[source]
+    existing_priority = _source_priority_case("property_market.specs_source")
+    any_incoming = _specs_any_incoming_sql()
+    return f"""
+        CASE
+            WHEN NOT ({any_incoming}) THEN property_market.specs_updated_at
+            WHEN property_market.specs_source IS NULL THEN NOW()
+            WHEN property_market.specs_source = '{source}' THEN NOW()
+            WHEN {source_priority} > ({existing_priority}) THEN NOW()
+            ELSE property_market.specs_updated_at
+        END
+    """
 
 
 def _detail_url_upsert_sql(source: str) -> str:
