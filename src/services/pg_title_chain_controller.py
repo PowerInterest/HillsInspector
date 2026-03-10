@@ -168,6 +168,28 @@ class TitleChainController:
         statuses = ", ".join(f"'{status}'" for status in cls.OVERLAY_EVENT_SOURCES)
         return f"{value_expr} IN ({statuses})"
 
+    @staticmethod
+    def _real_deed_overlay_sql(alias: str) -> str:
+        """Return the predicate for overlay rows that represent actual deeds.
+
+        ``PgTitleBreakService`` also writes ``SEARCH_NO_RESULT`` sentinels into
+        ``foreclosure_title_events`` with ``event_source='ORI_DEED_SEARCH'`` so
+        retry cooldowns survive rebuilds. Those sentinels are operational state,
+        not deed transfers. If we feed them into title-chain sale queries they
+        appear as fake "deeds" dated today with empty parties on every active
+        foreclosure touched by title_breaks.
+        """
+
+        return (
+            f"{alias}.event_source = 'ORI_DEED_SEARCH' "
+            f"AND COALESCE({alias}.event_subtype, '') <> 'SEARCH_NO_RESULT' "
+            f"AND NULLIF(btrim(COALESCE({alias}.instrument_number, '')), '') IS NOT NULL "
+            f"AND ("
+            f"NULLIF(btrim(COALESCE({alias}.grantor, '')), '') IS NOT NULL "
+            f"OR NULLIF(btrim(COALESCE({alias}.grantee, '')), '') IS NOT NULL"
+            f")"
+        )
+
     @classmethod
     def is_gap_status(cls, link_status: str | None) -> bool:
         return link_status in cls.GAP_STATUSES
@@ -359,6 +381,7 @@ class TitleChainController:
     @staticmethod
     def _insert_sales_events_sql() -> str:
         overlay_sql = TitleChainController._overlay_source_sql("e.event_source")
+        deed_overlay_sql = TitleChainController._real_deed_overlay_sql("e")
         return """
             WITH hcpa_with_overlay AS (
                 SELECT
@@ -427,7 +450,7 @@ class TitleChainController:
                 FROM controller_scope sc
                 JOIN foreclosure_title_events e
                   ON e.foreclosure_id = sc.foreclosure_id
-                WHERE e.event_source = 'ORI_DEED_SEARCH'
+                WHERE """ + deed_overlay_sql + """
                   AND e.event_date <= sc.auction_date
                   AND NOT EXISTS (
                       SELECT 1

@@ -523,6 +523,12 @@ DDL: list[str] = [
             FROM foreclosure_title_events e
             WHERE (e.folio = p_folio OR e.strap = p_folio)
               AND e.event_source = 'ORI_DEED_SEARCH'
+              AND COALESCE(e.event_subtype, '') <> 'SEARCH_NO_RESULT'
+              AND NULLIF(btrim(COALESCE(e.instrument_number, '')), '') IS NOT NULL
+              AND (
+                  NULLIF(btrim(COALESCE(e.grantor, '')), '') IS NOT NULL
+                  OR NULLIF(btrim(COALESCE(e.grantee, '')), '') IS NOT NULL
+              )
               AND e.event_date <= p_as_of_date
               AND NOT EXISTS (
                   -- Do not inject if HCPA sales already has this instrument for this folio

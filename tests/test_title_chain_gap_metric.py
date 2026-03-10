@@ -8,6 +8,7 @@ PostgreSQL fixture for the full title-chain pipeline.
 
 from __future__ import annotations
 
+from src.db.migrations.create_foreclosures import DDL
 from src.services.pg_title_chain_controller import ControllerConfig, TitleChainController
 
 
@@ -125,5 +126,23 @@ def test_insert_sales_events_sql_uses_recovery_overlay_rows() -> None:
     assert "LEFT JOIN LATERAL (" in sql
     assert "e.event_source IN ('ORI_DEED_SEARCH', 'ORI_DEED_BACKFILL')" in sql
     assert "JOIN foreclosure_title_events e" in sql
-    assert "WHERE e.event_source = 'ORI_DEED_SEARCH'" in sql
+    assert "e.event_source = 'ORI_DEED_SEARCH'" in sql
     assert "UNION ALL" in sql
+
+
+def test_insert_sales_events_sql_excludes_search_no_result_sentinels() -> None:
+    sql = TitleChainController._insert_sales_events_sql()  # noqa: SLF001
+
+    assert "COALESCE(e.event_subtype, '') <> 'SEARCH_NO_RESULT'" in sql
+    assert "NULLIF(btrim(COALESCE(e.instrument_number, '')), '') IS NOT NULL" in sql
+    assert "NULLIF(btrim(COALESCE(e.grantor, '')), '') IS NOT NULL" in sql
+    assert "NULLIF(btrim(COALESCE(e.grantee, '')), '') IS NOT NULL" in sql
+
+
+def test_bootstrap_fn_title_chain_excludes_search_no_result_sentinels() -> None:
+    ddl = next(stmt for stmt in DDL if "CREATE OR REPLACE FUNCTION fn_title_chain(" in stmt)
+
+    assert "COALESCE(e.event_subtype, '') <> 'SEARCH_NO_RESULT'" in ddl
+    assert "NULLIF(btrim(COALESCE(e.instrument_number, '')), '') IS NOT NULL" in ddl
+    assert "NULLIF(btrim(COALESCE(e.grantor, '')), '') IS NOT NULL" in ddl
+    assert "NULLIF(btrim(COALESCE(e.grantee, '')), '') IS NOT NULL" in ddl
