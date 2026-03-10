@@ -1,5 +1,6 @@
 from typing import Any
 
+from src.services import pg_title_break_service
 from src.services.pg_title_break_service import PgTitleBreakService
 
 
@@ -125,6 +126,43 @@ class _FindTargetsEngine:
 
     def connect(self) -> _FindTargetsConn:
         return self.conn
+
+
+class _SentinelSkipConn:
+    def __init__(
+        self,
+        *,
+        target_rows: list[dict[str, Any]] | None = None,
+        sentinel_rows: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.target_rows = target_rows or []
+        self.sentinel_rows = sentinel_rows or []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def execute(self, sql: Any, params: dict[str, Any]) -> _GapResult:
+        sql_text = str(sql)
+        self.calls.append((sql_text, params))
+        if "retry_eligible_on" in sql_text:
+            return _GapResult(self.sentinel_rows)
+        return _GapResult(self.target_rows)
+
+    def __enter__(self) -> "_SentinelSkipConn":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+class _CaptureLogger:
+    def __init__(self) -> None:
+        self.info_messages: list[str] = []
+        self.error_messages: list[str] = []
+
+    def info(self, message: str, *args: object) -> None:
+        self.info_messages.append(message.format(*args) if args else message)
+
+    def error(self, message: str, *args: object) -> None:
+        self.error_messages.append(message.format(*args) if args else message)
 
 
 def test_lookup_instrument_parties_uses_keyword_search_payload() -> None:
@@ -400,3 +438,43 @@ def test_insert_search_sentinel_respects_retry_ttl() -> None:
     assert "event_subtype = 'search_no_result'" in sql_lower
     assert "event_date >= current_date - cast(:retry_ttl_days as integer)" in sql_lower
     assert params["retry_ttl_days"] == 14
+
+
+def test_run_logs_recent_sentinel_skips(monkeypatch: Any) -> None:
+    conn = _SentinelSkipConn(
+        target_rows=[],
+        sentinel_rows=[
+            {
+                "foreclosure_id": 42,
+                "case_number_raw": "24-CA-000042",
+                "folio": "F42",
+                "strap": "S42",
+                "chain_status": "BROKEN",
+                "gap_count": 2,
+                "sentinel_date": "2026-03-09",
+                "retry_eligible_on": "2026-03-23",
+                "retry_days_remaining": 13,
+            }
+        ],
+    )
+    service = PgTitleBreakService.__new__(PgTitleBreakService)
+    service.engine = _FindTargetsEngine(conn)  # type: ignore[assignment]
+    capture_logger = _CaptureLogger()
+    monkeypatch.setattr(pg_title_break_service, "logger", capture_logger)
+
+    result = service.run()
+
+    assert result == {
+        "skipped": True,
+        "reason": "recent_search_no_result_sentinels",
+        "recent_sentinel_skip_count": 1,
+    }
+    assert capture_logger.error_messages == []
+    assert capture_logger.info_messages[0] == (
+        "title_breaks: skipping 1 foreclosures due to recent SEARCH_NO_RESULT sentinels"
+    )
+    assert (
+        "title_breaks: skipping foreclosure_id=42 case=24-CA-000042 folio=F42 strap=S42 "
+        "chain_status=BROKEN gap_count=2 due to SEARCH_NO_RESULT sentinel dated 2026-03-09 "
+        "(retry eligible 2026-03-23, 13 day(s) remaining)"
+    ) in capture_logger.info_messages

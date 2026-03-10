@@ -82,12 +82,24 @@ class PgTitleBreakService:
         foreclosure_id: int | None = None,
         case_number: str | None = None,
     ) -> dict[str, Any]:
+        sentinel_skips = self._find_recent_sentinel_skips(
+            foreclosure_id=foreclosure_id,
+            case_number=case_number,
+        )
+        self._log_recent_sentinel_skips(sentinel_skips)
+
         targets = self._find_targets(
             limit,
             foreclosure_id=foreclosure_id,
             case_number=case_number,
         )
         if not targets:
+            if sentinel_skips:
+                return {
+                    "skipped": True,
+                    "reason": "recent_search_no_result_sentinels",
+                    "recent_sentinel_skip_count": len(sentinel_skips),
+                }
             return {"skipped": True, "reason": "no_targets"}
 
         logger.info(f"title_breaks: {len(targets)} foreclosures to process")
@@ -117,6 +129,7 @@ class PgTitleBreakService:
             "gaps_found": total_gaps,
             "deeds_inserted": total_inserted,
             "sentinels_inserted": total_sentinels,
+            "recent_sentinel_skip_count": len(sentinel_skips),
             "backfilled": self._backfill_deed_parties(
                 limit,
                 foreclosure_id=foreclosure_id,
@@ -189,6 +202,99 @@ class PgTitleBreakService:
         with self.engine.connect() as conn:
             rows = conn.execute(text(sql), params).mappings().fetchall()
         return [dict(r) for r in rows]
+
+    def _find_recent_sentinel_skips(
+        self,
+        *,
+        foreclosure_id: int | None = None,
+        case_number: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Foreclosures currently skipped because a recent no-result sentinel is active."""
+        params: dict[str, Any] = {"retry_ttl_days": _SEARCH_NO_RESULT_RETRY_DAYS}
+        sql = """
+            SELECT DISTINCT
+                   f.foreclosure_id,
+                   f.case_number_raw,
+                   f.case_number_norm,
+                   f.strap,
+                   f.folio,
+                   COALESCE(ts.chain_status, '') AS chain_status,
+                   COALESCE(ts.gap_count, 0) AS gap_count,
+                   sentinel.event_date AS sentinel_date,
+                   sentinel.retry_eligible_on AS retry_eligible_on,
+                   GREATEST(
+                       0,
+                       CAST(sentinel.retry_eligible_on - CURRENT_DATE AS INTEGER)
+                   ) AS retry_days_remaining
+            FROM foreclosures f
+            JOIN LATERAL (
+                SELECT
+                    e2.event_date,
+                    e2.event_date + CAST(:retry_ttl_days AS INTEGER) AS retry_eligible_on
+                FROM foreclosure_title_events e2
+                WHERE e2.foreclosure_id = f.foreclosure_id
+                  AND e2.event_source = 'ORI_DEED_SEARCH'
+                  AND e2.event_subtype = 'SEARCH_NO_RESULT'
+                  AND e2.event_date >= CURRENT_DATE - CAST(:retry_ttl_days AS INTEGER)
+                ORDER BY e2.event_date DESC
+                LIMIT 1
+            ) sentinel ON TRUE
+            JOIN foreclosure_title_events fte
+              ON fte.foreclosure_id = f.foreclosure_id
+            LEFT JOIN foreclosure_title_summary ts
+              ON ts.foreclosure_id = f.foreclosure_id
+            WHERE f.archived_at IS NULL
+              AND f.folio IS NOT NULL
+              AND btrim(f.folio) <> ''
+              AND (
+                  ts.foreclosure_id IS NULL
+                  OR COALESCE(ts.gap_count, 0) > 0
+                  OR COALESCE(ts.chain_status, '') <> 'COMPLETE'
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM foreclosure_title_events e2
+                  WHERE e2.foreclosure_id = f.foreclosure_id
+                    AND e2.event_source = 'ORI_DEED_SEARCH'
+                    AND COALESCE(e2.event_subtype, '') <> 'SEARCH_NO_RESULT'
+              )
+        """
+        if foreclosure_id is not None:
+            sql += " AND f.foreclosure_id = :foreclosure_id"
+            params["foreclosure_id"] = foreclosure_id
+        if case_number:
+            sql += " AND f.case_number_raw = :case_number"
+            params["case_number"] = case_number
+        sql += " ORDER BY sentinel.retry_eligible_on, f.foreclosure_id"
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(text(sql), params).mappings().fetchall()
+        return [dict(r) for r in rows]
+
+    @staticmethod
+    def _log_recent_sentinel_skips(skips: list[dict[str, Any]]) -> None:
+        if not skips:
+            return
+
+        logger.info(
+            "title_breaks: skipping {} foreclosures due to recent SEARCH_NO_RESULT sentinels",
+            len(skips),
+        )
+        for skip in skips:
+            logger.info(
+                "title_breaks: skipping foreclosure_id={} case={} folio={} strap={} "
+                "chain_status={} gap_count={} due to SEARCH_NO_RESULT sentinel dated {} "
+                "(retry eligible {}, {} day(s) remaining)",
+                skip.get("foreclosure_id"),
+                skip.get("case_number_raw") or "",
+                skip.get("folio") or "",
+                skip.get("strap") or "",
+                skip.get("chain_status") or "",
+                int(skip.get("gap_count") or 0),
+                skip.get("sentinel_date"),
+                skip.get("retry_eligible_on"),
+                int(skip.get("retry_days_remaining") or 0),
+            )
 
     def _process_one(self, target: dict[str, Any]) -> tuple[int, int, int]:
         """Process a single foreclosure: find gaps, search ORI, insert deeds.
