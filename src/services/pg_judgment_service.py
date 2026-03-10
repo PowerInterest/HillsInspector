@@ -51,13 +51,20 @@ class PgJudgmentService:
     def _find_unextracted_pdfs(self, limit: int | None) -> list[dict[str, Any]]:
         """Find PDFs on disk that don't have a corresponding _extracted.json."""
         if not FORECLOSURE_DATA_DIR.exists():
+            logger.info("judgment_extract: data dir does not exist, nothing to scan")
             return []
 
-        results: list[dict[str, Any]] = []
+        case_dirs = sorted(
+            d for d in FORECLOSURE_DATA_DIR.iterdir() if d.is_dir()
+        )
+        logger.info(
+            f"judgment_extract: scanning {len(case_dirs)} case directories for unextracted PDFs"
+        )
 
-        for case_dir in sorted(FORECLOSURE_DATA_DIR.iterdir()):
-            if not case_dir.is_dir():
-                continue
+        results: list[dict[str, Any]] = []
+        scanned_with_docs = 0
+
+        for case_dir in case_dirs:
             doc_dir = case_dir / "documents"
             if not doc_dir.is_dir():
                 continue
@@ -66,6 +73,8 @@ class PgJudgmentService:
             pdfs = list(doc_dir.glob("*.pdf"))
             if not pdfs:
                 continue
+
+            scanned_with_docs += 1
 
             # Only judgment PDFs belong in this step. Mortgage PDFs live in the
             # same folder and are handled by the mortgage extraction service.
@@ -87,6 +96,10 @@ class PgJudgmentService:
             if limit and len(results) >= limit:
                 break
 
+        logger.info(
+            f"judgment_extract: scan complete — {scanned_with_docs} dirs with documents, "
+            f"{len(results)} unextracted PDFs found"
+        )
         return results
 
     def _extract_judgments(self, items: list[dict[str, Any]]) -> int:
