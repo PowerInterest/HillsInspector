@@ -140,6 +140,12 @@ def test_matches_property_rejects_owner_only_noc() -> None:
     assert pg_ori_service.PgOriService.matches_property(doc, tokens) is False
 
 
+def test_is_generic_name_flags_navy_federal_credit_union(monkeypatch: Any) -> None:
+    monkeypatch.setattr(pg_ori_service, "_GENERIC_NAMES", None)
+
+    assert pg_ori_service._is_generic_name("NAVY FEDERAL CREDIT UNION") is True  # noqa: SLF001
+
+
 def test_matches_property_rejects_owner_only_foreclosure_judgment_with_other_case() -> None:
     tokens = {
         "legal_tokens": {"LAKEWOOD", "ESTATES", "UNIT"},
