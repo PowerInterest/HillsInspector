@@ -71,8 +71,8 @@ ALTER TABLE ori_encumbrances ADD COLUMN IF NOT EXISTS mortgage_data JSONB;
 
 | Flag | Effect |
 |------|--------|
-| `--skip-mortgage-extract` | Skip this step in `Controller.py` |
-| `--mortgage-limit N` | Process only N mortgages (testing) |
+| `--skip-encumbrance-extraction` | Skip this step in `Controller.py` |
+| `--extraction-limit N` | Process only N documents (testing) |
 
 ## Running Standalone
 

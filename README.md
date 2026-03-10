@@ -36,7 +36,7 @@ uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --surviv
 
 ### 3. Run Phase A Only (bulk refresh)
 ```powershell
-uv run Controller.py --skip-auction-scrape --skip-judgment-extract --skip-identifier-recovery --skip-ori-search --skip-mortgage-extract --skip-survival --skip-encumbrance-audit --skip-encumbrance-recovery --skip-final-refresh --skip-market-data
+uv run Controller.py --skip-auction-scrape --skip-judgment-extract --skip-identifier-recovery --skip-ori-search --skip-encumbrance-extraction --skip-survival --skip-encumbrance-audit --skip-encumbrance-recovery --skip-final-refresh --skip-market-data
 ```
 
 ### 4. Run Phase B Only (enrichment)

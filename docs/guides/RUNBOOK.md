@@ -78,7 +78,7 @@ uv run Controller.py [OPTIONS]
 | `--skip-judgment-extract` | Judgment PDF extraction (Vision OCR) |
 | `--skip-identifier-recovery` | Strap/folio identifier recovery from judgment data |
 | `--skip-ori-search` | ORI document search |
-| `--skip-mortgage-extract` | Mortgage PDF extraction from ORI matches |
+| `--skip-encumbrance-extraction` | Encumbrance document extraction from ORI matches |
 | `--skip-survival` | Lien survival analysis |
 | `--skip-encumbrance-audit` | Encumbrance audit metrics and issue buckets |
 | `--skip-encumbrance-recovery` | Targeted audit-driven recovery loop |
@@ -156,7 +156,7 @@ uv run Controller.py --auction-limit 5 --judgment-limit 5 --ori-limit 5 --surviv
 # Phase A only (bulk refresh)
 uv run Controller.py \
   --skip-auction-scrape --skip-judgment-extract --skip-identifier-recovery \
-  --skip-ori-search --skip-mortgage-extract --skip-survival \
+  --skip-ori-search --skip-encumbrance-extraction --skip-survival \
   --skip-encumbrance-audit --skip-encumbrance-recovery \
   --skip-final-refresh --skip-market-data
 
@@ -174,7 +174,7 @@ uv run Controller.py --case-number 292024CA012345 \
 
 # Force all bulk loaders (ignore freshness)
 uv run Controller.py --force-all --skip-auction-scrape --skip-judgment-extract \
-  --skip-identifier-recovery --skip-ori-search --skip-mortgage-extract \
+  --skip-identifier-recovery --skip-ori-search --skip-encumbrance-extraction \
   --skip-survival --skip-encumbrance-audit --skip-encumbrance-recovery \
   --skip-final-refresh --skip-market-data
 ```
@@ -216,7 +216,7 @@ Sequential. Processes **all incomplete auctions** (no date filter, no staleness 
 | 16 | Judgment extract | `--skip-judgment-extract` | `--judgment-limit` | Download PDFs, extract via Vision OCR |
 | 17 | Identifier recovery | `--skip-identifier-recovery` | `--identifier-recovery-limit` | Recover missing parcel identifiers from judgment data |
 | 18 | ORI search | `--skip-ori-search` | `--ori-limit` | Search Official Records, ingest documents |
-| 19 | Mortgage extract | `--skip-mortgage-extract` | `--mortgage-limit` | Extract mortgage docs from ORI references |
+| 19 | Encumbrance extraction | `--skip-encumbrance-extraction` | `--extraction-limit` | Extract encumbrance docs from ORI references |
 | 20 | Survival analysis | `--skip-survival` | `--survival-limit` | Lien survival determination |
 | 21 | Encumbrance audit | `--skip-encumbrance-audit` | — | Read-only encumbrance coverage/issues report |
 | 22 | Encumbrance recovery | `--skip-encumbrance-recovery` | — | Targeted recovery from audit buckets |

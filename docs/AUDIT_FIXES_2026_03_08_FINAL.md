@@ -48,7 +48,7 @@ uv run Controller.py \
   --skip-trust-accounts --skip-title-breaks --skip-market-data \
   --skip-final-refresh \
   --skip-auction-scrape --skip-judgment-extract --skip-identifier-recovery \
-  --skip-ori-search --skip-municipal-liens --skip-mortgage-extract \
+  --skip-ori-search --skip-municipal-liens --skip-encumbrance-extraction \
   --skip-survival --skip-encumbrance-audit --skip-encumbrance-recovery
 ```
 
