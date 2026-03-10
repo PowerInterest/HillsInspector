@@ -23,6 +23,8 @@ cooldown marker.
     already parsed
   - address fallback normalizes punctuation/spacing and strips directionals plus
     street suffixes before applying a legal-description cross-check
+  - regression coverage includes human-equivalent variants such as
+    `CRESTHILL` vs `CREST HILL DR` and `BLAINE PLACE` vs `BLAINE TOP PL`
 
 ## ORI Search
 

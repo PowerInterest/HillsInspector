@@ -428,6 +428,59 @@ def test_run_batch_merges_scrapling_counts_into_parent_summary(monkeypatch: Any)
     assert result["scrapling"] == {"realtor": 2, "redfin": 1}
 
 
+def test_scrapling_service_keeps_parent_browser_realtor_runner() -> None:
+    assert (
+        PgMarketDataScraplingService._run_realtor
+        is market_data_service.MarketDataService._run_realtor
+    )
+
+
+def test_run_batch_uses_realtor_scrapling_runner(monkeypatch: Any) -> None:
+    svc = object.__new__(PgMarketDataScraplingService)
+    svc._has_realtor_column = True  # type: ignore[attr-defined]
+    svc._force = False  # type: ignore[attr-defined]
+
+    seen: list[tuple[str, str]] = []
+
+    async def _fake_safe_site_run(
+        site: str,
+        runner: Any,
+        _properties: list[dict[str, Any]],
+    ) -> tuple[int, int]:
+        seen.append((site, runner.__name__))
+        return (0, 0)
+
+    async def _fake_parent_run_batch(
+        self: Any,
+        properties: list[dict[str, Any]],
+        sources: list[str] | None = None,
+    ) -> dict[str, Any]:
+        assert properties == [{"strap": "A", "property_address": "1 Main St"}]
+        assert sources == ["realtor"]
+        return {"realtor": 0}
+
+    monkeypatch.setattr(
+        svc,
+        "_build_site_needs",
+        lambda properties, _sources: {"realtor": properties},
+    )
+    monkeypatch.setattr(svc, "_safe_site_run", _fake_safe_site_run)
+    monkeypatch.setattr(
+        market_data_service.MarketDataService,
+        "run_batch",
+        _fake_parent_run_batch,
+    )
+
+    asyncio.run(
+        svc.run_batch(
+            [{"strap": "A", "property_address": "1 Main St"}],
+            sources=["realtor"],
+        )
+    )
+
+    assert seen == [("realtor", "_run_realtor_scrapling")]
+
+
 def test_get_enrichment_state_assumes_enriched_on_query_failure() -> None:
     svc = object.__new__(PgMarketDataScraplingService)
     svc.__dict__["_engine"] = _RaisingEngine()

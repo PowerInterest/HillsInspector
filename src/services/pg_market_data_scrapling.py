@@ -1389,7 +1389,10 @@ class PgMarketDataScraplingService(MarketDataService):
     # Per-site runners (delegate to generic loop)
     # ------------------------------------------------------------------
 
-    async def _run_realtor(self, properties: list[dict[str, Any]]) -> tuple[int, int]:
+    async def _run_realtor_scrapling(
+        self,
+        properties: list[dict[str, Any]],
+    ) -> tuple[int, int]:
         return await self._run_site_loop(
             site=_REALTOR_SOURCE,
             properties=properties,
@@ -1573,7 +1576,7 @@ class PgMarketDataScraplingService(MarketDataService):
         needs = self._build_site_needs(properties, sources)
 
         site_runners = {
-            "realtor": (self._run_realtor, self._has_realtor_column),
+            "realtor": (self._run_realtor_scrapling, self._has_realtor_column),
             "redfin": (self._run_redfin_scrapling, True),
             "zillow": (self._run_zillow_scrapling, True),
         }

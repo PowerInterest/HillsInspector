@@ -130,6 +130,35 @@ class _AddressLookupConnection:
         )
 
 
+class _BlaineAddressLookupConnection:
+    def __init__(self) -> None:
+        self.execute_calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    def execute(
+        self,
+        statement: Any,
+        params: dict[str, Any] | None = None,
+    ) -> _FakeResult:
+        sql = str(statement)
+        self.execute_calls.append((sql, params))
+        if "WHERE property_address = :address" in sql:
+            return _FakeResult(rows=[])
+        return _FakeResult(
+            rows=[
+                {
+                    "folio": "F-3",
+                    "strap": "S-3",
+                    "property_address": "11112 BLAINE TOP PL",
+                    "raw_legal1": "WESTCHASE",
+                    "raw_legal2": "LOT 8 BLOCK 2",
+                    "raw_legal3": "",
+                    "raw_legal4": "",
+                    "source_file_id": 88,
+                }
+            ]
+        )
+
+
 class _BeginContext:
     def __init__(self, conn: _RunConnection) -> None:
         self._conn = conn
@@ -302,4 +331,33 @@ def test_lookup_by_address_falls_back_to_normalized_terms() -> None:
         "limit": 60,
         "street_token_0": "%CREST%",
         "street_token_1": "%HILL%",
+    }
+
+
+def test_address_lookup_terms_drop_suffix_for_blaine_place_variant() -> None:
+    house_number, street_tokens = identifier_recovery._address_lookup_terms(  # noqa: SLF001
+        "11112 Blaine Place, Tampa, FL 33626"
+    )
+
+    assert house_number == "11112"
+    assert street_tokens == ["BLAINE"]
+
+
+def test_lookup_by_address_matches_blaine_place_to_blaine_top_pl() -> None:
+    service = _build_service()
+    conn = _BlaineAddressLookupConnection()
+
+    candidates = service._lookup_by_address(  # noqa: SLF001
+        conn,  # type: ignore[arg-type]
+        address="11112 Blaine Place, Tampa, FL 33626",
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].strap == "S-3"
+    fallback_sql, fallback_params = conn.execute_calls[1]
+    assert "regexp_replace(UPPER(COALESCE(property_address, '')), '[^A-Z0-9]', '', 'g')" in fallback_sql
+    assert fallback_params == {
+        "house_prefix": "11112%",
+        "limit": 60,
+        "street_token_0": "%BLAINE%",
     }

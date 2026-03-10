@@ -426,10 +426,10 @@ The PAV truncation / fallback logic is still suspicious and likely contributes t
 | # | Issue | Severity | Fix Status |
 |---|---|---|---|
 | 1 | ORI `_save_documents` AmbiguousParameter — 221 instruments dropped | **High** | CAST fix applied, needs re-run to backfill + skip-count propagation |
-| 2 | `_run_realtor` signature mismatch — browser Realtor broken | **High** | Not yet fixed |
+| 2 | `_run_realtor` signature mismatch — browser Realtor broken | **High** | Fixed in code: the scrapling service no longer shadows the parent browser `_run_realtor`, so browser fallback can execute without the TypeError |
 | 8 | `title_breaks` sentinel writes poison retry scope without repairs | **Medium-High** | Fixed in code: target scope excludes complete chains, sentinels use a 14-day TTL refresh, and sentinel-writing runs now report degraded |
 | 3 | Identifier recovery — write path never reached for 11 cases | Medium | Fixed in code: retry cooldown added, `UNIT NO` parsing tightened, and normalized address fallback now reaches conservative legal-confirmed matches |
 | 4 | ORI staged-only cases + zero-save accounting | Medium | Fixed in code: zero-persistence runs no longer mark `step_ori_searched`, and staged/save-skip outcomes now report degraded instead of `noop` |
-| 6 | Market data degraded — external blocking + Issue 2 | Medium | Partially addressed by fixing Issue 2; external blocking is operational noise |
+| 6 | Market data degraded — external blocking + Issue 2 | Medium | Browser-path bug fixed; remaining degraded behavior is external blocking / rate-limit noise |
 | 5 | Missing coordinates — 10 properties x3 logs | Low | Same root cause as Issue 3 |
 | 7 | PAV >1500 corporate skips — 128 warnings | Low | By design for encumbrances, but see Issue 8 for title_breaks impact |
