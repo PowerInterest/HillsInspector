@@ -16,8 +16,8 @@ The extraction flow follows the same pattern as ``FinalJudgmentProcessor``:
 
 1. Queries ``ori_encumbrances`` for rows missing ``extracted_data``
 2. For each row, checks the on-disk JSON cache (``{stem}_extracted.json``)
-3. If no cache hit, downloads the PDF, renders pages to PNG (PyMuPDF)
-4. **pytesseract** OCRs each page image to raw text
+3. If no cache hit, downloads the PDF, renders every page to PNG (PyMuPDF)
+4. **pytesseract** OCRs every page image to raw text
 5. Combines OCR text with the doc-type prompt and sends to the LLM via
    ``VisionService.analyze_text()`` (text-only, NOT image-based)
 6. Parses JSON from the LLM response, validates against the Pydantic model
@@ -83,7 +83,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 _PAV_BASE = "https://publicaccess.hillsclerk.com"
-_MAX_PAGES = 3
 _RENDER_DPI = 150
 
 # ---------------------------------------------------------------------------
@@ -247,11 +246,7 @@ class PgEncumbranceExtractionService:
                     continue
                 try:
                     result = await self._process_one(page, row)
-                    if result:
-                        key = "extracted" if result.get("_from_vision") else "cached"
-                        stats[key] += 1
-                    else:
-                        stats["skipped"] += 1
+                    self._tally_result(stats, result)
                 except Exception:
                     logger.exception("Error extracting id={}", row["id"])
                     stats["errors"] += 1
@@ -260,6 +255,26 @@ class PgEncumbranceExtractionService:
 
         logger.info("Extraction complete: {}", stats)
         return stats
+
+    @staticmethod
+    def _tally_result(stats: dict[str, int], result: dict[str, Any] | None) -> None:
+        """Map per-row outcome markers into controller-visible stats.
+
+        The service used to return ``None`` for both benign skips and real OCR /
+        LLM / validation failures, which hid operational problems inside the
+        ``skipped`` counter. Keep the row result explicit so downstream metrics
+        tell reviewers whether a document was actually processed, cached, or
+        failed.
+        """
+        status = (result or {}).get("_status", "skipped")
+        if status == "extracted":
+            stats["extracted"] += 1
+        elif status == "cached":
+            stats["cached"] += 1
+        elif status == "error":
+            stats["errors"] += 1
+        else:
+            stats["skipped"] += 1
 
     # ------------------------------------------------------------------
     # Query helpers
@@ -342,11 +357,18 @@ class PgEncumbranceExtractionService:
 
     @staticmethod
     def _render_pages(pdf_path: Path) -> list[str]:
-        """Render first N pages of PDF to temp PNG files.  Returns paths."""
+        """Render every PDF page to temp PNG files.
+
+        Encumbrance documents routinely split critical facts across distant
+        pages: page 1 may have parties / recording refs, middle pages may hold
+        legal descriptions, and trailing riders often contain HOA names or other
+        downstream-critical terms. Rendering only the first few pages defeats
+        the whole "single combined OCR context" design.
+        """
         doc = _fitz.open(str(pdf_path))
         images: list[str] = []
         try:
-            for i in range(min(len(doc), _MAX_PAGES)):
+            for i in range(len(doc)):
                 pg = doc[i]
                 pix = pg.get_pixmap(dpi=_RENDER_DPI)
                 with _tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
@@ -361,13 +383,19 @@ class PgEncumbranceExtractionService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _ocr_images_to_text(image_paths: list[str]) -> str:
+    def _ocr_images_to_text(image_paths: list[str]) -> tuple[str, list[int]]:
         """OCR all page images with pytesseract and combine into one string.
 
         Each page is prefixed with ``--- PAGE N ---`` for context, matching
         the same convention used by ``FinalJudgmentProcessor``.
+
+        Returns ``(text, missing_pages)``. A missing page means OCR raised or
+        returned no text for that rendered image. The caller treats that as an
+        extraction failure because the "single combined LLM call with full
+        document context" contract is no longer true once pages are missing.
         """
         page_texts: list[str] = []
+        missing_pages: list[int] = []
         for idx, image_path in enumerate(image_paths, start=1):
             try:
                 with Image.open(image_path) as image:
@@ -379,6 +407,7 @@ class PgEncumbranceExtractionService:
                     image_path,
                     exc,
                 )
+                missing_pages.append(idx)
                 continue
             if not page_text:
                 logger.warning(
@@ -386,10 +415,11 @@ class PgEncumbranceExtractionService:
                     idx,
                     image_path,
                 )
+                missing_pages.append(idx)
                 continue
             page_texts.append(f"--- PAGE {idx} ---\n{page_text}")
 
-        return "\n\n".join(page_texts)
+        return "\n\n".join(page_texts), missing_pages
 
     def _extract_from_ocr_text(
         self, ocr_text: str, enc_type: str
@@ -402,9 +432,12 @@ class PgEncumbranceExtractionService:
         if not ocr_text.strip():
             return None
 
-        prompt_template, _model_cls = EXTRACTION_DISPATCH[enc_type]
+        prompt_template, model_cls = EXTRACTION_DISPATCH[enc_type]
 
-        # Build the full prompt: doc-type prompt + OCR text
+        # Build the full prompt: doc-type prompt + OCR text. The prompt gives
+        # domain guidance; the response_format below is the actual schema
+        # contract. Both are necessary because prompt drift alone is not a safe
+        # structured-output strategy.
         full_prompt = (
             f"{prompt_template}\n\n"
             f"## DOCUMENT TEXT (OCR)\n\n{ocr_text}\n\n"
@@ -412,7 +445,17 @@ class PgEncumbranceExtractionService:
             "Use null for any field you cannot determine from the text."
         )
 
-        raw_response = self.vision.analyze_text(full_prompt, max_tokens=4000)
+        raw_response = self.vision.analyze_text(
+            full_prompt,
+            max_tokens=4000,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": f"{enc_type}_extraction",
+                    "schema": model_cls.model_json_schema(),
+                },
+            },
+        )
         if not raw_response:
             logger.warning("LLM returned empty response for {} extraction", enc_type)
             return None
@@ -431,16 +474,30 @@ class PgEncumbranceExtractionService:
     ) -> dict[str, Any] | None:
         """Validate extraction against the Pydantic model.
 
-        Returns cleaned dict on success, or the raw dict if validation fails
-        (we still persist partial data so downstream can use whatever was extracted).
+        Returns cleaned dict on success. Validation failures are treated as real
+        extraction failures instead of being silently persisted as partial data,
+        because downstream survival / title workflows assume ``extracted_data``
+        is structurally trustworthy.
         """
         _, model_cls = EXTRACTION_DISPATCH[enc_type]
         try:
             validated = model_cls.model_validate(data)
             return validated.model_dump(mode="json")
         except ValidationError as exc:
-            logger.warning("Validation failed for {}: {}", enc_type, exc.error_count())
-            return data  # store raw extraction even if validation fails
+            messages = []
+            for err in exc.errors():
+                msg = str(err.get("msg") or "validation error")
+                if msg.startswith("Value error, "):
+                    msg = msg.removeprefix("Value error, ")
+                messages.append(msg)
+            preview = "; ".join(messages[:3]) if messages else "unknown validation failure"
+            logger.warning(
+                "Validation failed for {} extraction with {} issue(s): {}",
+                enc_type,
+                exc.error_count(),
+                preview,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Database persistence
@@ -471,36 +528,91 @@ class PgEncumbranceExtractionService:
         # 1. Check cache
         cached = _load_cache(pdf_path)
         if cached:
-            self._save_to_pg(row["id"], cached)
-            logger.debug("Loaded from cache: id={}", row["id"])
-            return {**cached, "_from_vision": False}
+            validated_cache = self._validate(cached, enc_type)
+            if validated_cache is None:
+                logger.warning(
+                    "Ignoring invalid cache for id={} type={} path={} and re-extracting",
+                    row["id"],
+                    enc_type,
+                    pdf_path,
+                )
+            else:
+                self._save_to_pg(row["id"], validated_cache)
+                logger.debug("Loaded validated cache: id={}", row["id"])
+                return {**validated_cache, "_status": "cached"}
 
         # 2. Download
         downloaded = await self._download_pdf(page, row)
         if not downloaded:
-            return None
+            return {
+                "_status": "error",
+                "_reason": "download_failed",
+            }
 
         # 3. Render
         images = self._render_pages(downloaded)
         if not images:
             logger.warning("No pages rendered from {}", downloaded)
-            return None
+            return {
+                "_status": "error",
+                "_reason": "render_failed",
+            }
 
         try:
             # 4. OCR all pages → combined text → single LLM call
-            ocr_text = self._ocr_images_to_text(images)
+            ocr_text, missing_pages = self._ocr_images_to_text(images)
+            if missing_pages:
+                logger.warning(
+                    "OCR missed {}/{} page(s) for id={} type={} inst={}: pages={}",
+                    len(missing_pages),
+                    len(images),
+                    row["id"],
+                    enc_type,
+                    row.get("instrument_number"),
+                    missing_pages,
+                )
+                return {
+                    "_status": "error",
+                    "_reason": "ocr_incomplete",
+                }
             if not ocr_text.strip():
-                logger.warning("OCR produced no text for id={}", row["id"])
-                return None
+                logger.warning(
+                    "OCR produced no text for id={} type={} inst={}",
+                    row["id"],
+                    enc_type,
+                    row.get("instrument_number"),
+                )
+                return {
+                    "_status": "error",
+                    "_reason": "ocr_empty",
+                }
 
             raw = self._extract_from_ocr_text(ocr_text, enc_type)
             if not raw:
-                return None
+                logger.warning(
+                    "LLM returned no usable structured extraction for id={} type={} inst={}",
+                    row["id"],
+                    enc_type,
+                    row.get("instrument_number"),
+                )
+                return {
+                    "_status": "error",
+                    "_reason": "llm_no_structured_output",
+                }
 
             # 5. Validate
             validated = self._validate(raw, enc_type)
             if not validated:
-                return None
+                logger.warning(
+                    "Skipping persistence for invalid extraction id={} type={} inst={}",
+                    row["id"],
+                    enc_type,
+                    row.get("instrument_number"),
+                )
+                return {
+                    "_status": "error",
+                    "_reason": "validation_failed",
+                }
 
             # 6. Cache
             _write_cache(downloaded, validated)
@@ -513,7 +625,7 @@ class PgEncumbranceExtractionService:
                 enc_type,
                 row.get("instrument_number"),
             )
-            return {**validated, "_from_vision": True}
+            return {**validated, "_status": "extracted"}
 
         finally:
             for img in images:

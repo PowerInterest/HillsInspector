@@ -3,11 +3,13 @@
 import json
 import tempfile
 from pathlib import Path
+from typing import Any
 
+import fitz
 import pytest
 
-from src.models.mortgage_extraction import MortgageExtraction
 from src.models.deed_extraction import DeedExtraction
+from src.models.mortgage_extraction import MortgageExtraction
 from src.models.lien_extraction import LienExtraction
 from src.models.lis_pendens_extraction import LisPendensExtraction
 from src.models.satisfaction_extraction import SatisfactionExtraction
@@ -47,6 +49,16 @@ class TestDispatchTable:
             assert "extract" in lower or "analyz" in lower, (
                 f"Prompt for {enc_type} missing extraction/analysis instructions"
             )
+
+    def test_dispatch_response_format_uses_model_schema(self):
+        from src.services.pg_encumbrance_extraction_service import EXTRACTION_DISPATCH
+
+        prompt, model_cls = EXTRACTION_DISPATCH["mortgage"]
+
+        assert isinstance(prompt, str)
+        schema = model_cls.model_json_schema()
+        assert schema["additionalProperties"] is False
+        assert "mortgage_type" in schema["required"]
 
 
 class TestCacheLogic:
@@ -129,3 +141,119 @@ class TestEndToEnd:
         assert result["principal_amount"] == 250000.0
         assert result["mortgagee"] == "WELLS FARGO BANK"
         assert result["mortgagor"] == "JOHN SMITH"
+
+    def test_validate_rejects_prompt_shaped_payload(self):
+        """Validation must fail closed when the model returns the wrong contract."""
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        prompt_shaped = {
+            "borrower": "JOHN SMITH",
+            "lender": "WELLS FARGO BANK",
+            "principal_amount": 250000.0,
+            "confidence": "high",
+        }
+
+        result = PgEncumbranceExtractionService._validate(prompt_shaped, "mortgage")  # noqa: SLF001
+
+        assert result is None
+
+    def test_extract_from_ocr_text_passes_json_schema_response_format(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService()
+        captured: dict[str, Any] = {}
+
+        def _fake_analyze_text(
+            prompt: str,
+            *,
+            max_tokens: int,
+            response_format: dict[str, Any] | None = None,
+        ) -> str:
+            captured["prompt"] = prompt
+            captured["max_tokens"] = max_tokens
+            captured["response_format"] = response_format
+            return json.dumps(
+                {
+                    "instrument_number": "2024-0012345",
+                    "recording_book": None,
+                    "recording_page": None,
+                    "recording_date": "2024-01-15",
+                    "execution_date": "2024-01-10",
+                    "property_address": "123 Main St, Tampa, FL 33601",
+                    "legal_description": "LOT 5, BLOCK 3, TAMPA PALMS UNIT 1",
+                    "parcel_id": "1929084000",
+                    "confidence_score": 0.9,
+                    "unclear_sections": [],
+                    "mortgage_type": "MTG",
+                    "mortgagor": "JOHN SMITH",
+                    "mortgagee": "WELLS FARGO BANK",
+                    "principal_amount": 250000.0,
+                    "interest_rate": 6.5,
+                    "maturity_date": "2054-01-15",
+                    "is_adjustable_rate": False,
+                    "mers_min": None,
+                    "is_mers_nominee": False,
+                    "association_name": None,
+                    "has_pud_rider": False,
+                    "has_condo_rider": False,
+                }
+            )
+
+        monkeypatch.setattr(svc.vision, "analyze_text", _fake_analyze_text)
+
+        result = svc._extract_from_ocr_text("--- PAGE 1 ---\nMortgage text", "mortgage")  # noqa: SLF001
+
+        assert result is not None
+        assert result["raw_text"].startswith("--- PAGE 1 ---")
+        assert captured["max_tokens"] == 4000
+        assert captured["response_format"]["type"] == "json_schema"
+        assert captured["response_format"]["json_schema"]["name"] == "mortgage_extraction"
+        assert "schema" in captured["response_format"]["json_schema"]
+
+    def test_render_pages_renders_entire_document(self) -> None:
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            pdf_path = Path(tmp.name)
+
+        doc = fitz.open()
+        try:
+            for idx in range(4):
+                page = doc.new_page()
+                page.insert_text((72, 72), f"Page {idx + 1}")
+            doc.save(str(pdf_path))
+        finally:
+            doc.close()
+
+        image_paths = PgEncumbranceExtractionService._render_pages(pdf_path)  # noqa: SLF001
+        try:
+            assert len(image_paths) == 4
+            for image_path in image_paths:
+                assert Path(image_path).exists()
+        finally:
+            for image_path in image_paths:
+                Path(image_path).unlink(missing_ok=True)
+            pdf_path.unlink(missing_ok=True)
+
+    def test_tally_result_counts_errors_separately(self) -> None:
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        stats = {"extracted": 0, "cached": 0, "errors": 0, "skipped": 0}
+
+        PgEncumbranceExtractionService._tally_result(stats, {"_status": "error"})  # noqa: SLF001
+        PgEncumbranceExtractionService._tally_result(stats, {"_status": "cached"})  # noqa: SLF001
+        PgEncumbranceExtractionService._tally_result(stats, {"_status": "extracted"})  # noqa: SLF001
+        PgEncumbranceExtractionService._tally_result(stats, None)  # noqa: SLF001
+
+        assert stats == {"extracted": 1, "cached": 1, "errors": 1, "skipped": 1}
