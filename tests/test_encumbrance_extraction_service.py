@@ -1,9 +1,10 @@
 """Tests for pg_encumbrance_extraction_service dispatch and cache logic."""
 
+import asyncio
 import json
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import fitz
 import pytest
@@ -15,6 +16,9 @@ from src.models.lis_pendens_extraction import LisPendensExtraction
 from src.models.satisfaction_extraction import SatisfactionExtraction
 from src.models.assignment_extraction import AssignmentExtraction
 from src.models.noc_extraction import NOCExtraction
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
 
 
 class TestDispatchTable:
@@ -129,6 +133,58 @@ class TestCacheLogic:
         from src.services.pg_encumbrance_extraction_service import _load_cache
         result = _load_cache(Path("/tmp/nonexistent_abc123.pdf"))  # noqa: S108
         assert result is None
+
+    def test_find_unextracted_filters_to_rows_missing_pg_payload(self) -> None:
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeResult:
+            def mappings(self) -> "_FakeResult":
+                return self
+
+            def all(self) -> list[dict[str, Any]]:
+                return []
+
+        class _FakeConn:
+            def __enter__(self) -> "_FakeConn":
+                return self
+
+            def __exit__(
+                self,
+                _exc_type: object,
+                _exc: object,
+                _tb: object,
+            ) -> None:
+                return None
+
+            def execute(self, sql: Any, params: dict[str, Any]) -> _FakeResult:
+                captured["sql"] = str(sql)
+                captured["params"] = params
+                return _FakeResult()
+
+        class _FakeEngine:
+            def connect(self) -> _FakeConn:
+                return _FakeConn()
+
+        svc = PgEncumbranceExtractionService()
+        svc.engine = _FakeEngine()
+
+        rows = svc._find_unextracted(  # noqa: SLF001
+            limit=5,
+            straps=["123"],
+            enc_types=["mortgage"],
+        )
+
+        assert rows == []
+        assert "WHERE extracted_data IS NULL" in captured["sql"]
+        assert captured["params"] == {
+            "straps": ["123"],
+            "enc_types": ["mortgage"],
+            "lim": 5,
+        }
 
 
 class TestEndToEnd:
@@ -391,6 +447,88 @@ class TestEndToEnd:
         assert "deed_type" in captured["prompt"]
         assert '"party_1"' not in captured["prompt"]
         assert '"party_2"' not in captured["prompt"]
+
+    def test_process_one_valid_cache_skips_vision_call(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+            _cache_path_for,
+        )
+
+        svc = PgEncumbranceExtractionService()
+        pdf_path = tmp_path / "mortgage_2024-0012345.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\n")
+        cache_path = _cache_path_for(pdf_path)
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "instrument_number": "2024-0012345",
+                    "recording_book": None,
+                    "recording_page": None,
+                    "recording_date": "2024-01-15",
+                    "execution_date": "2024-01-10",
+                    "property_address": "123 Main St, Tampa, FL 33601",
+                    "legal_description": "LOT 5, BLOCK 3, TAMPA PALMS UNIT 1",
+                    "parcel_id": "1929084000",
+                    "confidence_score": 0.9,
+                    "unclear_sections": [],
+                    "mortgage_type": "MTG",
+                    "mortgagor": "JOHN SMITH",
+                    "mortgagee": "WELLS FARGO BANK",
+                    "principal_amount": 250000.0,
+                    "interest_rate": 6.5,
+                    "maturity_date": "2054-01-15",
+                    "is_adjustable_rate": False,
+                    "mers_min": None,
+                    "is_mers_nominee": False,
+                    "association_name": None,
+                    "has_pud_rider": False,
+                    "has_condo_rider": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(
+            PgEncumbranceExtractionService,
+            "_pdf_path_for",
+            staticmethod(lambda _row: pdf_path),
+        )
+
+        def _fail_analyze_text(*_args: Any, **_kwargs: Any) -> str:
+            raise AssertionError("vision should not run on cache hit")
+
+        monkeypatch.setattr(
+            svc.vision,
+            "analyze_text",
+            _fail_analyze_text,
+        )
+
+        saved: dict[str, Any] = {}
+
+        def _fake_save(encumbrance_id: int, data: dict[str, Any]) -> None:
+            saved["id"] = encumbrance_id
+            saved["data"] = data
+
+        monkeypatch.setattr(svc, "_save_to_pg", _fake_save)
+
+        row = {
+            "id": 99,
+            "encumbrance_type": "mortgage",
+            "instrument_number": "2024-0012345",
+            "raw_document_type": "(MTG) MORTGAGE",
+            "case_number": "TESTCASE",
+        }
+
+        result = asyncio.run(svc._process_one(cast("Page", None), row))  # noqa: SLF001
+
+        assert result is not None
+        assert result["_status"] == "cached"
+        assert saved["id"] == 99
+        assert saved["data"]["mortgagee"] == "WELLS FARGO BANK"
 
     def test_render_pages_renders_entire_document(self) -> None:
         from src.services.pg_encumbrance_extraction_service import (

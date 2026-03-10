@@ -405,7 +405,10 @@ class PgEncumbranceExtractionService:
             logger.info("No unextracted encumbrances found.")
             return {"extracted": 0, "cached": 0, "errors": 0, "skipped": 0}
 
-        logger.info(f"Found {len(rows)} encumbrances needing extraction")
+        logger.info(
+            "Found {} encumbrances needing extraction (filtered to extracted_data IS NULL; persisted rows are excluded before cache/OCR/Vision)",
+            len(rows),
+        )
         stats: dict[str, int] = {"extracted": 0, "cached": 0, "errors": 0, "skipped": 0}
 
         from playwright.async_api import async_playwright
@@ -473,7 +476,13 @@ class PgEncumbranceExtractionService:
         straps: Sequence[str] | None = None,
         enc_types: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Find encumbrances with no extracted_data and a downloadable ori_id."""
+        """Find encumbrances that still need extraction work.
+
+        ``extracted_data IS NULL`` is the primary database-backed dedupe gate
+        for this service. Rows that already have validated structured payloads
+        in PostgreSQL are excluded here, before any cache lookup, OCR, or
+        VisionService call happens.
+        """
         sql = """
             SELECT id, strap, folio, ori_id, ori_uuid, instrument_number,
                    encumbrance_type, raw_document_type, case_number,
@@ -687,6 +696,10 @@ class PgEncumbranceExtractionService:
         - undeclared keys -> dropped
         - a small set of safe ORI metadata fallbacks for base identifiers and
           two-party document roles
+
+        This function is intentionally pure/local. It must never trigger a new
+        OCR or VisionService request. Re-running the model belongs at the row
+        orchestration level, not inside validation repair.
         """
 
         _, model_cls = EXTRACTION_DISPATCH[enc_type]
@@ -844,7 +857,12 @@ class PgEncumbranceExtractionService:
                 )
             else:
                 self._save_to_pg(row["id"], validated_cache)
-                logger.debug("Loaded validated cache: id={}", row["id"])
+                logger.debug(
+                    "Loaded validated cache for id={} type={} inst={}; skipping download/OCR/Vision",
+                    row["id"],
+                    enc_type,
+                    row.get("instrument_number"),
+                )
                 return {**validated_cache, "_status": "cached"}
 
         # 2. Download
