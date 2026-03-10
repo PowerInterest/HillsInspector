@@ -45,6 +45,13 @@ Those failures were showing up in `BAD` / `CRITICAL` judgment triage as:
   (`less payments`, `escrow credits`, `unapplied funds`, similar subtractive
   lines) before enforcing the hard amount gate. This keeps the arithmetic check
   strict without trusting the model to carry subtractive math correctly.
+- The validator also normalizes recurring mortgage fee-table layouts where
+  `Corporate Advances` is a subtotal and later filing/service detail lines are
+  embedded inside that subtotal. In those cases the pipeline suppresses the
+  duplicated `court_costs` read and carries the residual math itself.
+- OCR text can misread an accrued `Per Diem Interest good through ...` amount as
+  a daily `per_diem_rate`. The model now moves those accrued amounts into
+  `per_diem_interest` before enforcing arithmetic.
 - The validator also de-duplicates obvious amount collisions that come from OCR
   misreads, such as a `late_charges` value that is identical to `court_costs`
   when the judgment text does not actually mention late fees.
@@ -70,6 +77,11 @@ Two rules matter for interpreting the output correctly:
   downgrades that to a linkage warning and explicitly reports that the document
   likely belongs to an alternate parcel or that the foreclosure linkage is
   wrong.
+- The triage output now separates live extraction failures from
+  `LINKAGE_REVIEW`, `ARCHIVED_REVIEW`, and `ORPHANED_REVIEW`. The target for
+  final-judgment extraction quality is `0` live `SUSPECT` / `BAD` /
+  `CRITICAL` files; linkage-review cases are real data problems, but they are
+  not counted as bad OCR/LLM extraction.
 - Arithmetic triage uses the same OCR-derived credit recovery as the live
   validator, so old judgments with omitted `less payments` lines are not
   incorrectly kept in the `BAD` bucket.

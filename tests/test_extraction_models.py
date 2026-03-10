@@ -285,6 +285,96 @@ def test_judgment_multiline_credit_and_duplicate_late_fee_are_normalized() -> No
     assert warnings == []
 
 
+def test_judgment_attorney_fee_breakout_uses_authoritative_total() -> None:
+    payload = _judgment_payload()
+    payload["principal_amount"] = 98932.06
+    payload["interest_amount"] = 32358.22
+    payload["per_diem_interest"] = 670.95
+    payload["late_charges"] = 85.20
+    payload["escrow_advances"] = 25388.00
+    payload["court_costs"] = 6044.93
+    payload["attorney_fees"] = 40471.50
+    payload["other_costs"] = 200.00
+    payload["total_judgment_amount"] = 191872.15
+    payload["raw_text"] = (
+        "Attorney’s Fees $20,146.50\n"
+        "Attorney's fees $5,400.00\n"
+        "Additional Attorney’s fees $14,746.50\n"
+        "Property Preservations $200.00\n"
+        "GRAND TOTAL $191,872.15\n"
+    )
+
+    model = JudgmentExtraction.model_validate(payload)
+    failures, warnings = model.validate_extraction()
+
+    assert failures == []
+    assert model.attorney_fees == 20146.50
+    assert model.other_costs == 7921.29
+    assert warnings == []
+
+
+def test_judgment_confidence_warning_needs_multiple_unclear_sections() -> None:
+    payload = _judgment_payload()
+    payload["confidence_score"] = 0.98
+    payload["unclear_sections"] = ["minor OCR noise"]
+
+    model = JudgmentExtraction.model_validate(payload)
+    failures, warnings = model.validate_extraction()
+
+    assert failures == []
+    assert not any("confidence_score is 0.98" in warning for warning in warnings)
+
+
+def test_judgment_corporate_advances_subtotal_does_not_double_count_embedded_costs() -> None:
+    payload = _judgment_payload()
+    payload["principal_amount"] = 53608.00
+    payload["interest_amount"] = 35706.83
+    payload["per_diem_rate"] = 418.05
+    payload["per_diem_interest"] = None
+    payload["late_charges"] = None
+    payload["escrow_advances"] = 24516.51
+    payload["title_search_costs"] = None
+    payload["court_costs"] = 5259.46
+    payload["attorney_fees"] = 2620.00
+    payload["other_costs"] = 473.54
+    payload["total_judgment_amount"] = 120548.26
+    payload["raw_text"] = (
+        "Principal due on the note secured by the mortgage foreclosed: $53,608.00\n"
+        "Interest on the note and mortgage to 12/31/2025: $35,706.83\n"
+        "Intra Month Per Diem Interest good through 1/21/2026: $418.05\n"
+        "MIP: $180.31\n"
+        "Servicing Fees: $3,453.56\n"
+        "Corporate Advances: $24,516.51\n"
+        "Probate Review: $250.00\n"
+        "Death Certificate: $13.50\n"
+        "Skip Trace: $8.04\n"
+        "Lis Pendens: $10.00\n"
+        "Complaint Filing Fee: $938.78\n"
+        "Clerk Summons: $135.39\n"
+        "Publication: $203.02\n"
+        "Service of Process: $3,536.25\n"
+        "Attendance at Court: $975.00\n"
+        "Document Preparation: $100.00\n"
+        "Motions for Amended Complaint: $925.00\n"
+        "Flat Fee Already Paid Out: $3,480.00\n"
+        "Remaining Corporate Advances: $13,941.53\n"
+        "Additional Costs:\n"
+        "Death Certificate $45.00\n"
+        "Outstanding Attorneys' Fee Total: $2,620.00\n"
+        "TOTAL SUM $120,548.26\n"
+    )
+
+    model = JudgmentExtraction.model_validate(payload)
+    failures, warnings = model.validate_extraction()
+
+    assert failures == []
+    assert model.per_diem_rate is None
+    assert model.per_diem_interest == 418.05
+    assert model.court_costs is None
+    assert model.other_costs == 3678.87
+    assert warnings == []
+
+
 def test_judgment_online_sale_mismatch_fails_validation() -> None:
     payload = _judgment_payload()
     payload["is_online_sale"] = False

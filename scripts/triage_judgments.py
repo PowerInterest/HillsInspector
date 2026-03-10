@@ -37,6 +37,37 @@ from src.models.judgment_extraction import (
 
 PG_DSN = "host=localhost port=5433 dbname=hills_sunbiz user=hills password=hills_dev"
 DATA_ROOT = Path("data/Foreclosure")
+_ADDRESS_ABBREVIATIONS = {
+    "AVENUE": "AVE",
+    "AVE": "AVE",
+    "BOULEVARD": "BLVD",
+    "BLVD": "BLVD",
+    "CIRCLE": "CIR",
+    "CIR": "CIR",
+    "COURT": "CT",
+    "CT": "CT",
+    "DRIVE": "DR",
+    "DR": "DR",
+    "HIGHWAY": "HWY",
+    "HWY": "HWY",
+    "LANE": "LN",
+    "LN": "LN",
+    "PLACE": "PL",
+    "PL": "PL",
+    "PARKWAY": "PKWY",
+    "PKWY": "PKWY",
+    "ROAD": "RD",
+    "RD": "RD",
+    "STREET": "ST",
+    "ST": "ST",
+    "TERRACE": "TER",
+    "TER": "TER",
+    "TRAIL": "TRL",
+    "TRL": "TRL",
+    "VISTA": "VISTA",
+    "VIS": "VISTA",
+    "WAY": "WAY",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +88,7 @@ def load_hcpa_parcels(conn) -> dict[str, dict]:
             "strap": r[0],
             "folio": r[1],
             "address": (r[2] or "").strip(),
-            "address_key": re.sub(r"[^A-Z0-9]", "", (r[2] or "").upper()),
+            "address_key": normalize_address_key(r[2] or ""),
             "raw_sub": (r[3] or "").strip(),
             "legal": legal,
             "owner": (r[8] or "").strip(),
@@ -124,20 +155,45 @@ def address_tokens(s: str | None) -> set[str]:
     """Extract significant tokens from an address for comparison."""
     if not s:
         return set()
-    upper = s.upper()
-    # Remove unit/apt/suite qualifiers
-    upper = re.sub(r"\b(APT|UNIT|STE|SUITE|#)\s*\S*", "", upper)
+    upper = _normalize_address_text(s)
     # Keep only alphanum tokens, drop FL/FLORIDA/TAMPA common words
     tokens = set(re.findall(r"[A-Z0-9]+", upper))
     tokens -= {"FL", "FLORIDA", "TAMPA", "HILLSBOROUGH", "ST", "AVE",
-               "DR", "LN", "CT", "CIR", "BLVD", "RD", "PL", "WAY"}
+               "DR", "LN", "CT", "CIR", "BLVD", "RD", "PL", "WAY", "N",
+               "S", "E", "W", "TER", "TRL", "PKWY"}
     return tokens
 
 
 def normalize_address_key(s: str | None) -> str:
     if not s:
         return ""
-    return re.sub(r"[^A-Z0-9]", "", s.upper())
+    return re.sub(r"[^A-Z0-9]", "", _normalize_address_text(s))
+
+
+def addresses_equivalent(a: str | None, b: str | None) -> bool:
+    key_a = normalize_address_key(a)
+    key_b = normalize_address_key(b)
+    if not key_a or not key_b:
+        return False
+    return (
+        key_a == key_b
+        or key_a.startswith(key_b)
+        or key_a.endswith(key_b)
+        or key_b.startswith(key_a)
+        or key_b.endswith(key_a)
+    )
+
+
+def _normalize_address_text(s: str) -> str:
+    upper = s.upper()
+    upper = re.sub(r"\b(APT|UNIT|STE|SUITE|#)\s*\S*", "", upper)
+    upper = re.sub(r"(\d)([NSEW])\b", r"\1 \2", upper)
+    upper = re.sub(r"\b([NSEW])\.(?=\s)", r"\1", upper)
+    upper = re.sub(r"[^A-Z0-9 ]+", " ", upper)
+    tokens = []
+    for token in upper.split():
+        tokens.append(_ADDRESS_ABBREVIATIONS.get(token, token))
+    return " ".join(tokens)
 
 
 def normalize_free_text(s: str | None) -> str:
@@ -159,6 +215,8 @@ def entity_similarity(a: str | None, b: str | None) -> float:
     na_text = normalize_party_name(a)
     nb_text = normalize_party_name(b)
     if na_text == nb_text:
+        return 1.0
+    if re.sub(r"[^A-Z0-9]", "", na_text) == re.sub(r"[^A-Z0-9]", "", nb_text):
         return 1.0
 
     shorter_text, longer_text = sorted((na_text, nb_text), key=len)
@@ -229,9 +287,20 @@ def find_alternate_hcpa_parcel(
     for parcel in hcpa.values():
         if parcel.get("strap") == current_strap:
             continue
-        if parcel.get("address_key") == address_key:
+        if addresses_equivalent(parcel.get("address"), raw.get("property_address")):
             return parcel
     return None
+
+
+def normalize_legal_component(value: str | None, *, kind: str) -> str:
+    if not value:
+        return ""
+    upper = re.sub(r"\s+", " ", str(value).upper()).strip()
+    if kind == "lot":
+        upper = re.sub(r"\bLOTS?\b|\bNO\.?\b", "", upper)
+    if kind == "block":
+        upper = re.sub(r"\bBLOCK\b", "", upper)
+    return re.sub(r"\s+", " ", upper).strip(" ,")
 
 
 def case_numbers_match(extracted: str, case_dir: str, pg_norm: str | None) -> bool:
@@ -282,6 +351,7 @@ def patch_v1_schema(raw: dict) -> dict:
     # Defendant sub-dicts
     for d in patched.get("defendants", []):
         if isinstance(d, dict):
+            d.setdefault("party_type", "unknown")
             d.setdefault("lien_recording_reference", None)
             d.setdefault("is_deceased", False)
             d.setdefault("is_federal_entity", False)
@@ -291,6 +361,8 @@ def patch_v1_schema(raw: dict) -> dict:
     if isinstance(fm, dict):
         fm.setdefault("current_holder", None)
         fm.setdefault("original_lender", None)
+        fm.setdefault("original_date", None)
+        fm.setdefault("original_amount", None)
         fm.setdefault("instrument_number", None)
         fm.setdefault("recording_book", fm.pop("book", None))
         fm.setdefault("recording_page", fm.pop("page", None))
@@ -472,7 +544,14 @@ def check_property_identity(
     # -- Address match --
     ext_addr_tokens = address_tokens(raw.get("property_address"))
     hcpa_addr_tokens = address_tokens(parcel.get("address"))
-    if ext_addr_tokens and hcpa_addr_tokens:
+    ext_addr_key = normalize_address_key(raw.get("property_address"))
+    hcpa_addr_key = normalize_address_key(parcel.get("address"))
+    if ext_addr_key and hcpa_addr_key and addresses_equivalent(
+        raw.get("property_address"),
+        parcel.get("address"),
+    ):
+        pass
+    elif ext_addr_tokens and hcpa_addr_tokens:
         overlap = ext_addr_tokens & hcpa_addr_tokens
         if len(overlap) < 2 and len(ext_addr_tokens) >= 3:
             failures.append(
@@ -487,11 +566,11 @@ def check_property_identity(
 
     # -- Legal description: check lot/block appear in HCPA legal --
     hcpa_legal = parcel.get("legal", "").upper()
-    ext_lot = str(raw.get("lot") or "").strip()
-    ext_block = str(raw.get("block") or "").strip()
+    ext_lot = normalize_legal_component(raw.get("lot"), kind="lot")
+    ext_block = normalize_legal_component(raw.get("block"), kind="block")
     if ext_lot and hcpa_legal:
         # Check if lot number appears in HCPA legal text
-        lot_patterns = [f"LOT {ext_lot}", f"LOT{ext_lot}"]
+        lot_patterns = [f"LOT {ext_lot}", f"LOTS {ext_lot}", f"LOT{ext_lot}"]
         lot_found = any(p in hcpa_legal for p in lot_patterns)
         if not lot_found and ext_lot.isdigit():
             lot_found = f" {ext_lot} " in f" {hcpa_legal} "
@@ -629,8 +708,12 @@ def triage_one(
     schema_issues = []
     patched = patch_v1_schema(raw)
     pydantic_obj = None
+    normalized_raw = raw
     try:
         pydantic_obj = JudgmentExtraction.model_validate(patched)
+        normalized_raw = pydantic_obj.model_dump(mode="json")
+        if raw.get("raw_text"):
+            normalized_raw["raw_text"] = raw.get("raw_text")
     except Exception as e:
         err_str = str(e)
         if len(err_str) > 300:
@@ -642,17 +725,24 @@ def triage_one(
     if pydantic_obj:
         try:
             validation_failures, validation_warnings = pydantic_obj.validate_extraction()
+            normalized_raw = pydantic_obj.model_dump(mode="json")
+            if raw.get("raw_text"):
+                normalized_raw["raw_text"] = raw.get("raw_text")
         except Exception as e:
             schema_issues.append(f"validate_extraction() crashed: {e}")
 
     # -- Layer 1: Internal consistency --
-    int_failures, int_warnings = check_internal_consistency(raw, case_dir)
+    int_failures, int_warnings = check_internal_consistency(normalized_raw, case_dir)
 
     # -- Layer 2: Property identity vs HCPA --
-    prop_failures, prop_warnings = check_property_identity(raw, case_dir, fc_index, hcpa)
+    prop_failures, prop_warnings = check_property_identity(
+        normalized_raw, case_dir, fc_index, hcpa
+    )
 
     # -- Layer 3: Cross-document vs ORI --
-    xdoc_failures, xdoc_warnings = check_cross_document(raw, case_dir, fc_index, ori_data)
+    xdoc_failures, xdoc_warnings = check_cross_document(
+        normalized_raw, case_dir, fc_index, ori_data
+    )
 
     # -- Score --
     score = 100
@@ -679,11 +769,6 @@ def triage_one(
 
     # Archived / orphaned
     fc = fc_index.get(case_dir)
-    if not fc:
-        score -= 10
-    elif fc.get("archived"):
-        score -= 3
-
     score = max(0, min(100, score))
 
     # Aggregate issues
@@ -714,7 +799,20 @@ def triage_one(
     result["issues"] = all_issues
     result["score"] = score
 
-    if score >= 80:
+    has_linkage_issues = bool(
+        prop_failures or prop_warnings or xdoc_failures or xdoc_warnings
+    )
+    has_hard_extraction_issues = bool(
+        schema_issues or int_failures or validation_failures
+    )
+
+    if not fc:
+        result["status"] = "ORPHANED_REVIEW"
+    elif fc.get("archived"):
+        result["status"] = "ARCHIVED_REVIEW"
+    elif score < 80 and has_linkage_issues and not has_hard_extraction_issues:
+        result["status"] = "LINKAGE_REVIEW"
+    elif score >= 80:
         result["status"] = "GOOD"
     elif score >= 50:
         result["status"] = "SUSPECT"
@@ -753,13 +851,27 @@ def main():
     print("JUDGMENT EXTRACTION TRIAGE REPORT")
     print("=" * 80)
     print(f"\nTotal files triaged: {len(results)}")
-    for status in ("CRITICAL", "BAD", "SUSPECT", "GOOD", "CORRUPT", "NOT_JUDGMENT"):
+    for status in (
+        "CRITICAL",
+        "BAD",
+        "SUSPECT",
+        "LINKAGE_REVIEW",
+        "ARCHIVED_REVIEW",
+        "ORPHANED_REVIEW",
+        "GOOD",
+        "CORRUPT",
+        "NOT_JUDGMENT",
+    ):
         count = len(by_status.get(status, []))
         if count:
             print(f"  {status:14s}: {count}")
 
     # Print non-GOOD
-    bad_results = [r for r in results if r["status"] not in ("GOOD",)]
+    bad_results = [
+        r
+        for r in results
+        if r["status"] not in ("GOOD",)
+    ]
     if bad_results:
         print(f"\n{'─' * 80}")
         print(f"ISSUES ({len(bad_results)} files)")

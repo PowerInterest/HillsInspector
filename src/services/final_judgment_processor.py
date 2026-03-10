@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
@@ -41,6 +42,7 @@ class FinalJudgmentProcessor:
     """Process final-judgment PDFs into validated structured candidates."""
 
     _CACHE_FORMAT_VERSION = 3
+    _PAGE_MARKER_RE = re.compile(r"^--- PAGE (\d+) ---$", re.MULTILINE)
     _BATCH_SIZE = 3
     _TEXT_BATCH_SIZE = 6
     _SCHEMA_NAME = "JudgmentExtraction"
@@ -120,6 +122,10 @@ class FinalJudgmentProcessor:
             and metadata.get("cache_format_version") == cls._CACHE_FORMAT_VERSION
             and isinstance(validation, dict)
             and "is_valid" in validation
+            and cls._ocr_text_covers_all_pages(
+                cached.get("raw_text", ""),
+                metadata.get("total_pages"),
+            )
         )
 
     def process_pdf(
@@ -186,6 +192,17 @@ class FinalJudgmentProcessor:
 
             # Primary pass: OCR the full document to text, then extract from text.
             ocr_page_texts = self._ocr_images_to_page_texts(page_images)
+            ocr_complete = len(ocr_page_texts) == total_pages and self._ocr_text_covers_all_pages(
+                self._combine_page_texts(ocr_page_texts),
+                total_pages,
+            )
+            if not ocr_complete:
+                logger.warning(
+                    "Judgment OCR missed pages for case {}: got {} of {} page texts; forcing image fallback",
+                    case_number,
+                    len(ocr_page_texts),
+                    total_pages,
+                )
             priority_texts = self._select_priority_pages(ocr_page_texts)
             if priority_texts:
                 strategies.append("ocr_text_priority")
@@ -214,7 +231,7 @@ class FinalJudgmentProcessor:
 
             # Fallback: image extraction if OCR text extraction is incomplete.
             priority_images = self._select_priority_pages(page_images)
-            if self._needs_full_pass(merged_json) and priority_images:
+            if (self._needs_full_pass(merged_json) or not ocr_complete) and priority_images:
                 strategies.append("priority_pages")
                 logger.info(
                     f"Extracting from {len(priority_images)} prioritized pages..."
@@ -317,6 +334,15 @@ class FinalJudgmentProcessor:
                 except Exception as exc:
                     # Non-fatal debug artifact: extraction should continue.
                     logger.debug(f"Could not write OCR debug text for {case_number}: {exc}")
+
+            try:
+                canonical = self.canonicalize_candidate(merged_json)
+            except ValidationError:
+                canonical = None
+            if canonical:
+                if raw_text:
+                    canonical["raw_text"] = raw_text
+                merged_json = canonical
 
             merged_json["_metadata"] = {
                 "case_number": case_number,
@@ -832,6 +858,22 @@ OCR Text:
             or extracted_data.get('principal_amount')
         )
         return not (has_defendants and legal_description and (has_mortgage_ref or has_amount))
+
+    @classmethod
+    def _ocr_text_covers_all_pages(
+        cls,
+        raw_text: str | None,
+        total_pages: int | None,
+    ) -> bool:
+        if not raw_text or not isinstance(total_pages, int) or total_pages <= 0:
+            return False
+        page_numbers = [
+            int(match.group(1))
+            for match in cls._PAGE_MARKER_RE.finditer(raw_text)
+        ]
+        if len(page_numbers) != total_pages:
+            return False
+        return page_numbers == list(range(1, total_pages + 1))
     
     @staticmethod
     def is_thin_extraction(result: Optional[Dict[str, Any]]) -> bool:

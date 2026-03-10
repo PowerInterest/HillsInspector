@@ -157,6 +157,53 @@ def test_canonicalize_candidate_dedupes_duplicate_defendants() -> None:
     assert len(canonical["defendants"]) == 1
 
 
+def test_canonicalize_candidate_applies_amount_normalizations() -> None:
+    candidate = _valid_candidate()
+    candidate["principal_amount"] = 53608.00
+    candidate["interest_amount"] = 35706.83
+    candidate["per_diem_rate"] = 418.05
+    candidate["per_diem_interest"] = None
+    candidate["late_charges"] = None
+    candidate["escrow_advances"] = 24516.51
+    candidate["title_search_costs"] = None
+    candidate["court_costs"] = 5259.46
+    candidate["attorney_fees"] = 2620.00
+    candidate["other_costs"] = 473.54
+    candidate["total_judgment_amount"] = 120548.26
+    candidate["raw_text"] = (
+        "Principal due on the note secured by the mortgage foreclosed: $53,608.00\n"
+        "Interest on the note and mortgage to 12/31/2025: $35,706.83\n"
+        "Intra Month Per Diem Interest good through 1/21/2026: $418.05\n"
+        "MIP: $180.31\n"
+        "Servicing Fees: $3,453.56\n"
+        "Corporate Advances: $24,516.51\n"
+        "Probate Review: $250.00\n"
+        "Death Certificate: $13.50\n"
+        "Skip Trace: $8.04\n"
+        "Lis Pendens: $10.00\n"
+        "Complaint Filing Fee: $938.78\n"
+        "Clerk Summons: $135.39\n"
+        "Publication: $203.02\n"
+        "Service of Process: $3,536.25\n"
+        "Attendance at Court: $975.00\n"
+        "Document Preparation: $100.00\n"
+        "Motions for Amended Complaint: $925.00\n"
+        "Flat Fee Already Paid Out: $3,480.00\n"
+        "Remaining Corporate Advances: $13,941.53\n"
+        "Additional Costs:\n"
+        "Death Certificate $45.00\n"
+        "Outstanding Attorneys' Fee Total: $2,620.00\n"
+        "TOTAL SUM $120,548.26\n"
+    )
+
+    canonical = FinalJudgmentProcessor.canonicalize_candidate(candidate)
+
+    assert canonical["per_diem_rate"] is None
+    assert canonical["per_diem_interest"] == 418.05
+    assert canonical["court_costs"] is None
+    assert canonical["other_costs"] == 3678.87
+
+
 def test_extract_candidate_from_text_uses_text_endpoint_and_keeps_raw_text(
     monkeypatch: Any,
 ) -> None:
@@ -185,3 +232,26 @@ def test_extract_candidate_from_text_uses_text_endpoint_and_keeps_raw_text(
     assert captured["response_format"]["type"] == "json_schema"
     assert "OCR Text:" in captured["prompt"]
     assert ocr_text in captured["prompt"]
+
+
+def test_ocr_text_covers_all_pages_rejects_gaps() -> None:
+    assert FinalJudgmentProcessor._ocr_text_covers_all_pages(  # noqa: SLF001
+        "--- PAGE 1 ---\nA\n--- PAGE 2 ---\nB\n--- PAGE 3 ---\nC",
+        3,
+    )
+    assert not FinalJudgmentProcessor._ocr_text_covers_all_pages(  # noqa: SLF001
+        "--- PAGE 1 ---\nA\n--- PAGE 3 ---\nC",
+        3,
+    )
+
+
+def test_cache_is_current_rejects_incomplete_ocr_cache() -> None:
+    cached = _valid_candidate()
+    cached["raw_text"] = "--- PAGE 1 ---\nA\n--- PAGE 3 ---\nC"
+    cached["_metadata"] = {
+        "cache_format_version": FinalJudgmentProcessor._CACHE_FORMAT_VERSION,  # noqa: SLF001
+        "total_pages": 3,
+    }
+    cached["_validation"] = {"is_valid": True, "failures": [], "warnings": []}
+
+    assert not FinalJudgmentProcessor._cache_is_current(cached)  # noqa: SLF001

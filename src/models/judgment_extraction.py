@@ -76,6 +76,33 @@ _CREDIT_LINE_MARKERS = (
     "MISCELLANEOUS DEDUCTIONS",
     "LESS:",
 )
+_ATTORNEY_FEE_LINE_RE = re.compile(
+    r"^\s*(?:ADDITIONAL\s+)?ATTORNEY[’']?S?\s+FEES?\s+\$?(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})\s*$",
+    re.IGNORECASE,
+)
+_PER_DIEM_INTEREST_GOOD_THROUGH_RE = re.compile(
+    r"PER\s+DIEM\s+INTEREST\b.*?\bGOOD\s+THROUGH\b.*?\$?(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})",
+    re.IGNORECASE,
+)
+_AMOUNT_LINE_RE = re.compile(
+    r"\b(?P<label>[A-Z][A-Z0-9/&'().,\- ]{2,}?)\s*:?\s*\$?(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})\b",
+    re.IGNORECASE,
+)
+_CORPORATE_ADVANCE_EMBEDDED_LABELS = (
+    "PROBATE REVIEW",
+    "DEATH CERTIFICATE",
+    "SKIP TRACE",
+    "LIS PENDENS",
+    "COMPLAINT FILING FEE",
+    "CLERK SUMMONS",
+    "PUBLICATION",
+    "SERVICE OF PROCESS",
+    "ATTENDANCE AT COURT",
+    "DOCUMENT PREPARATION",
+    "MOTIONS FOR AMENDED COMPLAINT",
+    "FLAT FEE ALREADY PAID OUT",
+    "REMAINING CORPORATE ADVANCES",
+)
 
 
 def _parse_credit_amount(raw_amount: str) -> float:
@@ -124,6 +151,89 @@ def extract_credit_adjustments(raw_text: str) -> float:
                         adjustments.append(_parse_credit_amount(match.group("amount")))
 
     return round(sum(adjustments), 2)
+
+
+def extract_authoritative_attorney_fees(raw_text: str) -> float | None:
+    """Recover the top-level attorney fee total from OCR text when duplicated.
+
+    Some judgments list one authoritative attorney-fee total followed by
+    subcomponents, for example:
+
+    - ``Attorney's Fees $20,146.50``
+    - ``Attorney's fees $5,400.00``
+    - ``Additional Attorney's fees $14,746.50``
+
+    The LLM sometimes sums the total and the subcomponents together. When the
+    largest fee line equals the sum of the remaining fee lines, treat that
+    largest line as the authoritative fee total.
+    """
+    if not raw_text:
+        return None
+
+    fee_lines: list[float] = []
+    for line in raw_text.splitlines():
+        match = _ATTORNEY_FEE_LINE_RE.match(line.strip())
+        if match:
+            fee_lines.append(_parse_credit_amount(match.group("amount")))
+
+    if len(fee_lines) < 2:
+        return None
+
+    rounded = [round(value, 2) for value in fee_lines]
+    largest = max(rounded)
+    remaining_sum = round(sum(rounded) - largest, 2)
+    if abs(remaining_sum - largest) <= 0.5:
+        return largest
+
+    if len(set(rounded)) == 1:
+        return rounded[0]
+
+    return None
+
+
+def extract_accrued_per_diem_interest(raw_text: str) -> float | None:
+    """Recover accrued per-diem interest totals misread as daily rates."""
+    if not raw_text:
+        return None
+
+    for line in raw_text.splitlines():
+        upper = line.upper()
+        if "PER DIEM INTEREST" not in upper or "GOOD THROUGH" not in upper:
+            continue
+        match = _PER_DIEM_INTEREST_GOOD_THROUGH_RE.search(line)
+        if match:
+            return _parse_credit_amount(match.group("amount"))
+    return None
+
+
+def extract_embedded_corporate_advance_total(raw_text: str) -> float | None:
+    """Sum embedded cost lines when a judgment itemizes a Corporate Advances subtotal.
+
+    Some Hillsborough mortgage judgments present ``Corporate Advances`` as a
+    subtotal and then continue with the underlying filing/service/detail lines
+    on the next page. When the LLM also extracts those detail lines into
+    ``court_costs``, adding both against the final total double-counts the same
+    dollars. This helper recognizes the known embedded breakdown labels and
+    returns their summed total so validation can suppress the duplicated
+    ``court_costs`` field when the subtotal matches.
+    """
+    if not raw_text or "CORPORATE ADVANCES" not in raw_text.upper():
+        return None
+
+    label_totals: dict[str, float] = {}
+    for line in raw_text.splitlines():
+        match = _AMOUNT_LINE_RE.search(line.strip())
+        if not match:
+            continue
+        label = re.sub(r"\s+", " ", match.group("label").upper()).strip(" :")
+        if label not in _CORPORATE_ADVANCE_EMBEDDED_LABELS:
+            continue
+        label_totals.setdefault(label, _parse_credit_amount(match.group("amount")))
+
+    if len(label_totals) < 4:
+        return None
+
+    return round(sum(label_totals.values()), 2)
 
 class PlaintiffType(StrEnum):
     BANK = "bank"
@@ -1091,6 +1201,28 @@ class JudgmentExtraction(BaseDocumentExtraction):
         return []
 
     def _known_amounts(self) -> list[float | None]:
+        if self.per_diem_interest is None:
+            accrued_per_diem = extract_accrued_per_diem_interest(self.raw_text)
+            if accrued_per_diem is not None:
+                self.per_diem_interest = accrued_per_diem
+                if (
+                    self.per_diem_rate is not None
+                    and abs(self.per_diem_rate - accrued_per_diem) < 0.01
+                ):
+                    self.per_diem_rate = None
+
+        attorney_fees = self.attorney_fees
+        authoritative_attorney_fees = extract_authoritative_attorney_fees(
+            self.raw_text
+        )
+        if (
+            attorney_fees is not None
+            and authoritative_attorney_fees is not None
+            and attorney_fees > authoritative_attorney_fees
+        ):
+            attorney_fees = authoritative_attorney_fees
+            self.attorney_fees = authoritative_attorney_fees
+
         late_charges = self.late_charges
         if (
             late_charges is not None
@@ -1101,6 +1233,19 @@ class JudgmentExtraction(BaseDocumentExtraction):
             late_charges = None
             self.late_charges = None
 
+        court_costs = self.court_costs
+        embedded_corporate_total = extract_embedded_corporate_advance_total(
+            self.raw_text
+        )
+        if (
+            court_costs is not None
+            and self.escrow_advances is not None
+            and embedded_corporate_total is not None
+            and abs(embedded_corporate_total - self.escrow_advances) <= 1.0
+        ):
+            court_costs = None
+            self.court_costs = None
+
         return [
             self.principal_amount,
             self.interest_amount,
@@ -1108,8 +1253,8 @@ class JudgmentExtraction(BaseDocumentExtraction):
             late_charges,
             self.escrow_advances,
             self.title_search_costs,
-            self.court_costs,
-            self.attorney_fees,
+            court_costs,
+            attorney_fees,
         ]
 
     def _mentions_late_fees(self) -> bool:
@@ -1221,7 +1366,11 @@ class JudgmentExtraction(BaseDocumentExtraction):
     def _check_confidence_consistency(self) -> list[str]:
         """High confidence with unclear sections is contradictory."""
         warnings: list[str] = []
-        if self.confidence_score and self.confidence_score >= 0.95 and self.unclear_sections:
+        if (
+            self.confidence_score
+            and self.confidence_score >= 0.95
+            and len(self.unclear_sections) >= 3
+        ):
             warnings.append(
                 f"confidence_score is {self.confidence_score} but "
                 f"{len(self.unclear_sections)} unclear section(s) reported - "
@@ -1262,10 +1411,24 @@ class JudgmentExtraction(BaseDocumentExtraction):
         # Lot/block should appear in legal_description if both are set
         if self.lot and self.legal_description:
             legal_upper = self.legal_description.upper()
-            lot_str = str(self.lot).strip()
+            lot_str = re.sub(
+                r"\bLOTS?\b|\bNO\.?\b",
+                "",
+                str(self.lot).upper(),
+            )
+            lot_str = re.sub(r"\s+", " ", lot_str).strip(" ,")
             if lot_str not in legal_upper:
                 warnings.append(
                     f"lot '{self.lot}' not found in legal_description text"
+                )
+
+        if self.block and self.legal_description:
+            legal_upper = self.legal_description.upper()
+            block_str = re.sub(r"\bBLOCK\b", "", str(self.block).upper())
+            block_str = re.sub(r"\s+", " ", block_str).strip(" ,")
+            if block_str and f"BLOCK {block_str}" not in legal_upper:
+                warnings.append(
+                    f"block '{self.block}' not found in legal_description text"
                 )
 
         # Plat book/page: warn if plat_book is set but plat_page isn't (or vice versa)
