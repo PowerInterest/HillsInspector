@@ -54,6 +54,22 @@ class _FakeEngine:
         return _FakeConnection(self._captured, self._rows)
 
 
+class _RaisingConnection:
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, _sql: Any, _params: dict[str, Any] | None = None) -> Any:
+        raise RuntimeError("db boom")
+
+
+class _RaisingEngine:
+    def connect(self) -> _RaisingConnection:
+        return _RaisingConnection()
+
+
 # ---------------------------------------------------------------------------
 # Query tests
 # ---------------------------------------------------------------------------
@@ -410,6 +426,57 @@ def test_run_batch_merges_scrapling_counts_into_parent_summary(monkeypatch: Any)
     assert result["redfin"] == 1
     assert result["photos"] == 3
     assert result["scrapling"] == {"realtor": 2, "redfin": 1}
+
+
+def test_get_enrichment_state_assumes_enriched_on_query_failure() -> None:
+    svc = object.__new__(PgMarketDataScraplingService)
+    svc.__dict__["_engine"] = _RaisingEngine()
+    svc.__dict__["_enrichment_state_failures"] = 0
+    svc.__dict__["_enrichment_state_failure_straps"] = []
+
+    state = svc._get_enrichment_state("STRAP1")
+
+    assert state == {
+        "zillow_enriched": True,
+        "redfin_enriched": True,
+        "realtor_enriched": True,
+    }
+    assert svc.__dict__["_enrichment_state_failures"] == 1
+    assert svc.__dict__["_enrichment_state_failure_straps"] == ["STRAP1"]
+
+
+def test_run_batch_marks_degraded_when_enrichment_state_check_fails(monkeypatch: Any) -> None:
+    svc = object.__new__(PgMarketDataScraplingService)
+    svc.__dict__["_has_realtor_column"] = True
+    svc.__dict__["_force"] = False
+    svc.__dict__["_engine"] = _RaisingEngine()
+
+    async def _fake_parent_run_batch(
+        self: Any,
+        properties: list[dict[str, Any]],
+        sources: list[str] | None = None,
+    ) -> dict[str, Any]:
+        assert len(properties) == 1
+        assert sources == ["realtor", "redfin"]
+        return {"realtor": 0, "redfin": 0, "photos": 0}
+
+    monkeypatch.setattr(
+        market_data_service.MarketDataService,
+        "run_batch",
+        _fake_parent_run_batch,
+    )
+
+    result = asyncio.run(
+        svc.run_batch(
+            [{"strap": "STRAP1", "property_address": "1 Main St"}],
+            sources=["realtor", "redfin"],
+        )
+    )
+
+    assert result["enrichment_state_failures"] == 1
+    assert result["enrichment_state_failure_straps"] == ["STRAP1"]
+    assert result["degraded"] is True
+    assert result["status"] == "degraded"
 
 
 def test_run_redfin_scrapling_rejects_mismatched_payload(monkeypatch: Any) -> None:

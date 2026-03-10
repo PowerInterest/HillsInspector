@@ -81,6 +81,22 @@ class _FakeBeginEngine(_FakeEngine):
         return _FakeTxnConnection(self._captured, self._rows)
 
 
+class _RaisingConnection:
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def execute(self, _sql: Any, _params: Any = None) -> Any:
+        raise RuntimeError("db boom")
+
+
+class _RaisingEngine:
+    def connect(self) -> _RaisingConnection:
+        return _RaisingConnection()
+
+
 def test_query_properties_needing_market_includes_photo_backfill_clause(
     monkeypatch: Any,
 ) -> None:
@@ -273,6 +289,25 @@ def test_get_market_state_treats_thin_payloads_as_incomplete(monkeypatch: Any) -
     }
 
 
+def test_get_market_state_assumes_complete_on_query_failure() -> None:
+    svc = object.__new__(market_data_service.MarketDataService)
+    svc.__dict__["_has_realtor_column"] = True
+    svc.__dict__["_engine"] = _RaisingEngine()
+    svc.__dict__["_market_state_failures"] = 0
+    svc.__dict__["_market_state_failure_straps"] = []
+
+    state = svc._get_market_state("STRAP1")  # noqa: SLF001
+
+    assert state == {
+        "has_redfin": True,
+        "has_zillow": True,
+        "has_hh": True,
+        "has_realtor": True,
+    }
+    assert svc.__dict__["_market_state_failures"] == 1
+    assert svc.__dict__["_market_state_failure_straps"] == ["STRAP1"]
+
+
 def test_run_batch_marks_degraded_when_photo_download_has_errors(monkeypatch: Any) -> None:
     svc = object.__new__(market_data_service.MarketDataService)
     svc.__dict__["_has_realtor_column"] = False
@@ -298,6 +333,30 @@ def test_run_batch_marks_degraded_when_photo_download_has_errors(monkeypatch: An
 
     assert result["photos"] == 2
     assert result["photo_errors"] == 3
+    assert result["degraded"] is True
+    assert result["status"] == "degraded"
+
+
+def test_run_batch_marks_degraded_when_market_state_check_fails(monkeypatch: Any) -> None:
+    svc = object.__new__(market_data_service.MarketDataService)
+    svc.__dict__["_has_realtor_column"] = False
+    svc.__dict__["_engine"] = _RaisingEngine()
+    monkeypatch.setattr(svc, "_repair_stale_detail_urls", lambda: 0)
+    monkeypatch.setattr(
+        svc,
+        "_download_all_photos_with_stats",
+        lambda _properties: {"downloaded": 0, "errors": 0},
+    )
+
+    result = asyncio.run(
+        svc.run_batch(
+            [{"strap": "STRAP1", "property_address": "1 Main St"}],
+            sources=["redfin", "zillow", "homeharvest"],
+        )
+    )
+
+    assert result["state_check_failures"] == 1
+    assert result["state_check_failure_straps"] == ["STRAP1"]
     assert result["degraded"] is True
     assert result["status"] == "degraded"
 

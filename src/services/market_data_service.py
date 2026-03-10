@@ -154,6 +154,8 @@ class MarketDataService:
         self._use_windows_chrome = use_windows_chrome
         self._ensure_pg_table()
         self._has_realtor_column = self._column_exists("property_market", "realtor_json")
+        self._market_state_failures = 0
+        self._market_state_failure_straps: list[str] = []
         if not self._has_realtor_column:
             logger.warning(
                 "property_market.realtor_json column missing; Realtor source disabled. "
@@ -217,6 +219,8 @@ class MarketDataService:
         browser_phase_error: str | None = None
         save_errors = 0
         photo_errors = 0
+        self._market_state_failures = 0
+        self._market_state_failure_straps = []
 
         # Check existing PG state per-property to decide which sources to run.
         # A property is "done" only when all configured sources have been attempted.
@@ -275,6 +279,15 @@ class MarketDataService:
             photo_stats = self._download_all_photos_with_stats(properties)
             summary["photos"] = photo_stats["downloaded"]
             photo_errors = int(photo_stats.get("errors", 0) or 0)
+            state_failures = int(getattr(self, "_market_state_failures", 0) or 0)
+            if state_failures:
+                summary["state_check_failures"] = state_failures
+                if self._market_state_failure_straps:
+                    summary["state_check_failure_straps"] = list(
+                        self._market_state_failure_straps
+                    )
+                summary["degraded"] = True
+                summary["status"] = "degraded"
             if photo_errors:
                 summary["photo_errors"] = photo_errors
                 summary["degraded"] = True
@@ -417,7 +430,14 @@ class MarketDataService:
             summary["save_errors"] = save_errors
         if photo_errors:
             summary["photo_errors"] = photo_errors
-        if save_errors or photo_errors:
+        state_failures = int(getattr(self, "_market_state_failures", 0) or 0)
+        if state_failures:
+            summary["state_check_failures"] = state_failures
+            if self._market_state_failure_straps:
+                summary["state_check_failure_straps"] = list(
+                    self._market_state_failure_straps
+                )
+        if save_errors or photo_errors or state_failures:
             summary["degraded"] = True
             summary["status"] = "degraded"
 
@@ -469,8 +489,31 @@ class MarketDataService:
                 logger.warning("property_market.realtor_json is missing at runtime; disabling Realtor source.")
                 self._has_realtor_column = False
                 return self._get_market_state(strap)
-            logger.debug(f"Market state check failed for strap={strap}: {exc}")
-            return None
+            logger.warning(
+                "Market state check failed for strap={}; assuming all selected sources are complete for this run: {}",
+                strap,
+                exc,
+            )
+            self._market_state_failures = int(getattr(self, "_market_state_failures", 0) or 0) + 1
+            failure_straps = list(getattr(self, "_market_state_failure_straps", []))
+            if strap and strap not in failure_straps:
+                failure_straps.append(strap)
+            self._market_state_failure_straps = failure_straps
+            return self._assume_market_state_complete()
+
+    def _assume_market_state_complete(self) -> dict[str, bool]:
+        """Conservative fallback when PG state reads fail mid-run.
+
+        A transient DB error should not fan out into a full browser re-scrape
+        across rate-limited sites. We skip scraping for this run, mark the step
+        degraded, and let the next healthy run reconcile any remaining gaps.
+        """
+        return {
+            "has_redfin": True,
+            "has_zillow": True,
+            "has_hh": True,
+            "has_realtor": bool(self._has_realtor_column),
+        }
 
     def _repair_stale_detail_urls(self) -> int:
         """Repair rows where Redfin data was cleared but its detail URL remained.

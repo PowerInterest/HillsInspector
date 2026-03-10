@@ -151,6 +151,8 @@ class PgMarketDataScraplingService(MarketDataService):
         super().__init__(dsn=dsn, use_windows_chrome=use_windows_chrome)
         self._headless = headless
         self._force = force
+        self._enrichment_state_failures = 0
+        self._enrichment_state_failure_straps: list[str] = []
 
         self._fetcher_cls = self._detect_scrapling_fetcher()
 
@@ -181,9 +183,29 @@ class PgMarketDataScraplingService(MarketDataService):
                     "redfin_enriched": row.redfin_enriched,
                     "realtor_enriched": row.realtor_enriched,
                 }
-        except Exception:
-            logger.debug("Enrichment state check failed for strap={}", strap)
-            return None
+        except Exception as exc:
+            logger.warning(
+                "Enrichment state check failed for strap={}; assuming enriched for this run to avoid full re-scrape: {}",
+                strap,
+                exc,
+            )
+            self._enrichment_state_failures = int(
+                getattr(self, "_enrichment_state_failures", 0) or 0
+            ) + 1
+            failure_straps = list(getattr(self, "_enrichment_state_failure_straps", []))
+            if strap and strap not in failure_straps:
+                failure_straps.append(strap)
+            self._enrichment_state_failure_straps = failure_straps
+            return self._assume_all_sources_enriched()
+
+    @staticmethod
+    def _assume_all_sources_enriched() -> dict[str, bool]:
+        """Conservative fallback when enrichment-state reads fail."""
+        return {
+            "zillow_enriched": True,
+            "redfin_enriched": True,
+            "realtor_enriched": True,
+        }
 
     @staticmethod
     def _html_looks_blocked(html: str) -> bool:
@@ -1543,6 +1565,8 @@ class PgMarketDataScraplingService(MarketDataService):
         sources = list(sources or ["redfin", "zillow", "realtor", "homeharvest"])
         scrapling_results: dict[str, int] = {}
         scrapling_errors = 0
+        self._enrichment_state_failures = 0
+        self._enrichment_state_failure_straps = []
 
         # Phase 1: Run scrapling-backed enrichment for all supported sites
         # concurrently before the heavy browser phase.
@@ -1591,6 +1615,17 @@ class PgMarketDataScraplingService(MarketDataService):
             summary["scrapling"] = scrapling_results
         if scrapling_errors:
             summary["scrapling_errors"] = scrapling_errors
+            summary["degraded"] = True
+            summary["status"] = "degraded"
+        enrichment_state_failures = int(
+            getattr(self, "_enrichment_state_failures", 0) or 0
+        )
+        if enrichment_state_failures:
+            summary["enrichment_state_failures"] = enrichment_state_failures
+            if self._enrichment_state_failure_straps:
+                summary["enrichment_state_failure_straps"] = list(
+                    self._enrichment_state_failure_straps
+                )
             summary["degraded"] = True
             summary["status"] = "degraded"
         return summary

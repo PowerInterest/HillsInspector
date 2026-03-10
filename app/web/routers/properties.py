@@ -2117,7 +2117,7 @@ def _sanitize_folio(folio: str) -> str:
     )
 
 
-@router.get("/{folio}/doc/{doc_id}")
+@router.api_route("/{folio}/doc/{doc_id}", methods=["GET", "HEAD"])
 async def property_document_file(folio: str, doc_id: int):
     """
     Serve a document file by its DB id.
@@ -2141,7 +2141,7 @@ async def property_document_file(folio: str, doc_id: int):
     return FileResponse(path=file_path, filename=file_path.name)
 
 
-@router.get("/{folio}/documents/{filename:path}")
+@router.api_route("/{folio}/documents/{filename:path}", methods=["GET", "HEAD"])
 async def serve_document_by_name(folio: str, filename: str):
     """
     Serve a document file by filename for a property.
@@ -2169,7 +2169,7 @@ async def serve_document_by_name(folio: str, filename: str):
     raise HTTPException(status_code=404, detail="File not found on disk")
 
 
-@router.get("/{folio}/photos/{filename}")
+@router.api_route("/{folio}/photos/{filename}", methods=["GET", "HEAD"])
 async def serve_photo(folio: str, filename: str):
     """Serve a locally downloaded property photo."""
     # Path traversal protection

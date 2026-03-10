@@ -15,12 +15,11 @@ Scope rules for this pass:
 ### Fixed in code
 
 - High: `H1`, `H2`, `H3`, `H4`, `H5`
-- Medium: `M1`, `M3`, `M4`, `M5`, `M6`, `M7`, `M8`, `M9`, `M10`, `M11`, `M13`, `M15`, `M16`, `M17`
+- Medium: `M1`, `M3`, `M4`, `M5`, `M6`, `M7`, `M8`, `M9`, `M10`, `M11`, `M12`, `M13`, `M15`, `M16`, `M17`
 
 ### Reviewed and intentionally not changed
 
 - `M2`: not a bug in current design. Parcel-scoped `ori_encumbrances` rows for the same instrument are intentional. See [Per-Foreclosure Survival Persistence](docs/domain/PER_FORECLOSURE_SURVIVAL.md).
-- `M12`: real edge case, but low operational value compared with the confirmed failures above.
 - `M14`: different "needs market data" predicates are intentional because scrapling and browser scraping have different completeness contracts.
 - `M18`: schema governance issue, not a runtime correctness bug.
 
@@ -49,7 +48,7 @@ Scope rules for this pass:
 | M9 Scrapling exceptions lost from step details | Fixed | `src/services/pg_pipeline_controller.py` | Scrapling pre-worker failures are now stored in step details instead of disappearing into logs only. |
 | M10 Background bulk steps lack audit trail | Fixed | `src/services/bulk_step_worker.py` | Background bulk steps now run through `PgJobControlService` and write `pipeline_job_runs` rows. |
 | M11 `_payload_status` does not handle `StepResult` | Fixed | `src/services/pg_job_control_service.py` | Job control now accepts and serializes `StepResult` payloads. |
-| M12 Enrichment state query failure re-scrapes everything | Deferred | none | Low-frequency edge case; left unchanged in favor of higher-signal failures. |
+| M12 Enrichment state query failure re-scrapes everything | Fixed | `src/services/pg_market_data_scrapling.py`, `src/services/market_data_service.py` | Query failures now assume sources are complete for the current run, record degraded failure counts, and avoid fan-out re-scraping against rate-limited sites. |
 | M13 Captcha 200s never trigger backoff | Fixed | `src/services/pg_market_data_scrapling.py` | Blocked HTML now counts toward consecutive failures, so delay backoff can engage. |
 | M14 Two divergent market-data completeness queries | Rejected | none | Browser worker and scrapling service intentionally measure different completion surfaces. |
 | M15 Tampa enrichment error rate unchecked | Fixed | `src/services/pg_pipeline_controller.py` | Tampa permit step now reports degraded status when detail enrichment errors occur against rows that were otherwise fetched/synced. |
