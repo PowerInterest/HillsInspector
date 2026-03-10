@@ -75,7 +75,7 @@ class ControllerSettings:
     skip_identifier_recovery: bool = False
     skip_ori_search: bool = False
     skip_municipal_liens: bool = False
-    skip_mortgage_extract: bool = False
+    skip_encumbrance_extraction: bool = False
     skip_survival: bool = False
     skip_encumbrance_audit: bool = False
     skip_encumbrance_recovery: bool = False
@@ -121,7 +121,7 @@ class ControllerSettings:
     judgment_limit: int | None = None
     identifier_recovery_limit: int | None = None
     ori_limit: int | None = None
-    mortgage_limit: int | None = None
+    extraction_limit: int | None = None
     survival_limit: int | None = None
     title_breaks_limit: int | None = None
 
@@ -211,9 +211,9 @@ class PgPipelineController:
                 self._run_municipal_liens_phase0,
             ),
             (
-                "mortgage_extract",
-                self.settings.skip_mortgage_extract,
-                self._run_mortgage_extract,
+                "encumbrance_extraction",
+                self.settings.skip_encumbrance_extraction,
+                self._run_encumbrance_extraction,
             ),
             (
                 "encumbrance_audit",
@@ -1285,15 +1285,17 @@ class PgPipelineController:
             details=result,
         )
 
-    def _run_mortgage_extract(self) -> StepResult:
-        from src.services.pg_mortgage_extraction_service import PgMortgageExtractionService
+    def _run_encumbrance_extraction(self) -> StepResult:
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
 
-        svc = PgMortgageExtractionService(dsn=self.dsn)
-        result = svc.run(limit=self.settings.mortgage_limit)
-        extracted = self._int_from_paths(result, "mortgages_extracted")
+        svc = PgEncumbranceExtractionService(dsn=self.dsn)
+        result = svc.run(limit=self.settings.extraction_limit)
+        extracted = int(result.get("extracted", 0)) + int(result.get("cached", 0))
         errs = int(result.get("errors", 0))
         return StepResult(
-            step_name="mortgage_extract",
+            step_name="encumbrance_extraction",
             status="failed" if errs > 0 and extracted == 0 else (
                 "success" if extracted > 0 else "noop"
             ),
@@ -1946,7 +1948,7 @@ def parse_args() -> ControllerSettings:
     parser.add_argument("--skip-identifier-recovery", action="store_true")
     parser.add_argument("--skip-ori-search", action="store_true")
     parser.add_argument("--skip-municipal-liens", action="store_true")
-    parser.add_argument("--skip-mortgage-extract", action="store_true")
+    parser.add_argument("--skip-encumbrance-extraction", action="store_true")
     parser.add_argument("--skip-survival", action="store_true")
     parser.add_argument("--skip-encumbrance-audit", action="store_true")
     parser.add_argument("--skip-encumbrance-recovery", action="store_true")
@@ -2014,7 +2016,7 @@ def parse_args() -> ControllerSettings:
         help="Max unresolved foreclosures for identifier recovery (<=0 means all)",
     )
     parser.add_argument("--ori-limit", type=int, help="Max foreclosures for ORI search")
-    parser.add_argument("--mortgage-limit", type=int, help="Max mortgage PDFs to extract")
+    parser.add_argument("--extraction-limit", type=int, help="Max encumbrance PDFs to extract")
     parser.add_argument("--survival-limit", type=int, help="Max foreclosures for survival analysis")
     parser.add_argument("--title-breaks-limit", type=int, help="Max foreclosures for title break resolution")
 
@@ -2048,7 +2050,7 @@ def parse_args() -> ControllerSettings:
         skip_identifier_recovery=bool(args.skip_identifier_recovery),
         skip_ori_search=bool(args.skip_ori_search),
         skip_municipal_liens=bool(args.skip_municipal_liens),
-        skip_mortgage_extract=bool(args.skip_mortgage_extract),
+        skip_encumbrance_extraction=bool(args.skip_encumbrance_extraction),
         skip_survival=bool(args.skip_survival),
         skip_encumbrance_audit=bool(args.skip_encumbrance_audit),
         skip_encumbrance_recovery=bool(args.skip_encumbrance_recovery),
@@ -2075,7 +2077,7 @@ def parse_args() -> ControllerSettings:
         judgment_limit=args.judgment_limit,
         identifier_recovery_limit=args.identifier_recovery_limit,
         ori_limit=args.ori_limit,
-        mortgage_limit=args.mortgage_limit,
+        extraction_limit=args.extraction_limit,
         survival_limit=args.survival_limit,
         title_breaks_limit=args.title_breaks_limit,
     )
