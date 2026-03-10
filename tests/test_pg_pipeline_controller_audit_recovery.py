@@ -218,6 +218,7 @@ def test_run_title_chain_counts_chain_summary_and_event_rows(monkeypatch: Any) -
 def test_run_title_breaks_rebuilds_title_chain_after_repairs(monkeypatch: Any) -> None:
     controller = _build_controller(monkeypatch)
     rebuild_calls: list[str] = []
+    run_calls: list[int] = []
 
     class _FakeTitleBreakService:
         def __init__(self, dsn: str | None = None) -> None:
@@ -230,14 +231,23 @@ def test_run_title_breaks_rebuilds_title_chain_after_repairs(monkeypatch: Any) -
             foreclosure_id: int | None = None,
             case_number: str | None = None,
         ) -> dict[str, Any]:
+            run_calls.append(len(run_calls) + 1)
             assert limit is None
             assert foreclosure_id is None
             assert case_number is None
+            if len(run_calls) == 1:
+                return {
+                    "targets": 2,
+                    "gaps_found": 4,
+                    "deeds_inserted": 1,
+                    "backfilled": 2,
+                    "errors": 0,
+                }
             return {
                 "targets": 2,
-                "gaps_found": 4,
-                "deeds_inserted": 1,
-                "backfilled": 2,
+                "gaps_found": 2,
+                "deeds_inserted": 0,
+                "backfilled": 0,
                 "errors": 0,
             }
 
@@ -268,11 +278,16 @@ def test_run_title_breaks_rebuilds_title_chain_after_repairs(monkeypatch: Any) -
     assert result.status == "success"
     assert result.updated == 3
     assert rebuild_calls == ["init", "run"]
+    assert run_calls == [1, 2]
+    assert result.details["pass_count"] == 2
+    assert result.details["passes"][0]["repairs"] == 3
+    assert result.details["passes"][1]["repairs"] == 0
     assert result.details["title_chain_rebuild"]["chain_rows"] == 8
 
 
-def test_run_title_breaks_skips_rebuild_without_repairs(monkeypatch: Any) -> None:
+def test_run_title_breaks_runs_two_passes_before_noop_stop(monkeypatch: Any) -> None:
     controller = _build_controller(monkeypatch)
+    run_calls: list[int] = []
 
     class _FakeTitleBreakService:
         def __init__(self, dsn: str | None = None) -> None:
@@ -285,6 +300,7 @@ def test_run_title_breaks_skips_rebuild_without_repairs(monkeypatch: Any) -> Non
             foreclosure_id: int | None = None,
             case_number: str | None = None,
         ) -> dict[str, Any]:
+            run_calls.append(len(run_calls) + 1)
             assert limit is None
             assert foreclosure_id is None
             assert case_number is None
@@ -314,6 +330,8 @@ def test_run_title_breaks_skips_rebuild_without_repairs(monkeypatch: Any) -> Non
 
     assert result.status == "noop"
     assert result.updated == 0
+    assert run_calls == [1, 2]
+    assert result.details["pass_count"] == 2
     assert "title_chain_rebuild" not in result.details
 
 
@@ -358,6 +376,104 @@ def test_run_title_breaks_passes_scope_to_service(monkeypatch: Any) -> None:
         "foreclosure_id": 21007,
         "case_number": "292024CA003727A001HC",
     }
+
+
+def test_run_title_breaks_continues_after_second_pass_until_stop_condition(monkeypatch: Any) -> None:
+    controller = _build_controller(monkeypatch)
+    run_calls: list[int] = []
+    rebuild_calls: list[str] = []
+
+    class _FakeTitleBreakService:
+        def __init__(self, dsn: str | None = None) -> None:
+            assert dsn == controller.dsn
+
+        def run(
+            self,
+            *,
+            limit: int | None = None,
+            foreclosure_id: int | None = None,
+            case_number: str | None = None,
+        ) -> dict[str, Any]:
+            run_calls.append(len(run_calls) + 1)
+            if len(run_calls) == 1:
+                return {"targets": 1, "gaps_found": 3, "deeds_inserted": 1, "backfilled": 0, "errors": 0}
+            if len(run_calls) == 2:
+                return {"targets": 1, "gaps_found": 2, "deeds_inserted": 0, "backfilled": 1, "errors": 0}
+            return {"targets": 1, "gaps_found": 1, "deeds_inserted": 0, "backfilled": 0, "errors": 0}
+
+    class _FakeTitleChainController:
+        def __init__(self, _config: Any) -> None:
+            rebuild_calls.append("init")
+
+        def run(self) -> dict[str, int]:
+            rebuild_calls.append("run")
+            return {"chain_rows": 3, "summary_rows": 1, "events_inserted": 5}
+
+    monkeypatch.setattr(
+        "src.services.pg_title_break_service.PgTitleBreakService",
+        _FakeTitleBreakService,
+    )
+    monkeypatch.setattr(
+        pg_pipeline_controller,
+        "TitleChainController",
+        _FakeTitleChainController,
+    )
+
+    result = controller._run_title_breaks()  # noqa: SLF001
+
+    assert result.status == "success"
+    assert result.updated == 2
+    assert run_calls == [1, 2, 3]
+    assert rebuild_calls == ["init", "run", "init", "run"]
+    assert result.details["pass_count"] == 3
+    assert result.details["rebuild_count"] == 2
+
+
+def test_run_title_breaks_hard_caps_after_five_extra_cycles(monkeypatch: Any) -> None:
+    controller = _build_controller(monkeypatch)
+    run_calls: list[int] = []
+    rebuild_calls: list[str] = []
+
+    class _FakeTitleBreakService:
+        def __init__(self, dsn: str | None = None) -> None:
+            assert dsn == controller.dsn
+
+        def run(
+            self,
+            *,
+            limit: int | None = None,
+            foreclosure_id: int | None = None,
+            case_number: str | None = None,
+        ) -> dict[str, Any]:
+            run_calls.append(len(run_calls) + 1)
+            return {"targets": 1, "gaps_found": 1, "deeds_inserted": 1, "backfilled": 0, "errors": 0}
+
+    class _FakeTitleChainController:
+        def __init__(self, _config: Any) -> None:
+            rebuild_calls.append("init")
+
+        def run(self) -> dict[str, int]:
+            rebuild_calls.append("run")
+            return {"chain_rows": 1, "summary_rows": 1, "events_inserted": 1}
+
+    monkeypatch.setattr(
+        "src.services.pg_title_break_service.PgTitleBreakService",
+        _FakeTitleBreakService,
+    )
+    monkeypatch.setattr(
+        pg_pipeline_controller,
+        "TitleChainController",
+        _FakeTitleChainController,
+    )
+
+    result = controller._run_title_breaks()  # noqa: SLF001
+
+    assert result.status == "success"
+    assert result.updated == 7
+    assert run_calls == [1, 2, 3, 4, 5, 6, 7]
+    assert rebuild_calls == ["init", "run"] * 7
+    assert result.details["pass_count"] == 7
+    assert result.details["rebuild_count"] == 7
 
 
 def test_run_executes_recovery_after_audit_with_shared_state(monkeypatch: Any) -> None:

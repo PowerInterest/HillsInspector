@@ -41,6 +41,8 @@ DEFAULT_SUNBIZ_ENTITY_ROOT = DEFAULT_SUNBIZ_DATA_DIR / "public/doc/quarterly"
 SUNBIZ_ENTITY_FILE_PATTERN = (
     r"(?i)^(cor|gen)/(cordata|corevt|genfile|genevt)\.zip$"
 )
+_TITLE_BREAK_MIN_PASSES = 2
+_TITLE_BREAK_MAX_EXTRA_CYCLES = 5
 
 
 @dataclass(slots=True)
@@ -922,19 +924,86 @@ class PgPipelineController:
         from src.services.pg_title_break_service import PgTitleBreakService
 
         svc = PgTitleBreakService(dsn=self.dsn)
-        result = svc.run(
-            limit=self.settings.title_breaks_limit,
-            foreclosure_id=self.settings.foreclosure_id,
-            case_number=self.settings.case_number,
-        )
-        repairs = int(result.get("deeds_inserted", 0)) + int(result.get("backfilled", 0))
-        if repairs > 0:
-            result["title_chain_rebuild"] = self._run_title_chain_materialization()
+        pass_results: list[dict[str, Any]] = []
+        rebuilds: list[dict[str, Any]] = []
+        total_repairs = 0
+        max_passes = _TITLE_BREAK_MIN_PASSES + _TITLE_BREAK_MAX_EXTRA_CYCLES
+
+        for pass_index in range(1, max_passes + 1):
+            logger.info(
+                "title_breaks loop pass {}/{} start",
+                pass_index,
+                max_passes,
+            )
+            result = svc.run(
+                limit=self.settings.title_breaks_limit,
+                foreclosure_id=self.settings.foreclosure_id,
+                case_number=self.settings.case_number,
+            )
+            repairs = int(result.get("deeds_inserted", 0)) + int(result.get("backfilled", 0))
+            total_repairs += repairs
+            logger.info(
+                "title_breaks loop pass {} result: deeds_inserted={} backfilled={} errors={} repairs={}",
+                pass_index,
+                int(result.get("deeds_inserted", 0)),
+                int(result.get("backfilled", 0)),
+                int(result.get("errors", 0)),
+                repairs,
+            )
+
+            pass_detail = dict(result)
+            pass_detail["pass"] = pass_index
+            pass_detail["repairs"] = repairs
+
+            if repairs > 0:
+                rebuild = self._run_title_chain_materialization()
+                pass_detail["title_chain_rebuild"] = rebuild
+                rebuilds.append(rebuild)
+                logger.info(
+                    "title_breaks loop pass {} rebuild complete: chain_rows={} summary_rows={} events_inserted={}",
+                    pass_index,
+                    int(rebuild.get("chain_rows", 0)),
+                    int(rebuild.get("summary_rows", 0)),
+                    int(rebuild.get("events_inserted", 0)),
+                )
+
+            pass_results.append(pass_detail)
+
+            if pass_index < _TITLE_BREAK_MIN_PASSES:
+                logger.info(
+                    "title_breaks loop pass {} continuing to satisfy minimum pass count {}",
+                    pass_index,
+                    _TITLE_BREAK_MIN_PASSES,
+                )
+                continue
+            if repairs == 0:
+                logger.info(
+                    "title_breaks loop stopping after pass {} because repairs == 0",
+                    pass_index,
+                )
+                break
+        else:
+            logger.warning(
+                "title_breaks loop stopped at hard cap after {} passes with total_repairs={}",
+                max_passes,
+                total_repairs,
+            )
+
+        final_result = dict(pass_results[-1]) if pass_results else {
+            "skipped": True,
+            "reason": "no_passes",
+        }
+        final_result["passes"] = pass_results
+        final_result["pass_count"] = len(pass_results)
+        final_result["total_repairs"] = total_repairs
+        final_result["rebuild_count"] = len(rebuilds)
+        if rebuilds:
+            final_result["title_chain_rebuild"] = rebuilds[-1]
         return StepResult(
             step_name="title_breaks",
-            status="success" if repairs > 0 else "noop",
-            updated=repairs,
-            details=result,
+            status="success" if total_repairs > 0 else "noop",
+            updated=total_repairs,
+            details=final_result,
         )
 
     def _run_market_data(self) -> StepResult:

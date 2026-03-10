@@ -42,7 +42,13 @@ The controller's materialized title-chain step must honor the same overlay model
   falling back to `official_records_daily_instruments`.
 - `ORI_DEED_SEARCH` rows that represent deeds missing from `hcpa_allsales` are
   injected as synthetic `SALE` events during the rebuild.
-- After `title_breaks` writes any repairs, the pipeline immediately reruns the
+- The controller runs `title_breaks` in an iterative recovery loop:
+  - at least 2 passes always run
+  - after pass 2, the loop stops on the first pass with `0` repairs
+  - the loop is hard-capped at 5 extra passes beyond the initial 2
+- After any productive `title_breaks` pass, the pipeline immediately reruns the
   title-chain materialization step so `foreclosure_title_chain` and
   `foreclosure_title_summary` reflect the repaired chain in the same controller
   run.
+- The controller logs each pass, each rebuild, the stop condition, and any
+  hard-cap exit so iterative recovery cannot fail silently.

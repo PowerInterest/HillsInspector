@@ -3149,6 +3149,26 @@ class PgOriService:
             depth=depth,
         )
 
+    def search_legal_pav(
+        self,
+        text_value: str,
+        stats: dict[str, int],
+        *,
+        from_date: date,
+        to_date: date,
+        split_on_truncated: bool,
+        depth: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Public wrapper for legal-description PAV searches."""
+        return self._search_legal_pav(
+            text_value,
+            stats,
+            from_date=from_date,
+            to_date=to_date,
+            split_on_truncated=split_on_truncated,
+            depth=depth,
+        )
+
     def _search_book_page_pav(
         self,
         book: str,

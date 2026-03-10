@@ -19,6 +19,8 @@ This service currently performs 2 main gap-fillers:
 
 from __future__ import annotations
 
+import html
+import re
 import time
 from datetime import date
 from typing import Any
@@ -38,6 +40,28 @@ _DEED_TYPES = frozenset({
     "deed",
     "tax_deed",
 })
+
+_HIGH_VOLUME_BUILDER_TOKENS = (
+    "LENNAR",
+    "PULTE",
+    "CALATLANTIC",
+    "LGI HOMES",
+    "CENTEX",
+    "WCI COMMUNITIES",
+    "KB HOME",
+    "DR HORTON",
+    "D R HORTON",
+    "MERITAGE",
+    "TAYLOR MORRISON",
+    "RICHMOND AMERICAN",
+    "BEAZER",
+    "HOLIDAY BUILDERS",
+    "RYLAND",
+    "STANDARD PACIFIC",
+    "ASHTON WOODS",
+    "DAVID WEEKLEY",
+    "WESTBAY",
+)
 
 
 class PgTitleBreakService:
@@ -112,10 +136,16 @@ class PgTitleBreakService:
         params: dict[str, Any] = {}
         sql = """
             SELECT DISTINCT f.foreclosure_id, f.case_number_raw,
-                   f.case_number_norm, f.strap, f.folio
+                   f.case_number_norm, f.strap, f.folio,
+                   bp.raw_legal1 AS legal1,
+                   bp.raw_legal2 AS legal2,
+                   bp.raw_legal3 AS legal3,
+                   bp.raw_legal4 AS legal4
             FROM foreclosures f
             JOIN foreclosure_title_events fte
               ON fte.foreclosure_id = f.foreclosure_id
+            LEFT JOIN hcpa_bulk_parcels bp
+              ON bp.folio = f.folio
             WHERE f.archived_at IS NULL
               AND f.folio IS NOT NULL
               AND btrim(f.folio) <> ''
@@ -166,10 +196,6 @@ class PgTitleBreakService:
         all_deeds: list[dict[str, Any]] = []
 
         for gap in gaps:
-            party = gap["expected_from_party"] or gap["observed_to_party"]
-            if not party:
-                continue
-
             from_date = gap["missing_from_date"] or date(1970, 1, 1)
             import datetime as dt
 
@@ -180,15 +206,139 @@ class PgTitleBreakService:
             if isinstance(to_date, str):
                 to_date = date.fromisoformat(to_date)
 
-            stats: dict[str, int] = {
-                "api_calls": 0,
-                "retries": 0,
-                "truncated": 0,
-                "unresolved_truncations": 0,
-            }
-            try:
-                results = self._ori.search_party_pav(
+            all_deeds.extend(
+                self._search_gap_deeds(
+                    target,
+                    gap,
+                    from_date=from_date,
+                    to_date=to_date,
+                )
+            )
+
+        if not all_deeds:
+            return len(gaps), 0
+
+        inserted = self._insert_deeds(target, all_deeds)
+        return len(gaps), inserted
+
+    def _search_gap_deeds(
+        self,
+        target: dict[str, Any],
+        gap: dict[str, Any],
+        *,
+        from_date: date,
+        to_date: date,
+    ) -> list[dict[str, Any]]:
+        party = gap["expected_from_party"] or gap["observed_to_party"]
+        if not party:
+            return []
+
+        stats: dict[str, int] = {
+            "api_calls": 0,
+            "retries": 0,
+            "truncated": 0,
+            "unresolved_truncations": 0,
+        }
+        high_volume_builder = self._looks_high_volume_builder(party)
+
+        if high_volume_builder:
+            docs = self._search_gap_in_local_ori(
+                target,
+                gap,
+                party=party,
+                from_date=from_date,
+                to_date=to_date,
+            )
+            if docs:
+                logger.info(
+                    "title_breaks: local ORI builder recovery hit for party={!r} folio={}",
                     party,
+                    target["folio"],
+                )
+                return docs
+
+            docs = self._search_gap_by_legal(target, gap, from_date=from_date, to_date=to_date)
+            if docs:
+                logger.info(
+                    "title_breaks: legal-first builder recovery hit for party={!r} folio={}",
+                    party,
+                    target["folio"],
+                )
+                return docs
+
+        try:
+            party_results = self._ori.search_party_pav(
+                party,
+                stats,
+                from_date=from_date,
+                to_date=to_date,
+                split_on_truncated=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "title_breaks: PAV search failed for party={!r} folio={}: {}",
+                party,
+                target["folio"],
+                exc,
+            )
+            party_results = []
+
+        deeds = self._deed_docs(party_results)
+        if deeds:
+            time.sleep(0.5)
+            return deeds
+
+        if stats["unresolved_truncations"] > 0:
+            docs = self._search_gap_in_local_ori(
+                target,
+                gap,
+                party=party,
+                from_date=from_date,
+                to_date=to_date,
+            )
+            if docs:
+                logger.info(
+                    "title_breaks: local ORI fallback recovered truncated party search for {!r} folio={}",
+                    party,
+                    target["folio"],
+                )
+                return docs
+
+            docs = self._search_gap_by_legal(target, gap, from_date=from_date, to_date=to_date)
+            if docs:
+                logger.info(
+                    "title_breaks: legal fallback recovered truncated party search for {!r} folio={}",
+                    party,
+                    target["folio"],
+                )
+                return docs
+
+        time.sleep(0.5)
+        return []
+
+    def _search_gap_by_legal(
+        self,
+        target: dict[str, Any],
+        gap: dict[str, Any],
+        *,
+        from_date: date,
+        to_date: date,
+    ) -> list[dict[str, Any]]:
+        terms = self._legal_search_terms(target)
+        if not terms:
+            return []
+
+        stats: dict[str, int] = {
+            "api_calls": 0,
+            "retries": 0,
+            "truncated": 0,
+            "unresolved_truncations": 0,
+        }
+        matched: dict[str, dict[str, Any]] = {}
+        for term in terms:
+            try:
+                docs = self._ori.search_legal_pav(
+                    term,
                     stats,
                     from_date=from_date,
                     to_date=to_date,
@@ -196,26 +346,207 @@ class PgTitleBreakService:
                 )
             except Exception as exc:
                 logger.warning(
-                    "title_breaks: PAV search failed for party={!r} folio={}: {}",
-                    party,
-                    folio,
+                    "title_breaks: legal PAV search failed for term={!r} folio={}: {}",
+                    term,
+                    target["folio"],
                     exc,
                 )
                 continue
 
-            for doc in results:
-                raw_type = doc.get("DocType") or ""
-                if normalize_document_type(raw_type) in _DEED_TYPES:
-                    all_deeds.append(doc)
-
-            # Be polite to PAV
+            for doc in self._deed_docs(docs):
+                if not self._doc_matches_gap_parties(doc, gap):
+                    continue
+                instrument = (doc.get("Instrument") or "").strip()
+                if instrument:
+                    matched[instrument] = doc
             time.sleep(0.5)
 
-        if not all_deeds:
-            return len(gaps), 0
+        return list(matched.values())
 
-        inserted = self._insert_deeds(target, all_deeds)
-        return len(gaps), inserted
+    def _search_gap_in_local_ori(
+        self,
+        target: dict[str, Any],
+        gap: dict[str, Any],
+        *,
+        party: str,
+        from_date: date,
+        to_date: date,
+    ) -> list[dict[str, Any]]:
+        legal_terms = self._legal_search_terms(target)
+        like_party = f"%{party.strip()}%"
+        with self.engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text("""
+                        SELECT instrument_number,
+                               doc_type,
+                               recording_date,
+                               parties_from_text,
+                               parties_to_text,
+                               legal_description,
+                               book_number,
+                               page_number
+                        FROM official_records_daily_instruments
+                        WHERE recording_date BETWEEN :from_date AND :to_date
+                          AND (
+                              COALESCE(parties_from_text, '') ILIKE :party
+                              OR COALESCE(parties_to_text, '') ILIKE :party
+                          )
+                          AND COALESCE(doc_type, '') ILIKE '%DEED%'
+                        ORDER BY recording_date, instrument_number
+                    """),
+                    {
+                        "from_date": from_date,
+                        "to_date": to_date,
+                        "party": like_party,
+                    },
+                )
+                .mappings()
+                .fetchall()
+            )
+
+        scored_docs: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
+        expected = self._normalize_party_text(gap.get("expected_from_party"))
+        observed = self._normalize_party_text(gap.get("observed_to_party"))
+        for row in rows:
+            doc = {
+                "Instrument": row["instrument_number"],
+                "DocType": row["doc_type"] or "",
+                "RecordDate": row["recording_date"].isoformat() if row["recording_date"] else "",
+                "Book": row["book_number"] or "",
+                "Page": row["page_number"] or "",
+                "Legal": row["legal_description"] or "",
+                "PartiesOne": self._split_party_text(row["parties_from_text"]),
+                "PartiesTwo": self._split_party_text(row["parties_to_text"]),
+            }
+            if not self._doc_matches_gap_parties(doc, gap):
+                continue
+            if legal_terms and not self._doc_matches_legal_terms(doc, legal_terms):
+                if row["legal_description"]:
+                    continue
+                if len(rows) > 3:
+                    continue
+            score = self._local_ori_doc_score(
+                doc,
+                expected=expected,
+                observed=observed,
+            )
+            if score[0] <= 0:
+                continue
+            scored_docs.append((score, doc))
+
+        if not scored_docs:
+            return []
+
+        scored_docs.sort(key=lambda item: item[0], reverse=True)
+        best_score = scored_docs[0][0]
+        deduped: dict[str, dict[str, Any]] = {}
+        for score, doc in scored_docs:
+            if score != best_score:
+                break
+            instrument = (doc.get("Instrument") or "").strip()
+            if instrument:
+                deduped[instrument] = doc
+        return list(deduped.values())
+
+    @staticmethod
+    def _deed_docs(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            doc
+            for doc in docs
+            if normalize_document_type(doc.get("DocType") or "") in _DEED_TYPES
+        ]
+
+    def _legal_search_terms(self, target: dict[str, Any]) -> list[str]:
+        terms = self._ori._build_search_terms(target)  # noqa: SLF001
+        return [term for term in terms if term.strip()]
+
+    @staticmethod
+    def _normalize_party_text(value: str | None) -> str:
+        text_value = html.unescape(value or "").upper()
+        text_value = re.sub(r"[^A-Z0-9]+", " ", text_value)
+        return re.sub(r"\s+", " ", text_value).strip()
+
+    @classmethod
+    def _split_party_text(cls, value: str | None) -> list[str]:
+        if not value:
+            return []
+        return [part.strip() for part in value.split(";") if part.strip()]
+
+    @classmethod
+    def _looks_high_volume_builder(cls, party: str | None) -> bool:
+        normalized = cls._normalize_party_text(party)
+        return any(token in normalized for token in _HIGH_VOLUME_BUILDER_TOKENS)
+
+    @classmethod
+    def _doc_matches_gap_parties(
+        cls,
+        doc: dict[str, Any],
+        gap: dict[str, Any],
+    ) -> bool:
+        expected = cls._normalize_party_text(gap.get("expected_from_party"))
+        observed = cls._normalize_party_text(gap.get("observed_to_party"))
+        targets = [value for value in (expected, observed) if value]
+        if not targets:
+            return True
+
+        doc_parties = [
+            cls._normalize_party_text(name)
+            for name in [
+                *(doc.get("PartiesOne") or []),
+                *(doc.get("PartiesTwo") or []),
+            ]
+            if cls._normalize_party_text(name)
+        ]
+        if not doc_parties:
+            return False
+
+        for target in targets:
+            for doc_party in doc_parties:
+                if target in doc_party or doc_party in target:
+                    return True
+        return False
+
+    @classmethod
+    def _doc_matches_legal_terms(
+        cls,
+        doc: dict[str, Any],
+        legal_terms: list[str],
+    ) -> bool:
+        if not legal_terms:
+            return True
+        legal_text = cls._normalize_party_text(doc.get("Legal"))
+        return any(cls._normalize_party_text(term) in legal_text for term in legal_terms if term.strip())
+
+    @classmethod
+    def _local_ori_doc_score(
+        cls,
+        doc: dict[str, Any],
+        *,
+        expected: str,
+        observed: str,
+    ) -> tuple[int, int, int]:
+        grantor_blob = cls._normalize_party_text(" ; ".join(doc.get("PartiesOne") or []))
+        grantee_blob = cls._normalize_party_text(" ; ".join(doc.get("PartiesTwo") or []))
+
+        expected_in_grantor = int(bool(expected and expected in grantor_blob))
+        expected_in_grantee = int(bool(expected and expected in grantee_blob))
+        observed_in_grantor = int(bool(observed and observed in grantor_blob))
+        observed_in_grantee = int(bool(observed and observed in grantee_blob))
+
+        directional_hits = expected_in_grantor + observed_in_grantee
+        total_hits = (
+            expected_in_grantor
+            + expected_in_grantee
+            + observed_in_grantor
+            + observed_in_grantee
+        )
+        exact_side_bonus = int(expected_in_grantor and observed_in_grantee)
+        if not expected and observed:
+            exact_side_bonus = observed_in_grantee
+        if expected and not observed:
+            exact_side_bonus = expected_in_grantor
+        return (exact_side_bonus, directional_hits, total_hits)
 
     def _insert_deeds(self, target: dict[str, Any], deeds: list[dict[str, Any]]) -> int:
         """Insert found deeds into foreclosure_title_events."""
