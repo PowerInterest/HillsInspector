@@ -19,6 +19,7 @@ This service currently performs 2 main gap-fillers:
 
 from __future__ import annotations
 
+import datetime as dt
 import html
 import re
 import time
@@ -216,6 +217,7 @@ class PgTitleBreakService:
             )
 
         if not all_deeds:
+            self._insert_search_sentinel(target)
             return len(gaps), 0
 
         inserted = self._insert_deeds(target, all_deeds)
@@ -610,6 +612,56 @@ class PgTitleBreakService:
                 rows_to_insert,
             )
             return result.rowcount or 0
+
+    def _insert_search_sentinel(self, target: dict[str, Any]) -> None:
+        """Record that ORI deed search completed with no results for this foreclosure."""
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO foreclosure_title_events (
+                        foreclosure_id,
+                        case_number_raw,
+                        case_number_norm,
+                        folio,
+                        strap,
+                        event_date,
+                        event_source,
+                        event_subtype,
+                        instrument_number,
+                        grantor,
+                        grantee,
+                        description
+                    )
+                    SELECT
+                        :foreclosure_id,
+                        :case_number_raw,
+                        :case_number_norm,
+                        :folio,
+                        :strap,
+                        :event_date,
+                        'ORI_DEED_SEARCH',
+                        'SEARCH_NO_RESULT',
+                        NULL,
+                        NULL,
+                        NULL,
+                        :description
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM foreclosure_title_events
+                        WHERE foreclosure_id = :foreclosure_id
+                          AND event_source = 'ORI_DEED_SEARCH'
+                    )
+                """),
+                {
+                    "foreclosure_id": target["foreclosure_id"],
+                    "case_number_raw": target["case_number_raw"],
+                    "case_number_norm": target.get("case_number_norm"),
+                    "folio": target["folio"],
+                    "strap": target.get("strap"),
+                    "event_date": dt.datetime.now(dt.UTC).date(),
+                    "description": "ORI deed search completed with no matching deeds",
+                },
+            )
 
     def _backfill_deed_parties(
         self,

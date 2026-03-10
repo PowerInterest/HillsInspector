@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Self
+from typing import Any, Self, cast
 
 from src.services import pg_loader_clerk
 
@@ -16,6 +16,9 @@ class _FakeSession:
         return None
 
     def rollback(self) -> None:
+        return None
+
+    def execute(self, _statement: object) -> None:
         return None
 
 
@@ -80,3 +83,41 @@ def test_load_civil_alpha_index_preserves_full_ucn(
     assert stats["files_loaded"] == 1
     assert captured["cases"][0]["case_number"] == "08-CA-009351"
     assert captured["cases"][0]["ucn"] == "292008CA009351A001HC"
+
+
+def test_insert_criminal_name_index_batch_normalizes_null_conflict_keys(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeInsert:
+        def values(self, rows: list[dict[str, Any]]) -> Self:
+            captured["rows"] = rows
+            return self
+
+        def on_conflict_do_nothing(self, **kwargs: Any) -> Self:
+            captured["conflict_kwargs"] = kwargs
+            return self
+
+    session = _FakeSession()
+    monkeypatch.setattr(pg_loader_clerk, "pg_insert", lambda _model: _FakeInsert())
+
+    pg_loader_clerk._insert_criminal_name_index_batch(  # noqa: SLF001
+        cast("Any", session),
+        [
+            {
+                "ucn": "2025CF000001",
+                "count_number": None,
+                "disposition_code": None,
+            }
+        ],
+    )
+
+    assert captured["rows"] == [
+        {
+            "ucn": "2025CF000001",
+            "count_number": "",
+            "disposition_code": "",
+        }
+    ]
+    assert captured["conflict_kwargs"]["constraint"] == "uq_clerk_crim_ni_ucn_count_disp"

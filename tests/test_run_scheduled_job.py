@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from src.tools import run_scheduled_job
+from src.utils.step_result import StepResult
 
 
 def test_sunbiz_daily_raises_when_no_remote_files_match(monkeypatch: Any) -> None:
@@ -47,6 +48,8 @@ def test_sunbiz_daily_loads_raw_records_from_non_quarterly_feed(monkeypatch: Any
 
     result = run_scheduled_job.JOB_DEFINITIONS["sunbiz_daily"].handler("postgresql://db", {})
 
+    assert not isinstance(result, StepResult)
+    assert isinstance(result, dict)
     assert result["success"] is True
     assert captured["sync"]["exclude"] == r"/quarterly/"
     assert captured["sync"]["dataset_profile"] is None
@@ -79,6 +82,8 @@ def test_sunbiz_entity_quarterly_loads_only_supported_quarterly_files(
         {},
     )
 
+    assert not isinstance(result, StepResult)
+    assert isinstance(result, dict)
     assert result["success"] is True
     assert captured["sync"]["dataset_profile"] == "entity-quarterly"
     assert captured["load"]["root"] == run_scheduled_job.DEFAULT_DATA_DIR / "public/doc/quarterly"
@@ -123,6 +128,8 @@ def test_hcpa_bulk_uses_pg_loader_suite(monkeypatch: Any) -> None:
         {"skip_latlon": "true", "force_sync": "1", "batch_size": "250"},
     )
 
+    assert not isinstance(result, StepResult)
+    assert isinstance(result, dict)
     assert result["success"] is True
     assert result["update"]["parcels_loaded"] == 10
     assert captured["downloads_dir"] == Path("data/bulk_data/hcpa")

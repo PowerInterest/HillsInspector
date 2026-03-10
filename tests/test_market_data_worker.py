@@ -149,8 +149,11 @@ def test_run_market_data_update_tolerates_refresh_failure(monkeypatch: Any) -> N
     result = market_data_worker.run_market_data_update()
 
     assert result["properties_queried"] == 1
+    assert result["status"] == "degraded"
+    assert result["degraded"] is True
+    assert "refresh fail postgresql://x" in result["refresh_error"]
     assert result["update"]["homeharvest"] == 1
-    assert "foreclosure_refresh" not in result["update"]
+    assert result["update"]["foreclosure_refresh_error"] == "refresh fail postgresql://x"
 
 
 def test_run_market_data_update_propagates_batch_error(monkeypatch: Any) -> None:

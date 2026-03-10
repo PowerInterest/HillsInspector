@@ -20,6 +20,7 @@ This gives operational control without editing crontabs or redeploying code.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import traceback
@@ -29,9 +30,10 @@ from typing import Any, Callable
 from loguru import logger
 from sqlalchemy import text
 
+from src.utils.step_result import StepResult
 from sunbiz.db import get_engine, resolve_pg_dsn
 
-JobHandler = Callable[[str, dict[str, Any]], dict[str, Any]]
+JobHandler = Callable[[str, dict[str, Any]], dict[str, Any] | StepResult]
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,16 +217,10 @@ class PgJobControlService:
                 }
 
             except Exception as exc:
-                conn.rollback()
+                with contextlib.suppress(Exception):
+                    conn.rollback()
                 if run_id is not None:
-                    self._finalize_run(
-                        conn,
-                        run_id=run_id,
-                        status="failed",
-                        summary=None,
-                        error=f"{exc}\n{traceback.format_exc(limit=8)}",
-                    )
-                    conn.commit()
+                    self._finalize_failed_run(conn, run_id=run_id, error=exc)
                 logger.error("Scheduled job failed: {} ({})", definition.name, exc)
                 return {
                     "job_name": definition.name,
@@ -234,12 +230,20 @@ class PgJobControlService:
                 }
             finally:
                 if lock_acquired:
-                    conn.rollback()
-                    conn.execute(
-                        text("SELECT pg_advisory_unlock(hashtext(:job_name))"),
-                        {"job_name": definition.name},
-                    )
-                    conn.commit()
+                    with contextlib.suppress(Exception):
+                        conn.rollback()
+                    try:
+                        conn.execute(
+                            text("SELECT pg_advisory_unlock(hashtext(:job_name))"),
+                            {"job_name": definition.name},
+                        )
+                        conn.commit()
+                    except Exception as exc:
+                        logger.error(
+                            "Failed to release advisory lock for {}: {}",
+                            definition.name,
+                            exc,
+                        )
 
     @staticmethod
     def _coerce_nonnegative_int(value: Any, default: int) -> int:
@@ -418,7 +422,7 @@ class PgJobControlService:
         *,
         run_id: int,
         status: str,
-        summary: dict[str, Any] | None,
+        summary: dict[str, Any] | StepResult | None,
         error: str | None,
     ) -> None:
         conn.execute(
@@ -435,13 +439,23 @@ class PgJobControlService:
             {
                 "run_id": run_id,
                 "status": status,
-                "summary_json": json.dumps(summary) if summary is not None else None,
+                "summary_json": self._serialize_summary(summary),
                 "error": error,
             },
         )
 
     @staticmethod
-    def _payload_status(payload: dict[str, Any]) -> str:
+    def _serialize_summary(summary: dict[str, Any] | StepResult | None) -> str | None:
+        if summary is None:
+            return None
+        if isinstance(summary, StepResult):
+            return json.dumps(summary.to_summary_dict())
+        return json.dumps(summary)
+
+    @staticmethod
+    def _payload_status(payload: dict[str, Any] | StepResult) -> str:
+        if isinstance(payload, StepResult):
+            return payload.status
         if payload.get("status") == "skipped":
             return "skipped"
         if payload.get("status") == "degraded":
@@ -466,3 +480,28 @@ class PgJobControlService:
             if update.get("error") not in {None, ""}:
                 return "failed"
         return "success"
+
+    def _finalize_failed_run(
+        self,
+        conn: Any,
+        *,
+        run_id: int,
+        error: Exception,
+    ) -> None:
+        try:
+            self._finalize_run(
+                conn,
+                run_id=run_id,
+                status="failed",
+                summary=None,
+                error=f"{error}\n{traceback.format_exc(limit=8)}",
+            )
+            conn.commit()
+        except Exception as finalize_exc:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+            logger.error(
+                "Failed to finalize scheduled job run {} after handler error: {}",
+                run_id,
+                finalize_exc,
+            )

@@ -109,6 +109,14 @@ def _looks_like_tampa_record_number(record_number: str | None) -> bool:
     return bool(re.match(r"^[A-Z]{3}-\d{2}-\d{6,10}$", value))
 
 
+class SinglePinSyncError(RuntimeError):
+    """Raised when a single-pin sync partially writes data before a hard failure."""
+
+    def __init__(self, message: str, *, stats: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.stats = stats
+
+
 class PgPermitSinglePinService:
     """Sync single-pin permit payloads into existing PostgreSQL permit tables."""
 
@@ -696,6 +704,36 @@ class PgPermitSinglePinService:
         accela_errors = 0
         municipal_errors = 0
         permits_with_any_write = 0
+        routed_jurisdiction: str | None = None
+
+        def _stats(*, municipal_error_text: str | None = None) -> dict[str, Any]:
+            stats = {
+                "pin": pin,
+                "site_address": site_address,
+                "jurisdiction_route": routed_jurisdiction,
+                "permit_count": len(permits),
+                "county_arcgis_upserts": county_arcgis_upserts,
+                "county_backfill_updates": county_backfill_updates,
+                "county_hcpa_upserts": county_hcpa_upserts,
+                "tampa_upserts": tampa_upserts,
+                "plant_city_upserts": plant_city_upserts,
+                "temple_terrace_upserts": temple_terrace_upserts,
+                "total_writes": (
+                    county_arcgis_upserts
+                    + county_backfill_updates
+                    + county_hcpa_upserts
+                    + tampa_upserts
+                    + plant_city_upserts
+                    + temple_terrace_upserts
+                ),
+                "permits_with_any_write": permits_with_any_write,
+                "arcgis_errors": arcgis_errors,
+                "accela_errors": accela_errors,
+                "municipal_errors": municipal_errors,
+            }
+            if municipal_error_text is not None:
+                stats["error"] = municipal_error_text
+            return stats
 
         with self._engine.begin() as conn:
             for permit in permits:
@@ -830,32 +868,9 @@ class PgPermitSinglePinService:
                 )
 
         if municipal_error is not None:
-            raise RuntimeError(municipal_error)
+            raise SinglePinSyncError(municipal_error, stats=_stats(municipal_error_text=municipal_error))
 
-        stats = {
-            "pin": pin,
-            "site_address": site_address,
-            "jurisdiction_route": routed_jurisdiction,
-            "permit_count": len(permits),
-            "county_arcgis_upserts": county_arcgis_upserts,
-            "county_backfill_updates": county_backfill_updates,
-            "county_hcpa_upserts": county_hcpa_upserts,
-            "tampa_upserts": tampa_upserts,
-            "plant_city_upserts": plant_city_upserts,
-            "temple_terrace_upserts": temple_terrace_upserts,
-            "total_writes": (
-                county_arcgis_upserts
-                + county_backfill_updates
-                + county_hcpa_upserts
-                + tampa_upserts
-                + plant_city_upserts
-                + temple_terrace_upserts
-            ),
-            "permits_with_any_write": permits_with_any_write,
-            "arcgis_errors": arcgis_errors,
-            "accela_errors": accela_errors,
-            "municipal_errors": municipal_errors,
-        }
+        stats = _stats()
         logger.info("Single-pin permit sync complete: {}", stats)
         return stats
 
@@ -891,6 +906,24 @@ class PgPermitSinglePinService:
                 total_municipal_errors += int(stats.get("municipal_errors") or 0)
                 total_plant_city_upserts += int(stats.get("plant_city_upserts") or 0)
                 total_temple_terrace_upserts += int(stats.get("temple_terrace_upserts") or 0)
+            except SinglePinSyncError as exc:
+                failed += 1
+                stats = exc.stats
+                per_pin.append(stats)
+                total_permits += int(stats.get("permit_count") or 0)
+                total_writes += int(stats.get("total_writes") or 0)
+                total_arcgis_errors += int(stats.get("arcgis_errors") or 0)
+                total_accela_errors += int(stats.get("accela_errors") or 0)
+                total_municipal_errors += int(stats.get("municipal_errors") or 0)
+                total_plant_city_upserts += int(stats.get("plant_city_upserts") or 0)
+                total_temple_terrace_upserts += int(stats.get("temple_terrace_upserts") or 0)
+                err = {"pin": pin, "error": str(exc)}
+                errors.append(err)
+                logger.exception("Single-pin permit sync partially failed for pin={}: {}", pin, exc)
+                if fail_on_pin_error:
+                    raise RuntimeError(
+                        f"single-pin permit sync failed for pin={pin}: {exc}"
+                    ) from exc
             except Exception as exc:
                 failed += 1
                 err = {"pin": pin, "error": str(exc)}

@@ -638,8 +638,66 @@ def test_run_market_data_update_tolerates_refresh_failure(monkeypatch: Any) -> N
     result = pg_market_data_scrapling.run_market_data_update()
 
     assert result["properties_queried"] == 1
+    assert result["status"] == "degraded"
+    assert result["degraded"] is True
+    assert result["refresh_error"] == "boom"
     assert result["update"]["realtor"] == 1
-    assert "foreclosure_refresh" not in result["update"]
+    assert result["update"]["foreclosure_refresh_error"] == "boom"
+
+
+def test_run_site_loop_backs_off_on_blocked_html(monkeypatch: Any) -> None:
+    service = object.__new__(PgMarketDataScraplingService)
+    attempted: list[tuple[str, str]] = []
+    sleeps: list[float] = []
+    props = [
+        {"strap": "S1", "folio": "F1", "case_number": "C1", "property_address": "1 Main St"},
+        {"strap": "S2", "folio": "F2", "case_number": "C2", "property_address": "2 Main St"},
+        {"strap": "S3", "folio": "F3", "case_number": "C3", "property_address": "3 Main St"},
+    ]
+
+    monkeypatch.setitem(
+        pg_market_data_scrapling.DELAY_PROFILES,
+        "realtor",
+        pg_market_data_scrapling.SiteDelayProfile(
+            delay_min=0,
+            delay_max=0,
+            backoff_min=1,
+            backoff_max=1,
+            backoff_after=2,
+        ),
+    )
+    monkeypatch.setattr(
+        service,
+        "_fetch_site_html",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=("https://example.com", "<html>captcha</html>")),
+    )
+    monkeypatch.setattr(
+        service,
+        "_mark_source_attempted",
+        lambda strap, _folio, _case_number, site: attempted.append((strap, site)),
+    )
+    monkeypatch.setattr(pg_market_data_scrapling.random, "uniform", lambda *_args, **_kwargs: 1.0)
+
+    async def _fake_sleep(duration: float) -> None:
+        sleeps.append(duration)
+
+    monkeypatch.setattr(pg_market_data_scrapling.asyncio, "sleep", _fake_sleep)
+
+    matched, save_errors = asyncio.run(
+        service._run_site_loop(
+            "realtor",
+            props,
+            url_builder=lambda address, **_kwargs: f"https://example.com/{address}",
+            html_parser=lambda *_args, **_kwargs: {"list_price": 1},
+            upsert_fn=lambda *_args, **_kwargs: True,
+            is_useful_fn=lambda payload: bool(payload),
+        )
+    )
+
+    assert matched == 0
+    assert save_errors == 0
+    assert attempted == [("S1", "realtor"), ("S2", "realtor"), ("S3", "realtor")]
+    assert 1.0 in sleeps
 
 
 # ---------------------------------------------------------------------------

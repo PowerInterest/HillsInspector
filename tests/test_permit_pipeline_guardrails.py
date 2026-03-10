@@ -86,3 +86,48 @@ def test_permit_event_sql_ignores_blank_addresses() -> None:
     assert "btrim(cp.address) <> ''" in county_sql
     assert "btrim(sc.property_address) <> ''" in tampa_sql
     assert "btrim(coalesce(tr.address_normalized, tr.address_raw, '')) <> ''" in tampa_sql
+
+
+def test_run_tampa_permits_marks_detail_enrichment_errors_degraded(
+    monkeypatch: Any,
+) -> None:
+    controller = _build_controller(monkeypatch)
+    monkeypatch.setattr(
+        controller,
+        "_get_table_state",
+        lambda *_args, **_kwargs: {"row_count": 1000, "latest_at": date(2026, 1, 15)},
+    )
+    monkeypatch.setattr(controller, "_should_run", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        controller,
+        "_resolve_tampa_window",
+        lambda: (date(2026, 1, 1), date(2026, 1, 3)),
+    )
+
+    class _StubTampaPermitService:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def sync_date_range(self, **_kwargs: Any) -> dict[str, int]:
+            return {
+                "windows_processed": 1,
+                "windows_split": 0,
+                "csv_rows_total": 10,
+                "parsed_total": 10,
+                "written_total": 5,
+            }
+
+        def enrich_missing_details(self, **_kwargs: Any) -> dict[str, int]:
+            return {"selected": 5, "updated": 0, "errors": 5}
+
+    monkeypatch.setattr(
+        pg_pipeline_controller,
+        "TampaPermitService",
+        _StubTampaPermitService,
+    )
+
+    result = controller._run_tampa_permits()  # noqa: SLF001
+
+    assert result.status == "degraded"
+    assert result.inserted == 5
+    assert result.errors == 5

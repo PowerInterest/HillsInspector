@@ -351,6 +351,13 @@ class PgSurvivalService:
             return
 
         with self.engine.begin() as conn:
+            conn.execute(
+                text("""
+                    DELETE FROM foreclosure_encumbrance_survival
+                    WHERE foreclosure_id = :foreclosure_id
+                """),
+                {"foreclosure_id": foreclosure_id},
+            )
             for enc in all_encs:
                 enc_id = enc.get("id")
                 status = enc.get("survival_status")

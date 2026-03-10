@@ -197,18 +197,17 @@ def get_property_audit_snapshot(
                     continue
                 handler = bdef["handler"]
                 try:
-                    all_hits = handler(conn)
-                    for hit in all_hits:
-                        if hit.foreclosure_id == foreclosure_id:
-                            meta = get_bucket_meta(hit.bucket)
-                            issues.append({
-                                "bucket": hit.bucket,
-                                "label": meta["label"],
-                                "family": meta["family"],
-                                "reason": hit.reason,
-                                "why_it_matters": meta["why_it_matters"],
-                                "badge_class": meta["badge_class"],
-                            })
+                    scoped_hits = handler(conn, foreclosure_ids=[foreclosure_id])
+                    for hit in scoped_hits:
+                        meta = get_bucket_meta(hit.bucket)
+                        issues.append({
+                            "bucket": hit.bucket,
+                            "label": meta["label"],
+                            "family": meta["family"],
+                            "reason": hit.reason,
+                            "why_it_matters": meta["why_it_matters"],
+                            "badge_class": meta["badge_class"],
+                        })
                 except Exception:
                     logger.warning("Bucket {} failed for foreclosure {}", bdef["name"], foreclosure_id, exc_info=True)
 
@@ -317,6 +316,7 @@ def get_encumbrance_audit_inbox(
             "label": meta["label"],
             "family": meta["family"],
             "count": s.count,
+            "error_count": s.error_count,
             "description": s.description,
             "deferred": s.deferred,
             "deferred_reason": s.deferred_reason,

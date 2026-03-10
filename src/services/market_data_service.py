@@ -858,6 +858,10 @@ class MarketDataService:
     # Photo download
     # ------------------------------------------------------------------
 
+    def download_all_photos(self, properties: list[dict]) -> int:
+        """Public wrapper returning only the photo download count."""
+        return self._download_all_photos(properties)
+
     def _download_all_photos(self, properties: list[dict]) -> int:
         """Backward-compatible wrapper returning only the download count."""
         return self._download_all_photos_with_stats(properties)["downloaded"]

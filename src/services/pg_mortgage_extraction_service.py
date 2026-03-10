@@ -268,8 +268,10 @@ class PgMortgageExtractionService:
             logger.warning(f"Vision extraction failed or returned NULL for {instrument}")
             return False
 
+        cache_complete = self._is_cache_complete(result)
+
         # 5. Write JSON cache to disk (survives DB rebuilds)
-        if self._is_cache_complete(result):
+        if cache_complete:
             try:
                 cache_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
                 logger.debug(f"Cached mortgage extraction to {cache_path}")
@@ -279,6 +281,7 @@ class PgMortgageExtractionService:
             logger.warning(
                 f"Mortgage extraction for {instrument} is partial; skipping cache write so future runs can retry"
             )
+            return False
 
         # 6. Save to Database
         try:

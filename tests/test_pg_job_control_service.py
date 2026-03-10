@@ -4,6 +4,7 @@ import datetime as dt
 from typing import Self
 
 from src.services import pg_job_control_service
+from src.utils.step_result import StepResult
 
 
 class _FakeResult:
@@ -66,6 +67,26 @@ class _LockingConnection:
             assert params is not None
             self.run_rows.append(dict(params))
             return _FakeResult(scalar_one=len(self.run_rows))
+        if "SELECT job_name, enabled, min_interval_sec, max_runtime_sec" in sql:
+            return _FakeResult(
+                fetchone={
+                    "job_name": "test_job",
+                    "enabled": True,
+                    "min_interval_sec": 0,
+                    "max_runtime_sec": 3600,
+                    "singleton": True,
+                    "args_json": {},
+                    "paused_reason": None,
+                }
+            )
+        if "UPDATE pipeline_job_runs" in sql:
+            return _FakeResult()
+        if "SELECT pg_advisory_unlock" in sql:
+            return _FakeResult()
+        if "SELECT 1 FROM pipeline_job_runs" in sql:
+            return _FakeResult(fetchone=None)
+        if "UPDATE pipeline_job_runs SET status = 'timed_out'" in sql:
+            return _FakeResult(fetchall=[])
         raise AssertionError(f"Unexpected SQL in test: {sql}")
 
     def commit(self) -> None:
@@ -147,7 +168,41 @@ def test_ran_recently_only_checks_running_and_success_rows() -> None:
 def test_payload_status_supports_step_result_summary_dicts() -> None:
     payload_status = pg_job_control_service.PgJobControlService._payload_status  # noqa: SLF001
 
+    assert payload_status(
+        StepResult(step_name="demo", status="degraded")
+    ) == "degraded"
     assert payload_status({"status": "skipped"}) == "skipped"
     assert payload_status({"status": "degraded"}) == "degraded"
     assert payload_status({"status": "failed"}) == "failed"
     assert payload_status({"status": "success"}) == "success"
+
+
+def test_run_job_returns_failed_even_if_finalize_write_fails(monkeypatch: object) -> None:
+    conn = _LockingConnection(lock_acquired=True)
+    monkeypatch.setattr(
+        pg_job_control_service,
+        "resolve_pg_dsn",
+        lambda _dsn: "postgresql://user:pw@host:5432/db",
+    )
+    monkeypatch.setattr(
+        pg_job_control_service,
+        "get_engine",
+        lambda _dsn: _FakeEngine(conn),
+    )
+
+    service = pg_job_control_service.PgJobControlService()
+    monkeypatch.setattr(
+        service,
+        "_finalize_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("finalize down")),
+    )
+    definition = pg_job_control_service.JobDefinition(
+        name="test_job",
+        handler=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("handler boom")),
+    )
+
+    result = service.run_job(definition, triggered_by="cron")
+
+    assert result["status"] == "failed"
+    assert result["error"] == "handler boom"
+    assert any("SELECT pg_advisory_unlock" in sql for sql in conn.statements)

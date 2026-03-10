@@ -106,7 +106,12 @@ def run_market_data_update(
         refresh_counts = refresh_foreclosures(dsn=resolved_dsn)
         result["foreclosure_refresh"] = refresh_counts
     except Exception as exc:
-        logger.warning(f"Post-market foreclosure refresh failed: {exc}")
+        refresh_error = str(exc)
+        logger.warning(f"Post-market foreclosure refresh failed: {refresh_error}")
+        output["status"] = "degraded"
+        output["degraded"] = True
+        output["refresh_error"] = refresh_error
+        result["foreclosure_refresh_error"] = refresh_error
 
     return output
 

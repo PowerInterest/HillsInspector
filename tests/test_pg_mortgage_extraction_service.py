@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from typing import Any
+from typing import cast
 from typing import Self
+
+import fitz
 
 from src.services import pg_mortgage_extraction_service
 
@@ -105,3 +110,46 @@ def test_find_unextracted_mortgages_scopes_to_target_straps(monkeypatch: Any) ->
     sql_text = captured["sql"].lower()
     assert "strap = any(:straps)" in sql_text
     assert "limit :limit" in sql_text
+
+
+def test_process_single_skips_partial_extract_db_write(
+    monkeypatch: Any,
+    tmp_path: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+    pdf_path = tmp_path / "mortgage.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(pdf_path)
+    doc.close()
+
+    service.storage = SimpleNamespace(
+        document_exists=lambda **_kwargs: pdf_path,
+    )
+    service.vision = SimpleNamespace(
+        extract_json=lambda *_args, **_kwargs: {
+            "borrower": "Borrower Name",
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_save_to_pg",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("_save_to_pg should not be called for partial extracts")
+        ),
+    )
+
+    success = asyncio.run(
+        service._process_single(  # noqa: SLF001
+            cast("Any", object()),
+            {
+                "instrument_number": "2025000001",
+                "case_number": "24-CA-000001",
+                "id": 7,
+                "ori_id": "abc123",
+            },
+        )
+    )
+
+    assert success is False
+    assert not (tmp_path / "mortgage_extracted.json").exists()

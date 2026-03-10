@@ -427,7 +427,15 @@ class PgPipelineController:
                 details={"reason": "fresh", "state": state},
             )
         stats = svc.update(force_download=self.settings.force_all)
-        rows = int(stats.get("rows_written", 0)) + int(stats.get("cases_upserted", 0))
+        rows = self._int_from_paths(
+            stats,
+            "cases.rows_upserted",
+            "events.rows_inserted",
+            "parties.rows_upserted",
+            "disposed.rows_upserted",
+            "garnishment.rows_inserted",
+            "official_records.rows_upserted",
+        )
         return StepResult(
             step_name="clerk_bulk",
             status="success" if rows > 0 else "noop",
@@ -474,7 +482,7 @@ class PgPipelineController:
                 details={"reason": "fresh", "count": count},
             )
         stats = svc.update(force_download=self.settings.force_all)
-        rows = int(stats.get("rows_written", 0))
+        rows = self._int_from_paths(stats, "load.rows_inserted")
         return StepResult(
             step_name="clerk_criminal",
             status="success" if rows > 0 else "noop",
@@ -524,7 +532,11 @@ class PgPipelineController:
                 details={"reason": "fresh", "count": count},
             )
         stats = svc.update(force_download=self.settings.force_all)
-        rows = int(stats.get("rows_written", 0))
+        rows = self._max_int_from_paths(
+            stats,
+            "load.cases_upserted",
+            "load.parties_upserted",
+        )
         return StepResult(
             step_name="clerk_civil_alpha",
             status="success" if rows > 0 else "noop",
@@ -561,7 +573,7 @@ class PgPipelineController:
             )
 
         stats = svc.update(force_download=self.settings.force_all)
-        rows = int(stats.get("rows_written", 0)) + int(stats.get("parcels_upserted", 0))
+        rows = self._int_from_paths(stats, "load_stats.parcels_upserted")
         return StepResult(
             step_name="dor_nal",
             status="success" if rows > 0 else "noop",
@@ -591,7 +603,12 @@ class PgPipelineController:
                 details={"reason": "fresh", "state": state},
             )
         stats = svc.update(skip_sftp=False, force_download=self.settings.force_all)
-        rows = int(stats.get("rows_written", 0)) + int(stats.get("filings_upserted", 0))
+        rows = self._int_from_paths(
+            stats,
+            "load_stats.filings_upserted",
+            "load_stats.parties_inserted",
+            "load_stats.events_inserted",
+        )
         return StepResult(
             step_name="sunbiz_flr",
             status="success" if rows > 0 else "noop",
@@ -740,10 +757,17 @@ class PgPipelineController:
             enrich_stats = svc.enrich_missing_details(limit=limit if limit > 0 else None)
 
         rows = int(sync_stats.get("written_total", 0))
+        enrich_errors = int((enrich_stats or {}).get("errors") or 0)
+        enrich_selected = int((enrich_stats or {}).get("selected") or 0)
+        if enrich_errors > 0 and (rows > 0 or enrich_selected > 0):
+            status = "degraded"
+        else:
+            status = "success" if rows > 0 else "noop"
         return StepResult(
             step_name="tampa_permits",
-            status="success" if rows > 0 else "noop",
+            status=status,
             inserted=rows,
+            errors=enrich_errors,
             details={
                 "state_before": state,
                 "window": {"start_date": start_date, "end_date": end_date},
@@ -865,12 +889,22 @@ class PgPipelineController:
                 details={"reason": "service_unavailable"},
             )
         stats = svc.refresh()
-        rows = int(stats.get("refreshed", 0)) + int(stats.get("inserted", 0)) + int(stats.get("updated", 0))
+        rows = self._int_from_paths(
+            stats,
+            "enriched",
+            "strap_resolved",
+            "coords_enriched",
+            "resale",
+            "events_inserted",
+            "encumbrances",
+            "archived",
+            "judgments",
+            "rescheduled_reused",
+        )
         return StepResult(
             step_name="foreclosure_refresh",
             status="success" if rows > 0 else "noop",
-            inserted=int(stats.get("inserted", 0)),
-            updated=int(stats.get("updated", 0)) + int(stats.get("refreshed", 0)),
+            updated=rows,
             details={"update": stats},
         )
 
@@ -887,7 +921,12 @@ class PgPipelineController:
                 },
             )
         stats = svc.run(force_reprocess=self.settings.force_all)
-        rows = int(stats.get("updated", 0)) + int(stats.get("inserted", 0))
+        rows = self._int_from_paths(
+            stats,
+            "rows_upserted",
+            "rows_deleted",
+            "summary_rows_written",
+        )
         return StepResult(
             step_name="trust_accounts",
             status="success" if rows > 0 else "noop",
@@ -1032,8 +1071,13 @@ class PgPipelineController:
                 logger.info("Scrapling Realtor enrichment complete: {}", scrapling_result)
             else:
                 scrapling_result = {"skipped": True, "reason": "no_properties_need_market_data"}
-        except Exception:
+        except Exception as exc:
             logger.exception("Scrapling market enrichment failed; continuing with browser worker")
+            scrapling_result = {
+                "attempted": True,
+                "reason": "scrapling_enrichment_failed",
+                "warning": str(exc),
+            }
 
         if self.settings.background_market_data:
             from src.services.market_data_dispatcher import dispatch_market_data_worker
@@ -1118,7 +1162,7 @@ class PgPipelineController:
 
         svc = PgAuctionService(dsn=self.dsn)
         result = svc.run(limit=self.settings.auction_limit)
-        scraped = int(result.get("scraped", 0)) + int(result.get("rows_scraped", 0))
+        scraped = self._int_from_paths(result, "auctions_saved")
         return StepResult(
             step_name="auction_scrape",
             status="success" if scraped > 0 else "noop",
@@ -1131,7 +1175,7 @@ class PgPipelineController:
 
         svc = PgJudgmentService(dsn=self.dsn)
         result = svc.run(limit=self.settings.judgment_limit)
-        updated = int(result.get("updated", 0)) + int(result.get("extracted", 0))
+        updated = self._int_from_paths(result, "judgments_loaded_to_pg", "pdfs_extracted")
         errs = int(result.get("errors", 0))
         return StepResult(
             step_name="judgment_extract",
@@ -1154,7 +1198,7 @@ class PgPipelineController:
                 details={"reason": "service_unavailable"},
             )
         result = svc.run(limit=self.settings.identifier_recovery_limit)
-        recovered = int(result.get("recovered", 0))
+        recovered = self._int_from_paths(result, "rows_updated")
         return StepResult(
             step_name="identifier_recovery",
             status="success" if recovered > 0 else "noop",
@@ -1167,7 +1211,12 @@ class PgPipelineController:
 
         svc = PgOriService(dsn=self.dsn)
         result = svc.run(limit=self.settings.ori_limit)
-        searched = int(result.get("searched", 0)) + int(result.get("targets", 0))
+        searched = self._int_from_paths(
+            result,
+            "encumbrances_saved",
+            "inferred_saved",
+            "satisfactions_linked",
+        )
         errs = int(result.get("errors", 0))
         return StepResult(
             step_name="ori_search",
@@ -1188,7 +1237,7 @@ class PgPipelineController:
             case_number=self.settings.case_number,
             active_only=self.settings.active_only,
         )
-        found = int(result.get("found", 0)) + int(result.get("processed", 0))
+        found = self._int_from_paths(result, "findings_written")
         return StepResult(
             step_name="municipal_liens_phase0",
             status="success" if found > 0 else "noop",
@@ -1201,7 +1250,7 @@ class PgPipelineController:
 
         svc = PgMortgageExtractionService(dsn=self.dsn)
         result = svc.run(limit=self.settings.mortgage_limit)
-        extracted = int(result.get("extracted", 0)) + int(result.get("updated", 0))
+        extracted = self._int_from_paths(result, "mortgages_extracted")
         errs = int(result.get("errors", 0))
         return StepResult(
             step_name="mortgage_extract",
@@ -1341,7 +1390,18 @@ class PgPipelineController:
         from src.scripts.refresh_foreclosures import refresh as _refresh
 
         counts = _refresh(dsn=self.dsn)
-        rows = int(counts.get("refreshed", 0)) + int(counts.get("updated", 0))
+        rows = self._int_from_paths(
+            counts,
+            "enriched",
+            "strap_resolved",
+            "coords_enriched",
+            "resale",
+            "events_inserted",
+            "encumbrances",
+            "archived",
+            "judgments",
+            "rescheduled_reused",
+        )
         return StepResult(
             step_name="final_refresh",
             status="success" if rows > 0 else "noop",
@@ -1768,6 +1828,26 @@ class PgPipelineController:
             except (TypeError, ValueError):
                 continue
         return total
+
+    @staticmethod
+    def _int_from_paths(payload: Any, *paths: str) -> int:
+        total = 0
+        for path in paths:
+            value: Any = payload
+            for segment in path.split("."):
+                if not isinstance(value, dict):
+                    value = None
+                    break
+                value = value.get(segment)
+            try:
+                total += int(value or 0)
+            except (TypeError, ValueError):
+                continue
+        return total
+
+    @classmethod
+    def _max_int_from_paths(cls, payload: Any, *paths: str) -> int:
+        return max((cls._int_from_paths(payload, path) for path in paths), default=0)
 
     @staticmethod
     def _dsn_tag(dsn: str) -> str:

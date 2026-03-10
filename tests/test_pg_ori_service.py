@@ -880,6 +880,40 @@ def test_save_documents_matches_existing_instrument_by_strap_when_folio_changes(
     assert "OR strap = :strap" in update_sql
 
 
+def test_save_documents_does_not_count_noop_upserts_as_saved(
+    monkeypatch: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    def _execute(sql_text: str, _params: dict[str, Any]) -> _CaptureResult:
+        if "UPDATE ori_encumbrances" in sql_text and "WHERE instrument_number = :instrument" in sql_text:
+            return _CaptureResult(rowcount=0)
+        if "INSERT INTO ori_encumbrances" in sql_text:
+            return _CaptureResult(rowcount=0)
+        return _CaptureResult()
+
+    service.engine = _ExecuteFnEngine(_execute, captured)  # type: ignore[assignment]
+
+    saved = service._save_documents(  # noqa: SLF001
+        "strap-123",
+        "folio-456",
+        [
+            {
+                "Instrument": "2024000456",
+                "DocType": "(MTG) MORTGAGE",
+                "RecordDate": "2024-01-10",
+                "BookType": "OR",
+                "Book": "12345",
+                "Page": "678",
+                "Legal": "123 MAIN ST TAMPA FL",
+            }
+        ],
+    )
+
+    assert saved == 0
+
+
 def test_link_satisfactions_updates_parent_without_self_reference(
     monkeypatch: Any,
 ) -> None:

@@ -574,7 +574,10 @@ class TempleTerracePermitService:
                     detail_url,
                     exc,
                 )
-                continue
+                detail = {
+                    "detail_url": detail_url,
+                    "detail_fetch_error": str(exc),
+                }
             normalized = self._normalize_record(row, detail, query=query)
             if normalized is not None:
                 normalized_rows.append(normalized)

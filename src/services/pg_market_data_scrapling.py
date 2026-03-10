@@ -186,6 +186,19 @@ class PgMarketDataScraplingService(MarketDataService):
             return None
 
     @staticmethod
+    def _html_looks_blocked(html: str) -> bool:
+        lowered = html.lower()
+        blocked_markers = (
+            "captcha",
+            "verify you are human",
+            "access denied",
+            "are you a robot",
+            "cf-chl",
+            "/challenge-platform/",
+        )
+        return any(marker in lowered for marker in blocked_markers)
+
+    @staticmethod
     def _normalize_float(raw_value: Any) -> float | None:
         if raw_value in (None, ""):
             return None
@@ -1303,6 +1316,18 @@ class PgMarketDataScraplingService(MarketDataService):
                     logger.info("{} scrapling progress: {}/{} attempted, {} matched", site.capitalize(), attempted, len(properties), matched)
                 continue
 
+            if self._html_looks_blocked(html):
+                logger.warning(
+                    "{} scrapling: blocked/captcha content for {}",
+                    site.capitalize(),
+                    address,
+                )
+                self._mark_source_attempted(strap, folio, case_number, site)
+                consecutive_failures += 1
+                if attempted % 10 == 0:
+                    logger.info("{} scrapling progress: {}/{} attempted, {} matched", site.capitalize(), attempted, len(properties), matched)
+                continue
+
             consecutive_failures = 0
 
             payload = html_parser(html, address, url)
@@ -1617,7 +1642,12 @@ def run_market_data_update(
         refresh_counts = refresh_foreclosures(dsn=resolved_dsn)
         result["foreclosure_refresh"] = refresh_counts
     except Exception as exc:
-        logger.warning("Post-market foreclosure refresh failed: {}", exc)
+        refresh_error = str(exc)
+        logger.warning("Post-market foreclosure refresh failed: {}", refresh_error)
+        output["status"] = "degraded"
+        output["degraded"] = True
+        output["refresh_error"] = refresh_error
+        result["foreclosure_refresh_error"] = refresh_error
 
     return output
 

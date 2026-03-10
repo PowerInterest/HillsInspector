@@ -75,6 +75,7 @@ class BucketSummary:
     bucket: str
     description: str
     count: int
+    error_count: int = 0
     deferred: bool = False
     deferred_reason: str | None = None
 
@@ -158,8 +159,12 @@ def _bucket_lp_missing(conn: Any) -> list[BucketHit]:
       AND  NOT EXISTS (
                SELECT 1
                FROM   ori_encumbrances oe
-               WHERE  oe.strap = f.strap
-                 AND  oe.encumbrance_type = 'lis_pendens'
+               WHERE  oe.encumbrance_type = 'lis_pendens'
+                 AND (
+                       (f.strap IS NOT NULL AND oe.strap = f.strap)
+                    OR oe.case_number = f.case_number_raw
+                    OR oe.case_number = f.case_number_norm
+                 )
            )
       AND  NOT EXISTS (
                SELECT 1
@@ -756,6 +761,7 @@ def run_audit(dsn: str | None = None, *, conn: Any | None = None) -> AuditReport
                         bucket=bucket_name,
                         description=bdef["description"],
                         count=0,
+                        error_count=1,
                         deferred=True,
                         deferred_reason=f"Bucket error: {exc}",
                     )

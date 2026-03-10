@@ -2271,7 +2271,14 @@ def _dedup_criminal_name_index(rows: list[dict]) -> list[dict]:
 def _insert_criminal_name_index_batch(session: Session, rows: list[dict]) -> None:
     if not rows:
         return
-    rows = _dedup_criminal_name_index(rows)
+    rows = [
+        {
+            **row,
+            "count_number": row.get("count_number") or "",
+            "disposition_code": row.get("disposition_code") or "",
+        }
+        for row in _dedup_criminal_name_index(rows)
+    ]
     stmt = pg_insert(ClerkCriminalNameIndex).values(rows)
     stmt = stmt.on_conflict_do_nothing(
         constraint="uq_clerk_crim_ni_ucn_count_disp"

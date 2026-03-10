@@ -78,6 +78,7 @@ class BucketSummary:
     bucket: str
     description: str
     count: int
+    error_count: int = 0
     deferred: bool = False
     deferred_reason: str | None = None
 
@@ -273,6 +274,17 @@ def _lp_required_case_sql(alias: str) -> str:
     )
 
 
+def _foreclosure_scope_sql(
+    alias: str,
+    foreclosure_ids: list[int] | None,
+) -> tuple[str, dict[str, Any]]:
+    if not foreclosure_ids:
+        return "", {}
+    return f" AND {alias}.foreclosure_id = ANY(:foreclosure_ids)", {
+        "foreclosure_ids": foreclosure_ids,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Bucket queries
 # ---------------------------------------------------------------------------
@@ -280,8 +292,12 @@ def _lp_required_case_sql(alias: str) -> str:
 # operate on a single SQLAlchemy connection.
 
 
-def _bucket_lp_missing(conn: Any) -> list[BucketHit]:
+def _bucket_lp_missing(
+    conn: Any,
+    foreclosure_ids: list[int] | None = None,
+) -> list[BucketHit]:
     """Foreclosures missing lis pendens in ori_encumbrances AND title events."""
+    scope_sql, params = _foreclosure_scope_sql("f", foreclosure_ids)
     sql = """
     SELECT f.foreclosure_id,
            f.case_number_raw  AS case_number,
@@ -294,8 +310,12 @@ def _bucket_lp_missing(conn: Any) -> list[BucketHit]:
       AND  NOT EXISTS (
                SELECT 1
                FROM   ori_encumbrances oe
-               WHERE  oe.strap = f.strap
-                 AND  oe.encumbrance_type = 'lis_pendens'
+               WHERE  oe.encumbrance_type = 'lis_pendens'
+                 AND (
+                       (f.strap IS NOT NULL AND oe.strap = f.strap)
+                    OR oe.case_number = f.case_number_raw
+                    OR oe.case_number = f.case_number_norm
+                 )
            )
       AND  NOT EXISTS (
                SELECT 1
@@ -303,10 +323,14 @@ def _bucket_lp_missing(conn: Any) -> list[BucketHit]:
                WHERE  fte.foreclosure_id = f.foreclosure_id
                  AND  fte.event_subtype IN ('LP', 'LPR')
            )
+      {scope_sql}
     ORDER  BY f.foreclosure_id
-    """.format(lp_required_case_sql=_lp_required_case_sql("f"))
+    """.format(
+        lp_required_case_sql=_lp_required_case_sql("f"),
+        scope_sql=scope_sql,
+    )
     hits: list[BucketHit] = []
-    for r in _rows(conn, sql):
+    for r in _rows(conn, sql, params):
         hits.append(
             BucketHit(
                 bucket="lp_missing",
@@ -320,8 +344,12 @@ def _bucket_lp_missing(conn: Any) -> list[BucketHit]:
     return hits
 
 
-def _bucket_foreclosing_lien_missing(conn: Any) -> list[BucketHit]:
+def _bucket_foreclosing_lien_missing(
+    conn: Any,
+    foreclosure_ids: list[int] | None = None,
+) -> list[BucketHit]:
     """LP-required foreclosures with no mortgage/lien base encumbrance row."""
+    scope_sql, params = _foreclosure_scope_sql("f", foreclosure_ids)
     sql = """
     SELECT f.foreclosure_id,
            f.case_number_raw  AS case_number,
@@ -341,10 +369,14 @@ def _bucket_foreclosing_lien_missing(conn: Any) -> list[BucketHit]:
                WHERE  oe.strap = f.strap
                  AND  oe.encumbrance_type IN ('mortgage', 'lien')
            )
+      {scope_sql}
     ORDER  BY f.foreclosure_id
-    """.format(lp_required_case_sql=_lp_required_case_sql("f"))
+    """.format(
+        lp_required_case_sql=_lp_required_case_sql("f"),
+        scope_sql=scope_sql,
+    )
     hits: list[BucketHit] = []
-    for r in _rows(conn, sql):
+    for r in _rows(conn, sql, params):
         ct = r.get("clerk_case_type") or "unknown"
         plaintiff = r.get("plaintiff") or "unknown"
         hits.append(
@@ -360,13 +392,17 @@ def _bucket_foreclosing_lien_missing(conn: Any) -> list[BucketHit]:
     return hits
 
 
-def _bucket_plaintiff_chain_gap(conn: Any) -> list[BucketHit]:
+def _bucket_plaintiff_chain_gap(
+    conn: Any,
+    foreclosure_ids: list[int] | None = None,
+) -> list[BucketHit]:
     """Plaintiff from judgment is not reflected in any encumbrance party.
 
     We check whether the judgment plaintiff name appears (case-insensitive
     substring) in party1 or party2 of *any* encumbrance for this strap.
     """
-    sql = """
+    scope_sql, params = _foreclosure_scope_sql("f", foreclosure_ids)
+    sql = f"""
     SELECT f.foreclosure_id,
            f.case_number_raw  AS case_number,
            f.strap,
@@ -387,10 +423,11 @@ def _bucket_plaintiff_chain_gap(conn: Any) -> list[BucketHit]:
                   OR UPPER(oe.party2) LIKE '%%' || UPPER(TRIM(f.judgment_data->>'plaintiff')) || '%%'
                  )
            )
+      {scope_sql}
     ORDER  BY f.foreclosure_id
     """
     hits: list[BucketHit] = []
-    for r in _rows(conn, sql):
+    for r in _rows(conn, sql, params):
         plaintiff = r.get("plaintiff") or "unknown"
         hits.append(
             BucketHit(
@@ -405,9 +442,13 @@ def _bucket_plaintiff_chain_gap(conn: Any) -> list[BucketHit]:
     return hits
 
 
-def _bucket_cc_lien_gap(conn: Any) -> list[BucketHit]:
+def _bucket_cc_lien_gap(
+    conn: Any,
+    foreclosure_ids: list[int] | None = None,
+) -> list[BucketHit]:
     """Lien-style county-civil cases with no lien encumbrance."""
-    sql = """
+    scope_sql, params = _foreclosure_scope_sql("f", foreclosure_ids)
+    sql = f"""
     SELECT f.foreclosure_id,
            f.case_number_raw  AS case_number,
            f.strap,
@@ -425,10 +466,11 @@ def _bucket_cc_lien_gap(conn: Any) -> list[BucketHit]:
                WHERE  oe.strap = f.strap
                  AND  oe.encumbrance_type = 'lien'
            )
+      {scope_sql}
     ORDER  BY f.foreclosure_id
     """
     hits: list[BucketHit] = []
-    for r in _rows(conn, sql):
+    for r in _rows(conn, sql, params):
         hits.append(
             BucketHit(
                 bucket="cc_lien_gap",
@@ -442,7 +484,10 @@ def _bucket_cc_lien_gap(conn: Any) -> list[BucketHit]:
     return hits
 
 
-def _bucket_construction_lien_risk(conn: Any) -> list[BucketHit]:
+def _bucket_construction_lien_risk(
+    conn: Any,
+    foreclosure_ids: list[int] | None = None,
+) -> list[BucketHit]:
     """Properties with recent NOC or permit activity but no construction lien.
 
     We look for:
@@ -451,7 +496,8 @@ def _bucket_construction_lien_risk(conn: Any) -> list[BucketHit]:
     but *no* mechanic's / construction lien evidence.  The lien risk is that
     a contractor was not paid and may file (or has filed) a construction lien.
     """
-    sql = """
+    scope_sql, params = _foreclosure_scope_sql("f", foreclosure_ids)
+    sql = f"""
     SELECT f.foreclosure_id,
            f.case_number_raw  AS case_number,
            f.strap,
@@ -496,10 +542,11 @@ def _bucket_construction_lien_risk(conn: Any) -> list[BucketHit]:
                  AND  oe.encumbrance_type = 'lien'
                  AND  UPPER(COALESCE(oe.raw_document_type, '')) LIKE '%%CONSTRUCTION%%'
            )
+      {scope_sql}
     ORDER  BY f.foreclosure_id
     """
     hits: list[BucketHit] = []
-    for r in _rows(conn, sql):
+    for r in _rows(conn, sql, params):
         hits.append(
             BucketHit(
                 bucket="construction_lien_risk",
@@ -513,14 +560,18 @@ def _bucket_construction_lien_risk(conn: Any) -> list[BucketHit]:
     return hits
 
 
-def _bucket_sat_parent_gap(conn: Any) -> list[BucketHit]:
+def _bucket_sat_parent_gap(
+    conn: Any,
+    foreclosure_ids: list[int] | None = None,
+) -> list[BucketHit]:
     """Satisfaction or release exists but the parent encumbrance is missing.
 
     A satisfaction or release document should reference a parent mortgage or
     lien.  We flag cases where a satisfaction/release exists for the strap
     but ``satisfies_encumbrance_id`` is NULL (no linked parent).
     """
-    sql = """
+    scope_sql, params = _foreclosure_scope_sql("f", foreclosure_ids)
+    sql = f"""
     SELECT f.foreclosure_id,
            f.case_number_raw  AS case_number,
            f.strap,
@@ -538,11 +589,12 @@ def _bucket_sat_parent_gap(conn: Any) -> list[BucketHit]:
       AND  f.strap IS NOT NULL
       AND  oe.encumbrance_type IN ('satisfaction', 'release')
       AND  oe.satisfies_encumbrance_id IS NULL
+      {scope_sql}
     GROUP  BY f.foreclosure_id, f.case_number_raw, f.strap, f.property_address
     ORDER  BY f.foreclosure_id
     """
     hits: list[BucketHit] = []
-    for r in _rows(conn, sql):
+    for r in _rows(conn, sql, params):
         sat_count = int(r.get("sat_count") or 1)
         sat_refs = str(r.get("sat_refs") or "").strip()
         if sat_refs:
@@ -568,7 +620,10 @@ def _bucket_sat_parent_gap(conn: Any) -> list[BucketHit]:
     return hits
 
 
-def _bucket_superpriority_non_ori_risk(conn: Any) -> list[BucketHit]:
+def _bucket_superpriority_non_ori_risk(
+    conn: Any,
+    foreclosure_ids: list[int] | None = None,
+) -> list[BucketHit]:
     """Superpriority risk signals that are unlikely to appear in ORI.
 
     Superpriority liens (code enforcement, utility, PACE, CDD, tax) often do
@@ -581,7 +636,8 @@ def _bucket_superpriority_non_ori_risk(conn: Any) -> list[BucketHit]:
     we have positive signals from adjacent data (e.g. Accela violations or
     CDD membership) but no corresponding ORI encumbrance.
     """
-    sql = """
+    scope_sql, params = _foreclosure_scope_sql("f", foreclosure_ids)
+    sql = f"""
     SELECT f.foreclosure_id,
            f.case_number_raw  AS case_number,
            f.strap,
@@ -627,10 +683,11 @@ def _bucket_superpriority_non_ori_risk(conn: Any) -> list[BucketHit]:
                   OR UPPER(COALESCE(oe.raw_document_type, '')) LIKE '%%MUNICIPAL%%'
                  )
            )
+      {scope_sql}
     ORDER  BY f.foreclosure_id
     """
     hits: list[BucketHit] = []
-    for r in _rows(conn, sql):
+    for r in _rows(conn, sql, params):
         hits.append(
             BucketHit(
                 bucket="superpriority_non_ori_risk",
@@ -644,14 +701,18 @@ def _bucket_superpriority_non_ori_risk(conn: Any) -> list[BucketHit]:
     return hits
 
 
-def _bucket_historical_window_gap(conn: Any) -> list[BucketHit]:
+def _bucket_historical_window_gap(
+    conn: Any,
+    foreclosure_ids: list[int] | None = None,
+) -> list[BucketHit]:
     """Encumbrances exist but all are HISTORICAL — no current-owner coverage.
 
     If *every* encumbrance for the strap has survival_status='HISTORICAL',
     the current ownership period has no encumbrance coverage.  This is a
     meaningful gap: the current owner's liens/mortgages are missing.
     """
-    sql = """
+    scope_sql, params = _foreclosure_scope_sql("f", foreclosure_ids)
+    sql = f"""
     SELECT f.foreclosure_id,
            f.case_number_raw  AS case_number,
            f.strap,
@@ -670,6 +731,7 @@ def _bucket_historical_window_gap(conn: Any) -> list[BucketHit]:
       AND  f.judgment_data IS NOT NULL
       AND  f.strap IS NOT NULL
       AND  oe.encumbrance_type NOT IN ('noc', 'satisfaction', 'release', 'assignment')
+      {scope_sql}
     GROUP  BY f.foreclosure_id, f.case_number_raw, f.strap, f.property_address
     HAVING COUNT(*) = COUNT(*) FILTER (
                WHERE COALESCE(fes.survival_status, oe.survival_status) = 'HISTORICAL'
@@ -678,7 +740,7 @@ def _bucket_historical_window_gap(conn: Any) -> list[BucketHit]:
     ORDER  BY f.foreclosure_id
     """
     hits: list[BucketHit] = []
-    for r in _rows(conn, sql):
+    for r in _rows(conn, sql, params):
         total = r.get("total_enc", 0)
         hits.append(
             BucketHit(
@@ -693,14 +755,18 @@ def _bucket_historical_window_gap(conn: Any) -> list[BucketHit]:
     return hits
 
 
-def _bucket_lifecycle_base_gap(conn: Any) -> list[BucketHit]:
+def _bucket_lifecycle_base_gap(
+    conn: Any,
+    foreclosure_ids: list[int] | None = None,
+) -> list[BucketHit]:
     """Lifecycle documents (assignments, modifications) exist without a base.
 
     If an assignment or modification encumbrance exists for a strap but there
     is no corresponding mortgage or lien base encumbrance, the base was missed
     during ORI discovery.
     """
-    sql = """
+    scope_sql, params = _foreclosure_scope_sql("f", foreclosure_ids)
+    sql = f"""
     SELECT DISTINCT
            f.foreclosure_id,
            f.case_number_raw  AS case_number,
@@ -731,10 +797,11 @@ def _bucket_lifecycle_base_gap(conn: Any) -> list[BucketHit]:
                WHERE  base.strap = f.strap
                  AND  base.encumbrance_type IN ('mortgage', 'lien')
            )
+      {scope_sql}
     ORDER  BY f.foreclosure_id
     """
     hits: list[BucketHit] = []
-    for r in _rows(conn, sql):
+    for r in _rows(conn, sql, params):
         lt = r.get("lifecycle_type") or "assignment"
         inst = r.get("lifecycle_instrument") or "unknown"
         hits.append(
@@ -958,6 +1025,7 @@ def run_audit(dsn: str | None = None, *, conn: Any | None = None) -> AuditReport
                             bucket=bucket_name,
                             description=bdef["description"],
                             count=0,
+                            error_count=1,
                             deferred=True,
                             deferred_reason=signal_bucket_error,
                         )
@@ -1001,6 +1069,7 @@ def run_audit(dsn: str | None = None, *, conn: Any | None = None) -> AuditReport
                         bucket=bucket_name,
                         description=bdef["description"],
                         count=0,
+                        error_count=1,
                         deferred=True,
                         deferred_reason=f"Bucket error: {exc}",
                     )

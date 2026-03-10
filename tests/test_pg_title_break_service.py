@@ -1,3 +1,5 @@
+from typing import Any
+
 from src.services.pg_title_break_service import PgTitleBreakService
 
 
@@ -54,6 +56,52 @@ class _GapOri:
     ) -> list[dict]:
         self.legal_calls.append((text_value, dict(stats)))
         return list(self.legal_result)
+
+
+class _SentinelConn:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.executed: list[tuple[str, dict[str, Any]]] = []
+
+    def execute(self, sql: Any, params: dict[str, Any]) -> Any:
+        sql_text = str(sql)
+        self.executed.append((sql_text, params))
+        if "FROM fn_title_chain_gaps" in sql_text:
+            return _GapResult(self.rows)
+        return type("_RowcountResult", (), {"rowcount": 1})()
+
+    def __enter__(self) -> "_SentinelConn":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+class _SentinelEngine:
+    def __init__(self, conn: _SentinelConn) -> None:
+        self.conn = conn
+
+    def connect(self) -> _SentinelConn:
+        return self.conn
+
+    def begin(self) -> _SentinelConn:
+        return self.conn
+
+
+class _GapMappings:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self._rows
+
+
+class _GapResult:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def mappings(self) -> _GapMappings:
+        return _GapMappings(self._rows)
 
 
 def test_lookup_instrument_parties_uses_keyword_search_payload() -> None:
@@ -249,3 +297,41 @@ def test_local_ori_doc_score_prefers_directional_party_match() -> None:
     )
 
     assert better > weaker
+
+
+def test_process_one_inserts_search_sentinel_when_no_deeds_found(monkeypatch) -> None:
+    conn = _SentinelConn(
+        [
+            {
+                "gap_type": "missing_party",
+                "expected_from_party": "SELLER LLC",
+                "observed_to_party": "BUYER LLC",
+                "missing_from_date": "2024-01-01",
+                "missing_to_date": "2024-12-31",
+            }
+        ]
+    )
+    service = PgTitleBreakService.__new__(PgTitleBreakService)
+    service.engine = _SentinelEngine(conn)  # type: ignore[assignment]
+    monkeypatch.setattr(
+        service,
+        "_search_gap_deeds",
+        lambda *_args, **_kwargs: [],
+    )
+
+    gaps_found, deeds_inserted = service._process_one(  # noqa: SLF001
+        {
+            "foreclosure_id": 11,
+            "case_number_raw": "24-CA-000011",
+            "case_number_norm": "24-CA-000011",
+            "folio": "F11",
+            "strap": "S11",
+        }
+    )
+
+    assert gaps_found == 1
+    assert deeds_inserted == 0
+    sentinel_sql, sentinel_params = conn.executed[-1]
+    assert "event_source = 'ORI_DEED_SEARCH'" in sentinel_sql
+    assert sentinel_params["foreclosure_id"] == 11
+    assert sentinel_params["description"] == "ORI deed search completed with no matching deeds"

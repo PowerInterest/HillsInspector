@@ -158,3 +158,53 @@ def test_sync_pin_to_postgres_keeps_tampa_records_out_of_county_fallback() -> No
 def test_city_key_from_full_address_parses_city_not_state_zip() -> None:
     assert _city_key_from_site_address("301 N PALMER ST, Plant City, FL 33563-3435") == "PLANTCITY"
     assert _city_key_from_site_address("8301 N 56TH ST, Temple Terrace, FL 33617") == "TEMPLETERRACE"
+
+
+def test_sync_pins_to_postgres_preserves_partial_writes_on_municipal_failure() -> None:
+    payload = {
+        "parcel_context": {
+            "folio": "0123456789",
+            "site_address": "8301 N 56TH ST, Temple Terrace, FL 33617",
+        },
+        "permits": [
+            {
+                "permit_number": "BLD-25-0513202",
+                "description": "BUILDING PERMIT",
+                "issue_date": "2025-01-05",
+                "estimated_value": 10000.0,
+                "permit_url": "https://aca-prod.accela.com/TAMPA/Cap/GlobalSearchResults.aspx?QueryText=BLD-25-0513202",
+                "permit_type_code": "BLD",
+                "property_type_code": "R",
+                "source_guess": "tampa",
+                "source_row_id": 555,
+                "arcgis": {"matches": [], "error": None},
+                "accela": {
+                    "detail_url": "https://aca-prod.accela.com/TAMPA/Cap/CapDetail.aspx?foo=bar",
+                    "detail_extract": {"status": "Issued"},
+                    "search_extract": {"status": "Issued"},
+                    "error": None,
+                },
+            }
+        ],
+    }
+    service, _conn = _build_service(payload, rowcounts=[0, 1])
+    object.__setattr__(
+        service,
+        "_temple_terrace_service",
+        SimpleNamespace(
+            sync_address_to_postgres=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("detail failed")
+            )
+        ),
+    )
+
+    summary = service.sync_pins_to_postgres(
+        ["1234567890"],
+        fail_on_pin_error=False,
+    )
+
+    assert summary["pins_failed"] == 1
+    assert summary["total_writes"] == 1
+    assert summary["per_pin"][0]["tampa_upserts"] == 1
+    assert summary["per_pin"][0]["total_writes"] == 1
+    assert "Temple Terrace permit sync failed" in summary["errors"][0]["error"]

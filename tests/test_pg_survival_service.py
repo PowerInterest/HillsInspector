@@ -165,15 +165,19 @@ def test_save_survival_results_upserts_per_foreclosure_rows(
     )
 
     executed = captured["executed"]
-    assert len(executed) == 2
+    assert len(executed) == 3
 
-    insert_sql, insert_params = executed[0]
+    delete_sql, delete_params = executed[0]
+    assert "delete from foreclosure_encumbrance_survival" in delete_sql.lower()
+    assert delete_params["foreclosure_id"] == 7
+
+    insert_sql, insert_params = executed[1]
     assert "insert into foreclosure_encumbrance_survival" in insert_sql.lower()
     assert insert_params["foreclosure_id"] == 7
     assert insert_params["encumbrance_id"] == 101
     assert insert_params["case_number"] == "292025CA000007A001HC"
 
-    update_sql, update_params = executed[1]
+    update_sql, update_params = executed[2]
     assert "update ori_encumbrances set" in update_sql.lower()
     assert update_params["id"] == 101
     assert update_params["case_number"] == "292025CA000007A001HC"

@@ -79,3 +79,41 @@ def test_main_exits_nonzero_when_step_summary_failed(monkeypatch: Any) -> None:
         bulk_step_worker.main()
 
     assert exc.value.code == 1
+
+
+def test_main_wraps_background_step_in_job_control(monkeypatch: Any) -> None:
+    monkeypatch.setenv("HI_BULK_STEP_NAME", "hcpa_suite")
+    monkeypatch.setenv("HI_FORCE_ALL", "1")
+    monkeypatch.setenv("SUNBIZ_PG_DSN", "postgresql://user:pw@host:5432/db")
+    captured: dict[str, Any] = {}
+
+    class _FakeJobControlService:
+        def __init__(self, dsn: str | None = None) -> None:
+            captured["dsn"] = dsn
+
+        def run_job(self, definition: Any, *, triggered_by: str, force: bool) -> dict[str, Any]:
+            captured["job_name"] = definition.name
+            captured["triggered_by"] = triggered_by
+            captured["force"] = force
+            captured["payload"] = definition.handler("postgresql://worker", {})
+            return {"status": "success", "payload": captured["payload"]}
+
+    monkeypatch.setattr(bulk_step_worker, "PgJobControlService", _FakeJobControlService)
+    monkeypatch.setattr(
+        bulk_step_worker,
+        "run_bulk_step",
+        lambda step_name, **kwargs: {
+            "name": step_name,
+            "status": "success",
+            "details": kwargs,
+        },
+    )
+
+    bulk_step_worker.main()
+
+    assert captured["dsn"] == "postgresql://user:pw@host:5432/db"
+    assert captured["job_name"] == "controller_bulk_step:hcpa_suite"
+    assert captured["triggered_by"] == "controller_background"
+    assert captured["force"] is True
+    assert captured["payload"]["details"]["dsn"] == "postgresql://worker"
+    assert captured["payload"]["details"]["force_all"] is True
