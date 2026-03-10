@@ -31,3 +31,18 @@ Instead, all recovered information (both found deeds and backfilled names) is sa
 The dynamic SQL view **`fn_title_chain`** was updated with dynamic CTEs (`UNION ALL` and `LEFT JOIN LATERAL`) to seamlessly stitch these recovery events together with the raw `hcpa_allsales` data on-the-fly.
 
 By treating `foreclosure_title_events` as the priority layer, we guarantee a gapless, accurate chain of title without ever risking the corruption or accidental deletion of the original historical source data during nightly bulk refreshes.
+
+## Materialized Rebuild Contract
+The controller's materialized title-chain step must honor the same overlay model as
+`fn_title_chain`:
+
+- `TitleChainController` preserves `ORI_DEED_SEARCH` and `ORI_DEED_BACKFILL`
+  rows when resetting scoped outputs.
+- Rebuilt `SALE` events coalesce missing parties from those overlay rows before
+  falling back to `official_records_daily_instruments`.
+- `ORI_DEED_SEARCH` rows that represent deeds missing from `hcpa_allsales` are
+  injected as synthetic `SALE` events during the rebuild.
+- After `title_breaks` writes any repairs, the pipeline immediately reruns the
+  title-chain materialization step so `foreclosure_title_chain` and
+  `foreclosure_title_summary` reflect the repaired chain in the same controller
+  run.

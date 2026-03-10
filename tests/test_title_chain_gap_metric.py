@@ -8,7 +8,7 @@ PostgreSQL fixture for the full title-chain pipeline.
 
 from __future__ import annotations
 
-from src.services.pg_title_chain_controller import TitleChainController
+from src.services.pg_title_chain_controller import ControllerConfig, TitleChainController
 
 
 def test_is_gap_status_flags_missing_party_and_chained_by_folio() -> None:
@@ -74,3 +74,56 @@ def test_build_summary_sql_uses_shared_gap_predicate() -> None:
     sql = TitleChainController._build_summary_sql()  # noqa: SLF001
     assert "COUNT(*) FILTER (WHERE e.link_status IN ('MISSING_PARTY', 'CHAINED_BY_FOLIO')) AS gap_count" in sql
     assert "= 'GAP'" not in sql
+
+
+class _CaptureConn:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def execute(self, statement: object) -> None:
+        self.statements.append(str(statement))
+
+
+def test_reset_outputs_preserves_overlay_rows_for_partial_runs() -> None:
+    controller = TitleChainController.__new__(TitleChainController)
+    controller._config = ControllerConfig(active_only=True)  # noqa: SLF001
+    conn = _CaptureConn()
+
+    controller._reset_outputs(conn)  # noqa: SLF001
+
+    assert "DELETE FROM foreclosure_title_events" in conn.statements[2]
+    assert (
+        "event_source IN ('ORI_DEED_SEARCH', 'ORI_DEED_BACKFILL')"
+        in conn.statements[2]
+    )
+    assert "NOT (" in conn.statements[2]
+
+
+def test_reset_outputs_preserves_overlay_rows_for_full_runs() -> None:
+    controller = TitleChainController.__new__(TitleChainController)
+    controller._config = ControllerConfig(active_only=False)  # noqa: SLF001
+    conn = _CaptureConn()
+
+    controller._reset_outputs(conn)  # noqa: SLF001
+
+    assert conn.statements[0] == (
+        "TRUNCATE TABLE foreclosure_title_chain, foreclosure_title_summary "
+        "RESTART IDENTITY"
+    )
+    assert "DELETE FROM foreclosure_title_events" in conn.statements[1]
+    assert (
+        "event_source IN ('ORI_DEED_SEARCH', 'ORI_DEED_BACKFILL')"
+        in conn.statements[1]
+    )
+
+
+def test_insert_sales_events_sql_uses_recovery_overlay_rows() -> None:
+    sql = TitleChainController._insert_sales_events_sql()  # noqa: SLF001
+
+    assert "COALESCE(s.grantor, backfill.grantor, ori.parties_from_text)" in sql
+    assert "COALESCE(s.grantee, backfill.grantee, ori.parties_to_text)" in sql
+    assert "LEFT JOIN LATERAL (" in sql
+    assert "e.event_source IN ('ORI_DEED_SEARCH', 'ORI_DEED_BACKFILL')" in sql
+    assert "JOIN foreclosure_title_events e" in sql
+    assert "WHERE e.event_source = 'ORI_DEED_SEARCH'" in sql
+    assert "UNION ALL" in sql

@@ -894,15 +894,7 @@ class PgPipelineController:
         )
 
     def _run_title_chain(self) -> StepResult:
-        config = TitleChainConfig(
-            dsn=self.dsn,
-            foreclosure_id=self.settings.foreclosure_id,
-            case_number=self.settings.case_number,
-            active_only=self.settings.active_only,
-            limit=self.settings.limit,
-            similarity_threshold=self.settings.similarity_threshold,
-        )
-        result = TitleChainController(config).run()
+        result = self._run_title_chain_materialization()
         built = (
             int(result.get("chain_rows", 0))
             + int(result.get("summary_rows", 0))
@@ -915,16 +907,33 @@ class PgPipelineController:
             details={"update": result},
         )
 
+    def _run_title_chain_materialization(self) -> dict[str, Any]:
+        config = TitleChainConfig(
+            dsn=self.dsn,
+            foreclosure_id=self.settings.foreclosure_id,
+            case_number=self.settings.case_number,
+            active_only=self.settings.active_only,
+            limit=self.settings.limit,
+            similarity_threshold=self.settings.similarity_threshold,
+        )
+        return TitleChainController(config).run()
+
     def _run_title_breaks(self) -> StepResult:
         from src.services.pg_title_break_service import PgTitleBreakService
 
         svc = PgTitleBreakService(dsn=self.dsn)
-        result = svc.run(limit=self.settings.title_breaks_limit)
-        analyzed = int(result.get("analyzed", 0))
+        result = svc.run(
+            limit=self.settings.title_breaks_limit,
+            foreclosure_id=self.settings.foreclosure_id,
+            case_number=self.settings.case_number,
+        )
+        repairs = int(result.get("deeds_inserted", 0)) + int(result.get("backfilled", 0))
+        if repairs > 0:
+            result["title_chain_rebuild"] = self._run_title_chain_materialization()
         return StepResult(
             step_name="title_breaks",
-            status="success" if analyzed > 0 else "noop",
-            updated=analyzed,
+            status="success" if repairs > 0 else "noop",
+            updated=repairs,
             details=result,
         )
 

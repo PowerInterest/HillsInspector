@@ -48,8 +48,18 @@ class PgTitleBreakService:
         self.engine = get_engine(self.dsn)
         self._ori = PgOriService(dsn=self.dsn)
 
-    def run(self, *, limit: int | None = None) -> dict[str, Any]:
-        targets = self._find_targets(limit)
+    def run(
+        self,
+        *,
+        limit: int | None = None,
+        foreclosure_id: int | None = None,
+        case_number: str | None = None,
+    ) -> dict[str, Any]:
+        targets = self._find_targets(
+            limit,
+            foreclosure_id=foreclosure_id,
+            case_number=case_number,
+        )
         if not targets:
             return {"skipped": True, "reason": "no_targets"}
 
@@ -77,7 +87,11 @@ class PgTitleBreakService:
             "targets": len(targets),
             "gaps_found": total_gaps,
             "deeds_inserted": total_inserted,
-            "backfilled": self._backfill_deed_parties(limit),
+            "backfilled": self._backfill_deed_parties(
+                limit,
+                foreclosure_id=foreclosure_id,
+                case_number=case_number,
+            ),
             "errors": errors,
         }
         logger.info(f"title_breaks: {result}")
@@ -87,8 +101,15 @@ class PgTitleBreakService:
     # Internal
     # ------------------------------------------------------------------
 
-    def _find_targets(self, limit: int | None) -> list[dict[str, Any]]:
+    def _find_targets(
+        self,
+        limit: int | None,
+        *,
+        foreclosure_id: int | None = None,
+        case_number: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Active foreclosures with title events but no ORI_DEED_SEARCH yet."""
+        params: dict[str, Any] = {}
         sql = """
             SELECT DISTINCT f.foreclosure_id, f.case_number_raw,
                    f.case_number_norm, f.strap, f.folio
@@ -103,13 +124,19 @@ class PgTitleBreakService:
                   WHERE e2.foreclosure_id = f.foreclosure_id
                     AND e2.event_source = 'ORI_DEED_SEARCH'
               )
-            ORDER BY f.foreclosure_id
         """
+        if foreclosure_id is not None:
+            sql += " AND f.foreclosure_id = :foreclosure_id"
+            params["foreclosure_id"] = foreclosure_id
+        if case_number:
+            sql += " AND f.case_number_raw = :case_number"
+            params["case_number"] = case_number
+        sql += " ORDER BY f.foreclosure_id"
         if limit:
             sql += f" LIMIT {int(limit)}"
 
         with self.engine.connect() as conn:
-            rows = conn.execute(text(sql)).mappings().fetchall()
+            rows = conn.execute(text(sql), params).mappings().fetchall()
         return [dict(r) for r in rows]
 
     def _process_one(self, target: dict[str, Any]) -> tuple[int, int]:
@@ -240,7 +267,7 @@ class PgTitleBreakService:
                     SELECT
                         :foreclosure_id, :case_number_raw, :case_number_norm,
                         :folio, :strap,
-                        :event_date::date, :event_source, :event_subtype,
+                        :event_date, :event_source, :event_subtype,
                         :instrument_number, :grantor, :grantee, :description
                     WHERE NOT EXISTS (
                         SELECT 1 FROM foreclosure_title_events
@@ -253,7 +280,13 @@ class PgTitleBreakService:
             )
             return result.rowcount or 0
 
-    def _backfill_deed_parties(self, limit: int | None = None) -> int:
+    def _backfill_deed_parties(
+        self,
+        limit: int | None = None,
+        *,
+        foreclosure_id: int | None = None,
+        case_number: str | None = None,
+    ) -> int:
         """Fetch missing grantor/grantee from PAV for active-foreclosure deeds.
 
         Queries hcpa_allsales rows tied to active foreclosures that have a
@@ -261,15 +294,9 @@ class PgTitleBreakService:
         and inserts results into foreclosure_title_events so fn_title_chain
         can resolve party names.
         """
-        import requests as _requests
-
-        pav_url = "https://publicaccess.hillsclerk.com/api/OfficialRecordsDirectSearch/AdvancedSearch"
-        pav_headers = {"Content-Type": "application/json"}
-
+        params: dict[str, Any] = {}
         # First, find foreclosure folks missing a deed party...
-        with self.engine.connect() as conn:
-            rows = conn.execute(
-                text("""
+        sql = """
                     SELECT 
                         s.doc_num, 
                         MAX(s.sale_date) AS sale_date,
@@ -288,41 +315,33 @@ class PgTitleBreakService:
                           SELECT 1 FROM foreclosure_title_events e
                           WHERE e.instrument_number = s.doc_num
                             AND e.event_source = 'ORI_DEED_BACKFILL'
-                      )
+                        )
+                """
+        if foreclosure_id is not None:
+            sql += " AND f.foreclosure_id = :foreclosure_id"
+            params["foreclosure_id"] = foreclosure_id
+        if case_number:
+            sql += " AND f.case_number_raw = :case_number"
+            params["case_number"] = case_number
+        sql += """
                     GROUP BY s.doc_num
                     ORDER BY MAX(s.sale_date) DESC NULLS LAST
-                """)
-            ).fetchall()
+                """
+        with self.engine.connect() as conn:
+            rows = conn.execute(text(sql), params).fetchall()
 
         if not rows:
             return 0
 
         success = 0
         targets = rows[:limit] if limit else rows
-        sess = _requests.Session()
 
         for row in targets:
             doc_num = (row.doc_num or "").strip()
             if not doc_num:
                 continue
 
-            payload = {
-                "MatchAnySearchWord": True,
-                "InstrumentNumberSearchValue": doc_num,
-                "IsExactNameSearchMode": False,
-            }
-            parsed = None
-            for _ in range(1, 4):
-                try:
-                    resp = sess.post(pav_url, json=payload, headers=pav_headers, timeout=10)
-                    resp.raise_for_status()
-                    data = resp.json()
-                    docs = data.get("Documents", [])
-                    if docs:
-                        parsed = self._parse_pav_parties(docs, doc_num)
-                    break
-                except _requests.RequestException:
-                    time.sleep(1)
+            parsed = self._lookup_instrument_parties(doc_num)
 
             if parsed is None or (not parsed["from_text"] and not parsed["to_text"]):
                 time.sleep(0.5)
@@ -338,7 +357,7 @@ class PgTitleBreakService:
                         )
                         SELECT
                             :foreclosure_id, :case_number_raw, :case_number_norm,
-                            :folio, :strap, :event_date::date, :event_source, :event_subtype,
+                            :folio, :strap, :event_date, :event_source, :event_subtype,
                             :instrument_number, :grantor, :grantee, :description
                         WHERE NOT EXISTS (
                             SELECT 1 FROM foreclosure_title_events
@@ -366,6 +385,31 @@ class PgTitleBreakService:
             time.sleep(1.0)
 
         return success
+
+    def _lookup_instrument_parties(self, instrument: str) -> dict[str, str | None] | None:
+        stats = {"api_calls": 0, "retries": 0}
+        payload = {
+            "QueryID": 320,
+            "Keywords": [{"Id": 1006, "Value": instrument}],
+            "QueryLimit": 5,
+        }
+        data = self._ori._post_pav(  # noqa: SLF001
+            payload,
+            f"title_break_instrument:{instrument}",
+            stats,
+            bypass_cache=True,
+        )
+        if data is None:
+            logger.warning(
+                "title_breaks: instrument lookup returned no data for {}",
+                instrument,
+            )
+            return None
+
+        rows = data.get("Data") or []
+        if not rows:
+            return None
+        return self._parse_pav_parties(rows, instrument)
 
     @staticmethod
     def _parse_pav_parties(rows: list[dict], target_instrument: str) -> dict[str, str | None] | None:

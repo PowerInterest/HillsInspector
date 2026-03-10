@@ -1,6 +1,13 @@
 """PG title-chain builder for foreclosure timelines.
 
-Builds ownership/event outputs from PostgreSQL only.
+Architectural role:
+- materialize scoped foreclosure timeline events into
+  ``foreclosure_title_events``, ``foreclosure_title_chain``, and
+  ``foreclosure_title_summary``;
+- preserve recovery overlay rows written by ``PgTitleBreakService`` so a later
+  rebuild can incorporate repaired deed parties and missing deeds;
+- keep the materialized tables aligned with the ``fn_title_chain`` SQL view,
+  which also treats ORI deed recovery rows as first-class chain inputs.
 """
 
 from __future__ import annotations
@@ -144,6 +151,7 @@ class TitleChainController:
     """Build foreclosure title chain from PG-only sources."""
 
     GAP_STATUSES: tuple[str, ...] = ("MISSING_PARTY", "CHAINED_BY_FOLIO")
+    OVERLAY_EVENT_SOURCES: tuple[str, ...] = ("ORI_DEED_SEARCH", "ORI_DEED_BACKFILL")
 
     def __init__(self, config: ControllerConfig) -> None:
         self._config = config
@@ -153,6 +161,11 @@ class TitleChainController:
     @classmethod
     def _gap_status_sql(cls, value_expr: str) -> str:
         statuses = ", ".join(f"'{status}'" for status in cls.GAP_STATUSES)
+        return f"{value_expr} IN ({statuses})"
+
+    @classmethod
+    def _overlay_source_sql(cls, value_expr: str) -> str:
+        statuses = ", ".join(f"'{status}'" for status in cls.OVERLAY_EVENT_SOURCES)
         return f"{value_expr} IN ({statuses})"
 
     @classmethod
@@ -306,6 +319,7 @@ class TitleChainController:
         ])
 
     def _reset_outputs(self, conn: Any) -> None:
+        overlay_sql = self._overlay_source_sql("event_source")
         if self._is_partial_run():
             conn.execute(
                 text("""
@@ -320,20 +334,108 @@ class TitleChainController:
             """)
             )
             conn.execute(
-                text("""
+                text(
+                    f"""
                 DELETE FROM foreclosure_title_events
                 WHERE foreclosure_id IN (SELECT foreclosure_id FROM controller_scope)
-            """)
+                  AND NOT ({overlay_sql})
+            """
+                )
             )
             return
 
         conn.execute(
-            text("TRUNCATE TABLE foreclosure_title_chain, foreclosure_title_summary, foreclosure_title_events RESTART IDENTITY")
+            text("TRUNCATE TABLE foreclosure_title_chain, foreclosure_title_summary RESTART IDENTITY")
+        )
+        conn.execute(
+            text(
+                f"""
+                DELETE FROM foreclosure_title_events
+                WHERE NOT ({overlay_sql})
+            """
+            )
         )
 
     @staticmethod
     def _insert_sales_events_sql() -> str:
+        overlay_sql = TitleChainController._overlay_source_sql("e.event_source")
         return """
+            WITH hcpa_with_overlay AS (
+                SELECT
+                    sc.foreclosure_id,
+                    sc.case_number_raw,
+                    sc.case_number_norm,
+                    sc.folio,
+                    sc.strap,
+                    s.sale_date AS event_date,
+                    'SALE' AS event_source,
+                    s.sale_type AS event_subtype,
+                    s.doc_num AS instrument_number,
+                    s.or_book,
+                    s.or_page,
+                    COALESCE(s.grantor, backfill.grantor, ori.parties_from_text) AS grantor,
+                    COALESCE(s.grantee, backfill.grantee, ori.parties_to_text) AS grantee,
+                    s.sale_amount AS amount,
+                    concat_ws(
+                        ' ',
+                        coalesce(s.sale_type, 'UNK'),
+                        coalesce(s.grantor, backfill.grantor, ori.parties_from_text, ''),
+                        '->',
+                        coalesce(s.grantee, backfill.grantee, ori.parties_to_text, '')
+                    ) AS description,
+                    s.id AS sale_row_id
+                FROM controller_scope sc
+                JOIN hcpa_allsales s ON s.folio = sc.folio
+                LEFT JOIN LATERAL (
+                    SELECT e.grantor, e.grantee
+                    FROM foreclosure_title_events e
+                    WHERE e.foreclosure_id = sc.foreclosure_id
+                      AND e.instrument_number = s.doc_num
+                      AND (""" + overlay_sql + """)
+                    ORDER BY e.created_at DESC
+                    LIMIT 1
+                ) backfill ON TRUE
+                LEFT JOIN official_records_daily_instruments ori
+                  ON s.doc_num IS NOT NULL
+                 AND ori.instrument_number = s.doc_num
+                 AND (s.grantor IS NULL OR s.grantee IS NULL)
+                WHERE sc.folio IS NOT NULL
+                  AND s.sale_date IS NOT NULL
+                  AND s.sale_date <= sc.auction_date
+            ),
+            ori_gap_fills AS (
+                SELECT
+                    sc.foreclosure_id,
+                    sc.case_number_raw,
+                    sc.case_number_norm,
+                    sc.folio,
+                    sc.strap,
+                    e.event_date,
+                    'SALE' AS event_source,
+                    e.event_subtype,
+                    e.instrument_number,
+                    e.or_book,
+                    e.or_page,
+                    e.grantor,
+                    e.grantee,
+                    e.amount,
+                    COALESCE(
+                        e.description,
+                        concat_ws(' ', coalesce(e.event_subtype, 'ORI_DEED_SEARCH'), coalesce(e.grantor, ''), '->', coalesce(e.grantee, ''))
+                    ) AS description,
+                    NULL::BIGINT AS sale_row_id
+                FROM controller_scope sc
+                JOIN foreclosure_title_events e
+                  ON e.foreclosure_id = sc.foreclosure_id
+                WHERE e.event_source = 'ORI_DEED_SEARCH'
+                  AND e.event_date <= sc.auction_date
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM hcpa_allsales s
+                      WHERE s.folio = sc.folio
+                        AND s.doc_num = e.instrument_number
+                  )
+            )
             INSERT INTO foreclosure_title_events (
                 foreclosure_id, case_number_raw, case_number_norm, folio, strap,
                 event_date, event_source, event_subtype,
@@ -341,37 +443,42 @@ class TitleChainController:
                 grantor, grantee, amount, description, sale_row_id
             )
             SELECT
-                sc.foreclosure_id,
-                sc.case_number_raw,
-                sc.case_number_norm,
-                sc.folio,
-                sc.strap,
-                s.sale_date,
-                'SALE' AS event_source,
-                s.sale_type,
-                s.doc_num,
-                s.or_book,
-                s.or_page,
-                COALESCE(s.grantor, ori.parties_from_text) AS grantor,
-                COALESCE(s.grantee, ori.parties_to_text)  AS grantee,
-                s.sale_amount,
-                concat_ws(
-                    ' ',
-                    coalesce(s.sale_type, 'UNK'),
-                    coalesce(s.grantor, ori.parties_from_text, ''),
-                    '->',
-                    coalesce(s.grantee, ori.parties_to_text, '')
-                ) AS description,
-                s.id
-            FROM controller_scope sc
-            JOIN hcpa_allsales s ON s.folio = sc.folio
-            LEFT JOIN official_records_daily_instruments ori
-              ON s.doc_num IS NOT NULL
-             AND ori.instrument_number = s.doc_num
-             AND (s.grantor IS NULL OR s.grantee IS NULL)
-            WHERE sc.folio IS NOT NULL
-              AND s.sale_date IS NOT NULL
-              AND s.sale_date <= sc.auction_date
+                foreclosure_id,
+                case_number_raw,
+                case_number_norm,
+                folio,
+                strap,
+                event_date,
+                event_source,
+                event_subtype,
+                instrument_number,
+                or_book,
+                or_page,
+                grantor,
+                grantee,
+                amount,
+                description,
+                sale_row_id
+            FROM hcpa_with_overlay
+            UNION ALL
+            SELECT
+                foreclosure_id,
+                case_number_raw,
+                case_number_norm,
+                folio,
+                strap,
+                event_date,
+                event_source,
+                event_subtype,
+                instrument_number,
+                or_book,
+                or_page,
+                grantor,
+                grantee,
+                amount,
+                description,
+                sale_row_id
+            FROM ori_gap_fills
         """
 
     @staticmethod
