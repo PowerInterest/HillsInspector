@@ -206,6 +206,76 @@ class TestEndToEnd:
         assert result is None
         assert messages
 
+    def test_validate_repairs_partial_lien_payload_and_drops_unknown_keys(self):
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        partial = {
+            "instrument_number": "2006029847",
+            "recording_book": "16010",
+            "recording_page": "1385",
+            "recording_date": "2006-01-19",
+            "execution_date": "2006-01-13",
+            "property_address": None,
+            "legal_description": "Test legal description",
+            "WITH": "spurious OCR spill",
+            "follows": "more OCR spill",
+        }
+
+        result, messages = PgEncumbranceExtractionService._validate(  # noqa: SLF001
+            partial,
+            "lien",
+            row_context={"id": 137024, "instrument_number": "2006029847"},
+            source="fresh extraction",
+        )
+
+        assert messages == []
+        assert result is not None
+        assert result["lien_type"] is None
+        assert result["lienor"] is None
+        assert result["lienee"] is None
+        assert result["unclear_sections"] == []
+        assert "WITH" not in result
+        assert "follows" not in result
+
+    def test_validate_repairs_assignment_using_ori_party_metadata(self):
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        partial = {
+            "instrument_number": "2011326920",
+            "recording_book": "20743",
+            "recording_page": "317",
+            "recording_date": "2011-10-06",
+            "execution_date": "2011-10-01",
+            "property_address": None,
+            "legal_description": "Test legal description",
+            "parcel_id": None,
+            "confidence_score": 0.7,
+        }
+
+        result, messages = PgEncumbranceExtractionService._validate(  # noqa: SLF001
+            partial,
+            "assignment",
+            row_context={
+                "id": 138531,
+                "instrument_number": "2011326920",
+                "party1": "REDUS PROPERTIES INC, REDUS TRG LLC",
+                "party2": "DREF II FL I LLC",
+            },
+            source="fresh extraction",
+        )
+
+        assert messages == []
+        assert result is not None
+        assert result["assignor"] == "REDUS PROPERTIES INC, REDUS TRG LLC"
+        assert result["assignee"] == "DREF II FL I LLC"
+        assert result["unclear_sections"] == []
+        assert result["assignment_type"] is None
+        assert result["parent_instrument"] is None
+
     def test_extract_from_ocr_text_passes_json_schema_response_format(
         self,
         monkeypatch: pytest.MonkeyPatch,

@@ -36,23 +36,27 @@ Downstream consumers:
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
+from datetime import date, datetime
 import json
 import re
 import tempfile as _tempfile
 import time
 import urllib.parse
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 import fitz as _fitz
 import pytesseract
 from loguru import logger
 from PIL import Image
 from pydantic import ValidationError
+from pydantic.fields import PydanticUndefined
 from sqlalchemy import text
 
 from src.models.assignment_extraction import AssignmentExtraction
 from src.models.deed_extraction import DeedExtraction
+from src.models.extraction_base import StrictExtractionModel
 from src.models.lien_extraction import LienExtraction
 from src.models.lis_pendens_extraction import LisPendensExtraction
 from src.models.mortgage_extraction import MortgageExtraction
@@ -111,6 +115,25 @@ _LEGACY_OUTPUT_FORMAT_RE = re.compile(
     flags=re.DOTALL,
 )
 
+_ROW_FIELD_FALLBACKS: dict[str, dict[str, str]] = {
+    "mortgage": {
+        "mortgagor": "party1",
+        "mortgagee": "party2",
+    },
+    "assignment": {
+        "assignor": "party1",
+        "assignee": "party2",
+    },
+    "easement": {
+        "grantor": "party1",
+        "grantee": "party2",
+    },
+    "other": {
+        "grantor": "party1",
+        "grantee": "party2",
+    },
+}
+
 
 def _strip_legacy_output_format(prompt: str) -> str:
     """Remove stale JSON examples that drifted away from the live schemas.
@@ -144,6 +167,128 @@ def _schema_contract_text(model_cls: type[BaseDocumentExtraction]) -> str:
         "Schema:\n"
         f"{schema_json}"
     )
+
+
+def _allows_none(annotation: Any) -> bool:
+    """Return True when the annotation explicitly allows ``None``."""
+
+    return any(arg is type(None) for arg in get_args(annotation))
+
+
+def _submodel_from_annotation(annotation: Any) -> type[StrictExtractionModel] | None:
+    """Extract a nested Pydantic model class from a field annotation."""
+
+    if isinstance(annotation, type) and issubclass(annotation, StrictExtractionModel):
+        return annotation
+    for arg in get_args(annotation):
+        if isinstance(arg, type) and issubclass(arg, StrictExtractionModel):
+            return arg
+    return None
+
+
+def _list_submodel_from_annotation(annotation: Any) -> type[StrictExtractionModel] | None:
+    """Return the nested model class when the field is ``list[Model]``."""
+
+    if get_origin(annotation) is not list:
+        return None
+    args = get_args(annotation)
+    if not args:
+        return None
+    item = args[0]
+    if isinstance(item, type) and issubclass(item, StrictExtractionModel):
+        return item
+    return None
+
+
+def _default_value_for_field(field: Any) -> Any:
+    """Choose the explicit-null/default value used when the LLM omits a key."""
+
+    if field.default_factory is not None:
+        return field.default_factory()
+    if field.default is not PydanticUndefined:
+        return deepcopy(field.default)
+    if get_origin(field.annotation) is list:
+        return []
+    if _allows_none(field.annotation):
+        return None
+    return None
+
+
+def _normalize_model_payload(
+    model_cls: type[StrictExtractionModel],
+    payload: dict[str, Any],
+    *,
+    path: str = "",
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    """Normalize a parsed JSON object to the declared schema keys only.
+
+    Some endpoints return a nearly-correct object but omit nullable keys or add
+    spurious OCR spill keys. We normalize those responses into the declared
+    contract, then validate the repaired object. The repair is always logged so
+    reviewers can see exactly what was missing or dropped.
+    """
+
+    missing: list[str] = []
+    extras: list[str] = []
+    normalized: dict[str, Any] = {}
+
+    valid_names = {
+        name
+        for name, field in model_cls.model_fields.items()
+        if name != "raw_text" and field.exclude is not True
+    }
+    for key in payload:
+        if key not in valid_names:
+            extras.append(f"{path}{key}")
+
+    for name, field in model_cls.model_fields.items():
+        if name == "raw_text" or field.exclude is True:
+            continue
+        field_path = f"{path}{name}"
+        value = payload.get(name, PydanticUndefined)
+        if value is PydanticUndefined:
+            normalized[name] = _default_value_for_field(field)
+            missing.append(field_path)
+            continue
+
+        nested_model = _submodel_from_annotation(field.annotation)
+        list_model = _list_submodel_from_annotation(field.annotation)
+        if nested_model and isinstance(value, dict):
+            child, child_missing, child_extras = _normalize_model_payload(
+                nested_model,
+                value,
+                path=f"{field_path}.",
+            )
+            normalized[name] = child
+            missing.extend(child_missing)
+            extras.extend(child_extras)
+        elif list_model and isinstance(value, list):
+            normalized_list: list[Any] = []
+            for idx, item in enumerate(value):
+                if isinstance(item, dict):
+                    child, child_missing, child_extras = _normalize_model_payload(
+                        list_model,
+                        item,
+                        path=f"{field_path}[{idx}].",
+                    )
+                    normalized_list.append(child)
+                    missing.extend(child_missing)
+                    extras.extend(child_extras)
+                else:
+                    normalized_list.append(item)
+            normalized[name] = normalized_list
+        else:
+            normalized[name] = value
+
+    return normalized, missing, extras
+
+
+def _json_scalar(value: Any) -> Any:
+    """Convert DB/date values into JSON-serializable scalars for schema fill."""
+
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +476,8 @@ class PgEncumbranceExtractionService:
         """Find encumbrances with no extracted_data and a downloadable ori_id."""
         sql = """
             SELECT id, strap, folio, ori_id, ori_uuid, instrument_number,
-                   encumbrance_type, raw_document_type, case_number
+                   encumbrance_type, raw_document_type, case_number,
+                   book, page, recording_date, party1, party2
             FROM ori_encumbrances
             WHERE extracted_data IS NULL
               AND ori_id IS NOT NULL
@@ -525,6 +671,92 @@ class PgEncumbranceExtractionService:
         return messages
 
     @staticmethod
+    def _repair_extraction_payload(
+        data: dict[str, Any],
+        enc_type: str,
+        *,
+        row_context: dict[str, Any] | None = None,
+        source: str = "extraction",
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Repair weak-but-salvageable JSON shape issues before validation.
+
+        The strict model contract is still the source of truth. This helper only
+        fixes transport/decoder shape problems:
+
+        - omitted nullable/defaultable keys -> explicit null/default values
+        - undeclared keys -> dropped
+        - a small set of safe ORI metadata fallbacks for base identifiers and
+          two-party document roles
+        """
+
+        _, model_cls = EXTRACTION_DISPATCH[enc_type]
+        valid_keys = {
+            name
+            for name, field in model_cls.model_fields.items()
+            if name != "raw_text" and field.exclude is not True
+        }
+        overlap = len(set(data) & valid_keys)
+        if overlap < 4:
+            return data, []
+
+        repaired, missing_keys, extra_keys = _normalize_model_payload(model_cls, data)
+        notes: list[str] = []
+
+        if missing_keys:
+            preview = ", ".join(missing_keys[:12])
+            if len(missing_keys) > 12:
+                preview = f"{preview}, ... ({len(missing_keys) - 12} more)"
+            notes.append(f"filled omitted schema key(s): {preview}")
+
+        if extra_keys:
+            preview = ", ".join(extra_keys[:12])
+            if len(extra_keys) > 12:
+                preview = f"{preview}, ... ({len(extra_keys) - 12} more)"
+            notes.append(f"dropped unexpected key(s): {preview}")
+
+        filled_from_row: list[str] = []
+        row = row_context or {}
+        base_fallbacks = {
+            "instrument_number": row.get("instrument_number"),
+            "recording_book": row.get("book"),
+            "recording_page": row.get("page"),
+            "recording_date": row.get("recording_date"),
+        }
+        parcel_fallback = row.get("strap") or row.get("folio")
+        if parcel_fallback and not repaired.get("parcel_id"):
+            repaired["parcel_id"] = _json_scalar(parcel_fallback)
+            filled_from_row.append("parcel_id")
+
+        for field_name, fallback in base_fallbacks.items():
+            if fallback and not repaired.get(field_name):
+                repaired[field_name] = _json_scalar(fallback)
+                filled_from_row.append(field_name)
+
+        for field_name, row_key in _ROW_FIELD_FALLBACKS.get(enc_type, {}).items():
+            row_value = row.get(row_key)
+            if row_value and not repaired.get(field_name):
+                repaired[field_name] = _json_scalar(row_value)
+                filled_from_row.append(field_name)
+
+        if filled_from_row:
+            notes.append(
+                "filled from ORI row metadata: " + ", ".join(sorted(set(filled_from_row)))
+            )
+
+        if notes:
+            logger.warning(
+                "Repaired {} {} id={} type={} inst={} before validation: {}",
+                source,
+                enc_type,
+                row.get("id"),
+                enc_type,
+                row.get("instrument_number"),
+                " | ".join(notes),
+            )
+
+        return repaired, notes
+
+    @staticmethod
     def _validate(
         data: dict[str, Any],
         enc_type: str,
@@ -540,6 +772,12 @@ class PgEncumbranceExtractionService:
         is structurally trustworthy.
         """
         _, model_cls = EXTRACTION_DISPATCH[enc_type]
+        data, _ = PgEncumbranceExtractionService._repair_extraction_payload(
+            data,
+            enc_type,
+            row_context=row_context,
+            source=source,
+        )
         try:
             validated = model_cls.model_validate(data)
             return validated.model_dump(mode="json"), []
