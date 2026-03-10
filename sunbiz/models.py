@@ -1037,7 +1037,7 @@ class OriEncumbrance(Base):
     source_file_id: Mapped[int | None] = mapped_column(BigInteger)
     discovered_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
-    mortgage_data: Mapped[dict | None] = mapped_column(JSONB)
+    extracted_data: Mapped[dict | None] = mapped_column(JSONB)
 
     __table_args__ = (
         Index("idx_ori_enc_folio", "folio"),
