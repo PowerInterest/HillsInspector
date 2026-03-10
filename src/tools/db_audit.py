@@ -181,6 +181,7 @@ def audit_database(dsn: str | None = None) -> None:
 
             steps = [
                 ("step_judgment_extracted", "Judgment extracted"),
+                ("step_identifier_recovery", "Identifier recovery decision recorded"),
                 ("step_ori_searched", "ORI searched"),
                 ("step_survival_analyzed", "Survival analyzed"),
             ]

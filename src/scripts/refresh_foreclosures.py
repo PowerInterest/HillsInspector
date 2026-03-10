@@ -256,7 +256,7 @@ FROM (
            COUNT(*)                              AS total,
            COUNT(*) FILTER (
                WHERE NOT oe.is_satisfied
-                 AND COALESCE(fes.survival_status, oe.survival_status) NOT IN (
+                 AND COALESCE(fes.survival_status, oe.survival_status, 'UNKNOWN') NOT IN (
                      'SATISFIED', 'EXPIRED', 'HISTORICAL', 'EXTINGUISHED'
                  )
            )
@@ -407,6 +407,10 @@ UPDATE foreclosures new_f SET
     property_address = COALESCE(new_f.property_address, donor.property_address),
     judgment_data = COALESCE(new_f.judgment_data, donor.judgment_data),
     step_judgment_extracted = COALESCE(new_f.step_judgment_extracted, donor.step_judgment_extracted),
+    step_identifier_recovery = COALESCE(
+        new_f.step_identifier_recovery,
+        donor.step_identifier_recovery
+    ),
     step_ori_searched = CASE
         WHEN COALESCE(new_f.strap, donor.strap) = donor.strap
          AND EXISTS (SELECT 1 FROM ori_encumbrances WHERE strap = donor.strap)
@@ -433,7 +437,7 @@ UPDATE foreclosures new_f SET
 FROM (
     SELECT DISTINCT ON (case_number_raw)
         foreclosure_id, case_number_raw, strap, folio, property_address,
-        judgment_data, step_judgment_extracted,
+        judgment_data, step_judgment_extracted, step_identifier_recovery,
         step_ori_searched, step_survival_analyzed
     FROM foreclosures
     WHERE archived_at IS NOT NULL

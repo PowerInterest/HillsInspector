@@ -48,7 +48,9 @@ def test_reuse_rescheduled_enrichment_copies_survival_rows_for_ready_pairs() -> 
 
     assert counts == {"updated_foreclosures": 1, "copied_survival_rows": 3}
     assert len(conn.executed) == 2
+    update_sql, _update_params = conn.executed[0]
     copy_sql, copy_params = conn.executed[1]
+    assert "step_identifier_recovery = coalesce(" in update_sql.lower()
     assert "insert into foreclosure_encumbrance_survival" in copy_sql.lower()
     assert copy_params == [{"new_foreclosure_id": 200, "donor_foreclosure_id": 150}]
 

@@ -1411,6 +1411,113 @@ def test_process_target_stages_case_only_docs_when_identity_missing(
     assert staged_payload["documents"][0]["Instrument"] == "2024000123"
 
 
+def test_process_target_does_not_mark_searched_on_zero_persistence(monkeypatch: Any) -> None:
+    service = _build_service(monkeypatch)
+    marks: list[int] = []
+    target = {
+        "foreclosure_id": 21007,
+        "case_number": "292024CA003727A001HC",
+        "strap": "19283348Y000000000310A",
+        "folio": "1534060000",
+        "judgment_data": {},
+        "property_address": "",
+        "skip_inferred_fallback": True,
+    }
+
+    monkeypatch.setattr(
+        service,
+        "_prepare_target_identity",
+        _passthrough_prepare_target_identity,
+    )
+    monkeypatch.setattr(
+        service,
+        "_discover_property",
+        lambda _target: (
+            [],
+            {
+                "api_calls": 0,
+                "retries": 0,
+                "truncated": 0,
+                "unresolved_truncations": 0,
+                "deed_count": 0,
+                "clerk_case_count": 0,
+                "official_seed_docs": 0,
+            },
+        ),
+    )
+
+    def _save_zero(_strap: str | None, _folio: str | None, _docs: list[dict[str, Any]]) -> int:
+        service._last_save_documents_stats = {  # noqa: SLF001
+            "saved": 0,
+            "skipped": 0,
+            "eligible": 0,
+        }
+        return 0
+
+    monkeypatch.setattr(service, "_save_documents", _save_zero)
+    monkeypatch.setattr(service, "_mark_searched", lambda fid: marks.append(fid))
+
+    result = service._process_target(target, persist=True)  # noqa: SLF001
+
+    assert result["saved"] == 0
+    assert result["marked_ori_searched"] is False
+    assert marks == []
+
+
+def test_process_target_does_not_mark_searched_after_save_skips(monkeypatch: Any) -> None:
+    service = _build_service(monkeypatch)
+    marks: list[int] = []
+    target = {
+        "foreclosure_id": 21007,
+        "case_number": "292024CA003727A001HC",
+        "strap": "19283348Y000000000310A",
+        "folio": "1534060000",
+        "judgment_data": {},
+        "property_address": "",
+        "skip_inferred_fallback": True,
+    }
+
+    monkeypatch.setattr(
+        service,
+        "_prepare_target_identity",
+        _passthrough_prepare_target_identity,
+    )
+    monkeypatch.setattr(
+        service,
+        "_discover_property",
+        lambda _target: (
+            [{"Instrument": "2024000123", "DocType": "MORTGAGE"}],
+            {
+                "api_calls": 1,
+                "retries": 0,
+                "truncated": 0,
+                "unresolved_truncations": 0,
+                "deed_count": 0,
+                "clerk_case_count": 0,
+                "official_seed_docs": 0,
+            },
+        ),
+    )
+
+    def _save_with_skip(_strap: str | None, _folio: str | None, _docs: list[dict[str, Any]]) -> int:
+        service._last_save_documents_stats = {  # noqa: SLF001
+            "saved": 0,
+            "skipped": 1,
+            "eligible": 1,
+        }
+        return 0
+
+    monkeypatch.setattr(service, "_save_documents", _save_with_skip)
+    monkeypatch.setattr(service, "_mark_searched", lambda fid: marks.append(fid))
+
+    result = service._process_target(target, persist=True)  # noqa: SLF001
+
+    assert result["save_skips"] == 1
+    assert result["eligible_documents"] == 1
+    assert result["marked_ori_searched"] is False
+    assert marks == []
+
+
 def test_discover_property_bypasses_case_cache_and_skips_noc_fallback_for_lp_gap(
     monkeypatch: Any,
 ) -> None:

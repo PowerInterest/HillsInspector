@@ -64,6 +64,8 @@ _HIGH_VOLUME_BUILDER_TOKENS = (
     "WESTBAY",
 )
 
+_SEARCH_NO_RESULT_RETRY_DAYS = 14
+
 
 class PgTitleBreakService:
     """Service to search ORI/PAV for title gap-fills and party backfills."""
@@ -92,13 +94,15 @@ class PgTitleBreakService:
 
         total_gaps = 0
         total_inserted = 0
+        total_sentinels = 0
         errors = 0
 
         for t in targets:
             try:
-                gaps_found, inserted = self._process_one(t)
+                gaps_found, inserted, sentinels = self._process_one(t)
                 total_gaps += gaps_found
                 total_inserted += inserted
+                total_sentinels += sentinels
             except Exception as exc:
                 errors += 1
                 logger.error(
@@ -112,6 +116,7 @@ class PgTitleBreakService:
             "targets": len(targets),
             "gaps_found": total_gaps,
             "deeds_inserted": total_inserted,
+            "sentinels_inserted": total_sentinels,
             "backfilled": self._backfill_deed_parties(
                 limit,
                 foreclosure_id=foreclosure_id,
@@ -133,8 +138,8 @@ class PgTitleBreakService:
         foreclosure_id: int | None = None,
         case_number: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Active foreclosures with title events but no ORI_DEED_SEARCH yet."""
-        params: dict[str, Any] = {}
+        """Broken or gap-bearing active foreclosures that still need deed retries."""
+        params: dict[str, Any] = {"retry_ttl_days": _SEARCH_NO_RESULT_RETRY_DAYS}
         sql = """
             SELECT DISTINCT f.foreclosure_id, f.case_number_raw,
                    f.case_number_norm, f.strap, f.folio,
@@ -145,15 +150,30 @@ class PgTitleBreakService:
             FROM foreclosures f
             JOIN foreclosure_title_events fte
               ON fte.foreclosure_id = f.foreclosure_id
+            LEFT JOIN foreclosure_title_summary ts
+              ON ts.foreclosure_id = f.foreclosure_id
             LEFT JOIN hcpa_bulk_parcels bp
               ON bp.folio = f.folio
             WHERE f.archived_at IS NULL
               AND f.folio IS NOT NULL
               AND btrim(f.folio) <> ''
+              AND (
+                  ts.foreclosure_id IS NULL
+                  OR COALESCE(ts.gap_count, 0) > 0
+                  OR COALESCE(ts.chain_status, '') <> 'COMPLETE'
+              )
               AND NOT EXISTS (
                   SELECT 1 FROM foreclosure_title_events e2
                   WHERE e2.foreclosure_id = f.foreclosure_id
                     AND e2.event_source = 'ORI_DEED_SEARCH'
+                    AND COALESCE(e2.event_subtype, '') <> 'SEARCH_NO_RESULT'
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM foreclosure_title_events e2
+                  WHERE e2.foreclosure_id = f.foreclosure_id
+                    AND e2.event_source = 'ORI_DEED_SEARCH'
+                    AND e2.event_subtype = 'SEARCH_NO_RESULT'
+                    AND e2.event_date >= CURRENT_DATE - CAST(:retry_ttl_days AS INTEGER)
               )
         """
         if foreclosure_id is not None:
@@ -170,10 +190,10 @@ class PgTitleBreakService:
             rows = conn.execute(text(sql), params).mappings().fetchall()
         return [dict(r) for r in rows]
 
-    def _process_one(self, target: dict[str, Any]) -> tuple[int, int]:
+    def _process_one(self, target: dict[str, Any]) -> tuple[int, int, int]:
         """Process a single foreclosure: find gaps, search ORI, insert deeds.
 
-        Returns (gaps_found, deeds_inserted).
+        Returns (gaps_found, deeds_inserted, sentinels_inserted).
         """
         folio = target["folio"]
 
@@ -192,7 +212,7 @@ class PgTitleBreakService:
             )
 
         if not gaps:
-            return 0, 0
+            return 0, 0, 0
 
         all_deeds: list[dict[str, Any]] = []
 
@@ -217,11 +237,11 @@ class PgTitleBreakService:
             )
 
         if not all_deeds:
-            self._insert_search_sentinel(target)
-            return len(gaps), 0
+            sentinels = self._insert_search_sentinel(target)
+            return len(gaps), 0, sentinels
 
         inserted = self._insert_deeds(target, all_deeds)
-        return len(gaps), inserted
+        return len(gaps), inserted, 0
 
     def _search_gap_deeds(
         self,
@@ -613,10 +633,10 @@ class PgTitleBreakService:
             )
             return result.rowcount or 0
 
-    def _insert_search_sentinel(self, target: dict[str, Any]) -> None:
+    def _insert_search_sentinel(self, target: dict[str, Any]) -> int:
         """Record that ORI deed search completed with no results for this foreclosure."""
         with self.engine.begin() as conn:
-            conn.execute(
+            result = conn.execute(
                 text("""
                     INSERT INTO foreclosure_title_events (
                         foreclosure_id,
@@ -650,6 +670,15 @@ class PgTitleBreakService:
                         FROM foreclosure_title_events
                         WHERE foreclosure_id = :foreclosure_id
                           AND event_source = 'ORI_DEED_SEARCH'
+                          AND COALESCE(event_subtype, '') <> 'SEARCH_NO_RESULT'
+                    )
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM foreclosure_title_events
+                        WHERE foreclosure_id = :foreclosure_id
+                          AND event_source = 'ORI_DEED_SEARCH'
+                          AND event_subtype = 'SEARCH_NO_RESULT'
+                          AND event_date >= CURRENT_DATE - CAST(:retry_ttl_days AS INTEGER)
                     )
                 """),
                 {
@@ -660,8 +689,10 @@ class PgTitleBreakService:
                     "strap": target.get("strap"),
                     "event_date": dt.datetime.now(dt.UTC).date(),
                     "description": "ORI deed search completed with no matching deeds",
+                    "retry_ttl_days": _SEARCH_NO_RESULT_RETRY_DAYS,
                 },
             )
+        return int(result.rowcount or 0)
 
     def _backfill_deed_parties(
         self,

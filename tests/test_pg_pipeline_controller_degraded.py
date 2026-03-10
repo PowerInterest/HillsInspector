@@ -197,3 +197,86 @@ def test_market_data_nested_degraded_marks_step_degraded(monkeypatch: Any) -> No
 
     assert result.status == "degraded"
     assert result.details["worker"]["update"]["photo_errors"] == 2
+
+
+def test_ori_search_staged_only_results_are_degraded(monkeypatch: Any) -> None:
+    controller = _build_controller(monkeypatch)
+
+    class _FakeOriService:
+        def __init__(self, dsn: str | None = None) -> None:
+            assert dsn == controller.dsn
+
+        def run(self, *, limit: int | None = None) -> dict[str, Any]:
+            assert limit is None
+            return {
+                "encumbrances_saved": 0,
+                "inferred_saved": 0,
+                "satisfactions_linked": 0,
+                "errors": 0,
+                "save_skips": 0,
+                "staged_targets": 1,
+            }
+
+    monkeypatch.setattr("src.services.pg_ori_service.PgOriService", _FakeOriService)
+
+    result = controller._run_ori_search()  # noqa: SLF001
+
+    assert result.status == "degraded"
+    assert result.updated == 0
+    assert result.errors == 0
+
+
+def test_ori_search_save_skips_degrade_and_increment_errors(monkeypatch: Any) -> None:
+    controller = _build_controller(monkeypatch)
+
+    class _FakeOriService:
+        def __init__(self, dsn: str | None = None) -> None:
+            assert dsn == controller.dsn
+
+        def run(self, *, limit: int | None = None) -> dict[str, Any]:
+            assert limit is None
+            return {
+                "encumbrances_saved": 1,
+                "inferred_saved": 0,
+                "satisfactions_linked": 0,
+                "errors": 0,
+                "save_skips": 2,
+                "staged_targets": 0,
+            }
+
+    monkeypatch.setattr("src.services.pg_ori_service.PgOriService", _FakeOriService)
+
+    result = controller._run_ori_search()  # noqa: SLF001
+
+    assert result.status == "degraded"
+    assert result.updated == 1
+    assert result.errors == 2
+
+
+def test_identifier_recovery_partial_unresolved_is_degraded(monkeypatch: Any) -> None:
+    controller = _build_controller(monkeypatch)
+
+    class _FakeIdentifierRecoveryService:
+        available = True
+
+        def __init__(self, dsn: str | None = None) -> None:
+            assert dsn == controller.dsn
+
+        def run(self, *, limit: int | None = None) -> dict[str, Any]:
+            assert limit is None
+            return {
+                "rows_updated": 1,
+                "errors": 0,
+                "unresolved": 2,
+                "ambiguous": 1,
+            }
+
+    monkeypatch.setattr(
+        "src.services.pg_foreclosure_identifier_recovery_service.PgForeclosureIdentifierRecoveryService",
+        _FakeIdentifierRecoveryService,
+    )
+
+    result = controller._run_identifier_recovery()  # noqa: SLF001
+
+    assert result.status == "degraded"
+    assert result.updated == 1

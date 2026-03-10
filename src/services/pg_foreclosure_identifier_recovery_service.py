@@ -37,6 +37,9 @@ _LEGAL_EXPR = (
     "UPPER(COALESCE(raw_legal1, '') || ' ' || COALESCE(raw_legal2, '') || "
     "' ' || COALESCE(raw_legal3, '') || ' ' || COALESCE(raw_legal4, ''))"
 )
+_ADDRESS_NORMALIZED_EXPR = (
+    "regexp_replace(UPPER(COALESCE(property_address, '')), '[^A-Z0-9]', '', 'g')"
+)
 
 _GENERIC_SUBDIVISION_TERMS = frozenset(
     {
@@ -63,6 +66,7 @@ _GENERIC_SUBDIVISION_TERMS = frozenset(
 
 _MAX_CANDIDATES_LEGAL = 300
 _MAX_CANDIDATES_ADDRESS = 60
+_IDENTIFIER_RETRY_COOLDOWN_DAYS = 14
 _UNRESOLVED_SAMPLE_LIMIT = 12
 _MAX_OWNER_NAMES = 6
 _MAX_OWNER_MATCHES = 12
@@ -130,8 +134,41 @@ _ENTITY_KEYWORDS = frozenset(
         "DEPARTMENT OF",
     }
 )
+_ADDRESS_DIRECTIONALS = frozenset({"N", "S", "E", "W", "NORTH", "SOUTH", "EAST", "WEST"})
+_ADDRESS_STATE_CODE = "FL"
+_ADDRESS_TERMINATORS = frozenset(
+    {
+        "ST",
+        "STREET",
+        "AVE",
+        "AVENUE",
+        "BLVD",
+        "BOULEVARD",
+        "RD",
+        "ROAD",
+        "DR",
+        "DRIVE",
+        "LN",
+        "LANE",
+        "CT",
+        "COURT",
+        "CIR",
+        "CIRCLE",
+        "PL",
+        "PLACE",
+        "WAY",
+        "TER",
+        "TERRACE",
+        "TRL",
+        "TRAIL",
+        "PKWY",
+        "PARKWAY",
+        "HWY",
+        "HIGHWAY",
+    }
+)
 
-_SCOPE_SQL = """
+_SCOPE_SQL = f"""
 SELECT
     f.foreclosure_id,
     f.case_number_raw,
@@ -152,6 +189,10 @@ FROM foreclosures f
 WHERE f.archived_at IS NULL
   AND f.judgment_data IS NOT NULL
   AND (f.strap IS NULL OR f.folio IS NULL)
+  AND (
+      f.step_identifier_recovery IS NULL
+      OR f.step_identifier_recovery < now() - INTERVAL '{_IDENTIFIER_RETRY_COOLDOWN_DAYS} days'
+  )
 ORDER BY f.auction_date NULLS LAST, f.foreclosure_id
 """
 
@@ -192,6 +233,13 @@ _ADDRESS_LOOKUP_SQL = text(
     WHERE property_address = :address
     ORDER BY source_file_id DESC NULLS LAST
     LIMIT :limit
+    """
+)
+_MARK_IDENTIFIER_RECOVERY_SQL = text(
+    """
+    UPDATE foreclosures
+    SET step_identifier_recovery = now()
+    WHERE foreclosure_id = :foreclosure_id
     """
 )
 
@@ -374,6 +422,10 @@ class PgForeclosureIdentifierRecoveryService:
                         decision = self._resolve_one(conn, row)
 
                         if not decision.candidate or not decision.method:
+                            self._mark_recovery_attempted(
+                                conn,
+                                foreclosure_id=int(row["foreclosure_id"]),
+                            )
                             if decision.ambiguous:
                                 stats["ambiguous"] += 1
                             else:
@@ -394,6 +446,10 @@ class PgForeclosureIdentifierRecoveryService:
                                 "property_address": decision.candidate.property_address,
                             },
                         ).mappings().fetchone()
+                        self._mark_recovery_attempted(
+                            conn,
+                            foreclosure_id=int(row["foreclosure_id"]),
+                        )
 
                         if not updated:
                             stats["unresolved"] += 1
@@ -1126,6 +1182,36 @@ class PgForeclosureIdentifierRecoveryService:
             _ADDRESS_LOOKUP_SQL,
             {"address": address, "limit": _MAX_CANDIDATES_ADDRESS},
         ).mappings().fetchall()
+        if rows:
+            return [_row_to_candidate(row) for row in rows]
+
+        house_number, street_tokens = _address_lookup_terms(address)
+        if not house_number or not street_tokens:
+            return []
+
+        clauses = [f"{_ADDRESS_NORMALIZED_EXPR} LIKE :house_prefix"]
+        params: dict[str, Any] = {
+            "house_prefix": f"{house_number}%",
+            "limit": _MAX_CANDIDATES_ADDRESS,
+        }
+        for index, token in enumerate(street_tokens[:3]):
+            key = f"street_token_{index}"
+            clauses.append(f"{_ADDRESS_NORMALIZED_EXPR} LIKE :{key}")
+            params[key] = f"%{token}%"
+
+        sql = text(
+            f"""
+            SELECT
+                folio, strap, property_address,
+                raw_legal1, raw_legal2, raw_legal3, raw_legal4,
+                source_file_id
+            FROM hcpa_bulk_parcels
+            WHERE {' AND '.join(clauses)}
+            ORDER BY source_file_id DESC NULLS LAST
+            LIMIT :limit
+            """
+        )
+        rows = conn.execute(sql, params).mappings().fetchall()
         return [_row_to_candidate(row) for row in rows]
 
     def _lookup_by_legal_description(
@@ -1281,6 +1367,17 @@ class PgForeclosureIdentifierRecoveryService:
             return
         samples.append({"case_number": case_number, "reason": reason})
 
+    @staticmethod
+    def _mark_recovery_attempted(
+        conn: Connection,
+        *,
+        foreclosure_id: int,
+    ) -> None:
+        conn.execute(
+            _MARK_IDENTIFIER_RECOVERY_SQL,
+            {"foreclosure_id": foreclosure_id},
+        )
+
 
 def _clean_text(value: Any) -> str | None:
     if value is None:
@@ -1295,6 +1392,42 @@ def _address_head(value: Any) -> str | None:
         return None
     first = cleaned.replace("\t", " ").split(",", 1)[0].strip()
     return first.upper() if first else None
+
+
+def _address_lookup_terms(value: str | None) -> tuple[str | None, list[str]]:
+    address = _address_head(value)
+    if not address:
+        return None, []
+
+    tokens = re.findall(r"[A-Z0-9]+", address.upper())
+    if not tokens:
+        return None, []
+
+    house_number = tokens[0] if tokens[0].isdigit() else None
+    if not house_number:
+        return None, []
+
+    street_tokens: list[str] = []
+    for token in tokens[1:]:
+        if token in _ADDRESS_DIRECTIONALS:
+            continue
+        if token in _ADDRESS_TERMINATORS:
+            break
+        if token == _ADDRESS_STATE_CODE or (token.isdigit() and len(token) >= 5):
+            break
+        street_tokens.append(token)
+
+    if not street_tokens:
+        street_tokens = [
+            token
+            for token in tokens[1:]
+            if token not in _ADDRESS_DIRECTIONALS
+            and token not in _ADDRESS_TERMINATORS
+            and token != _ADDRESS_STATE_CODE
+            and not (token.isdigit() and len(token) >= 5)
+        ][:2]
+
+    return house_number, street_tokens
 
 
 def _parcel_tokens(value: Any) -> list[str]:

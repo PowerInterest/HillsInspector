@@ -150,6 +150,7 @@ The `docs/` folder contains comprehensive guides and technical design artifacts,
 - [NOC & Permit Linking](docs/domain/NOC_PERMIT_LINKING.md) - How we link notices of commencement to active building permits.
 - [ORI Property Matching](docs/domain/ORI_PROPERTY_MATCHING.md) - How discovered ORI documents are filtered to prevent cross-property contamination in subdivisions and condominiums.
 - [ORI SQL Parameter Typing](docs/domain/ORI_SQL_PARAMETER_TYPING.md) - Why `_save_documents()` casts bind parameters in change-detection predicates to prevent psycopg `AmbiguousParameter` skips.
+- [Workflow Retry Contracts](docs/domain/WORKFLOW_RETRY_CONTRACTS.md) - Persistence and retry semantics for `identifier_recovery`, `ori_search`, and `title_breaks`, including cooldown markers, degraded accounting, and sentinel TTLs.
 - [Upsert Source Tracking](docs/domain/UPSERT_SOURCE_TRACKING.md) - Change-log persistence and priority-aware market upserts for mixed-source property data.
 - [Party Matching Strategy](docs/domain/PARTY_MATCHING_STRATEGY.md) - Entity resolution logic for fuzzy matching property owners across completely different data silos.
 - [Legal Issues Overview](docs/domain/LEGAL_ISSUES.md) - Real estate law nuances codified into algorithms.

@@ -127,6 +127,36 @@ def test_subdivision_extraction():
     assert failed == 0
 
 
+def test_unit_no_with_lot_block_is_not_treated_as_condo_unit():
+    parsed = parse_legal_description(
+        "LOT 19, IN BLOCK BB, OF DEL WEBB'S SUN CITY FLORIDA UNIT NO 02, "
+        "ACCORDING TO THE MAP OR PLAT THEREOF"
+    )
+
+    assert parsed.unit is None
+    assert parsed.block == "BB"
+    assert parsed.subdivision is not None
+    assert "DEL WEBB" in parsed.subdivision
+
+
+def test_subdivision_after_block_without_comma_is_extracted():
+    parsed = parse_legal_description(
+        "LOT 24 BLOCK 1 CASA BLANCA RECORDED IN PLAT BOOK 89 PAGE 28"
+    )
+
+    assert parsed.lot == "24"
+    assert parsed.block == "1"
+    assert parsed.subdivision == "CASA BLANCA"
+
+
+def test_condo_unit_still_parses_when_no_lot_or_block_exists():
+    parsed = parse_legal_description(
+        "UNIT 203B BUILDING B OF EGYPT LAKE BEACH CLUB A CONDOMINIUM"
+    )
+
+    assert parsed.unit == "203B"
+
+
 def test_permutation_generation():
     """Test that search permutations are generated correctly."""
     print("\n" + "=" * 80)

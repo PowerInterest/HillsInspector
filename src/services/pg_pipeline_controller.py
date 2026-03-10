@@ -966,6 +966,8 @@ class PgPipelineController:
         pass_results: list[dict[str, Any]] = []
         rebuilds: list[dict[str, Any]] = []
         total_repairs = 0
+        total_sentinels = 0
+        total_errors = 0
         max_passes = _TITLE_BREAK_MIN_PASSES + _TITLE_BREAK_MAX_EXTRA_CYCLES
 
         for pass_index in range(1, max_passes + 1):
@@ -980,19 +982,25 @@ class PgPipelineController:
                 case_number=self.settings.case_number,
             )
             repairs = int(result.get("deeds_inserted", 0)) + int(result.get("backfilled", 0))
+            sentinels = int(result.get("sentinels_inserted", 0))
+            errors = int(result.get("errors", 0))
             total_repairs += repairs
+            total_sentinels += sentinels
+            total_errors += errors
             logger.info(
-                "title_breaks loop pass {} result: deeds_inserted={} backfilled={} errors={} repairs={}",
+                "title_breaks loop pass {} result: deeds_inserted={} backfilled={} sentinels_inserted={} errors={} repairs={}",
                 pass_index,
                 int(result.get("deeds_inserted", 0)),
                 int(result.get("backfilled", 0)),
-                int(result.get("errors", 0)),
+                sentinels,
+                errors,
                 repairs,
             )
 
             pass_detail = dict(result)
             pass_detail["pass"] = pass_index
             pass_detail["repairs"] = repairs
+            pass_detail["state_writes"] = repairs + sentinels
 
             if repairs > 0:
                 rebuild = self._run_title_chain_materialization()
@@ -1035,13 +1043,24 @@ class PgPipelineController:
         final_result["passes"] = pass_results
         final_result["pass_count"] = len(pass_results)
         final_result["total_repairs"] = total_repairs
+        final_result["total_sentinels_inserted"] = total_sentinels
+        final_result["total_errors"] = total_errors
         final_result["rebuild_count"] = len(rebuilds)
         if rebuilds:
             final_result["title_chain_rebuild"] = rebuilds[-1]
+        if total_errors > 0 and (total_repairs + total_sentinels) == 0:
+            status = "failed"
+        elif total_errors > 0 or total_sentinels > 0:
+            status = "degraded"
+        elif total_repairs > 0:
+            status = "success"
+        else:
+            status = "noop"
         return StepResult(
             step_name="title_breaks",
-            status="success" if total_repairs > 0 else "noop",
-            updated=total_repairs,
+            status=status,
+            updated=total_repairs + total_sentinels,
+            errors=total_errors,
             details=final_result,
         )
 
@@ -1199,10 +1218,22 @@ class PgPipelineController:
             )
         result = svc.run(limit=self.settings.identifier_recovery_limit)
         recovered = self._int_from_paths(result, "rows_updated")
+        errors = int(result.get("errors", 0))
+        unresolved = int(result.get("unresolved", 0))
+        ambiguous = int(result.get("ambiguous", 0))
+        if errors > 0 and recovered == 0 and unresolved == 0 and ambiguous == 0:
+            status = "failed"
+        elif errors > 0 or unresolved > 0 or ambiguous > 0:
+            status = "degraded"
+        elif recovered > 0:
+            status = "success"
+        else:
+            status = "noop"
         return StepResult(
             step_name="identifier_recovery",
-            status="success" if recovered > 0 else "noop",
+            status=status,
             updated=recovered,
+            errors=errors,
             details=result,
         )
 
@@ -1218,12 +1249,21 @@ class PgPipelineController:
             "satisfactions_linked",
         )
         errs = int(result.get("errors", 0))
+        save_skips = int(result.get("save_skips", 0))
+        staged_targets = int(result.get("staged_targets", 0))
+        if errs > 0 and searched == 0 and save_skips == 0 and staged_targets == 0:
+            status = "failed"
+        elif errs > 0 or save_skips > 0 or staged_targets > 0:
+            status = "degraded"
+        elif searched > 0:
+            status = "success"
+        else:
+            status = "noop"
         return StepResult(
             step_name="ori_search",
-            status="failed" if errs > 0 and searched == 0 else (
-                "success" if searched > 0 else "noop"
-            ),
-            updated=searched, errors=errs,
+            status=status,
+            updated=searched,
+            errors=errs + save_skips,
             details=result,
         )
 

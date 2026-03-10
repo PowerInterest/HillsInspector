@@ -215,11 +215,12 @@ class PgForeclosureService:
         """Mark a pipeline step timestamp on a foreclosure row.
 
         ``step`` must be one of: step_pdf_downloaded, step_judgment_extracted,
-        step_ori_searched, step_survival_analyzed.
+        step_identifier_recovery, step_ori_searched, step_survival_analyzed.
         """
         allowed = {
             "step_pdf_downloaded",
             "step_judgment_extracted",
+            "step_identifier_recovery",
             "step_ori_searched",
             "step_survival_analyzed",
         }

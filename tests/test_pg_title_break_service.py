@@ -104,6 +104,29 @@ class _GapResult:
         return _GapMappings(self._rows)
 
 
+class _FindTargetsConn:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def execute(self, sql: Any, params: dict[str, Any]) -> _GapResult:
+        self.calls.append((str(sql), params))
+        return _GapResult([])
+
+    def __enter__(self) -> "_FindTargetsConn":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+class _FindTargetsEngine:
+    def __init__(self, conn: _FindTargetsConn) -> None:
+        self.conn = conn
+
+    def connect(self) -> _FindTargetsConn:
+        return self.conn
+
+
 def test_lookup_instrument_parties_uses_keyword_search_payload() -> None:
     service = PgTitleBreakService.__new__(PgTitleBreakService)
     fake_ori = _FakeOri(
@@ -319,7 +342,7 @@ def test_process_one_inserts_search_sentinel_when_no_deeds_found(monkeypatch) ->
         lambda *_args, **_kwargs: [],
     )
 
-    gaps_found, deeds_inserted = service._process_one(  # noqa: SLF001
+    gaps_found, deeds_inserted, sentinels_inserted = service._process_one(  # noqa: SLF001
         {
             "foreclosure_id": 11,
             "case_number_raw": "24-CA-000011",
@@ -331,7 +354,49 @@ def test_process_one_inserts_search_sentinel_when_no_deeds_found(monkeypatch) ->
 
     assert gaps_found == 1
     assert deeds_inserted == 0
+    assert sentinels_inserted == 1
     sentinel_sql, sentinel_params = conn.executed[-1]
     assert "event_source = 'ORI_DEED_SEARCH'" in sentinel_sql
     assert sentinel_params["foreclosure_id"] == 11
     assert sentinel_params["description"] == "ORI deed search completed with no matching deeds"
+
+
+def test_find_targets_filters_complete_chains_and_recent_sentinels() -> None:
+    conn = _FindTargetsConn()
+    service = PgTitleBreakService.__new__(PgTitleBreakService)
+    service.engine = _FindTargetsEngine(conn)  # type: ignore[assignment]
+
+    assert service._find_targets(limit=25) == []  # noqa: SLF001
+
+    sql_text, params = conn.calls[0]
+    sql_lower = sql_text.lower()
+    assert "left join foreclosure_title_summary ts" in sql_lower
+    assert "coalesce(ts.gap_count, 0) > 0" in sql_lower
+    assert "coalesce(ts.chain_status, '') <> 'complete'" in sql_lower
+    assert "coalesce(e2.event_subtype, '') <> 'search_no_result'" in sql_lower
+    assert "event_date >= current_date - cast(:retry_ttl_days as integer)" in sql_lower
+    assert params["retry_ttl_days"] == 14
+
+
+def test_insert_search_sentinel_respects_retry_ttl() -> None:
+    conn = _SentinelConn([])
+    service = PgTitleBreakService.__new__(PgTitleBreakService)
+    service.engine = _SentinelEngine(conn)  # type: ignore[assignment]
+
+    inserted = service._insert_search_sentinel(  # noqa: SLF001
+        {
+            "foreclosure_id": 42,
+            "case_number_raw": "24-CA-000042",
+            "case_number_norm": "24-CA-000042",
+            "folio": "F42",
+            "strap": "S42",
+        }
+    )
+
+    assert inserted == 1
+    sql_text, params = conn.executed[-1]
+    sql_lower = sql_text.lower()
+    assert "coalesce(event_subtype, '') <> 'search_no_result'" in sql_lower
+    assert "event_subtype = 'search_no_result'" in sql_lower
+    assert "event_date >= current_date - cast(:retry_ttl_days as integer)" in sql_lower
+    assert params["retry_ttl_days"] == 14

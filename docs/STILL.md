@@ -3,6 +3,12 @@
 **Log file**: `logs/controller_runs/controller-20260310T065735Z-pid971481.log`
 **18,612 lines** | **452 WARNING/ERROR entries** | **Run time**: 02:57:45 — 03:34:22 EDT (36m 37s)
 
+This document is a historical analysis of the March 10, 2026 run. It explains
+why that run produced misleading `noop` results. The code paths for
+`identifier_recovery`, `ori_search`, and `title_breaks` have since been
+remediated; see [`docs/domain/WORKFLOW_RETRY_CONTRACTS.md`](domain/WORKFLOW_RETRY_CONTRACTS.md)
+for the current persistence and retry behavior.
+
 ---
 
 ## Step Reporting Summary
@@ -421,9 +427,9 @@ The PAV truncation / fallback logic is still suspicious and likely contributes t
 |---|---|---|---|
 | 1 | ORI `_save_documents` AmbiguousParameter — 221 instruments dropped | **High** | CAST fix applied, needs re-run to backfill + skip-count propagation |
 | 2 | `_run_realtor` signature mismatch — browser Realtor broken | **High** | Not yet fixed |
-| 8 | `title_breaks` sentinel writes poison retry scope without repairs | **Medium-High** | Not yet fixed |
-| 3 | Identifier recovery — write path never reached for 11 cases | Medium | Not yet fixed; mixed upstream gaps and matching false negatives |
-| 4 | ORI staged-only cases + zero-save accounting | Medium | SQL write bug fixed for parcel-backed cases; staged/no-identity path still unresolved |
+| 8 | `title_breaks` sentinel writes poison retry scope without repairs | **Medium-High** | Fixed in code: target scope excludes complete chains, sentinels use a 14-day TTL refresh, and sentinel-writing runs now report degraded |
+| 3 | Identifier recovery — write path never reached for 11 cases | Medium | Fixed in code: retry cooldown added, `UNIT NO` parsing tightened, and normalized address fallback now reaches conservative legal-confirmed matches |
+| 4 | ORI staged-only cases + zero-save accounting | Medium | Fixed in code: zero-persistence runs no longer mark `step_ori_searched`, and staged/save-skip outcomes now report degraded instead of `noop` |
 | 6 | Market data degraded — external blocking + Issue 2 | Medium | Partially addressed by fixing Issue 2; external blocking is operational noise |
 | 5 | Missing coordinates — 10 properties x3 logs | Low | Same root cause as Issue 3 |
 | 7 | PAV >1500 corporate skips — 128 warnings | Low | By design for encumbrances, but see Issue 8 for title_breaks impact |

@@ -11,14 +11,19 @@ class _FakeResult:
         self,
         *,
         row: dict[str, Any] | None = None,
+        rows: list[dict[str, Any]] | None = None,
     ) -> None:
         self._row = row
+        self._rows = rows or ([] if row is None else [row])
 
     def mappings(self) -> _FakeResult:
         return self
 
     def fetchone(self) -> dict[str, Any] | None:
         return self._row
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return list(self._rows)
 
 
 class _ParcelLookupConnection:
@@ -69,6 +74,7 @@ class _RunConnection:
         self.aborted = False
         self.begin_nested_calls = 0
         self.update_calls: list[dict[str, Any]] = []
+        self.mark_calls: list[dict[str, Any]] = []
 
     def begin_nested(self) -> _NestedTransaction:
         return _NestedTransaction(self)
@@ -83,12 +89,44 @@ class _RunConnection:
         sql = str(statement)
         if "UPDATE foreclosures" not in sql:
             raise AssertionError(sql)
+        if "step_identifier_recovery = now()" in sql:
+            self.mark_calls.append(params or {})
+            return _FakeResult()
         self.update_calls.append(params or {})
         return _FakeResult(
             row={
                 "strap": (params or {}).get("strap"),
                 "folio": (params or {}).get("folio"),
             }
+        )
+
+
+class _AddressLookupConnection:
+    def __init__(self) -> None:
+        self.execute_calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    def execute(
+        self,
+        statement: Any,
+        params: dict[str, Any] | None = None,
+    ) -> _FakeResult:
+        sql = str(statement)
+        self.execute_calls.append((sql, params))
+        if "WHERE property_address = :address" in sql:
+            return _FakeResult(rows=[])
+        return _FakeResult(
+            rows=[
+                {
+                    "folio": "F-2",
+                    "strap": "S-2",
+                    "property_address": "123 CRESTHILL DR",
+                    "raw_legal1": "CREST HILL",
+                    "raw_legal2": "LOT 4",
+                    "raw_legal3": "",
+                    "raw_legal4": "",
+                    "source_file_id": 77,
+                }
+            ]
         )
 
 
@@ -189,6 +227,7 @@ def test_run_uses_nested_transactions_to_isolate_case_failures() -> None:
     assert result["rows_updated"] == 1
     assert result["resolved_parcel_id"] == 1
     assert conn.begin_nested_calls == 2
+    assert conn.mark_calls == [{"foreclosure_id": 2}]
     assert conn.update_calls == [
         {
             "foreclosure_id": 2,
@@ -197,3 +236,70 @@ def test_run_uses_nested_transactions_to_isolate_case_failures() -> None:
             "property_address": "2 MAIN ST",
         }
     ]
+
+
+def test_run_marks_recovery_attempt_for_unresolved_rows() -> None:
+    service = _build_service()
+    conn = _RunConnection()
+    service._engine = _FakeEngine(conn)  # noqa: SLF001
+
+    def _fake_load_scope_rows(
+        _conn: Any,
+        *,
+        limit: int | None,
+    ) -> list[dict[str, Any]]:
+        _ = limit
+        return [{"foreclosure_id": 9, "case_number_raw": "unresolved"}]
+
+    service._load_scope_rows = _fake_load_scope_rows  # type: ignore[method-assign]  # noqa: SLF001
+    service._resolve_one = lambda _conn, _row: identifier_recovery._ResolutionDecision(  # type: ignore[method-assign]  # noqa: SLF001
+        candidate=None,
+        method=None,
+        ambiguous=False,
+        reason="no_match",
+    )
+
+    result = service.run()
+
+    assert result["rows_updated"] == 0
+    assert result["unresolved"] == 1
+    assert conn.update_calls == []
+    assert conn.mark_calls == [{"foreclosure_id": 9}]
+
+
+def test_scope_sql_uses_identifier_recovery_cooldown() -> None:
+    sql = identifier_recovery._SCOPE_SQL  # noqa: SLF001
+
+    assert "step_identifier_recovery IS NULL" in sql
+    assert "step_identifier_recovery < now() - INTERVAL '14 days'" in sql
+
+
+def test_address_lookup_terms_strip_directionals_and_suffixes() -> None:
+    house_number, street_tokens = identifier_recovery._address_lookup_terms(  # noqa: SLF001
+        "123 W Crest Hill Drive, Tampa FL 33602"
+    )
+
+    assert house_number == "123"
+    assert street_tokens == ["CREST", "HILL"]
+
+
+def test_lookup_by_address_falls_back_to_normalized_terms() -> None:
+    service = _build_service()
+    conn = _AddressLookupConnection()
+
+    candidates = service._lookup_by_address(  # noqa: SLF001
+        conn,  # type: ignore[arg-type]
+        address="123 W Crest Hill Drive",
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].strap == "S-2"
+    assert len(conn.execute_calls) == 2
+    fallback_sql, fallback_params = conn.execute_calls[1]
+    assert "regexp_replace(UPPER(COALESCE(property_address, '')), '[^A-Z0-9]', '', 'g')" in fallback_sql
+    assert fallback_params == {
+        "house_prefix": "123%",
+        "limit": 60,
+        "street_token_0": "%CREST%",
+        "street_token_1": "%HILL%",
+    }

@@ -66,6 +66,8 @@ ABBREVIATIONS = {
     "SOUTHWEST": ["SOUTHWEST", "SW"],
 }
 
+_BLOCK_STOPWORDS = {"OF", "IN", "AT", "TO", "BY"}
+
 
 def combine_legal_fields(legal1: str, legal2: str | None = None,
                          legal3: str | None = None, legal4: str | None = None) -> str:
@@ -155,7 +157,10 @@ def parse_legal_description(raw_text: str) -> LegalDescription:
     for pattern in block_patterns:
         match = re.search(pattern, text)
         if match:
-            result.block = match.group(1)
+            candidate = match.group(1)
+            if candidate in _BLOCK_STOPWORDS:
+                continue
+            result.block = candidate
             break
 
     # Extract unit number (for condos) - can be numbers, letters, or alphanumeric
@@ -165,11 +170,17 @@ def parse_legal_description(raw_text: str) -> LegalDescription:
         r'\bUN\s+([A-Z]?\d+[A-Z]?|[A-Z]{1,2})\b',
         r'#\s*([A-Z]?\d+[A-Z]?|[A-Z]{1,2})\b',
     ]
+    extracted_unit = None
     for pattern in unit_patterns:
         match = re.search(pattern, text)
         if match:
-            result.unit = match.group(1)
+            extracted_unit = match.group(1)
             break
+    # In platted subdivision legals, "UNIT NO 02" usually describes the
+    # subdivision phase rather than a condo unit. Suppress that parse only
+    # when we already identified a specific lot.
+    if extracted_unit and not (result.lot or result.lots):
+        result.unit = extracted_unit
 
     # Extract phase
     phase_match = re.search(r'\bPHASE\s+(\d+[A-Z]?)\b|\bPH\s+(\d+[A-Z]?)\b', text)
@@ -282,7 +293,7 @@ def parse_legal_description(raw_text: str) -> LegalDescription:
     if not result.subdivision and result.block:
         # Look for pattern: "BLOCK X, NAME" where NAME is capitalized words before SECTION/UNIT/ACCORDING/PLAT
         after_block = re.search(
-            r'\bBLOCK\s+[A-Z]?\d*[A-Z]?\s*,\s*([A-Z][A-Z\s\']+?)(?:,|\s+(?:SECTION|UNIT|ACCORDING|PLAT|AS\s+PER|A\s+SUBDIVISION))',
+            r'\bBLOCK\s+[A-Z]?\d*[A-Z]?\s*,?\s*([A-Z][A-Z\s\']+?)(?:,|\s+(?:SECTION|UNIT|ACCORDING|PLAT|AS\s+PER|A\s+SUBDIVISION|RECORDED|OF\s+THE))',
             text,
             re.IGNORECASE
         )
@@ -304,7 +315,7 @@ def parse_legal_description(raw_text: str) -> LegalDescription:
     # Fallback 3: "LOT X, SUBDIVISION_NAME, ACCORDING/PLAT..." (no block)
     if not result.subdivision and result.lot and not result.block:
         after_lot = re.search(
-            r'\bLOT\s+[A-Z]?\d+[A-Z]?\s*,\s*([A-Z][A-Z\s\']+?)(?:,|\s+(?:ACCORDING|PLAT|AS\s+PER|A\s+SUBDIVISION))',
+            r'\bLOT\s+[A-Z]?\d+[A-Z]?\s*,?\s*([A-Z][A-Z\s\']+?)(?:,|\s+(?:ACCORDING|PLAT|AS\s+PER|A\s+SUBDIVISION|RECORDED|OF\s+THE))',
             text,
             re.IGNORECASE
         )

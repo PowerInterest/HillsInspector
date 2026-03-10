@@ -142,6 +142,7 @@ DDL: list[str] = [
         -- Pipeline tracking
         step_pdf_downloaded     TIMESTAMPTZ,
         step_judgment_extracted TIMESTAMPTZ,
+        step_identifier_recovery TIMESTAMPTZ,
         step_ori_searched       TIMESTAMPTZ,
         step_survival_analyzed  TIMESTAMPTZ,
 
@@ -188,6 +189,7 @@ DDL: list[str] = [
                 has_ucc_liens, ucc_active_count,
                 encumbrance_count, unsatisfied_encumbrance_count,
                 step_pdf_downloaded, step_judgment_extracted,
+                step_identifier_recovery,
                 step_ori_searched, step_survival_analyzed,
                 created_at, updated_at, archived_at
             )
@@ -209,6 +211,7 @@ DDL: list[str] = [
                 fh.has_ucc_liens, fh.ucc_active_count,
                 fh.encumbrance_count, fh.unsatisfied_encumbrance_count,
                 fh.step_pdf_downloaded, fh.step_judgment_extracted,
+                fh.step_identifier_recovery,
                 fh.step_ori_searched, fh.step_survival_analyzed,
                 fh.created_at, fh.updated_at,
                 COALESCE(fh.archived_at, fh.moved_to_history_at)
@@ -229,6 +232,7 @@ DDL: list[str] = [
                 pdf_path            = COALESCE(foreclosures.pdf_path,            EXCLUDED.pdf_path),
                 step_pdf_downloaded     = COALESCE(foreclosures.step_pdf_downloaded,     EXCLUDED.step_pdf_downloaded),
                 step_judgment_extracted  = COALESCE(foreclosures.step_judgment_extracted,  EXCLUDED.step_judgment_extracted),
+                step_identifier_recovery = COALESCE(foreclosures.step_identifier_recovery, EXCLUDED.step_identifier_recovery),
                 step_ori_searched       = COALESCE(foreclosures.step_ori_searched,       EXCLUDED.step_ori_searched),
                 step_survival_analyzed  = COALESCE(foreclosures.step_survival_analyzed,  EXCLUDED.step_survival_analyzed),
                 archived_at         = COALESCE(foreclosures.archived_at,         EXCLUDED.archived_at);

@@ -460,6 +460,11 @@ class PgOriService:
         self._pav_session = requests.Session()
         self._pav_session.headers.update(_PAV_HEADERS)
         self._official_noc_coverage_start_cache: date | None = None
+        self._last_save_documents_stats = {
+            "saved": 0,
+            "skipped": 0,
+            "eligible": 0,
+        }
 
     def run(self, *, limit: int | None = None) -> dict[str, Any]:
         """Find foreclosures needing ORI search, run searches, save to PG."""
@@ -1620,6 +1625,9 @@ class PgOriService:
         total_truncated = 0
         total_unresolved_truncations = 0
         total_official_seed_docs = 0
+        total_save_skips = 0
+        total_staged_targets = 0
+        total_search_marks = 0
 
         for i, target in enumerate(targets):
             fid = target["foreclosure_id"]
@@ -1638,6 +1646,9 @@ class PgOriService:
                 total_truncated += result["truncated"]
                 total_unresolved_truncations += result["unresolved_truncations"]
                 total_official_seed_docs += result["official_seed_docs"]
+                total_save_skips += result["save_skips"]
+                total_staged_targets += int(bool(result["case_only_stage_path"]))
+                total_search_marks += int(bool(result["marked_ori_searched"]))
 
             except Exception:
                 logger.exception(
@@ -1659,6 +1670,9 @@ class PgOriService:
             "truncated_responses": total_truncated,
             "unresolved_truncations": total_unresolved_truncations,
             "official_seed_docs": total_official_seed_docs,
+            "save_skips": total_save_skips,
+            "staged_targets": total_staged_targets,
+            "targets_marked_searched": total_search_marks,
         }
 
     def _process_target(
@@ -1695,6 +1709,9 @@ class PgOriService:
         inferred = 0
         linked = 0
         staged_path: str | None = None
+        save_skips = 0
+        eligible_documents = 0
+        marked_searched = False
         if persist:
             if not self._has_persistable_identity(target):
                 if docs:
@@ -1711,6 +1728,9 @@ class PgOriService:
                     )
             else:
                 saved = self._save_documents(strap, folio, docs)
+                save_stats = dict(self._last_save_documents_stats)
+                save_skips = int(save_stats.get("skipped", 0))
+                eligible_documents = int(save_stats.get("eligible", 0))
                 if saved == 0 and not bool(target.get("skip_inferred_fallback")):
                     inferred = self._infer_from_judgment(strap, folio, target)
                     saved += inferred
@@ -1732,8 +1752,11 @@ class PgOriService:
                 bool(target.get("mark_ori_searched", True))
                 and self._has_persistable_identity(target)
                 and not staged_path
+                and save_skips == 0
+                and (saved + inferred + linked) > 0
             ):
                 self._mark_searched(foreclosure_id)
+                marked_searched = True
 
         return {
             "foreclosure_id": foreclosure_id,
@@ -1754,6 +1777,9 @@ class PgOriService:
             "official_seed_docs": metrics["official_seed_docs"],
             "deed_count": metrics["deed_count"],
             "clerk_case_count": metrics["clerk_case_count"],
+            "save_skips": save_skips,
+            "eligible_documents": eligible_documents,
+            "marked_ori_searched": marked_searched,
             "instruments": [_get_instrument(doc) for doc in docs if _get_instrument(doc)],
         }
 
@@ -3816,6 +3842,8 @@ class PgOriService:
     ) -> int:
         """Classify ORI documents and save encumbrances to PG."""
         saved = 0
+        skipped = 0
+        eligible = 0
         with self.engine.begin() as conn:
             for doc in documents:
                 raw_type = doc.get("DocType") or doc.get("document_type") or doc.get("doc_type") or ""
@@ -3838,6 +3866,7 @@ class PgOriService:
                 instrument = str(doc.get("Instrument") or doc.get("instrument_number") or doc.get("instrument") or "").strip()
                 if not instrument:
                     continue
+                eligible += 1
 
                 # Parse parties
                 party1 = doc.get("party1") or ""
@@ -4107,7 +4136,13 @@ class PgOriService:
                 except Exception as exc:
                     conn.execute(text("ROLLBACK TO SAVEPOINT ori_doc"))
                     logger.warning(f"Skip document {instrument}: {exc}")
+                    skipped += 1
 
+        self._last_save_documents_stats = {
+            "saved": saved,
+            "skipped": skipped,
+            "eligible": eligible,
+        }
         return saved
 
     def _infer_from_judgment(

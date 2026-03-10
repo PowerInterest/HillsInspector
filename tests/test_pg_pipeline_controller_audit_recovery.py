@@ -378,6 +378,66 @@ def test_run_title_breaks_passes_scope_to_service(monkeypatch: Any) -> None:
     }
 
 
+def test_run_title_breaks_marks_sentinel_only_passes_degraded(monkeypatch: Any) -> None:
+    controller = _build_controller(monkeypatch)
+    run_calls: list[int] = []
+
+    class _FakeTitleBreakService:
+        def __init__(self, dsn: str | None = None) -> None:
+            assert dsn == controller.dsn
+
+        def run(
+            self,
+            *,
+            limit: int | None = None,
+            foreclosure_id: int | None = None,
+            case_number: str | None = None,
+        ) -> dict[str, Any]:
+            run_calls.append(len(run_calls) + 1)
+            assert limit is None
+            assert foreclosure_id is None
+            assert case_number is None
+            if len(run_calls) == 1:
+                return {
+                    "targets": 1,
+                    "gaps_found": 1,
+                    "deeds_inserted": 0,
+                    "backfilled": 0,
+                    "sentinels_inserted": 1,
+                    "errors": 0,
+                }
+            return {
+                "targets": 0,
+                "gaps_found": 0,
+                "deeds_inserted": 0,
+                "backfilled": 0,
+                "sentinels_inserted": 0,
+                "errors": 0,
+            }
+
+    class _ExplodingTitleChainController:
+        def __init__(self, _config: Any) -> None:
+            raise AssertionError("title_chain rebuild should not run for sentinel-only passes")
+
+    monkeypatch.setattr(
+        "src.services.pg_title_break_service.PgTitleBreakService",
+        _FakeTitleBreakService,
+    )
+    monkeypatch.setattr(
+        pg_pipeline_controller,
+        "TitleChainController",
+        _ExplodingTitleChainController,
+    )
+
+    result = controller._run_title_breaks()  # noqa: SLF001
+
+    assert result.status == "degraded"
+    assert result.updated == 1
+    assert result.errors == 0
+    assert run_calls == [1, 2]
+    assert result.details["total_sentinels_inserted"] == 1
+
+
 def test_run_title_breaks_continues_after_second_pass_until_stop_condition(monkeypatch: Any) -> None:
     controller = _build_controller(monkeypatch)
     run_calls: list[int] = []

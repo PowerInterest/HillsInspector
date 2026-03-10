@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from src.scripts.refresh_foreclosures import ENCUMBRANCE_SQL
 from src.scripts.refresh_foreclosures import ENRICH_BASE_SQL
 from src.db.migrations.create_foreclosures import DDL
 
@@ -20,6 +21,16 @@ def test_normalize_trigger_repairs_non_null_invalid_strap_from_folio() -> None:
     assert "WHERE bp.strap = NEW.strap" in trigger_sql
     assert "AND bp.folio = NEW.folio" in trigger_sql
     assert "WHERE bp.folio = NEW.folio" in trigger_sql
+
+
+def test_foreclosures_ddl_includes_identifier_recovery_step_column() -> None:
+    create_sql = next(stmt for stmt in DDL if "CREATE TABLE IF NOT EXISTS foreclosures (" in stmt)
+
+    assert "step_identifier_recovery TIMESTAMPTZ" in create_sql
+
+
+def test_encumbrance_sql_treats_unknown_survival_as_unsatisfied_candidate() -> None:
+    assert "COALESCE(fes.survival_status, oe.survival_status, 'UNKNOWN')" in ENCUMBRANCE_SQL
 
 
 def test_bootstrap_dashboard_auctions_prefers_per_foreclosure_survival_rows() -> None:
