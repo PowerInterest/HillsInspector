@@ -325,3 +325,61 @@ def test_load_judgment_data_to_pg_revalidates_legacy_cache_without_metadata(
     svc = pg_judgment_service.PgJudgmentService()
 
     assert svc._load_judgment_data_to_pg() == 1  # noqa: SLF001
+
+
+def test_load_judgment_data_to_pg_ignores_stale_embedded_validation(
+    tmp_path: Any,
+    monkeypatch: Any,
+) -> None:
+    """Embedded _validation must not override the current validation contract."""
+    import json
+
+    from src.services import pg_judgment_service
+
+    doc_dir = tmp_path / "25-CA-000001" / "documents"
+    doc_dir.mkdir(parents=True)
+    payload = _valid_judgment_cache("2025001111")
+    payload["_validation"] = {
+        "is_valid": False,
+        "failures": ["stale invalidation"],
+        "warnings": [],
+    }
+    (doc_dir / "final_judgment_2025001111_extracted.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(pg_judgment_service, "FORECLOSURE_DATA_DIR", tmp_path)
+
+    class _FakeConnCtx:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def execute(self, sql: Any, params: Any = None) -> Any:
+            sql_str = str(sql)
+            if "DISTINCT ON" in sql_str:
+                class _Rows:
+                    @staticmethod
+                    def fetchall() -> list[tuple[int, str, str]]:
+                        return [(1, "25-CA-000001", "STRAP001")]
+
+                return _Rows()
+            return _FakeResult(rowcount=1)
+
+    class _FakeEngine:
+        def begin(self) -> _FakeConnCtx:
+            return _FakeConnCtx()
+
+    monkeypatch.setattr(
+        pg_judgment_service,
+        "resolve_pg_dsn",
+        lambda _dsn: "postgresql://user:pw@host:5432/db",
+    )
+    monkeypatch.setattr(pg_judgment_service, "get_engine", lambda _dsn: _FakeEngine())
+
+    svc = pg_judgment_service.PgJudgmentService()
+
+    assert svc._load_judgment_data_to_pg() == 1  # noqa: SLF001

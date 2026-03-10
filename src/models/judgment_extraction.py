@@ -43,6 +43,7 @@ Downstream field access map (why each field exists):
 from __future__ import annotations
 
 from enum import StrEnum
+import re
 from typing import Any
 
 from pydantic import Field, field_validator, model_validator
@@ -60,6 +61,69 @@ from src.models.extraction_base import (
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
+
+_CREDIT_AMOUNT_RE = re.compile(
+    r"(?P<prefix>-?\$|\(\$|\$ ?\()?\s*"
+    r"(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})\)?",
+    re.IGNORECASE,
+)
+_CREDIT_LINE_MARKERS = (
+    "LESS PAYMENTS",
+    "PAYMENTS RECEIVED",
+    "LESS CREDITS",
+    "ESCROW CREDIT",
+    "UNAPPLIED FUNDS",
+    "MISCELLANEOUS DEDUCTIONS",
+    "LESS:",
+)
+
+
+def _parse_credit_amount(raw_amount: str) -> float:
+    return float(raw_amount.replace(",", ""))
+
+
+def extract_credit_adjustments(raw_text: str) -> float:
+    """Sum document-stated credits/payments that reduce the total due.
+
+    Final judgments often present the amount table as:
+
+    - major line items (principal, interest, fees, costs)
+    - one or more explicit credits/payments (``less payments received``,
+      ``less escrow credits``, ``unapplied funds``)
+    - the final total
+
+    The LLM frequently extracts the positive line items but omits the
+    subtractive credit line.  We do not want to weaken the arithmetic gate, so
+    this helper recovers the credit directly from OCR text and lets the
+    validator do the math on the complete formula.
+    """
+    if not raw_text:
+        return 0.0
+
+    adjustments: list[float] = []
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+
+    for idx, line in enumerate(lines):
+        upper = line.upper()
+        for marker in _CREDIT_LINE_MARKERS:
+            pos = upper.find(marker)
+            if pos == -1:
+                continue
+            segment = " ".join(lines[idx : idx + 2])
+            tail = segment[pos:]
+            match = _CREDIT_AMOUNT_RE.search(tail)
+            if match:
+                adjustments.append(_parse_credit_amount(match.group("amount")))
+            break
+        else:
+            if "SUB-TOTAL" in upper or "SUBTOTAL" in upper:
+                for candidate in lines[idx + 1 : idx + 3]:
+                    if not ("(" in candidate or "-$" in candidate):
+                        continue
+                    for match in _CREDIT_AMOUNT_RE.finditer(candidate):
+                        adjustments.append(_parse_credit_amount(match.group("amount")))
+
+    return round(sum(adjustments), 2)
 
 class PlaintiffType(StrEnum):
     BANK = "bank"
@@ -960,22 +1024,15 @@ class JudgmentExtraction(BaseDocumentExtraction):
             return []
 
         # Known line items the model extracts individually
-        known = [
-            self.principal_amount,
-            self.interest_amount,
-            self.per_diem_interest,
-            self.late_charges,
-            self.escrow_advances,
-            self.title_search_costs,
-            self.court_costs,
-            self.attorney_fees,
-        ]
+        known = self._known_amounts()
         non_null_known = [c for c in known if c is not None]
         if len(non_null_known) < 3:
             return []  # not enough itemization to enforce
 
         known_sum = sum(non_null_known)
-        remainder = self.total_judgment_amount - known_sum
+        credit_adjustments = extract_credit_adjustments(self.raw_text)
+        adjusted_known_sum = known_sum - credit_adjustments
+        remainder = self.total_judgment_amount - adjusted_known_sum
 
         # Recompute other_costs as the remainder if it's non-negative.
         # This lets us validate without relying on the LLM's arithmetic.
@@ -1013,22 +1070,15 @@ class JudgmentExtraction(BaseDocumentExtraction):
         if self.total_judgment_amount is None:
             return []
 
-        known = [
-            self.principal_amount,
-            self.interest_amount,
-            self.per_diem_interest,
-            self.late_charges,
-            self.escrow_advances,
-            self.title_search_costs,
-            self.court_costs,
-            self.attorney_fees,
-        ]
+        known = self._known_amounts()
         non_null_known = [c for c in known if c is not None]
         if len(non_null_known) < 2:
             return []
 
         known_sum = sum(non_null_known)
-        remainder = self.total_judgment_amount - known_sum
+        credit_adjustments = extract_credit_adjustments(self.raw_text)
+        adjusted_known_sum = known_sum - credit_adjustments
+        remainder = self.total_judgment_amount - adjusted_known_sum
 
         # Warn when the remainder (other_costs) is a sizable fraction of
         # the total — may indicate a missing major component.
@@ -1039,6 +1089,32 @@ class JudgmentExtraction(BaseDocumentExtraction):
                 f"a major line item may be missing from extraction"
             ]
         return []
+
+    def _known_amounts(self) -> list[float | None]:
+        late_charges = self.late_charges
+        if (
+            late_charges is not None
+            and self.court_costs is not None
+            and abs(late_charges - self.court_costs) < 0.01
+            and not self._mentions_late_fees()
+        ):
+            late_charges = None
+            self.late_charges = None
+
+        return [
+            self.principal_amount,
+            self.interest_amount,
+            self.per_diem_interest,
+            late_charges,
+            self.escrow_advances,
+            self.title_search_costs,
+            self.court_costs,
+            self.attorney_fees,
+        ]
+
+    def _mentions_late_fees(self) -> bool:
+        raw = (self.raw_text or "").upper()
+        return any(marker in raw for marker in ("LATE FEE", "LATE FEES", "LATE CHARGE", "LATE CHARGES"))
 
     def _check_sale_terms_hard(self) -> list[str]:
         """HARD FAIL: sale modality contradicts the stated sale location."""

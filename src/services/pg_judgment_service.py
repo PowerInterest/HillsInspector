@@ -191,9 +191,8 @@ class PgJudgmentService:
     def _judgment_validation(judgment_data: dict[str, Any]) -> dict[str, Any]:
         from src.services.final_judgment_processor import FinalJudgmentProcessor
 
-        validation = judgment_data.get("_validation")
-        if isinstance(validation, dict) and "is_valid" in validation:
-            return validation
+        # Always revalidate against the current contract instead of trusting
+        # stale cached verdicts embedded in older extraction files.
         return FinalJudgmentProcessor.validation_summary(judgment_data)
 
     @staticmethod

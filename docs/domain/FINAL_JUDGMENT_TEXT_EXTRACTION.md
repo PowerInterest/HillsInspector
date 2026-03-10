@@ -41,10 +41,38 @@ Those failures were showing up in `BAD` / `CRITICAL` judgment triage as:
   endpoints.
 - The pipeline computes money residuals itself; the model is not trusted to do
   arithmetic correctly.
+- The validator recovers document-stated credit adjustments from OCR text
+  (`less payments`, `escrow credits`, `unapplied funds`, similar subtractive
+  lines) before enforcing the hard amount gate. This keeps the arithmetic check
+  strict without trusting the model to carry subtractive math correctly.
+- The validator also de-duplicates obvious amount collisions that come from OCR
+  misreads, such as a `late_charges` value that is identical to `court_costs`
+  when the judgment text does not actually mention late fees.
 - Old caches should not block the new path forever, so the cache format version
   is bumped when the extraction contract changes materially.
 - No new database tables or columns are required for this workflow. Validated
   judgments still persist to `foreclosures.judgment_data`.
+
+## Triage Rules
+
+`scripts/triage_judgments.py` is not just a schema checker. It now applies
+three separate lenses:
+
+1. Internal judgment consistency.
+2. Property identity against HCPA.
+3. Cross-document consistency against ORI / foreclosure state.
+
+Two rules matter for interpreting the output correctly:
+
+- A judgment is not treated as a bad extraction merely because it conflicts
+  with the foreclosure row's current strap. If the extracted address /
+  subdivision / lot / block are clearly grounded in the OCR text, the script
+  downgrades that to a linkage warning and explicitly reports that the document
+  likely belongs to an alternate parcel or that the foreclosure linkage is
+  wrong.
+- Arithmetic triage uses the same OCR-derived credit recovery as the live
+  validator, so old judgments with omitted `less payments` lines are not
+  incorrectly kept in the `BAD` bucket.
 
 ## Operational Use
 
@@ -52,3 +80,6 @@ Those failures were showing up in `BAD` / `CRITICAL` judgment triage as:
 - Re-run `scripts/triage_judgments.py` after bulk re-extraction.
 - Treat the triage result as an extraction-quality report, not a persistence
   schema.
+- When loading cached extracted judgments into PostgreSQL, revalidate against
+  the current contract instead of trusting stale embedded `_validation` blobs
+  from older cache files.

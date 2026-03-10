@@ -210,6 +210,81 @@ def test_judgment_negative_rollup_gap_fails_validation() -> None:
         JudgmentExtraction.model_validate(payload)
 
 
+def test_judgment_credit_lines_from_raw_text_keep_amount_gate_strict() -> None:
+    payload = _judgment_payload()
+    payload["principal_amount"] = 35394.64
+    payload["interest_amount"] = 3596.82
+    payload["late_charges"] = None
+    payload["escrow_advances"] = None
+    payload["title_search_costs"] = None
+    payload["court_costs"] = 1207.17
+    payload["attorney_fees"] = 4593.50
+    payload["total_judgment_amount"] = 20401.98
+    payload["raw_text"] = (
+        "The value of Plaintiff's lien is the sum of $35,394.64 in principal; "
+        "$3,596.82 in interest; $1,207.17 in costs; and $4,593.50 in attorneys' "
+        "fees, all less payments received totaling ($24,390.15), for a total of "
+        "$20,401.98."
+    )
+
+    model = JudgmentExtraction.model_validate(payload)
+    failures, warnings = model.validate_extraction()
+
+    assert failures == []
+    assert model.other_costs == 0.0
+    assert warnings == []
+
+
+def test_judgment_subtotal_credit_lines_reconcile_total() -> None:
+    payload = _judgment_payload()
+    payload["principal_amount"] = 200000.00
+    payload["interest_amount"] = 48920.48
+    payload["late_charges"] = None
+    payload["escrow_advances"] = None
+    payload["title_search_costs"] = 275.00
+    payload["court_costs"] = 1514.00
+    payload["attorney_fees"] = 3240.00
+    payload["total_judgment_amount"] = 242674.08
+    payload["raw_text"] = (
+        "Sub-Total. $254,054.48\n"
+        "$ (11,380.40)\n"
+        "$242,674.08\n"
+    )
+
+    model = JudgmentExtraction.model_validate(payload)
+    failures, warnings = model.validate_extraction()
+
+    assert failures == []
+    assert model.other_costs == 105.00
+    assert warnings == []
+
+
+def test_judgment_multiline_credit_and_duplicate_late_fee_are_normalized() -> None:
+    payload = _judgment_payload()
+    payload["principal_amount"] = 5881.43
+    payload["interest_amount"] = 437.08
+    payload["late_charges"] = 647.49
+    payload["escrow_advances"] = None
+    payload["title_search_costs"] = None
+    payload["court_costs"] = 647.49
+    payload["attorney_fees"] = 4593.50
+    payload["total_judgment_amount"] = 10719.50
+    payload["per_diem_rate"] = None
+    payload["raw_text"] = (
+        "$647.49 in costs; and $4,593.50 in attorneys' fees, all less payments "
+        "received totaling\n"
+        "($840.00), for a total of $10,719.50.\n"
+    )
+
+    model = JudgmentExtraction.model_validate(payload)
+    failures, warnings = model.validate_extraction()
+
+    assert failures == []
+    assert model.late_charges is None
+    assert model.other_costs == 0.0
+    assert warnings == []
+
+
 def test_judgment_online_sale_mismatch_fails_validation() -> None:
     payload = _judgment_payload()
     payload["is_online_sale"] = False
