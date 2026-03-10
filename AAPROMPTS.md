@@ -103,13 +103,14 @@ Audit this workflow end-to-end as a persistence bug. Do not trust logs or step s
 - permit service logged matches but no permits appeared in downstream review pages
 - refresh step ran but summary tables still reflect stale data
 
-##  Forensic Case Study
+## Forensic Case Study
 
 Use this when one case looks wrong and you need a deep, evidence-driven
 investigation rather than a quick bug hunt.
 
 ### Paste-Ready Prompt
 
+```md
 Core rule:
 Do not trust the extracted JSON, the database row, the controller status, or prior conclusions until each critical fact is proven from primary evidence.
 
@@ -232,6 +233,3 @@ Run a forensic case study on {case_number}. Reconstruct ground truth from the so
 - It separates extraction bugs from linkage bugs.
 - It names the exact broken code path.
 - It turns one ugly case into a reusable regression test and a durable workflow rule.
-
-## Code Review
-Perform a detailed code review of the pa
