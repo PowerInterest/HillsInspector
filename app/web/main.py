@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title="HillsInspector", description="Hillsborough County Property Auction Analysis", version="0.1.0", lifespan=lifespan
+    title="Truck's List", description="Hillsborough County Property Auction Analysis", version="0.1.0", lifespan=lifespan
 )
 
 # Paths
@@ -278,7 +278,7 @@ async def health_check():
     from app.web.pg_web import check_database_health
 
     db_status = check_database_health()
-    return {"status": "ok" if db_status["available"] else "degraded", "service": "HillsInspector", "database": db_status}
+    return {"status": "ok" if db_status["available"] else "degraded", "service": "Truck's List", "database": db_status}
 
 
 if __name__ == "__main__":

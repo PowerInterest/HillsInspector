@@ -4,8 +4,10 @@
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>
-            {% block title %}HillsInspector{% endblock %}
+            {% block title %}Truck's List{% endblock %}
         </title>
+        <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}">
+        <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', path='apple-touch-icon.png') }}">
         <link rel="stylesheet"
               href="{{ url_for('static', path='styles.css') }}?v=20260227-photo-fit">
         <link rel="stylesheet"
@@ -62,7 +64,7 @@
     <body>
         <header class="header">
             <div class="header-content">
-                <a href="/" class="logo">HillsInspector</a>
+                <a href="/" class="logo"><img src="{{ url_for('static', path='TrucksList.png') }}" alt="Truck's List" class="logo-img">Truck's List</a>
                 <nav class="nav">
                     <a href="/"
                        class="nav-link{% if request.url.path == '/' %} is-active{% endif %}">Dashboard</a>
@@ -108,7 +110,7 @@
             {% block content %}{% endblock %}
         </main>
         <footer class="footer">
-            <p>HillsInspector - Hillsborough County Property Auction Analysis</p>
+            <p>Truck's List - Hillsborough County Property Auction Analysis</p>
         </footer>
         <script>
         function openTab(evt, tabName) {

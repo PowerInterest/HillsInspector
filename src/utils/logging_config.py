@@ -37,16 +37,13 @@ def configure_logger(
     logger.configure(extra={"run_id": "-"})
 
     console_format = (
-        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+        "<green>{time:MM-DD HH:mm:ss}</green> | "
         "<level>{level: <8}</level> | "
-        "pid=<cyan>{process.id}</cyan> | "
-        "run=<magenta>{extra[run_id]}</magenta> | "
         "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
         "<level>{message}</level>"
     )
     file_format = (
-        "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | "
-        "pid={process.id} | run={extra[run_id]} | "
+        "{time:MM-DD HH:mm:ss} | {level: <8} | "
         "{name}:{function}:{line} - {message}"
     )
 
