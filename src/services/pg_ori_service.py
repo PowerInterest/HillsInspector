@@ -465,6 +465,10 @@ class PgOriService:
             "skipped": 0,
             "eligible": 0,
         }
+        self._last_infer_from_judgment_stats = {
+            "saved": 0,
+            "reason": "not_run",
+        }
 
     def run(self, *, limit: int | None = None) -> dict[str, Any]:
         """Find foreclosures needing ORI search, run searches, save to PG."""
@@ -747,6 +751,7 @@ class PgOriService:
         limit: int | None = None,
         dry_run: bool = False,
         force_satisfaction_relink: bool = True,
+        retry_reasons: dict[int, list[str]] | None = None,
     ) -> dict[str, Any]:
         """Re-run the full ORI discovery pipeline for a selected foreclosure scope.
 
@@ -780,8 +785,16 @@ class PgOriService:
 
         for index, base_target in enumerate(targets, start=1):
             target = dict(base_target)
+            target["ori_run_context"] = "targeted_recovery"
             if force_satisfaction_relink:
                 target["force_satisfaction_relink"] = True
+            target_retry_reasons = [
+                str(reason)
+                for reason in (retry_reasons or {}).get(int(target["foreclosure_id"]), [])
+                if reason
+            ]
+            if target_retry_reasons:
+                target["ori_retry_reasons"] = target_retry_reasons
 
             case = target["case_number"]
             strap = target.get("strap")
@@ -1401,6 +1414,75 @@ class PgOriService:
                 break
         return merged
 
+    @staticmethod
+    def _describe_zero_persistence_reason(
+        *,
+        docs_found: int,
+        eligible_documents: int,
+        save_skips: int,
+    ) -> str:
+        if save_skips > 0:
+            return "eligible documents were discovered but savepoint rollbacks prevented persistence"
+        if docs_found <= 0:
+            return "discovery found no documents"
+        if eligible_documents <= 0:
+            return "discovery found only non-persistable documents"
+        return "eligible documents were already persisted unchanged"
+
+    @staticmethod
+    def _describe_infer_from_judgment_reason(reason: str | None) -> str:
+        mapping = {
+            "missing_property_identity": "judgment fallback could not run without strap/folio",
+            "missing_plaintiff": "judgment fallback had no plaintiff to infer the foreclosing lien",
+            "existing_inferred_encumbrance": "judgment fallback was already persisted",
+            "inserted": "judgment fallback inserted an inferred encumbrance",
+            "not_run": "judgment fallback was not attempted",
+        }
+        return mapping.get(reason or "", "judgment fallback returned no new encumbrance")
+
+    def _existing_encumbrance_snapshot(
+        self,
+        strap: str | None,
+        case_number: str | None,
+    ) -> dict[str, int]:
+        snapshot = {
+            "total": 0,
+            "core_liens": 0,
+            "foreclosing": 0,
+            "lis_pendens": 0,
+            "noc": 0,
+        }
+        case_candidates = [candidate for candidate in self._case_variants(case_number or "") if candidate]
+        match_clauses: list[str] = []
+        params: dict[str, Any] = {}
+        if strap:
+            match_clauses.append("oe.strap = :strap")
+            params["strap"] = strap
+        if case_candidates:
+            match_clauses.append("oe.case_number = ANY(:case_numbers)")
+            params["case_numbers"] = case_candidates
+        if not match_clauses:
+            return snapshot
+
+        sql = f"""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (
+                    WHERE oe.encumbrance_type IN ('mortgage', 'lien', 'judgment')
+                ) AS core_liens,
+                COUNT(*) FILTER (
+                    WHERE COALESCE(oe.survival_status, '') = 'FORECLOSING'
+                ) AS foreclosing,
+                COUNT(*) FILTER (WHERE oe.encumbrance_type = 'lis_pendens') AS lis_pendens,
+                COUNT(*) FILTER (WHERE oe.encumbrance_type = 'noc') AS noc
+            FROM ori_encumbrances oe
+            WHERE {" OR ".join(match_clauses)}
+        """
+        with self.engine.connect() as conn:
+            row = conn.execute(text(sql), params).mappings().first() or {}
+
+        return {key: int(row.get(key) or 0) for key in snapshot}
+
     def _find_lis_pendens_gap_targets(
         self,
         *,
@@ -1637,7 +1719,9 @@ class PgOriService:
             logger.info(f"[{i + 1}/{len(targets)}] ORI search for {case} (strap={strap})")
 
             try:
-                result = self._process_target(target, persist=True)
+                scoped_target = dict(target)
+                scoped_target.setdefault("ori_run_context", "standard_search")
+                result = self._process_target(scoped_target, persist=True)
                 total_docs += result["docs_found"]
                 total_saved += result["saved"]
                 total_inferred += result["inferred"]
@@ -1690,6 +1774,8 @@ class PgOriService:
         case_number = target.get("case_number") or ""
         strap = (target.get("strap") or "").strip() or None
         folio = (target.get("folio") or "").strip() or None
+        run_context = str(target.get("ori_run_context") or "standard_search")
+        retry_reasons = [str(reason) for reason in (target.get("ori_retry_reasons") or []) if reason]
 
         docs, metrics = self._discover_property(target)
         logger.info(
@@ -1735,10 +1821,35 @@ class PgOriService:
                     inferred = self._infer_from_judgment(strap, folio, target)
                     saved += inferred
                     if inferred == 0:
+                        zero_reason = self._describe_zero_persistence_reason(
+                            docs_found=len(docs),
+                            eligible_documents=eligible_documents,
+                            save_skips=save_skips,
+                        )
+                        infer_reason_key = self._last_infer_from_judgment_stats.get("reason")
+                        infer_reason = self._describe_infer_from_judgment_reason(
+                            infer_reason_key if isinstance(infer_reason_key, str) else None,
+                        )
+                        existing_snapshot = self._existing_encumbrance_snapshot(
+                            strap,
+                            case_number,
+                        )
                         logger.warning(
-                            "No encumbrances saved and no inferred fallback for case={} strap={}",
+                            "No new encumbrances persisted for case={} strap={} context={} retry_reasons={} why={} inferred_why={} docs_found={} eligible_docs={} save_skips={} existing_total={} existing_core_liens={} existing_foreclosing={} existing_lis_pendens={} existing_noc={}",
                             case_number,
                             strap or "",
+                            run_context,
+                            ",".join(retry_reasons) if retry_reasons else "none",
+                            zero_reason,
+                            infer_reason,
+                            len(docs),
+                            eligible_documents,
+                            save_skips,
+                            existing_snapshot["total"],
+                            existing_snapshot["core_liens"],
+                            existing_snapshot["foreclosing"],
+                            existing_snapshot["lis_pendens"],
+                            existing_snapshot["noc"],
                         )
                 if saved > 0 or inferred > 0:
                     self._clear_case_only_stage_files(case_number)
@@ -1780,6 +1891,8 @@ class PgOriService:
             "save_skips": save_skips,
             "eligible_documents": eligible_documents,
             "marked_ori_searched": marked_searched,
+            "run_context": run_context,
+            "retry_reasons": retry_reasons,
             "instruments": [_get_instrument(doc) for doc in docs if _get_instrument(doc)],
         }
 
@@ -4152,10 +4265,19 @@ class PgOriService:
         target: dict,
     ) -> int:
         """Create inferred encumbrance from judgment data when ORI finds nothing."""
+        case_number = target.get("case_number", "")
+        self._last_infer_from_judgment_stats = {
+            "saved": 0,
+            "reason": "not_run",
+        }
         if not folio or not strap or strap == "MULTIPLE PARCEL":
+            self._last_infer_from_judgment_stats = {
+                "saved": 0,
+                "reason": "missing_property_identity",
+            }
             logger.info(
                 "Skip inferred encumbrance for case={} due to missing folio/strap",
-                target.get("case_number") or "",
+                case_number,
             )
             return 0
 
@@ -4163,9 +4285,16 @@ class PgOriService:
         plaintiff = jdata.get("plaintiff") or ""
         defendant = jdata.get("defendant") or ""
         if not plaintiff:
+            self._last_infer_from_judgment_stats = {
+                "saved": 0,
+                "reason": "missing_plaintiff",
+            }
+            logger.info(
+                "Skip inferred encumbrance for case={} because judgment plaintiff is missing",
+                case_number,
+            )
             return 0
 
-        case_number = target.get("case_number", "")
         is_cc = len(case_number) >= 8 and "CC" in case_number[6:8]
         plaintiff_upper = plaintiff.upper()
         is_hoa = any(kw in plaintiff_upper for kw in ("ASSOCIATION", "HOA", "CONDO", "HOMEOWNER"))
@@ -4197,6 +4326,15 @@ class PgOriService:
             ).fetchone()
 
             if existing:
+                self._last_infer_from_judgment_stats = {
+                    "saved": 0,
+                    "reason": "existing_inferred_encumbrance",
+                }
+                logger.info(
+                    "Skip inferred encumbrance for case={} because {} already exists",
+                    case_number,
+                    instrument,
+                )
                 return 0
 
             conn.execute(
@@ -4229,6 +4367,10 @@ class PgOriService:
                 },
             )
 
+        self._last_infer_from_judgment_stats = {
+            "saved": 1,
+            "reason": "inserted",
+        }
         logger.info(f"Inferred {enc_type} encumbrance for {case_number}: plaintiff={plaintiff}")
         return 1
 

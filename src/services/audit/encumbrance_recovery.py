@@ -79,6 +79,21 @@ def _bucket_foreclosure_ids(report: AuditReport) -> dict[str, set[int]]:
     return ids_by_bucket
 
 
+def _retry_reasons_by_foreclosure_id(
+    report: AuditReport,
+    *,
+    buckets: frozenset[str],
+) -> dict[int, list[str]]:
+    reasons: dict[int, set[str]] = defaultdict(set)
+    for hit in report.hits:
+        if hit.bucket in buckets:
+            reasons[int(hit.foreclosure_id)].add(hit.bucket)
+    return {
+        foreclosure_id: sorted(bucket_names)
+        for foreclosure_id, bucket_names in reasons.items()
+    }
+
+
 def _changed_target_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
     changed: list[dict[str, Any]] = []
     for row in result.get("per_target", []) or []:
@@ -222,6 +237,10 @@ class EncumbranceRecoveryService:
         action_errors = 0
 
         ori_service = PgOriService(dsn=self.dsn)
+        ori_retry_reasons = _retry_reasons_by_foreclosure_id(
+            pre_report,
+            buckets=ORI_RETRY_BUCKETS,
+        )
 
         if lp_targets:
             lp_result = ori_service.run_lis_pendens_backfill(
@@ -237,6 +256,7 @@ class EncumbranceRecoveryService:
             ori_result = ori_service.run_targeted_recovery(
                 foreclosure_ids=ori_retry_targets,
                 force_satisfaction_relink=True,
+                retry_reasons=ori_retry_reasons,
             )
             actions["ori_targeted_recovery"] = ori_result
             action_errors += int(ori_result.get("errors") or 0)

@@ -180,6 +180,10 @@ def test_recovery_maps_buckets_to_targeted_services(monkeypatch: Any) -> None:
     assert calls["lp_kwargs"]["foreclosure_ids"] == [1]
     assert calls["ori_kwargs"]["foreclosure_ids"] == [2, 3]
     assert calls["ori_kwargs"]["force_satisfaction_relink"] is True
+    assert calls["ori_kwargs"]["retry_reasons"] == {
+        2: ["construction_lien_risk"],
+        3: ["sat_parent_gap"],
+    }
     assert calls["noc_kwargs"]["foreclosure_ids"] == [2]
     assert calls["mortgage_straps"] == ["S1", "S2", "S3"]
     assert calls["survival_ids"] == [1, 2, 3]

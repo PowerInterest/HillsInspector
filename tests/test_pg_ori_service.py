@@ -42,6 +42,11 @@ class _CaptureResult:
             return self._mapping_rows
         return self._rows
 
+    def fetchone(self) -> Any:
+        if self._mapping_rows:
+            return self._mapping_rows[0] if self._mapping_rows else None
+        return self._rows[0] if self._rows else None
+
     def first(self) -> dict[str, Any] | None:
         if self._mapping_rows:
             return self._mapping_rows[0]
@@ -1516,6 +1521,126 @@ def test_process_target_does_not_mark_searched_after_save_skips(monkeypatch: Any
     assert result["eligible_documents"] == 1
     assert result["marked_ori_searched"] is False
     assert marks == []
+
+
+def test_process_target_logs_zero_persistence_context(monkeypatch: Any) -> None:
+    service = _build_service(monkeypatch)
+    warnings: list[str] = []
+    target = {
+        "foreclosure_id": 15289,
+        "case_number": "292025CA001913A001HC",
+        "strap": "172834985C00000000010U",
+        "folio": "0066170422",
+        "judgment_data": {"plaintiff": "Newrez LLC", "defendant": "Example Borrower"},
+        "property_address": "10243 VILLA PALAZZO CT",
+        "ori_run_context": "targeted_recovery",
+        "ori_retry_reasons": ["construction_lien_risk"],
+    }
+
+    monkeypatch.setattr(
+        service,
+        "_prepare_target_identity",
+        _passthrough_prepare_target_identity,
+    )
+    monkeypatch.setattr(
+        service,
+        "_discover_property",
+        lambda _target: (
+            [
+                {"Instrument": "2025208942", "DocType": "LIS PENDENS"},
+                {"Instrument": "2026041591", "DocType": "JUDGMENT"},
+            ],
+            {
+                "api_calls": 0,
+                "retries": 0,
+                "truncated": 1,
+                "unresolved_truncations": 0,
+                "deed_count": 5,
+                "clerk_case_count": 3,
+                "official_seed_docs": 0,
+            },
+        ),
+    )
+
+    def _save_zero(_strap: str | None, _folio: str | None, _docs: list[dict[str, Any]]) -> int:
+        service._last_save_documents_stats = {  # noqa: SLF001
+            "saved": 0,
+            "skipped": 0,
+            "eligible": 2,
+        }
+        return 0
+
+    def _infer_zero(_strap: str | None, _folio: str | None, _target: dict[str, Any]) -> int:
+        service._last_infer_from_judgment_stats = {  # noqa: SLF001
+            "saved": 0,
+            "reason": "existing_inferred_encumbrance",
+        }
+        return 0
+
+    monkeypatch.setattr(service, "_save_documents", _save_zero)
+    monkeypatch.setattr(service, "_infer_from_judgment", _infer_zero)
+    monkeypatch.setattr(
+        service,
+        "_existing_encumbrance_snapshot",
+        lambda _strap, _case: {
+            "total": 9,
+            "core_liens": 3,
+            "foreclosing": 1,
+            "lis_pendens": 1,
+            "noc": 0,
+        },
+    )
+    monkeypatch.setattr(
+        pg_ori_service.logger,
+        "warning",
+        lambda message, *args: warnings.append(message.format(*args)),
+    )
+
+    result = service._process_target(target, persist=True)  # noqa: SLF001
+
+    assert result["saved"] == 0
+    assert result["run_context"] == "targeted_recovery"
+    assert result["retry_reasons"] == ["construction_lien_risk"]
+    assert warnings
+    assert (
+        "No new encumbrances persisted for case=292025CA001913A001HC"
+        in warnings[-1]
+    )
+    assert "retry_reasons=construction_lien_risk" in warnings[-1]
+    assert "why=eligible documents were already persisted unchanged" in warnings[-1]
+    assert "inferred_why=judgment fallback was already persisted" in warnings[-1]
+    assert "existing_total=9" in warnings[-1]
+    assert "existing_foreclosing=1" in warnings[-1]
+
+
+def test_infer_from_judgment_tracks_existing_inferred_reason(monkeypatch: Any) -> None:
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    def _execute(sql_text: str, _params: dict[str, Any]) -> _CaptureResult:
+        if "SELECT id FROM ori_encumbrances WHERE strap = :strap AND instrument_number = :inst" in sql_text:
+            return _CaptureResult(rows=[(1,)])
+        return _CaptureResult()
+
+    service.engine = _ExecuteFnEngine(_execute, captured)  # type: ignore[assignment]
+
+    result = service._infer_from_judgment(  # noqa: SLF001
+        "172834985C00000000010U",
+        "0066170422",
+        {
+            "case_number": "292025CA001913A001HC",
+            "judgment_data": {
+                "plaintiff": "Newrez LLC D/B/A Shellpoint Mortgage Servicing",
+                "defendant": "Example Borrower",
+            },
+        },
+    )
+
+    assert result == 0
+    assert service._last_infer_from_judgment_stats == {  # noqa: SLF001
+        "saved": 0,
+        "reason": "existing_inferred_encumbrance",
+    }
 
 
 def test_discover_property_bypasses_case_cache_and_skips_noc_fallback_for_lp_gap(
