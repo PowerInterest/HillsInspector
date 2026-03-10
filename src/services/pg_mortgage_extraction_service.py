@@ -1,11 +1,18 @@
-"""Phase B Step 5: Extract mortgage data from PDFs → PG ori_encumbrances.mortgage_data.
+"""DEPRECATED: Use pg_encumbrance_extraction_service.py instead.
 
-Finds encumbrances that are mortgages but have no extracted JSON, downloads the PDF
-from the Clerk's PAVDirectSearch API using the instrument number, and runs the
-Vision Service to extract loan amounts, interest rates, and loan seniority.
+This module is retained for reference only. The unified encumbrance extraction
+service now handles all document types including mortgages.
 """
 
 from __future__ import annotations
+
+import warnings
+
+warnings.warn(
+    "pg_mortgage_extraction_service is deprecated. Use pg_encumbrance_extraction_service.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 import asyncio
 import contextlib

@@ -42,6 +42,9 @@ dependencies = [
     "unzip>=1.0.0",
     "inflate64>=1.0.4",
     "scrapling[all,fetchers]>=0.4.1",
+    "pytesseract>=0.3.13",
+    "pdf2image>=1.17.0",
+    "openai>=2.26.0",
 ]
 requires-python = ">=3.12,<3.13"
 
@@ -284,6 +287,8 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 # Config files can have unused imports and imports after try/except
 "config.py" = ["F401", "E402"]
 "__init__.py" = ["F401"]
+# Deprecated module: warnings.warn() at module level triggers E402 for subsequent imports
+"src/services/pg_mortgage_extraction_service.py" = ["E402"]
 
 [tool.ruff.lint.flake8-quotes]
 docstring-quotes = "double"

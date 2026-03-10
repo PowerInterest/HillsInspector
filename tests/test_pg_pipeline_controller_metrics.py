@@ -183,13 +183,12 @@ def test_controller_reads_phase_b_service_metrics(monkeypatch: Any) -> None:
         def run_phase0(self, **_kwargs: Any) -> dict[str, Any]:
             return {"findings_written": 17}
 
-    class _FakeMortgageSvc:
+    class _FakeEncumbranceExtractionSvc:
         def __init__(self, dsn: str | None = None) -> None:
             assert dsn == controller.dsn
 
-        def run(self, limit: int | None = None) -> dict[str, Any]:
-            assert limit is None
-            return {"mortgages_extracted": 19}
+        def run(self, limit: int | None = None, **_kwargs: Any) -> dict[str, Any]:
+            return {"extracted": 19, "cached": 0, "errors": 0}
 
     monkeypatch.setattr("src.services.pg_auction_service.PgAuctionService", _FakeAuctionSvc)
     monkeypatch.setattr("src.services.pg_judgment_service.PgJudgmentService", _FakeJudgmentSvc)
@@ -199,14 +198,14 @@ def test_controller_reads_phase_b_service_metrics(monkeypatch: Any) -> None:
     )
     monkeypatch.setattr("src.services.pg_ori_service.PgOriService", _FakeOriSvc)
     monkeypatch.setattr("src.services.pg_municipal_lien_service.PgMunicipalLienService", _FakeMunicipalSvc)
-    monkeypatch.setattr("src.services.pg_mortgage_extraction_service.PgMortgageExtractionService", _FakeMortgageSvc)
+    monkeypatch.setattr("src.services.pg_encumbrance_extraction_service.PgEncumbranceExtractionService", _FakeEncumbranceExtractionSvc)
 
     assert controller._run_auction_scrape().inserted == 11  # noqa: SLF001
     assert controller._run_judgment_extract().updated == 8  # noqa: SLF001
     assert controller._run_identifier_recovery().updated == 7  # noqa: SLF001
     assert controller._run_ori_search().updated == 16  # noqa: SLF001
     assert controller._run_municipal_liens_phase0().inserted == 17  # noqa: SLF001
-    assert controller._run_mortgage_extract().updated == 19  # noqa: SLF001
+    assert controller._run_encumbrance_extraction().updated == 19  # noqa: SLF001
 
 
 def test_controller_reads_refresh_metrics_from_refresh_script(monkeypatch: Any) -> None:

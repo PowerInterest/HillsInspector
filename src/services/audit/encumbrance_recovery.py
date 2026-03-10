@@ -8,7 +8,7 @@ subset of audit buckets to the *existing* enrichment services that know how to
 load real source data into PostgreSQL:
 
 - ``PgOriService`` for targeted ORI rediscovery and gap backfills,
-- ``PgMortgageExtractionService`` for mortgage PDF extraction on newly-touched
+- ``PgEncumbranceExtractionService`` for encumbrance PDF extraction on newly-touched
   straps,
 - ``PgSurvivalService`` for targeted re-analysis after encumbrance changes.
 
@@ -24,7 +24,7 @@ from collections import defaultdict
 from typing import Any
 
 from src.services.audit.pg_audit_encumbrance import AuditReport, run_audit
-from src.services.pg_mortgage_extraction_service import PgMortgageExtractionService
+from src.services.pg_encumbrance_extraction_service import PgEncumbranceExtractionService
 from src.services.pg_ori_service import PgOriService
 from src.services.pg_survival_service import PgSurvivalService
 
@@ -275,7 +275,7 @@ class EncumbranceRecoveryService:
 
         mortgage_result: dict[str, Any]
         if changed_straps:
-            mortgage_result = PgMortgageExtractionService(dsn=self.dsn).run(
+            mortgage_result = PgEncumbranceExtractionService(dsn=self.dsn).run(
                 straps=sorted(changed_straps),
             )
         else:
