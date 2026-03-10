@@ -3930,40 +3930,40 @@ class PgOriService:
                                   OR strap = :strap
                               )
                               AND (
-                                  (:folio IS NOT NULL AND folio IS DISTINCT FROM :folio)
-                                  OR (:strap IS NOT NULL AND strap IS DISTINCT FROM :strap)
-                                  OR (:book IS NOT NULL AND book IS DISTINCT FROM :book)
-                                  OR (:page IS NOT NULL AND page IS DISTINCT FROM :page)
-                                  OR (:book_type IS NOT NULL AND book_type IS DISTINCT FROM :book_type)
-                                  OR (:ori_uuid IS NOT NULL AND ori_uuid IS DISTINCT FROM :ori_uuid)
-                                  OR (:ori_id IS NOT NULL AND ori_id IS DISTINCT FROM :ori_id)
-                                  OR (:raw_type IS NOT NULL AND raw_document_type IS DISTINCT FROM :raw_type)
+                                  (CAST(:folio AS TEXT) IS NOT NULL AND folio IS DISTINCT FROM :folio)
+                                  OR (CAST(:strap AS TEXT) IS NOT NULL AND strap IS DISTINCT FROM :strap)
+                                  OR (CAST(:book AS TEXT) IS NOT NULL AND book IS DISTINCT FROM :book)
+                                  OR (CAST(:page AS TEXT) IS NOT NULL AND page IS DISTINCT FROM :page)
+                                  OR (CAST(:book_type AS TEXT) IS NOT NULL AND book_type IS DISTINCT FROM :book_type)
+                                  OR (CAST(:ori_uuid AS TEXT) IS NOT NULL AND ori_uuid IS DISTINCT FROM :ori_uuid)
+                                  OR (CAST(:ori_id AS TEXT) IS NOT NULL AND ori_id IS DISTINCT FROM :ori_id)
+                                  OR (CAST(:raw_type AS TEXT) IS NOT NULL AND raw_document_type IS DISTINCT FROM :raw_type)
                                   OR (
-                                      :enc_type IS NOT NULL
+                                      CAST(:enc_type AS TEXT) IS NOT NULL
                                       AND encumbrance_type IS DISTINCT FROM CAST(:enc_type AS encumbrance_type_enum)
                                   )
-                                  OR (:party1 IS NOT NULL AND party1 IS DISTINCT FROM :party1)
-                                  OR (:party2 IS NOT NULL AND party2 IS DISTINCT FROM :party2)
+                                  OR (CAST(:party1 AS TEXT) IS NOT NULL AND party1 IS DISTINCT FROM :party1)
+                                  OR (CAST(:party2 AS TEXT) IS NOT NULL AND party2 IS DISTINCT FROM :party2)
                                   OR (
-                                      :p1_json IS NOT NULL
+                                      CAST(:p1_json AS TEXT) IS NOT NULL
                                       AND parties_one_json IS DISTINCT FROM CAST(:p1_json AS JSONB)
                                   )
                                   OR (
-                                      :p2_json IS NOT NULL
+                                      CAST(:p2_json AS TEXT) IS NOT NULL
                                       AND parties_two_json IS DISTINCT FROM CAST(:p2_json AS JSONB)
                                   )
-                                  OR (:amount IS NOT NULL AND amount IS DISTINCT FROM :amount)
+                                  OR (CAST(:amount AS NUMERIC) IS NOT NULL AND amount IS DISTINCT FROM :amount)
                                   OR (
-                                      :rec_date != ''
+                                      CAST(:rec_date AS TEXT) != ''
                                       AND recording_date IS DISTINCT FROM CAST(NULLIF(:rec_date, '') AS DATE)
                                   )
                                   OR (
-                                      :case_number IS NOT NULL
+                                      CAST(:case_number AS TEXT) IS NOT NULL
                                       AND case_number IS DISTINCT FROM :case_number
                                   )
-                                  OR (:legal IS NOT NULL AND legal_description IS DISTINCT FROM :legal)
+                                  OR (CAST(:legal AS TEXT) IS NOT NULL AND legal_description IS DISTINCT FROM :legal)
                                   OR (
-                                      :is_sat_update IS TRUE
+                                      CAST(:is_sat_update AS BOOLEAN) IS TRUE
                                       AND is_satisfied IS DISTINCT FROM TRUE
                                   )
                               )
