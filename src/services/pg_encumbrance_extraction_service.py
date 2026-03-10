@@ -35,10 +35,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile as _tempfile
 import time
+import urllib.parse
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import fitz as _fitz
 from loguru import logger
+from pydantic import ValidationError
+from sqlalchemy import text
 
 from src.models.assignment_extraction import AssignmentExtraction
 from src.models.deed_extraction import DeedExtraction
@@ -53,9 +59,18 @@ from sunbiz.db import get_engine, resolve_pg_dsn
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
+
+    from playwright.async_api import Page
 
     from src.models.extraction_base import BaseDocumentExtraction
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_PAV_BASE = "https://publicaccess.hillsclerk.com"
+_MAX_PAGES = 3
+_RENDER_DPI = 150
 
 # ---------------------------------------------------------------------------
 # Dispatch table: encumbrance_type → (VisionService method name, Pydantic model)
@@ -185,19 +200,52 @@ class PgEncumbranceExtractionService:
         straps: Sequence[str] | None = None,
         enc_types: Sequence[str] | None = None,
     ) -> dict[str, int]:
-        """Async entry point for extraction orchestration.
-
-        Currently a stub — full implementation in Task 4.
-        """
+        """Async entry point — find rows, launch browser, extract, close."""
         rows = self._find_unextracted(limit=limit, straps=straps, enc_types=enc_types)
         if not rows:
             logger.info("No unextracted encumbrances found.")
             return {"extracted": 0, "cached": 0, "errors": 0, "skipped": 0}
 
         logger.info(f"Found {len(rows)} encumbrances needing extraction")
+        stats: dict[str, int] = {"extracted": 0, "cached": 0, "errors": 0, "skipped": 0}
 
-        # TODO(Task 4): iterate rows, download PDFs, run vision, validate, save
-        return {"extracted": 0, "cached": 0, "errors": 0, "skipped": 0}
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            context = await browser.new_context(accept_downloads=True)
+            page = await context.new_page()
+            # Pre-navigate to establish cookies/session
+            await page.goto(
+                f"{_PAV_BASE}/oripublicaccess/",
+                wait_until="domcontentloaded",
+            )
+
+            for row in rows:
+                enc_type = row["encumbrance_type"]
+                if enc_type not in EXTRACTION_DISPATCH:
+                    logger.debug(
+                        "No dispatch for type={}, skipping id={}",
+                        enc_type,
+                        row["id"],
+                    )
+                    stats["skipped"] += 1
+                    continue
+                try:
+                    result = await self._process_one(page, row)
+                    if result:
+                        key = "extracted" if result.get("_from_vision") else "cached"
+                        stats[key] += 1
+                    else:
+                        stats["skipped"] += 1
+                except Exception:
+                    logger.exception("Error extracting id={}", row["id"])
+                    stats["errors"] += 1
+
+            await browser.close()
+
+        logger.info("Extraction complete: {}", stats)
+        return stats
 
     # ------------------------------------------------------------------
     # Query helpers
@@ -210,10 +258,205 @@ class PgEncumbranceExtractionService:
         straps: Sequence[str] | None = None,
         enc_types: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Find encumbrances that need extraction.
-
-        Currently a stub returning an empty list — full implementation
-        in Task 4.
+        """Find encumbrances with no extracted_data and a downloadable ori_id."""
+        sql = """
+            SELECT id, strap, folio, ori_id, ori_uuid, instrument_number,
+                   encumbrance_type, raw_document_type, case_number
+            FROM ori_encumbrances
+            WHERE extracted_data IS NULL
+              AND ori_id IS NOT NULL
+              AND encumbrance_type != 'release'
         """
-        # TODO(Task 4): query ori_encumbrances WHERE extracted_data IS NULL
-        return []
+        params: dict[str, Any] = {}
+        if straps:
+            sql += " AND strap = ANY(:straps)"
+            params["straps"] = list(straps)
+        if enc_types:
+            sql += " AND encumbrance_type = ANY(:enc_types)"
+            params["enc_types"] = list(enc_types)
+        sql += " ORDER BY recording_date ASC NULLS LAST"
+        if limit:
+            sql += " LIMIT :lim"
+            params["lim"] = limit
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(text(sql), params).mappings().all()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # PDF path + download
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _pdf_path_for(row: dict[str, Any]) -> Path:
+        """Build local PDF path from encumbrance metadata."""
+        case = row.get("case_number") or "unknown"
+        inst = row.get("instrument_number") or str(row["id"])
+        doc_type = row.get("raw_document_type") or row.get("encumbrance_type") or "doc"
+        filename = f"{doc_type.lower()}_{inst}.pdf"
+        return Path(f"data/Foreclosure/{case}/documents/{filename}")
+
+    async def _download_pdf(self, page: Page, row: dict[str, Any]) -> Path | None:
+        """Download document PDF from PAV API.  Returns local path or None."""
+        pdf_path = self._pdf_path_for(row)
+        if pdf_path.exists() and pdf_path.stat().st_size > 0:
+            return pdf_path
+
+        ori_id = row["ori_id"]
+        encoded = urllib.parse.quote(str(ori_id))
+        url = f"{_PAV_BASE}/PAVDirectSearch/api/Document/{encoded}/?OverlayMode=View"
+
+        try:
+            pdf_path.parent.mkdir(parents=True, exist_ok=True)
+            dl_page = await page.context.new_page()
+            try:
+                async with dl_page.expect_download(timeout=60_000) as dl_info:
+                    await dl_page.evaluate(f"window.location.href = '{url}'")
+                download = await dl_info.value
+                await download.save_as(str(pdf_path))
+                logger.debug("Downloaded {} -> {}", ori_id, pdf_path)
+                return pdf_path
+            finally:
+                await dl_page.close()
+        except Exception:
+            logger.exception("Download failed for ori_id={}", ori_id)
+            return None
+
+    # ------------------------------------------------------------------
+    # PDF rendering
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _render_pages(pdf_path: Path) -> list[str]:
+        """Render first N pages of PDF to temp PNG files.  Returns paths."""
+        doc = _fitz.open(str(pdf_path))
+        images: list[str] = []
+        try:
+            for i in range(min(len(doc), _MAX_PAGES)):
+                pg = doc[i]
+                pix = pg.get_pixmap(dpi=_RENDER_DPI)
+                with _tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    pix.save(tmp.name)
+                    images.append(tmp.name)
+        finally:
+            doc.close()
+        return images
+
+    # ------------------------------------------------------------------
+    # Vision extraction + validation
+    # ------------------------------------------------------------------
+
+    async def _extract_from_images(
+        self, images: list[str], enc_type: str
+    ) -> dict[str, Any] | None:
+        """Send page images to vision and merge results across pages."""
+        method_name, _model_cls = EXTRACTION_DISPATCH[enc_type]
+        vision_fn = getattr(self.vision, method_name)
+
+        result: dict[str, Any] | None = None
+        for img in images:
+            try:
+                page_result = vision_fn(img)
+                if not isinstance(page_result, dict):
+                    continue
+                if result is None:
+                    result = page_result
+                else:
+                    # Fill in missing fields from subsequent pages
+                    for k, v in page_result.items():
+                        if v and not result.get(k):
+                            result[k] = v
+            except Exception:
+                logger.exception("Vision call failed for {}", img)
+            await asyncio.sleep(1)
+
+        return result
+
+    @staticmethod
+    def _validate(
+        data: dict[str, Any], enc_type: str
+    ) -> dict[str, Any] | None:
+        """Validate extraction against the Pydantic model.
+
+        Returns cleaned dict on success, or the raw dict if validation fails
+        (we still persist partial data so downstream can use whatever was extracted).
+        """
+        _, model_cls = EXTRACTION_DISPATCH[enc_type]
+        try:
+            validated = model_cls.model_validate(data)
+            return validated.model_dump(mode="json")
+        except ValidationError as exc:
+            logger.warning("Validation failed for {}: {}", enc_type, exc.error_count())
+            return data  # store raw extraction even if validation fails
+
+    # ------------------------------------------------------------------
+    # Database persistence
+    # ------------------------------------------------------------------
+
+    def _save_to_pg(self, encumbrance_id: int, data: dict[str, Any]) -> None:
+        """UPDATE ori_encumbrances SET extracted_data for this row."""
+        sql = text("""
+            UPDATE ori_encumbrances
+            SET extracted_data = CAST(:jdata AS JSONB),
+                updated_at = NOW()
+            WHERE id = :id
+        """)
+        with self.engine.begin() as conn:
+            conn.execute(sql, {"jdata": json.dumps(data, default=str), "id": encumbrance_id})
+
+    # ------------------------------------------------------------------
+    # Single-row orchestration
+    # ------------------------------------------------------------------
+
+    async def _process_one(
+        self, page: Page, row: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Process a single encumbrance: cache check -> download -> extract -> save."""
+        enc_type = row["encumbrance_type"]
+        pdf_path = self._pdf_path_for(row)
+
+        # 1. Check cache
+        cached = _load_cache(pdf_path)
+        if cached:
+            self._save_to_pg(row["id"], cached)
+            logger.debug("Loaded from cache: id={}", row["id"])
+            return {**cached, "_from_vision": False}
+
+        # 2. Download
+        downloaded = await self._download_pdf(page, row)
+        if not downloaded:
+            return None
+
+        # 3. Render
+        images = self._render_pages(downloaded)
+        if not images:
+            logger.warning("No pages rendered from {}", downloaded)
+            return None
+
+        try:
+            # 4. Extract
+            raw = await self._extract_from_images(images, enc_type)
+            if not raw:
+                return None
+
+            # 5. Validate
+            validated = self._validate(raw, enc_type)
+            if not validated:
+                return None
+
+            # 6. Cache
+            _write_cache(downloaded, validated)
+
+            # 7. Save to DB
+            self._save_to_pg(row["id"], validated)
+            logger.info(
+                "Extracted id={} type={} inst={}",
+                row["id"],
+                enc_type,
+                row.get("instrument_number"),
+            )
+            return {**validated, "_from_vision": True}
+
+        finally:
+            for img in images:
+                Path(img).unlink(missing_ok=True)
