@@ -684,56 +684,25 @@ class PgEncumbranceExtractionService:
         VisionService call happens.
         """
         sql = """
-            SELECT id, strap, folio, ori_id, ori_uuid, instrument_number,
-                   encumbrance_type, raw_document_type, case_number,
-                   book, page, recording_date, party1, party2
-            FROM ori_encumbrances
-            WHERE extracted_data IS NULL
-              AND ori_id IS NOT NULL
+            SELECT oe.id, oe.strap, oe.folio, oe.ori_id, oe.ori_uuid,
+                   oe.instrument_number, oe.encumbrance_type,
+                   oe.raw_document_type,
+                   COALESCE(oe.case_number, f.case_number_raw) AS case_number,
+                   oe.book, oe.page, oe.recording_date, oe.party1, oe.party2
+            FROM ori_encumbrances oe
+            LEFT JOIN foreclosures f
+              ON f.strap = oe.strap AND f.archived_at IS NULL
+            WHERE oe.extracted_data IS NULL
+              AND oe.ori_id IS NOT NULL
         """
         params: dict[str, Any] = {}
         if straps:
-            sql += " AND strap = ANY(:straps)"
+            sql += " AND oe.strap = ANY(:straps)"
             params["straps"] = list(straps)
         if enc_types:
-            sql += " AND encumbrance_type = ANY(:enc_types)"
+            sql += " AND oe.encumbrance_type = ANY(:enc_types)"
             params["enc_types"] = list(enc_types)
-        sql += " ORDER BY recording_date ASC NULLS LAST"
-        if limit:
-            sql += " LIMIT :lim"
-            params["lim"] = limit
-
-        with self.engine.connect() as conn:
-            rows = conn.execute(text(sql), params).mappings().all()
-        return [dict(r) for r in rows]
-
-    def _find_missing_ori_ids(
-        self,
-        *,
-        limit: int | None = None,
-        straps: Sequence[str] | None = None,
-        enc_types: Sequence[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Find extractable rows blocked only by a missing ORI document id."""
-
-        sql = """
-            SELECT id, strap, folio, instrument_number, encumbrance_type,
-                   raw_document_type, case_number, book, page,
-                   recording_date, party1, party2
-            FROM ori_encumbrances
-            WHERE extracted_data IS NULL
-              AND ori_id IS NULL
-              AND instrument_number IS NOT NULL
-              AND btrim(instrument_number) <> ''
-        """
-        params: dict[str, Any] = {}
-        if straps:
-            sql += " AND strap = ANY(:straps)"
-            params["straps"] = list(straps)
-        if enc_types:
-            sql += " AND encumbrance_type = ANY(:enc_types)"
-            params["enc_types"] = list(enc_types)
-        sql += " ORDER BY recording_date ASC NULLS LAST"
+        sql += " ORDER BY oe.recording_date ASC NULLS LAST"
         if limit:
             sql += " LIMIT :lim"
             params["lim"] = limit
@@ -749,88 +718,19 @@ class PgEncumbranceExtractionService:
         straps: Sequence[str] | None = None,
         enc_types: Sequence[str] | None = None,
     ) -> dict[str, int]:
-        """Resolve missing ``ori_id`` values by exact PAV instrument lookup."""
+        """Resolve missing ``ori_id`` values by delegating to ORI exact lookup."""
 
-        rows = [
-            row
-            for row in self._find_missing_ori_ids(
-                limit=limit,
-                straps=straps,
-                enc_types=enc_types,
-            )
-            if row.get("encumbrance_type") in EXTRACTION_DISPATCH
-        ]
-        if not rows:
-            return {"searched": 0, "updated": 0, "api_calls": 0}
+        from src.services.pg_ori_service import PgOriService
 
-        from src.services.pg_ori_service import PgOriService, _get_instrument
-
-        ori_service = PgOriService(dsn=self.dsn)
-        stats = {
-            "api_calls": 0,
-            "retries": 0,
-            "truncated": 0,
-            "unresolved_truncations": 0,
-            "cache_hits": 0,
-        }
-        updated = 0
-        for row in rows:
-            instrument = str(row.get("instrument_number") or "").strip()
-            if not instrument:
-                continue
-            docs = ori_service._search_instrument_pav(instrument, stats)  # noqa: SLF001
-            match = next(
-                (
-                    doc for doc in docs
-                    if _get_instrument(doc) == instrument
-                    and (doc.get("ID") or doc.get("ori_id"))
-                ),
-                None,
-            )
-            if not match:
-                logger.warning(
-                    "Unable to backfill ori_id for id={} type={} inst={} because exact PAV lookup returned no matching doc id",
-                    row.get("id"),
-                    row.get("encumbrance_type"),
-                    instrument,
-                )
-                continue
-            updated += self._update_ori_lookup_metadata(int(row["id"]), match)
-
+        result = PgOriService(dsn=self.dsn).backfill_missing_ori_ids(
+            limit=limit,
+            straps=list(straps) if straps else None,
+            enc_types=list(enc_types) if enc_types else None,
+        )
         return {
-            "searched": len(rows),
-            "updated": updated,
-            "api_calls": int(stats.get("api_calls", 0)),
+            "updated": int(result.get("resolved", 0)),
+            "api_calls": int(result.get("api_calls", 0)),
         }
-
-    def _update_ori_lookup_metadata(self, encumbrance_id: int, doc: dict[str, Any]) -> int:
-        """Persist exact PAV lookup identifiers onto an existing encumbrance row."""
-
-        sql = text("""
-            UPDATE ori_encumbrances
-            SET ori_id = COALESCE(:ori_id, ori_id),
-                ori_uuid = COALESCE(:ori_uuid, ori_uuid),
-                updated_at = NOW()
-            WHERE id = :id
-              AND (
-                  ori_id IS DISTINCT FROM COALESCE(:ori_id, ori_id)
-                  OR ori_uuid IS DISTINCT FROM COALESCE(:ori_uuid, ori_uuid)
-              )
-        """)
-        params = {
-            "id": encumbrance_id,
-            "ori_id": str(doc.get("ID") or doc.get("ori_id") or "").strip() or None,
-            "ori_uuid": str(doc.get("UUID") or doc.get("ori_uuid") or "").strip() or None,
-        }
-        with self.engine.begin() as conn:
-            result = conn.execute(sql, params)
-        if int(result.rowcount or 0) > 0:
-            logger.info(
-                "Backfilled ori_id for encumbrance id={} ori_id={}",
-                encumbrance_id,
-                params["ori_id"],
-            )
-        return int(result.rowcount or 0)
 
     # ------------------------------------------------------------------
     # PDF path + download

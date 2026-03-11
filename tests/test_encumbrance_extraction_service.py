@@ -181,13 +181,158 @@ class TestCacheLogic:
         )
 
         assert rows == []
-        assert "WHERE extracted_data IS NULL" in captured["sql"]
+        assert "oe.extracted_data IS NULL" in captured["sql"]
         assert "!= 'release'" not in captured["sql"], "release should no longer be excluded"
         assert captured["params"] == {
             "straps": ["123"],
             "enc_types": ["mortgage"],
             "lim": 5,
         }
+
+    def test_backfill_missing_ori_ids_uses_exact_instrument_lookup(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        svc.dsn = "postgresql://db"
+
+        class _FakeOriService:
+            def __init__(self, dsn: str | None = None) -> None:
+                assert dsn == "postgresql://db"
+
+            def backfill_missing_ori_ids(self, **kwargs: Any) -> dict[str, Any]:
+                assert kwargs == {
+                    "limit": None,
+                    "straps": None,
+                    "enc_types": None,
+                }
+                return {"resolved": 1, "api_calls": 3}
+
+        monkeypatch.setattr("src.services.pg_ori_service.PgOriService", _FakeOriService)
+
+        result = svc._backfill_missing_ori_ids()  # noqa: SLF001
+
+        assert result["updated"] == 1
+        assert result["api_calls"] == 3
+
+    def test_process_one_ignores_stale_mortgage_cache_and_falls_through_to_download(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+            _cache_path_for,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        pdf_path = tmp_path / "mortgage_2024000123.pdf"
+        cache_path = _cache_path_for(pdf_path)
+        cache_path.write_text(json.dumps({"borrower": "OLD NAME", "lender": "OLD BANK"}))
+
+        monkeypatch.setattr(
+            PgEncumbranceExtractionService,
+            "_pdf_path_for",
+            staticmethod(lambda _row: pdf_path),
+        )
+
+        async def _fake_download(_page: Any, _row: dict[str, Any]) -> Path | None:
+            return None
+
+        monkeypatch.setattr(svc, "_download_pdf", _fake_download)
+
+        row = {
+            "id": 17,
+            "encumbrance_type": "mortgage",
+            "instrument_number": "2024000123",
+            "ori_id": "ori-17",
+        }
+
+        result = asyncio.run(svc._process_one(cast("Page", None), row))  # noqa: SLF001
+
+        assert result == {"_status": "error", "_reason": "download_failed"}
+        assert not cache_path.exists()
+
+    def test_process_one_keeps_enriched_cached_lp_without_reextract(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+            _cache_path_for,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        pdf_path = tmp_path / "lis_pendens_2024000777.pdf"
+        cache_path = _cache_path_for(pdf_path)
+        cache_path.write_text(json.dumps({
+            "instrument_number": "2024000777",
+            "recording_book": None,
+            "recording_page": None,
+            "recording_date": "2024-01-15",
+            "execution_date": "2024-01-10",
+            "property_address": None,
+            "legal_description": "LEGAL",
+            "parcel_id": None,
+            "confidence_score": 0.8,
+            "unclear_sections": [],
+            "plaintiff": "BANK",
+            "defendants": ["OWNER"],
+            "civil_case_number": None,
+            "foreclosed_instrument": None,
+            "is_release": False,
+        }))
+
+        monkeypatch.setattr(
+            PgEncumbranceExtractionService,
+            "_pdf_path_for",
+            staticmethod(lambda _row: pdf_path),
+        )
+        monkeypatch.setattr(
+            svc,
+            "_enrich_from_metadata",
+            lambda validated, _enc_type, _row: {
+                **validated,
+                "property_address": "123 MAIN ST",
+                "civil_case_number": "25-CA-000777",
+            },
+        )
+        monkeypatch.setattr(svc, "_address_resolves", lambda address: address == "123 MAIN ST")
+
+        saved: dict[str, Any] = {}
+        monkeypatch.setattr(
+            svc,
+            "_save_to_pg",
+            lambda encumbrance_id, data: saved.update({"id": encumbrance_id, "data": data}),
+        )
+
+        async def _unexpected_download(_page: Any, _row: dict[str, Any]) -> Path | None:
+            raise AssertionError("cache hit should not re-download")
+
+        monkeypatch.setattr(svc, "_download_pdf", _unexpected_download)
+
+        row = {
+            "id": 77,
+            "encumbrance_type": "lis_pendens",
+            "instrument_number": "2024000777",
+            "case_number": "292025CA000777A001HC",
+            "ori_id": "ori-77",
+            "strap": "strap-77",
+            "folio": "folio-77",
+        }
+
+        result = asyncio.run(svc._process_one(cast("Page", None), row))  # noqa: SLF001
+
+        assert result is not None
+        assert result["_status"] == "cached"
+        assert saved["id"] == 77
+        assert saved["data"]["property_address"] == "123 MAIN ST"
+        assert saved["data"]["civil_case_number"] == "25-CA-000777"
 
 
 class TestEndToEnd:
@@ -202,7 +347,10 @@ class TestEndToEnd:
         )
 
         svc = PgEncumbranceExtractionService()
-        with patch.object(svc, "_find_unextracted", return_value=[]):
+        with (
+            patch.object(svc, "_backfill_missing_ori_ids", return_value={"updated": 0, "api_calls": 0}),
+            patch.object(svc, "_find_unextracted", return_value=[]),
+        ):
             result = svc.run()
         assert result["extracted"] == 0
         assert result["errors"] == 0
