@@ -618,3 +618,36 @@ class TestAddressResolves:
         svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
         assert svc._address_resolves(None) is False
         assert svc._address_resolves("") is False
+
+
+class TestRepairErrorDescription:
+    def test_repair_error_description_detects_non_hillsborough_zip(self):
+        """Non-HC zip code should be flagged in the error description."""
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        desc = svc._build_repair_error_description("951 Yamato Road, Boca Raton, FL 33431")
+        assert "33431" in desc
+        assert "not in Hillsborough County" in desc
+
+    def test_repair_error_description_handles_none(self):
+        """Null address should produce a 'No property address' error."""
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        desc = svc._build_repair_error_description(None)
+        assert "No property address" in desc
+
+    def test_repair_error_description_handles_hcpa_mismatch(self):
+        """HC zip but no HCPA match should mention OCR errors."""
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        desc = svc._build_repair_error_description("999 FAKE ST, TAMPA, FL 33601")
+        assert "does not match any known parcel" in desc

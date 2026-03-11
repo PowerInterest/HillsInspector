@@ -90,6 +90,45 @@ if TYPE_CHECKING:
 _PAV_BASE = "https://publicaccess.hillsclerk.com"
 _RENDER_DPI = 150
 
+_HILLSBOROUGH_ZIPS = (
+    "33503, 33510, 33511, 33527, 33534, 33544, 33547, 33548, 33549, "
+    "33556, 33558, 33559, 33563, 33565, 33566, 33567, 33569, 33570, "
+    "33572, 33573, 33575, 33578, 33579, 33584, 33592, 33594, 33596, "
+    "33598, 33601, 33602, 33603, 33604, 33605, 33606, 33607, 33609, "
+    "33610, 33611, 33612, 33613, 33614, 33615, 33616, 33617, 33618, "
+    "33619, 33624, 33625, 33626, 33629, 33634, 33635, 33636, 33637, 33647"
+)
+
+_REPAIR_PROMPT_TEMPLATE = """You previously extracted data from this Hillsborough County document, but the \
+property address you returned does not match any known parcel in the county.
+
+YOUR PREVIOUS EXTRACTION:
+{previous_json}
+
+THE ERROR:
+{error_description}
+
+VALID HILLSBOROUGH COUNTY ZIP CODES:
+{zips}
+
+COMMON MISTAKES TO CORRECT:
+- The property address is in the GRANTING CLAUSE or LEGAL DESCRIPTION section, \
+NOT the "Return To" / "Prepared By" / "After Recording" header block
+- If the zip code is not in the list above, you have the WRONG address \
+(likely the lender's, attorney's, or servicer's office)
+- The BORROWER/MORTGAGOR grants the mortgage — the return-to contact is NOT the borrower
+- The RECORDING DATE is on the clerk's stamp (top-right, "RECORDED" or "INSTR #"), \
+not the form print date at the bottom of the page
+- For UCC/Consensual Liens: always extract parties and amounts — \
+secured party = creditor, debtor = lienee
+
+ORIGINAL OCR TEXT:
+{ocr_text}
+
+Return a corrected JSON object with the same schema. Fix the property_address \
+and any other fields that were wrong. Use null only if the information truly \
+does not appear anywhere in the document."""
+
 # ---------------------------------------------------------------------------
 # Dispatch table: encumbrance_type → (prompt constant, Pydantic model)
 #
@@ -840,6 +879,28 @@ class PgEncumbranceExtractionService:
         """)
         with self.engine.connect() as conn:
             return conn.execute(sql, {"addr": normalized}).fetchone() is not None
+
+    def _build_repair_error_description(self, address: str | None) -> str:
+        """Build a human-readable error for the repair prompt."""
+        if not address:
+            return (
+                "No property address was extracted. Look for it in the granting "
+                "clause, legal description, or sale paragraph."
+            )
+        # Check if zip is outside Hillsborough
+        zip_match = re.search(r"\b(\d{5})\b", address)
+        if zip_match:
+            zip_code = zip_match.group(1)
+            if zip_code not in _HILLSBOROUGH_ZIPS:
+                return (
+                    f"You extracted address '{address}' with zip code {zip_code}, "
+                    f"which is not in Hillsborough County. This is likely the "
+                    f"lender's or attorney's office address."
+                )
+        return (
+            f"Address '{address}' does not match any known parcel in "
+            f"Hillsborough County. Check for OCR errors in the street name or number."
+        )
 
     def _save_raw_to_pg(self, encumbrance_id: int, ocr_text: str) -> None:
         """Persist raw OCR text before LLM extraction."""
