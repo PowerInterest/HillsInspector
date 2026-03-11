@@ -408,9 +408,17 @@ class PgJudgmentService:
         - ``step_pdf_downloaded`` is set once (COALESCE preserves first)
         - ``step_judgment_extracted`` is set once (COALESCE preserves first)
 
+        Callers should pre-normalize via ``normalize_judgment_payload`` before
+        calling this method. As a safety net this normalizes internally so
+        raw/legacy payloads are still handled correctly — normalization is
+        idempotent so pre-normalized data passes through unchanged.
+
         Returns True if a row was updated, False otherwise.
         """
-        canonical = PgJudgmentService._canonical_judgment_payload(judgment_data)
+        # Normalize once here as the public-API safety net.  Callers that
+        # already normalized pay near-zero cost (idempotent pass-through).
+        normalized, _, _ = PgJudgmentService.normalize_judgment_payload(judgment_data)
+        canonical = PgJudgmentService._canonical_judgment_payload(normalized)
         fja = canonical.get("total_judgment_amount")
         result = conn.execute(
             text(

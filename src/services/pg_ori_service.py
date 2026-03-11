@@ -1052,6 +1052,11 @@ class PgOriService:
                 # for the same case/party already exists on the same strap.
                 if docs and strap:
                     inferred_party = row.get("party1") or ""
+                    # Threshold 0.60 matches Pass 1 (line ~958) and is
+                    # intentionally looser than the project-wide 0.72 used
+                    # in is_same_entity().  Inferred rows are low-confidence
+                    # placeholders — a moderately close party match on a real
+                    # ORI doc is sufficient evidence to drop the placeholder.
                     delete_sql = text("""
                         DELETE FROM ori_encumbrances
                         WHERE id = :id

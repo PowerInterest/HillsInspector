@@ -304,8 +304,9 @@ if __name__ == "__main__":
         )
         parser.add_argument(
             "--ngrok",
-            action="store_true",
-            help="Start an ngrok HTTP tunnel for remote access",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Start an ngrok HTTP tunnel for remote access (default: on; use --no-ngrok to disable)",
         )
         return parser
 
