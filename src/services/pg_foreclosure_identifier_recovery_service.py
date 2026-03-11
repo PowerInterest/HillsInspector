@@ -711,7 +711,21 @@ class PgForeclosureIdentifierRecoveryService:
                     reason=f"{address_source}_exact",
                 )
 
-        # Retry with unit number appended (e.g., "3127 W SLIGH AVE 203B")
+        # Exact address match with unit (e.g., "3127 W SLIGH AVE 203B")
+        for address_source in ("jd_property_address", "property_address"):
+            address_unit = _address_with_unit(row.get(address_source))
+            if not address_unit:
+                continue
+            exact_unit = self._lookup_by_exact_address(conn, address=address_unit)
+            if len(exact_unit) == 1:
+                return _ResolutionDecision(
+                    candidate=exact_unit[0],
+                    method="resolved_exact_address",
+                    ambiguous=False,
+                    reason=f"{address_source}_exact_unit",
+                )
+
+        # Retry with unit number appended + legal cross-check
         if judgment_legal:
             for address_source in ("property_address", "jd_property_address"):
                 address_unit = _address_with_unit(row.get(address_source))
