@@ -38,6 +38,50 @@ class _Engine:
     def begin(self) -> _Conn:
         return _Conn(self._captured)
 
+    def connect(self) -> _Conn:
+        return _Conn(self._captured)
+
+
+def test_find_targets_orders_without_select_distinct(monkeypatch: Any) -> None:
+    captured_sql: list[tuple[str, dict[str, Any]]] = []
+    service = PgEncumbranceRelationshipService.__new__(PgEncumbranceRelationshipService)
+    service.engine = _Engine(captured_sql)
+
+    rows = [
+        {
+            "foreclosure_id": 7,
+            "case_number": "CASE-7",
+            "strap": "STRAP-7",
+            "folio": "FOLIO-7",
+            "judgment_data": {"plaintiff": "BANK"},
+        }
+    ]
+
+    class _Rows:
+        def mappings(self) -> _Rows:
+            return self
+
+        def all(self) -> list[dict[str, Any]]:
+            return rows
+
+    def _execute(
+        self: _Conn,
+        sql: Any,
+        params: dict[str, Any] | None = None,
+    ) -> _Rows:
+        captured_sql.append((str(sql), params or {}))
+        return _Rows()
+
+    monkeypatch.setattr(_Conn, "execute", _execute, raising=False)
+
+    result = service._find_targets(limit=25, straps=None, foreclosure_ids=None)  # noqa: SLF001
+
+    assert result == rows
+    sql_text, params = captured_sql[0]
+    assert "SELECT DISTINCT" not in sql_text
+    assert "ORDER BY f.auction_date NULLS LAST, f.foreclosure_id" in sql_text
+    assert params == {"limit": 25}
+
 
 def test_process_target_chases_missing_refs_and_updates_holder(monkeypatch: Any) -> None:
     captured_sql: list[tuple[str, dict[str, Any]]] = []

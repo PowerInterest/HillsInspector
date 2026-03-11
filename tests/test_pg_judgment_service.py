@@ -41,6 +41,28 @@ def test_find_unextracted_pdfs_ignores_non_judgment_documents(
     ]
 
 
+def test_find_unextracted_pdfs_reextracts_stale_judgment_cache(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    doc_dir = tmp_path / "26-CA-000001" / "documents"
+    doc_dir.mkdir(parents=True)
+    judgment_pdf = doc_dir / "final_judgment_2026001111.pdf"
+    judgment_pdf.write_bytes(b"%PDF-judgment")
+    stale_cache = doc_dir / "final_judgment_2026001111_extracted.json"
+    stale_cache.write_text(json.dumps({"plaintiff": "BANK"}), encoding="utf-8")
+
+    monkeypatch.setattr(pg_judgment_service, "FORECLOSURE_DATA_DIR", tmp_path)
+    svc = _build_service(monkeypatch)
+
+    assert svc._find_unextracted_pdfs(None) == [  # noqa: SLF001
+        {
+            "case_number": "26-CA-000001",
+            "pdf_path": str(judgment_pdf),
+        }
+    ]
+
+
 def test_select_best_judgment_prefers_extracted_metadata_over_filename_stem(
     tmp_path: Path,
 ) -> None:

@@ -945,37 +945,46 @@ class PgOriService:
                 pass1_unresolved.append(dict(row))
                 continue
 
-            # Check if any real encumbrance on same strap matches the plaintiff.
+            # Atomically identify the best real match and delete the inferred row.
             # Truncate to 250 chars — PG levenshtein() has a 255-char limit.
-            match_sql = text("""
-                SELECT id, instrument_number, encumbrance_type,
-                       entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party1, ''), 250)) AS p1_score,
-                       entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party2, ''), 250)) AS p2_score
-                FROM ori_encumbrances
-                WHERE strap = :strap
-                  AND instrument_number NOT LIKE 'INFERRED-%%'
-                  AND (
-                      entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party1, ''), 250)) >= 0.60
-                      OR entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party2, ''), 250)) >= 0.60
-                  )
-                ORDER BY GREATEST(
-                    entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party1, ''), 250)),
-                    entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party2, ''), 250))
-                ) DESC
-                LIMIT 1
+            match_and_delete_sql = text("""
+                WITH best_match AS (
+                    SELECT id, instrument_number, encumbrance_type,
+                           entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party1, ''), 250)) AS p1_score,
+                           entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party2, ''), 250)) AS p2_score
+                    FROM ori_encumbrances
+                    WHERE strap = :strap
+                      AND instrument_number NOT LIKE 'INFERRED-%%'
+                      AND (
+                          entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party1, ''), 250)) >= 0.60
+                          OR entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party2, ''), 250)) >= 0.60
+                      )
+                    ORDER BY GREATEST(
+                        entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party1, ''), 250)),
+                        entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party2, ''), 250))
+                    ) DESC,
+                    id DESC
+                    LIMIT 1
+                ),
+                deleted AS (
+                    DELETE FROM ori_encumbrances
+                    WHERE id = :id
+                      AND EXISTS (SELECT 1 FROM best_match)
+                    RETURNING id
+                )
+                SELECT bm.id, bm.instrument_number, bm.encumbrance_type,
+                       bm.p1_score, bm.p2_score
+                FROM best_match bm
+                JOIN deleted d ON TRUE
             """)
 
-            with self.engine.connect() as conn:
+            with self.engine.begin() as conn:
                 match = conn.execute(
-                    match_sql, {"party": party1, "strap": strap}
+                    match_and_delete_sql,
+                    {"id": enc_id, "party": party1, "strap": strap},
                 ).fetchone()
 
-            if match:
-                with self.engine.begin() as conn:
-                    conn.execute(
-                        text("DELETE FROM ori_encumbrances WHERE id = :id"),
-                        {"id": enc_id},
-                    )
+            if match is not None:
                 pass1_deleted += 1
                 best_score = max(match[3], match[4])
                 logger.info(
@@ -1038,7 +1047,46 @@ class PgOriService:
                         )
                         continue
 
-                # No new docs saved — keep the inferred row
+                # Docs found but 0 new saves — they likely already exist.
+                # Atomically delete the inferred row only if a real encumbrance
+                # for the same case/party already exists on the same strap.
+                if docs and strap:
+                    inferred_party = row.get("party1") or ""
+                    delete_sql = text("""
+                        DELETE FROM ori_encumbrances
+                        WHERE id = :id
+                          AND EXISTS (
+                              SELECT 1 FROM ori_encumbrances r
+                              WHERE r.strap = :strap
+                                AND r.instrument_number NOT LIKE 'INFERRED-%%'
+                                AND (
+                                    r.case_number = :case_number
+                                    OR (
+                                        LENGTH(:party) > 0
+                                        AND entity_match_score(
+                                            LEFT(:party, 250),
+                                            LEFT(COALESCE(r.party1, ''), 250)
+                                        ) >= 0.60
+                                    )
+                                )
+                          )
+                    """)
+                    with self.engine.begin() as conn:
+                        result = conn.execute(
+                            delete_sql,
+                            {"id": enc_id, "strap": strap, "case_number": case_number, "party": inferred_party},
+                        )
+                    if result.rowcount:
+                        pass2_deleted += 1
+                        logger.info(
+                            "resolve_inferred: case search for {} returned {} docs (already saved); "
+                            "deleted redundant inferred id={}",
+                            case_number,
+                            len(docs),
+                            enc_id,
+                        )
+                        continue
+
                 pass2_kept += 1
                 logger.info(
                     "resolve_inferred: case search for {} returned {} docs but 0 new saves; keeping inferred id={}",

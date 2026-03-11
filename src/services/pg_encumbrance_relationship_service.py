@@ -206,7 +206,7 @@ class PgEncumbranceRelationshipService:
         """Find active foreclosures whose extracted JSON can drive exact search."""
 
         sql = """
-            SELECT DISTINCT
+            SELECT
                    f.foreclosure_id,
                    f.case_number_raw AS case_number,
                    f.strap,

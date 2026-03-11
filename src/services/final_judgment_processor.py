@@ -128,6 +128,11 @@ class FinalJudgmentProcessor:
             )
         )
 
+    @classmethod
+    def cache_is_current(cls, cached: dict[str, Any]) -> bool:
+        """Public wrapper for cache freshness checks used by orchestrators."""
+        return cls._cache_is_current(cached)
+
     def process_pdf(
         self,
         pdf_path: str,

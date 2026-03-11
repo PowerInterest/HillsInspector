@@ -379,10 +379,20 @@ def _load_judgment_data(conn: object) -> int:
         )
         pdf_path = str(matching_pdf) if matching_pdf.exists() else None
 
+        normalized_jd, _, _ = PgJudgmentService.normalize_judgment_payload(jd)
+        validation = PgJudgmentService.validate_judgment_payload(normalized_jd)
+        if not validation.get("is_valid"):
+            logger.warning(
+                "Skipping canonical judgment persistence for case {} during refresh because chosen cache is invalid: {}",
+                case_number,
+                "; ".join(validation.get("failures") or ["unknown validation failure"]),
+            )
+            continue
+
         if PgJudgmentService.persist_judgment(
             conn,
             foreclosure_id=fid,
-            judgment_data=jd,
+            judgment_data=normalized_jd,
             pdf_path=pdf_path,
         ):
             updated += 1

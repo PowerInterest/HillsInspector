@@ -2206,7 +2206,6 @@ def test_resolve_inferred_pass1_deletes_matching(monkeypatch: Any) -> None:
     """Pass 1 deletes inferred row when real encumbrance matches plaintiff."""
     service = _build_service(monkeypatch)
     captured: list[tuple[str, dict[str, Any]]] = []
-    call_seq = {"idx": 0}
 
     inferred_rows = [
         {
@@ -2225,21 +2224,15 @@ def test_resolve_inferred_pass1_deletes_matching(monkeypatch: Any) -> None:
 
     def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
         sql_upper = sql.upper()
-        idx = call_seq["idx"]
-        call_seq["idx"] += 1
 
-        # First call: SELECT inferred rows
-        if idx == 0 and "INFERRED" in sql_upper and "LIKE" in sql_upper:
+        if "INSTRUMENT_NUMBER LIKE 'INFERRED-" in sql_upper:
             return _CaptureResult(mapping_rows=inferred_rows)
 
-        # Second call: entity_match_score query
-        if "ENTITY_MATCH_SCORE" in sql_upper:
-            return _CaptureResult(rows=[match_row])
-
-        # Third call: DELETE
-        if "DELETE" in sql_upper:
+        if "ENTITY_MATCH_SCORE" in sql_upper and "DELETE FROM ORI_ENCUMBRANCES" in sql_upper:
             assert params.get("id") == 100
-            return _CaptureResult(rowcount=1)
+            assert params.get("strap") == "ABC123"
+            assert params.get("party") == "BANK OF AMERICA"
+            return _CaptureResult(rows=[match_row])
 
         return _CaptureResult()
 
@@ -2248,13 +2241,15 @@ def test_resolve_inferred_pass1_deletes_matching(monkeypatch: Any) -> None:
     assert result["pass1_deleted"] == 1
     assert result["total_deleted"] == 1
     assert result["kept"] == 0
+    atomic_sql = [sql for sql, _ in captured if "ENTITY_MATCH_SCORE" in sql.upper()]
+    assert len(atomic_sql) == 1
+    assert "DELETE FROM ori_encumbrances" in atomic_sql[0]
 
 
 def test_resolve_inferred_pass1_keeps_unmatched(monkeypatch: Any) -> None:
     """Pass 1 keeps inferred row when no real encumbrance matches."""
     service = _build_service(monkeypatch)
     captured: list[tuple[str, dict[str, Any]]] = []
-    call_seq = {"idx": 0}
 
     inferred_rows = [
         {
@@ -2270,14 +2265,11 @@ def test_resolve_inferred_pass1_keeps_unmatched(monkeypatch: Any) -> None:
 
     def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
         sql_upper = sql.upper()
-        idx = call_seq["idx"]
-        call_seq["idx"] += 1
 
-        if idx == 0 and "INFERRED" in sql_upper and "LIKE" in sql_upper:
+        if "INSTRUMENT_NUMBER LIKE 'INFERRED-" in sql_upper:
             return _CaptureResult(mapping_rows=inferred_rows)
 
-        # No match from entity_match_score
-        if "ENTITY_MATCH_SCORE" in sql_upper:
+        if "ENTITY_MATCH_SCORE" in sql_upper and "DELETE FROM ORI_ENCUMBRANCES" in sql_upper:
             return _CaptureResult(rows=[])
 
         return _CaptureResult()

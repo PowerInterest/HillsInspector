@@ -8,6 +8,7 @@ PgJudgmentService._load_judgment_data_to_pg and refresh_foreclosures
 
 from __future__ import annotations
 
+import json
 from typing import Any, Self
 
 from src.services.pg_judgment_service import PgJudgmentService
@@ -157,6 +158,46 @@ def test_persist_judgment_uses_coalesce_preserve_first() -> None:
     sql_text = captured["sql"].lower()
     # step_judgment_extracted should COALESCE (preserve first)
     assert "coalesce(step_judgment_extracted, now())" in sql_text
+
+
+def test_persist_judgment_normalizes_legacy_shape_before_write() -> None:
+    captured: dict[str, Any] = {}
+    conn = _FakeConnection(captured)
+    legacy = _valid_judgment_cache("2025001111", include_validation=False)
+    for key in (
+        "instrument_number",
+        "recording_book",
+        "recording_page",
+        "recording_date",
+        "execution_date",
+        "per_diem_interest",
+        "plaintiff_maximum_bid",
+    ):
+        legacy.pop(key)
+    legacy["foreclosed_mortgage"].pop("original_lender")
+    legacy["foreclosed_mortgage"].pop("current_holder")
+
+    PgJudgmentService.persist_judgment(
+        conn,
+        foreclosure_id=77,
+        judgment_data=legacy,
+        pdf_path="data/Foreclosure/25-CA-123456/documents/final_judgment.pdf",
+    )
+
+    persisted = json.loads(captured["params"]["jd"])
+    for key in (
+        "instrument_number",
+        "recording_book",
+        "recording_page",
+        "recording_date",
+        "execution_date",
+        "per_diem_interest",
+        "plaintiff_maximum_bid",
+    ):
+        assert key in persisted
+        assert persisted[key] is None
+    assert persisted["foreclosed_mortgage"]["original_lender"] is None
+    assert persisted["foreclosed_mortgage"]["current_holder"] is None
 
 
 def test_persist_judgment_extracts_final_judgment_amount() -> None:

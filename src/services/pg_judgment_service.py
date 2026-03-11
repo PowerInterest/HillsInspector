@@ -7,17 +7,129 @@ cache into PG via the refresh path.
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args, get_origin
 
 from loguru import logger
+from pydantic_core import PydanticUndefined
 from sqlalchemy import text
 
+from src.models.extraction_base import StrictExtractionModel
+from src.models.judgment_extraction import JudgmentExtraction
 from sunbiz.db import get_engine, resolve_pg_dsn
 
 FORECLOSURE_DATA_DIR = Path("data/Foreclosure")
+
+
+def _allows_none(annotation: Any) -> bool:
+    return any(arg is type(None) for arg in get_args(annotation))
+
+
+def _submodel_from_annotation(annotation: Any) -> type[StrictExtractionModel] | None:
+    if isinstance(annotation, type) and issubclass(annotation, StrictExtractionModel):
+        return annotation
+    for arg in get_args(annotation):
+        if isinstance(arg, type) and issubclass(arg, StrictExtractionModel):
+            return arg
+    return None
+
+
+def _list_submodel_from_annotation(
+    annotation: Any,
+) -> type[StrictExtractionModel] | None:
+    if get_origin(annotation) is not list:
+        return None
+    args = get_args(annotation)
+    if not args:
+        return None
+    item = args[0]
+    if isinstance(item, type) and issubclass(item, StrictExtractionModel):
+        return item
+    return None
+
+
+def _default_value_for_field(field: Any) -> Any:
+    if field.default_factory is not None:
+        return field.default_factory()
+    if field.default is not PydanticUndefined:
+        return deepcopy(field.default)
+    if get_origin(field.annotation) is list:
+        return []
+    if _allows_none(field.annotation):
+        return None
+    # Non-nullable required field with no default — return None so
+    # Pydantic validation surfaces the problem clearly rather than
+    # crashing here with an opaque KeyError.  Log a warning so schema
+    # additions that forget a default are caught early.
+    logger.warning(
+        "No safe default for non-nullable field '{}'; returning None (Pydantic validation will reject this)",
+        field,
+    )
+    return None
+
+
+def _normalize_model_payload(
+    model_cls: type[StrictExtractionModel],
+    payload: dict[str, Any],
+    *,
+    path: str = "",
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    missing: list[str] = []
+    extras: list[str] = []
+    normalized: dict[str, Any] = {}
+
+    valid_names = {
+        name
+        for name, field in model_cls.model_fields.items()
+        if name != "raw_text" and field.exclude is not True
+    }
+    for key in payload:
+        if key not in valid_names:
+            extras.append(f"{path}{key}")
+
+    for name, field in model_cls.model_fields.items():
+        if name == "raw_text" or field.exclude is True:
+            continue
+        field_path = f"{path}{name}"
+        value = payload.get(name, PydanticUndefined)
+        if value is PydanticUndefined:
+            normalized[name] = _default_value_for_field(field)
+            missing.append(field_path)
+            continue
+
+        nested_model = _submodel_from_annotation(field.annotation)
+        list_model = _list_submodel_from_annotation(field.annotation)
+        if nested_model and isinstance(value, dict):
+            child, child_missing, child_extras = _normalize_model_payload(
+                nested_model,
+                value,
+                path=f"{field_path}.",
+            )
+            normalized[name] = child
+            missing.extend(child_missing)
+            extras.extend(child_extras)
+        elif list_model and isinstance(value, list):
+            normalized_list: list[Any] = []
+            for idx, item in enumerate(value):
+                if isinstance(item, dict):
+                    child, child_missing, child_extras = _normalize_model_payload(
+                        list_model,
+                        item,
+                        path=f"{field_path}[{idx}].",
+                    )
+                    normalized_list.append(child)
+                    missing.extend(child_missing)
+                    extras.extend(child_extras)
+                else:
+                    normalized_list.append(item)
+            normalized[name] = normalized_list
+        else:
+            normalized[name] = value
+
+    return normalized, missing, extras
 
 
 class PgJudgmentService:
@@ -49,7 +161,9 @@ class PgJudgmentService:
         }
 
     def _find_unextracted_pdfs(self, limit: int | None) -> list[dict[str, Any]]:
-        """Find PDFs on disk that don't have a corresponding _extracted.json."""
+        """Find judgment PDFs that are missing a usable extraction cache."""
+        from src.services.final_judgment_processor import FinalJudgmentProcessor
+
         if not FORECLOSURE_DATA_DIR.exists():
             logger.info("judgment_extract: data dir does not exist, nothing to scan")
             return []
@@ -83,7 +197,26 @@ class PgJudgmentService:
                     continue
                 json_cache = doc_dir / f"{pdf.stem}_extracted.json"
                 if json_cache.exists():
-                    continue
+                    try:
+                        cached = json.loads(json_cache.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, OSError) as exc:
+                        logger.info(
+                            "judgment_extract: cache {} for {} is unreadable; re-extracting ({})",
+                            json_cache.name,
+                            case_dir.name,
+                            exc,
+                        )
+                    else:
+                        if (
+                            isinstance(cached, dict)
+                            and FinalJudgmentProcessor.cache_is_current(cached)
+                        ):
+                            continue
+                        logger.info(
+                            "judgment_extract: cache {} for {} is stale; re-extracting",
+                            json_cache.name,
+                            case_dir.name,
+                        )
 
                 results.append({
                     "case_number": case_dir.name,
@@ -189,27 +322,70 @@ class PgJudgmentService:
 
     @staticmethod
     def _judgment_validation(judgment_data: dict[str, Any]) -> dict[str, Any]:
+        return PgJudgmentService.validate_judgment_payload(judgment_data)
+
+    @staticmethod
+    def validate_judgment_payload(judgment_data: dict[str, Any]) -> dict[str, Any]:
+        """Validate a judgment payload against the current Pydantic contract.
+
+        Expects **already-normalized** input (via ``normalize_judgment_payload``).
+        Callers are responsible for normalizing first so that missing/extra keys
+        are handled once at the boundary, and validation does not redundantly
+        re-normalize on every call in the persist chain.
+        """
         from src.services.final_judgment_processor import FinalJudgmentProcessor
 
-        # Always revalidate against the current contract instead of trusting
-        # stale cached verdicts embedded in older extraction files.
         return FinalJudgmentProcessor.validation_summary(judgment_data)
 
     @staticmethod
-    def _canonical_judgment_payload(judgment_data: dict[str, Any]) -> dict[str, Any]:
-        from src.services.final_judgment_processor import FinalJudgmentProcessor
-
-        if not judgment_data:
-            return {}
+    def normalize_judgment_payload(
+        judgment_data: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str], list[str]]:
+        if not isinstance(judgment_data, dict):
+            return {}, [], []
         public_payload = {
             key: value
             for key, value in judgment_data.items()
             if not str(key).startswith("_")
         }
+        if not public_payload:
+            return {}, [], []
+        return _normalize_model_payload(JudgmentExtraction, public_payload)
+
+    @staticmethod
+    def _format_schema_repair_notes(
+        missing_keys: list[str],
+        extra_keys: list[str],
+    ) -> list[str]:
+        notes: list[str] = []
+        if missing_keys:
+            preview = ", ".join(missing_keys[:8])
+            if len(missing_keys) > 8:
+                preview = f"{preview}, ... ({len(missing_keys) - 8} more)"
+            notes.append(f"filled omitted key(s): {preview}")
+        if extra_keys:
+            preview = ", ".join(extra_keys[:8])
+            if len(extra_keys) > 8:
+                preview = f"{preview}, ... ({len(extra_keys) - 8} more)"
+            notes.append(f"dropped unexpected key(s): {preview}")
+        return notes
+
+    @staticmethod
+    def _canonical_judgment_payload(judgment_data: dict[str, Any]) -> dict[str, Any]:
+        """Canonicalize a judgment payload for DB storage.
+
+        Expects **already-normalized** input. Does not re-normalize — the
+        single normalize-once contract keeps the persist chain
+        (caller → validate → canonicalize → write) free of redundant work.
+        """
+        from src.services.final_judgment_processor import FinalJudgmentProcessor
+
+        if not judgment_data:
+            return {}
         validation = PgJudgmentService._judgment_validation(judgment_data)
         if validation.get("is_valid"):
             return FinalJudgmentProcessor.canonicalize_candidate(judgment_data)
-        return public_payload
+        return judgment_data
 
     @staticmethod
     def persist_judgment(
@@ -319,12 +495,25 @@ class PgJudgmentService:
                         f"chose {chosen_json_path.name} (pdf={pdf_path})"
                     )
 
-                validation = self._judgment_validation(jd)
+                normalized_jd, missing_keys, extra_keys = (
+                    self.normalize_judgment_payload(jd)
+                )
                 if "_validation" not in jd:
                     logger.info(
                         "Revalidated legacy judgment cache for case {} during PG load",
                         case_number,
                     )
+                repair_notes = self._format_schema_repair_notes(
+                    missing_keys,
+                    extra_keys,
+                )
+                if repair_notes:
+                    logger.info(
+                        "Normalized legacy judgment cache for case {} during PG load: {}",
+                        case_number,
+                        "; ".join(repair_notes),
+                    )
+                validation = self._judgment_validation(normalized_jd)
                 if not validation.get("is_valid"):
                     logger.warning(
                         "Skipping canonical judgment persistence for case {} because chosen cache is invalid: {}",
@@ -336,7 +525,7 @@ class PgJudgmentService:
                 if self.persist_judgment(
                     conn,
                     foreclosure_id=fid,
-                    judgment_data=jd,
+                    judgment_data=normalized_jd,
                     pdf_path=pdf_path,
                 ):
                     updated += 1
