@@ -167,6 +167,21 @@ _ADDRESS_TERMINATORS = frozenset(
         "HIGHWAY",
     }
 )
+_SUFFIX_TO_ABBREV: dict[str, str] = {
+    "AVENUE": "AVE",
+    "BOULEVARD": "BLVD",
+    "CIRCLE": "CIR",
+    "COURT": "CT",
+    "DRIVE": "DR",
+    "HIGHWAY": "HWY",
+    "LANE": "LN",
+    "PARKWAY": "PKWY",
+    "PLACE": "PL",
+    "ROAD": "RD",
+    "STREET": "ST",
+    "TERRACE": "TER",
+    "TRAIL": "TRL",
+}
 
 _SCOPE_SQL = f"""
 SELECT
@@ -1387,11 +1402,38 @@ def _clean_text(value: Any) -> str | None:
 
 
 def _address_head(value: Any) -> str | None:
+    """Extract and normalize the street address head from a full address string.
+
+    Splits on the first comma, uppercases, abbreviates street suffixes to USPS
+    standard forms (AVENUE->AVE, DRIVE->DR, etc.), and strips trailing city/state/zip
+    tokens that appear when the address has no commas.
+    """
     cleaned = _clean_text(value)
     if not cleaned:
         return None
-    first = cleaned.replace("\t", " ").split(",", 1)[0].strip()
-    return first.upper() if first else None
+    first = cleaned.replace("\t", " ").split(",", 1)[0].strip().upper()
+    if not first:
+        return None
+
+    tokens = first.split()
+    normalized: list[str] = []
+    for idx, token in enumerate(tokens):
+        abbrev = _SUFFIX_TO_ABBREV.get(token)
+        if abbrev:
+            normalized.append(abbrev)
+            break
+        if token in _ADDRESS_TERMINATORS and token not in _SUFFIX_TO_ABBREV:
+            normalized.append(token)
+            break
+        # Only treat 5+ digit tokens as zip codes after the first token
+        # (first token is the house number).
+        if token == _ADDRESS_STATE_CODE or (
+            idx > 0 and token.isdigit() and len(token) >= 5
+        ):
+            break
+        normalized.append(token)
+
+    return " ".join(normalized) if normalized else None
 
 
 def _address_lookup_terms(value: str | None) -> tuple[str | None, list[str]]:

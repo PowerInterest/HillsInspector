@@ -361,3 +361,37 @@ def test_lookup_by_address_matches_blaine_place_to_blaine_top_pl() -> None:
         "limit": 60,
         "street_token_0": "%BLAINE%",
     }
+
+
+def test_address_head_normalizes_avenue_to_ave() -> None:
+    assert identifier_recovery._address_head("3127 W SLIGH AVENUE") == "3127 W SLIGH AVE"
+
+
+def test_address_head_normalizes_drive_to_dr() -> None:
+    assert identifier_recovery._address_head("2303 Briana Drive, Brandon, FL 33511") == "2303 BRIANA DR"
+
+
+def test_address_head_normalizes_court_to_ct() -> None:
+    assert identifier_recovery._address_head("821 Luent Sands Court, Brandon, FL 33511") == "821 LUENT SANDS CT"
+
+
+def test_address_head_normalizes_street_to_st() -> None:
+    assert identifier_recovery._address_head("123 Main Street, Tampa") == "123 MAIN ST"
+
+
+def test_address_head_normalizes_boulevard_to_blvd() -> None:
+    assert identifier_recovery._address_head("456 N Dale Mabry Boulevard") == "456 N DALE MABRY BLVD"
+
+
+def test_address_head_does_not_double_abbreviate() -> None:
+    assert identifier_recovery._address_head("1202 E 15TH AVE, TAMPA, FL 33605") == "1202 E 15TH AVE"
+
+
+def test_address_head_strips_city_state_zip_when_no_comma() -> None:
+    """Address without commas should still strip city/state/zip."""
+    assert identifier_recovery._address_head("1202 DESERT HILLS DR SUN CITY CENTER FL 33573") == "1202 DESERT HILLS DR"
+
+
+def test_address_head_returns_none_for_empty() -> None:
+    assert identifier_recovery._address_head("") is None
+    assert identifier_recovery._address_head(None) is None
