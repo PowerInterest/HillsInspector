@@ -518,6 +518,9 @@ class TestEndToEnd:
 
         monkeypatch.setattr(svc, "_save_to_pg", _fake_save)
 
+        # Mock _address_resolves so cache path doesn't hit real DB
+        monkeypatch.setattr(svc, "_address_resolves", lambda _addr: True)
+
         row = {
             "id": 99,
             "encumbrance_type": "mortgage",
@@ -1226,3 +1229,119 @@ class TestNormalizeCaseNumber:
         from src.services.pg_encumbrance_extraction_service import _normalize_case_number
 
         assert _normalize_case_number("") is None
+
+
+class TestEnrichFromMetadata:
+    """Tests for _enrich_from_metadata — backfilling from HCPA and ORI metadata."""
+
+    def test_enriches_property_address_from_hcpa(self, mock_engine):
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchone.return_value = ("1202 E 15TH AVE",)
+        mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+        svc.engine = mock_engine
+
+        validated: dict[str, Any] = {"property_address": None, "parcel_id": "1929084000"}
+        row: dict[str, Any] = {"id": 100, "strap": "1929084NUB00000000040A"}
+
+        result = svc._enrich_from_metadata(validated, "mortgage", row)  # noqa: SLF001
+
+        assert result["property_address"] == "1202 E 15TH AVE"
+
+    def test_does_not_overwrite_existing_address(self, mock_engine):
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        svc.engine = mock_engine
+
+        validated: dict[str, Any] = {"property_address": "EXISTING ADDRESS"}
+        row: dict[str, Any] = {"id": 101, "strap": "1929084NUB00000000040A"}
+
+        result = svc._enrich_from_metadata(validated, "mortgage", row)  # noqa: SLF001
+
+        assert result["property_address"] == "EXISTING ADDRESS"
+        # Should NOT have queried the DB since address already present
+        mock_engine.connect.assert_not_called()
+
+    def test_no_enrichment_when_no_strap(self, mock_engine):
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        svc.engine = mock_engine
+
+        validated: dict[str, Any] = {"property_address": None}
+        row: dict[str, Any] = {"id": 102}
+
+        result = svc._enrich_from_metadata(validated, "mortgage", row)  # noqa: SLF001
+
+        assert result["property_address"] is None
+        mock_engine.connect.assert_not_called()
+
+    def test_enriches_civil_case_number_for_lis_pendens(self):
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        svc.engine = MagicMock()
+
+        validated: dict[str, Any] = {
+            "property_address": "123 MAIN ST",
+            "civil_case_number": None,
+        }
+        row: dict[str, Any] = {
+            "id": 103,
+            "case_number": "292025CA006599A001HC",
+        }
+
+        result = svc._enrich_from_metadata(validated, "lis_pendens", row)  # noqa: SLF001
+
+        assert result["civil_case_number"] == "25-CA-006599"
+
+    def test_does_not_overwrite_existing_case_number(self):
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        svc.engine = MagicMock()
+
+        validated: dict[str, Any] = {
+            "property_address": "123 MAIN ST",
+            "civil_case_number": "25-CA-000001",
+        }
+        row: dict[str, Any] = {
+            "id": 104,
+            "case_number": "292025CA006599A001HC",
+        }
+
+        result = svc._enrich_from_metadata(validated, "lis_pendens", row)  # noqa: SLF001
+
+        assert result["civil_case_number"] == "25-CA-000001"
+
+    def test_no_case_enrichment_for_non_lis_pendens(self):
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        svc.engine = MagicMock()
+
+        validated: dict[str, Any] = {"property_address": "123 MAIN ST"}
+        row: dict[str, Any] = {
+            "id": 105,
+            "case_number": "292025CA006599A001HC",
+        }
+
+        result = svc._enrich_from_metadata(validated, "mortgage", row)  # noqa: SLF001
+
+        assert "civil_case_number" not in result

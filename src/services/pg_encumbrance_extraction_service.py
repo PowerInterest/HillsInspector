@@ -378,6 +378,18 @@ _ASSIGNMENT_NESTED_REMAP: dict[str, str | None] = {
     "original_amount": None,  # remove
 }
 
+_STALE_MORTGAGE_CACHE_KEYS = frozenset({
+    "borrower",
+    "lender",
+    "book",
+    "page",
+    "is_mers",
+    "confidence",
+    "document_type",
+    "red_flags",
+    "prior_assignments",
+})
+
 
 def _remap_legacy_keys(payload: dict[str, Any], enc_type: str) -> dict[str, Any]:
     """Remap legacy cache field names to current Pydantic model keys.
@@ -422,6 +434,17 @@ def _remap_legacy_keys(payload: dict[str, Any], enc_type: str) -> dict[str, Any]
             remapped["parent_instrument"] = nested
 
     return remapped
+
+
+def _stale_cache_reason(payload: dict[str, Any], enc_type: str) -> str | None:
+    """Return a reason when a cache should be ignored and rebuilt."""
+
+    if enc_type != "mortgage":
+        return None
+    stale_keys = sorted(_STALE_MORTGAGE_CACHE_KEYS & set(payload))
+    if stale_keys:
+        return "legacy mortgage cache keys present: " + ", ".join(stale_keys)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -546,13 +569,21 @@ class PgEncumbranceExtractionService:
         dict with extraction statistics.
         """
         started = time.monotonic()
+        backfill_stats = self._backfill_missing_ori_ids(
+            limit=limit,
+            straps=straps,
+            enc_types=enc_types,
+        )
         stats = asyncio.run(self._run_async(limit=limit, straps=straps, enc_types=enc_types))
+        stats["ori_id_backfilled"] = int(backfill_stats.get("updated", 0))
+        stats["ori_id_backfill_api_calls"] = int(backfill_stats.get("api_calls", 0))
         elapsed = round(time.monotonic() - started, 2)
         stats["elapsed_seconds"] = elapsed
         logger.info(
             "Encumbrance extraction complete: "
             f"extracted={stats['extracted']}, cached={stats['cached']}, "
-            f"errors={stats['errors']}, skipped={stats['skipped']} "
+            f"errors={stats['errors']}, skipped={stats['skipped']}, "
+            f"ori_id_backfilled={stats['ori_id_backfilled']} "
             f"in {elapsed}s"
         )
         return stats
@@ -675,6 +706,131 @@ class PgEncumbranceExtractionService:
         with self.engine.connect() as conn:
             rows = conn.execute(text(sql), params).mappings().all()
         return [dict(r) for r in rows]
+
+    def _find_missing_ori_ids(
+        self,
+        *,
+        limit: int | None = None,
+        straps: Sequence[str] | None = None,
+        enc_types: Sequence[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Find extractable rows blocked only by a missing ORI document id."""
+
+        sql = """
+            SELECT id, strap, folio, instrument_number, encumbrance_type,
+                   raw_document_type, case_number, book, page,
+                   recording_date, party1, party2
+            FROM ori_encumbrances
+            WHERE extracted_data IS NULL
+              AND ori_id IS NULL
+              AND instrument_number IS NOT NULL
+              AND btrim(instrument_number) <> ''
+        """
+        params: dict[str, Any] = {}
+        if straps:
+            sql += " AND strap = ANY(:straps)"
+            params["straps"] = list(straps)
+        if enc_types:
+            sql += " AND encumbrance_type = ANY(:enc_types)"
+            params["enc_types"] = list(enc_types)
+        sql += " ORDER BY recording_date ASC NULLS LAST"
+        if limit:
+            sql += " LIMIT :lim"
+            params["lim"] = limit
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(text(sql), params).mappings().all()
+        return [dict(r) for r in rows]
+
+    def _backfill_missing_ori_ids(
+        self,
+        *,
+        limit: int | None = None,
+        straps: Sequence[str] | None = None,
+        enc_types: Sequence[str] | None = None,
+    ) -> dict[str, int]:
+        """Resolve missing ``ori_id`` values by exact PAV instrument lookup."""
+
+        rows = [
+            row
+            for row in self._find_missing_ori_ids(
+                limit=limit,
+                straps=straps,
+                enc_types=enc_types,
+            )
+            if row.get("encumbrance_type") in EXTRACTION_DISPATCH
+        ]
+        if not rows:
+            return {"searched": 0, "updated": 0, "api_calls": 0}
+
+        from src.services.pg_ori_service import PgOriService, _get_instrument
+
+        ori_service = PgOriService(dsn=self.dsn)
+        stats = {
+            "api_calls": 0,
+            "retries": 0,
+            "truncated": 0,
+            "unresolved_truncations": 0,
+            "cache_hits": 0,
+        }
+        updated = 0
+        for row in rows:
+            instrument = str(row.get("instrument_number") or "").strip()
+            if not instrument:
+                continue
+            docs = ori_service._search_instrument_pav(instrument, stats)  # noqa: SLF001
+            match = next(
+                (
+                    doc for doc in docs
+                    if _get_instrument(doc) == instrument
+                    and (doc.get("ID") or doc.get("ori_id"))
+                ),
+                None,
+            )
+            if not match:
+                logger.warning(
+                    "Unable to backfill ori_id for id={} type={} inst={} because exact PAV lookup returned no matching doc id",
+                    row.get("id"),
+                    row.get("encumbrance_type"),
+                    instrument,
+                )
+                continue
+            updated += self._update_ori_lookup_metadata(int(row["id"]), match)
+
+        return {
+            "searched": len(rows),
+            "updated": updated,
+            "api_calls": int(stats.get("api_calls", 0)),
+        }
+
+    def _update_ori_lookup_metadata(self, encumbrance_id: int, doc: dict[str, Any]) -> int:
+        """Persist exact PAV lookup identifiers onto an existing encumbrance row."""
+
+        sql = text("""
+            UPDATE ori_encumbrances
+            SET ori_id = COALESCE(:ori_id, ori_id),
+                ori_uuid = COALESCE(:ori_uuid, ori_uuid),
+                updated_at = NOW()
+            WHERE id = :id
+              AND (
+                  ori_id IS DISTINCT FROM COALESCE(:ori_id, ori_id)
+                  OR ori_uuid IS DISTINCT FROM COALESCE(:ori_uuid, ori_uuid)
+              )
+        """)
+        params = {
+            "id": encumbrance_id,
+            "ori_id": str(doc.get("ID") or doc.get("ori_id") or "").strip() or None,
+            "ori_uuid": str(doc.get("UUID") or doc.get("ori_uuid") or "").strip() or None,
+        }
+        with self.engine.begin() as conn:
+            result = conn.execute(sql, params)
+        if int(result.rowcount or 0) > 0:
+            logger.info(
+                "Backfilled ori_id for encumbrance id={} ori_id={}",
+                encumbrance_id,
+                params["ori_id"],
+            )
+        return int(result.rowcount or 0)
 
     # ------------------------------------------------------------------
     # PDF path + download
@@ -994,6 +1150,34 @@ class PgEncumbranceExtractionService:
         with self.engine.begin() as conn:
             conn.execute(sql, {"jdata": json.dumps(data, default=str), "id": encumbrance_id})
 
+    def _lookup_hcpa_property_address(
+        self,
+        *,
+        strap: str | None,
+        folio: str | None,
+    ) -> str | None:
+        """Return the parcel address from HCPA when property identity is known."""
+
+        strap_value = (strap or "").strip()
+        folio_value = (folio or "").strip()
+        if not strap_value and not folio_value:
+            return None
+        sql = text("""
+            SELECT property_address
+            FROM hcpa_bulk_parcels
+            WHERE (:strap != '' AND strap = :strap)
+               OR (:folio != '' AND folio = :folio)
+            ORDER BY CASE WHEN strap = :strap THEN 0 ELSE 1 END
+            LIMIT 1
+        """)
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                sql,
+                {"strap": strap_value, "folio": folio_value},
+            ).fetchone()
+        address = (row[0] if row else None) or None
+        return str(address).strip() if address else None
+
     def _address_resolves(self, address: str | None) -> bool:
         """Check if extracted address matches any HCPA parcel."""
         if not address or len(address.strip()) < 5:
@@ -1041,6 +1225,46 @@ class PgEncumbranceExtractionService:
         """)
         with self.engine.begin() as conn:
             conn.execute(sql, {"ocr_text": ocr_text, "id": encumbrance_id})
+
+    # ------------------------------------------------------------------
+    # Post-extraction enrichment
+    # ------------------------------------------------------------------
+
+    def _enrich_from_metadata(self, validated: dict[str, Any], enc_type: str, row: dict[str, Any]) -> dict[str, Any]:
+        """Backfill null fields from HCPA and ORI metadata.
+
+        Called after validation passes for both cached and fresh extractions.
+        Fills in property_address from HCPA when the LLM couldn't extract it
+        but we know the strap, and fills civil_case_number for lis_pendens
+        from the ORI case_number metadata.
+        """
+        enriched = deepcopy(validated)
+
+        if not enriched.get("property_address"):
+            property_address = self._lookup_hcpa_property_address(
+                strap=row.get("strap"),
+                folio=row.get("folio"),
+            )
+            if property_address:
+                enriched["property_address"] = property_address
+                logger.info(
+                    "Enriched property_address from HCPA for id={}: '{}'",
+                    row["id"],
+                    property_address,
+                )
+
+        if enc_type == "lis_pendens" and not enriched.get("civil_case_number"):
+            raw_case = row.get("case_number") or ""
+            normalized = _normalize_case_number(raw_case)
+            if normalized:
+                enriched["civil_case_number"] = normalized
+                logger.info(
+                    "Enriched civil_case_number from ORI metadata for id={}: '{}'",
+                    row["id"],
+                    normalized,
+                )
+
+        return enriched
 
     # ------------------------------------------------------------------
     # Repair pass
@@ -1092,6 +1316,21 @@ class PgEncumbranceExtractionService:
         # 1. Check cache
         cached = _load_cache(pdf_path)
         if cached:
+            stale_reason = _stale_cache_reason(cached, enc_type)
+            if stale_reason:
+                logger.info(
+                    "Ignoring stale cache for id={} type={} inst={} path={}: {}",
+                    row["id"],
+                    enc_type,
+                    row.get("instrument_number"),
+                    pdf_path,
+                    stale_reason,
+                )
+                _delete_cache(pdf_path)
+                cached = None
+        if cached:
+            # Apply legacy key remapping before validation (Fix 6)
+            cached = _remap_legacy_keys(cached, enc_type)
             validated_cache, cache_errors = self._validate(
                 cached,
                 enc_type,
@@ -1108,14 +1347,27 @@ class PgEncumbranceExtractionService:
                     "; ".join(cache_errors[:3]) if cache_errors else "unknown validation failure",
                 )
             else:
-                self._save_to_pg(row["id"], validated_cache)
-                logger.debug(
-                    "Loaded validated cache for id={} type={} inst={}; skipping download/OCR/Vision",
-                    row["id"],
-                    enc_type,
-                    row.get("instrument_number"),
-                )
-                return {**validated_cache, "_status": "cached"}
+                validated_cache = self._enrich_from_metadata(validated_cache, enc_type, row)
+                cache_address = validated_cache.get("property_address")
+                if cache_address and not self._address_resolves(cache_address):
+                    # Cache has a bad address — delete and fall through to fresh extraction
+                    logger.warning(
+                        "Cache for id={} type={} inst={} has unresolved address '{}'; deleting cache and re-extracting",
+                        row["id"],
+                        enc_type,
+                        row.get("instrument_number"),
+                        cache_address,
+                    )
+                    _delete_cache(pdf_path)
+                else:
+                    self._save_to_pg(row["id"], validated_cache)
+                    logger.debug(
+                        "Loaded validated cache for id={} type={} inst={}; skipping download/OCR/Vision",
+                        row["id"],
+                        enc_type,
+                        row.get("instrument_number"),
+                    )
+                    return {**validated_cache, "_status": "cached"}
 
         # 2. Download
         downloaded = await self._download_pdf(page, row)
@@ -1199,9 +1451,12 @@ class PgEncumbranceExtractionService:
                     "_reason": "validation_failed",
                 }
 
-            # 6. Repair if address doesn't resolve
+            # 6. Enrich from metadata before spending another LLM round-trip
+            validated = self._enrich_from_metadata(validated, enc_type, row)
+
+            # 7. Repair only when a non-null address still does not resolve
             address = validated.get("property_address")
-            if not self._address_resolves(address):
+            if address and not self._address_resolves(address):
                 logger.info(
                     "Address '{}' for id={} type={} inst={} does not resolve; attempting repair",
                     address,
@@ -1224,10 +1479,10 @@ class PgEncumbranceExtractionService:
                         row["id"],
                     )
 
-            # 7. Cache
+            # 8. Cache
             _write_cache(downloaded, validated)
 
-            # 8. Save to DB
+            # 9. Save to DB
             self._save_to_pg(row["id"], validated)
             logger.info(
                 "Extracted id={} type={} inst={}",
