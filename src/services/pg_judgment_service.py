@@ -17,11 +17,228 @@ from loguru import logger
 from pydantic_core import PydanticUndefined
 from sqlalchemy import text
 
-from src.models.extraction_base import StrictExtractionModel
-from src.models.judgment_extraction import JudgmentExtraction
+from src.models.extraction_base import (
+    StrictExtractionModel,
+    is_federal_entity,
+    is_generic_occupant,
+    is_hoa_entity,
+    normalize_party_name,
+)
+from src.models.judgment_extraction import (
+    JudgmentExtraction,
+    PartyType,
+    PlaintiffType,
+    RedFlagType,
+    Severity,
+)
 from sunbiz.db import get_engine, resolve_pg_dsn
 
 FORECLOSURE_DATA_DIR = Path("data/Foreclosure")
+
+_VALID_PARTY_TYPES = {member.value for member in PartyType}
+_VALID_PLAINTIFF_TYPES = {member.value for member in PlaintiffType}
+_VALID_RED_FLAG_TYPES = {member.value for member in RedFlagType}
+_VALID_SEVERITIES = {member.value for member in Severity}
+
+_LEGACY_PARTY_TYPE_ALIASES = {
+    "state_agency": "municipality",
+    "tax_agency": "municipality",
+    "trustee": "unknown",
+    "other": "unknown",
+    "bank": "unknown",
+    "servicer": "unknown",
+    "trust": "unknown",
+    "gse": "unknown",
+    "private_lender": "unknown",
+}
+_LEGACY_PLAINTIFF_TYPE_ALIASES = {
+    "condo_association": "hoa",
+}
+_LEGACY_RED_FLAG_TYPE_ALIASES = {
+    "missing_pages": None,
+    "missing_document_pages": None,
+    "missing_defendants": None,
+    "unclear_defendant_list": None,
+    "unknown": None,
+}
+
+
+def _split_legacy_enum_tokens(raw: str) -> list[str]:
+    normalized = raw.strip().lower().replace("-", "_").replace(" ", "_")
+    return [token.strip("_") for token in re.split(r"[|/,;]+", normalized) if token.strip("_")]
+
+
+def _coerce_legacy_plaintiff_type(raw_value: Any, plaintiff_name: Any) -> Any:
+    if not isinstance(raw_value, str):
+        return raw_value
+    normalized = raw_value.strip().lower().replace("-", "_").replace(" ", "_")
+    mapped = _LEGACY_PLAINTIFF_TYPE_ALIASES.get(normalized, normalized)
+    if mapped in _VALID_PLAINTIFF_TYPES:
+        return mapped
+
+    name = normalize_party_name(str(plaintiff_name or ""))
+    if "TRUST" in name:
+        return PlaintiffType.TRUST.value
+    if "FANNIE" in name or "FREDDIE" in name:
+        return PlaintiffType.GSE.value
+    if is_hoa_entity(name):
+        return PlaintiffType.HOA.value
+    if "BANK" in name or "CREDIT UNION" in name or name.endswith(" N A") or " N A " in name:
+        return PlaintiffType.BANK.value
+    if "SERVICING" in name or "MORTGAGE LLC" in name or "LOAN SERVIC" in name:
+        return PlaintiffType.SERVICER.value
+    return raw_value
+
+
+def _party_type_from_name(name: str) -> str | None:
+    normalized_name = normalize_party_name(name)
+    if not normalized_name:
+        return None
+    if "INTERNAL REVENUE" in normalized_name or normalized_name == "IRS":
+        return PartyType.IRS.value
+    if is_federal_entity(normalized_name):
+        return PartyType.FEDERAL_AGENCY.value
+    if "CONDOMINIUM" in normalized_name or " CONDO " in f" {normalized_name} ":
+        return PartyType.CONDO_ASSOCIATION.value
+    if is_hoa_entity(normalized_name):
+        return PartyType.HOA.value
+    if is_generic_occupant(normalized_name) or "TENANT" in normalized_name or "OCCUPANT" in normalized_name:
+        return PartyType.TENANT.value
+    if any(
+        marker in normalized_name
+        for marker in (
+            "CITY OF ",
+            "COUNTY",
+            "STATE OF FLORIDA",
+            "DEPARTMENT OF REVENUE",
+            "TAX COLLECTOR",
+            "CLERK OF THE CIRCUIT COURT",
+        )
+    ):
+        return PartyType.MUNICIPALITY.value
+    return None
+
+
+def _coerce_legacy_party_type(raw_value: Any, defendant_name: Any) -> Any:
+    if not isinstance(raw_value, str):
+        return raw_value
+    normalized_name = str(defendant_name or "")
+    heuristic = _party_type_from_name(normalized_name)
+    tokens = [
+        _LEGACY_PARTY_TYPE_ALIASES.get(token, token)
+        for token in _split_legacy_enum_tokens(raw_value)
+    ]
+    valid_tokens = [token for token in tokens if token in _VALID_PARTY_TYPES]
+
+    if len(valid_tokens) == 1:
+        return valid_tokens[0]
+    if heuristic and heuristic in valid_tokens:
+        return heuristic
+    if heuristic and not valid_tokens:
+        return heuristic
+    non_unknown = [token for token in valid_tokens if token != PartyType.UNKNOWN.value]
+    if non_unknown:
+        return non_unknown[0]
+    if valid_tokens:
+        return valid_tokens[0]
+    return raw_value
+
+
+def _coerce_legacy_red_flag_type(raw_value: Any, description: str) -> str | None:
+    if not isinstance(raw_value, str):
+        return raw_value if raw_value in _VALID_RED_FLAG_TYPES else None
+    tokens = _split_legacy_enum_tokens(raw_value)
+    mapped_tokens = [_LEGACY_RED_FLAG_TYPE_ALIASES.get(token, token) for token in tokens]
+    valid_tokens = [token for token in mapped_tokens if token in _VALID_RED_FLAG_TYPES]
+    if len(valid_tokens) == 1:
+        return valid_tokens[0]
+
+    desc = normalize_party_name(description)
+    if "UNITED STATES" in desc or "INTERNAL REVENUE" in desc or "IRS" in desc:
+        return RedFlagType.FEDERAL_DEFENDANT.value
+    if "LOST NOTE" in desc:
+        return RedFlagType.LOST_NOTE.value
+    if "DECEASED" in desc or "ESTATE OF" in desc or "PERSONAL REPRESENTATIVE" in desc:
+        return RedFlagType.DECEASED_BORROWER.value
+    if "MISSING HOA" in desc or ("HOA" in desc and "MISSING" in desc):
+        return RedFlagType.MISSING_HOA_DEFENDANT.value
+    if "SERVICE" in desc or "PUBLICATION" in desc or "DUE PROCESS" in desc:
+        return RedFlagType.SERVICE_ISSUE.value
+    return None
+
+
+def _coerce_legacy_severity(raw_value: Any, flag_type: str | None) -> str | None:
+    if not isinstance(raw_value, str):
+        return raw_value if raw_value in _VALID_SEVERITIES else None
+    tokens = [token for token in _split_legacy_enum_tokens(raw_value) if token in _VALID_SEVERITIES]
+    if len(tokens) == 1:
+        return tokens[0]
+    if flag_type == RedFlagType.FEDERAL_DEFENDANT.value:
+        return Severity.CRITICAL.value
+    if flag_type in {
+        RedFlagType.LOST_NOTE.value,
+        RedFlagType.DECEASED_BORROWER.value,
+        RedFlagType.MISSING_HOA_DEFENDANT.value,
+    }:
+        return Severity.HIGH.value
+    if flag_type == RedFlagType.SERVICE_ISSUE.value:
+        return Severity.MEDIUM.value
+    return None
+
+
+def _normalize_legacy_judgment_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = deepcopy(payload)
+    normalized["plaintiff_type"] = _coerce_legacy_plaintiff_type(
+        normalized.get("plaintiff_type"),
+        normalized.get("plaintiff"),
+    )
+
+    defendants: list[dict[str, Any]] = []
+    for defendant in normalized.get("defendants") or []:
+        if not isinstance(defendant, dict):
+            defendants.append(defendant)
+            continue
+        repaired = deepcopy(defendant)
+        if not str(repaired.get("name") or "").strip():
+            continue
+        repaired["party_type"] = _coerce_legacy_party_type(
+            repaired.get("party_type"),
+            repaired.get("name"),
+        )
+        if repaired.get("party_type") in {
+            PartyType.IRS.value,
+            PartyType.FEDERAL_AGENCY.value,
+        }:
+            repaired["is_federal_entity"] = True
+        defendants.append(repaired)
+    normalized["defendants"] = defendants
+
+    unclear_sections = list(normalized.get("unclear_sections") or [])
+    normalized_flags: list[dict[str, Any]] = []
+    for raw_flag in normalized.get("red_flags") or []:
+        if not isinstance(raw_flag, dict):
+            continue
+        repaired_flag = deepcopy(raw_flag)
+        description = str(repaired_flag.get("description") or "").strip()
+        mapped_flag_type = _coerce_legacy_red_flag_type(
+            repaired_flag.get("flag_type"),
+            description,
+        )
+        if mapped_flag_type is None:
+            note = description or str(repaired_flag.get("flag_type") or "").strip()
+            if note and note not in unclear_sections:
+                unclear_sections.append(note)
+            continue
+        repaired_flag["flag_type"] = mapped_flag_type
+        repaired_flag["severity"] = _coerce_legacy_severity(
+            repaired_flag.get("severity"),
+            mapped_flag_type,
+        ) or Severity.MEDIUM.value
+        normalized_flags.append(repaired_flag)
+
+    normalized["red_flags"] = normalized_flags
+    normalized["unclear_sections"] = unclear_sections
+    return normalized
 
 
 def _allows_none(annotation: Any) -> bool:
@@ -350,7 +567,11 @@ class PgJudgmentService:
         }
         if not public_payload:
             return {}, [], []
-        return _normalize_model_payload(JudgmentExtraction, public_payload)
+        normalized, missing, extras = _normalize_model_payload(
+            JudgmentExtraction,
+            public_payload,
+        )
+        return _normalize_legacy_judgment_payload(normalized), missing, extras
 
     @staticmethod
     def _format_schema_repair_notes(

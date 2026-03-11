@@ -95,3 +95,109 @@ def test_select_best_judgment_prefers_extracted_metadata_over_filename_stem(
 
     assert best is not None
     assert best[0] == newer_instrument_stem
+
+
+def test_normalize_judgment_payload_repairs_legacy_enum_drift(
+    monkeypatch: Any,
+) -> None:
+    svc = _build_service(monkeypatch)
+    payload = {
+        "instrument_number": None,
+        "recording_book": None,
+        "recording_page": None,
+        "recording_date": None,
+        "execution_date": None,
+        "property_address": "3061 SUTTON WOODS DR PLANT CITY, FL 33566",
+        "legal_description": "LOT 2, BLOCK 2, WALDEN LAKE UNIT 23",
+        "parcel_id": None,
+        "confidence_score": 0.8,
+        "unclear_sections": [],
+        "case_number": "292024CA005094A001HC",
+        "court_circuit": "13th",
+        "county": "Hillsborough",
+        "judge_name": None,
+        "judgment_date": "2025-08-28",
+        "plaintiff": "SUTTON WOODS CONDOMINIUM ASSOCIATION, INC.",
+        "plaintiff_type": "condo_association",
+        "defendants": [
+            {
+                "name": "UNKNOWN TENANTS/OWNERS 1",
+                "party_type": "borrower|co_borrower|spouse|hoa|condo_association|tenant|unknown",
+                "is_federal_entity": False,
+                "is_deceased": False,
+                "lien_recording_reference": None,
+            }
+        ],
+        "subdivision": "WALDEN LAKE UNIT 23",
+        "lot": "2",
+        "block": "2",
+        "unit": None,
+        "plat_book": None,
+        "plat_page": None,
+        "is_condo": False,
+        "foreclosed_mortgage": {
+            "original_date": None,
+            "original_amount": 0.0,
+            "recording_date": None,
+            "recording_book": None,
+            "recording_page": None,
+            "instrument_number": None,
+            "original_lender": None,
+            "current_holder": None,
+        },
+        "lis_pendens": {
+            "recording_date": None,
+            "recording_book": None,
+            "recording_page": None,
+            "instrument_number": None,
+        },
+        "principal_amount": 400000.0,
+        "interest_amount": 991.83,
+        "interest_through_date": None,
+        "per_diem_rate": None,
+        "per_diem_interest": None,
+        "late_charges": None,
+        "escrow_advances": None,
+        "title_search_costs": None,
+        "court_costs": None,
+        "attorney_fees": None,
+        "other_costs": 0.0,
+        "total_judgment_amount": 400991.83,
+        "foreclosure_sale_date": "2025-10-27",
+        "sale_location": "https://www.hillsborough.realforeclose.com",
+        "is_online_sale": True,
+        "foreclosure_type": "FIRST MORTGAGE",
+        "hoa_safe_harbor_mentioned": False,
+        "superiority_language": None,
+        "plaintiff_maximum_bid": None,
+        "monthly_payment": None,
+        "default_date": None,
+        "service_by_publication": False,
+        "red_flags": [
+            {
+                "flag_type": "missing_document_pages",
+                "severity": "critical",
+                "description": "Pages 1-5 are missing from the cache export.",
+            },
+            {
+                "flag_type": "federal_defendant|lost_note|deceased_borrower|service_issue|missing_hoa_defendant",
+                "severity": "critical|high|medium",
+                "description": "United States of America is a named junior lienholder.",
+            },
+        ],
+    }
+
+    normalized, _, _ = svc.normalize_judgment_payload(payload)
+    validation = svc.validate_judgment_payload(normalized)
+
+    assert normalized["plaintiff_type"] == "hoa"
+    assert normalized["defendants"][0]["party_type"] == "tenant"
+    assert normalized["red_flags"] == [
+        {
+            "flag_type": "federal_defendant",
+            "severity": "critical",
+            "description": "United States of America is a named junior lienholder.",
+        }
+    ]
+    assert "Pages 1-5 are missing from the cache export." in normalized["unclear_sections"]
+    assert validation["is_valid"] is True
