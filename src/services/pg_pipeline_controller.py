@@ -76,6 +76,7 @@ class ControllerSettings:
     skip_ori_search: bool = False
     skip_municipal_liens: bool = False
     skip_encumbrance_extraction: bool = False
+    skip_encumbrance_relationships: bool = False
     skip_survival: bool = False
     skip_encumbrance_audit: bool = False
     skip_encumbrance_recovery: bool = False
@@ -216,9 +217,19 @@ class PgPipelineController:
                 self._run_ori_id_backfill,
             ),
             (
+                "resolve_inferred",
+                self.settings.skip_ori_search,
+                self._run_resolve_inferred,
+            ),
+            (
                 "encumbrance_extraction",
                 self.settings.skip_encumbrance_extraction,
                 self._run_encumbrance_extraction,
+            ),
+            (
+                "encumbrance_relationships",
+                self.settings.skip_encumbrance_relationships,
+                self._run_encumbrance_relationships,
             ),
             (
                 "encumbrance_audit",
@@ -1297,6 +1308,27 @@ class PgPipelineController:
             details=result,
         )
 
+    def _run_resolve_inferred(self) -> StepResult:
+        from src.services.pg_ori_service import PgOriService
+
+        svc = PgOriService(dsn=self.dsn)
+        result = svc.resolve_inferred_encumbrances(limit=self.settings.ori_limit)
+        deleted = int(result.get("total_deleted", 0))
+        kept = int(result.get("kept", 0))
+        if result.get("skipped"):
+            status = "noop"
+        elif deleted > 0:
+            status = "success"
+        else:
+            status = "noop"
+        return StepResult(
+            step_name="resolve_inferred",
+            status=status,
+            updated=deleted,
+            errors=kept,
+            details=result,
+        )
+
     def _run_municipal_liens_phase0(self) -> StepResult:
         from src.services.pg_municipal_lien_service import PgMunicipalLienService
 
@@ -1330,6 +1362,38 @@ class PgPipelineController:
                 "success" if extracted > 0 else "noop"
             ),
             updated=extracted, errors=errs,
+            details=result,
+        )
+
+    def _run_encumbrance_relationships(self) -> StepResult:
+        from src.services.pg_encumbrance_relationship_service import (
+            PgEncumbranceRelationshipService,
+        )
+
+        svc = PgEncumbranceRelationshipService(dsn=self.dsn)
+        result = svc.run(limit=self.settings.extraction_limit)
+        changed = self._int_from_paths(
+            result,
+            "saved",
+            "linked_satisfactions",
+            "linked_modifications",
+            "holder_updates",
+        )
+        errs = int(result.get("errors", 0))
+        leads_total = int(result.get("leads_total", 0))
+        if result.get("skipped"):
+            status = "noop"
+        elif errs > 0 and changed == 0 and leads_total == 0:
+            status = "failed"
+        elif changed > 0:
+            status = "success"
+        else:
+            status = "noop"
+        return StepResult(
+            step_name="encumbrance_relationships",
+            status=status,
+            updated=changed,
+            errors=errs,
             details=result,
         )
 
@@ -1979,6 +2043,7 @@ def parse_args() -> ControllerSettings:
     parser.add_argument("--skip-ori-search", action="store_true")
     parser.add_argument("--skip-municipal-liens", action="store_true")
     parser.add_argument("--skip-encumbrance-extraction", action="store_true")
+    parser.add_argument("--skip-encumbrance-relationships", action="store_true")
     parser.add_argument("--skip-survival", action="store_true")
     parser.add_argument("--skip-encumbrance-audit", action="store_true")
     parser.add_argument("--skip-encumbrance-recovery", action="store_true")
@@ -2081,6 +2146,7 @@ def parse_args() -> ControllerSettings:
         skip_ori_search=bool(args.skip_ori_search),
         skip_municipal_liens=bool(args.skip_municipal_liens),
         skip_encumbrance_extraction=bool(args.skip_encumbrance_extraction),
+        skip_encumbrance_relationships=bool(args.skip_encumbrance_relationships),
         skip_survival=bool(args.skip_survival),
         skip_encumbrance_audit=bool(args.skip_encumbrance_audit),
         skip_encumbrance_recovery=bool(args.skip_encumbrance_recovery),

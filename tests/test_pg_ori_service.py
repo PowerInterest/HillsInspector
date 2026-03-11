@@ -2161,3 +2161,215 @@ def test_backfill_missing_ori_ids_filters_non_matching_instruments(
     ]
     assert len(update_calls) == 1
     assert update_calls[0][1]["ori_id"] == "ID-RIGHT"
+
+
+# ---------------------------------------------------------------------------
+# resolve_inferred_encumbrances tests
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_inferred_noop_when_no_rows(monkeypatch: Any) -> None:
+    """When there are no inferred rows, the method should skip."""
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
+        return _CaptureResult(mapping_rows=[])
+
+    service.engine = _ExecuteFnEngine(_execute_fn, captured)
+    result = service.resolve_inferred_encumbrances()
+    assert result["skipped"] is True
+
+
+def test_resolve_inferred_pass1_deletes_matching(monkeypatch: Any) -> None:
+    """Pass 1 deletes inferred row when real encumbrance matches plaintiff."""
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+    call_seq = {"idx": 0}
+
+    inferred_rows = [
+        {
+            "id": 100,
+            "strap": "ABC123",
+            "folio": "0001",
+            "instrument_number": "INFERRED-292025CA001",
+            "case_number": "292025CA001",
+            "encumbrance_type": "mortgage",
+            "party1": "BANK OF AMERICA",
+        },
+    ]
+
+    # entity_match_score match result (real encumbrance)
+    match_row = (42, "2020123456", "mortgage", 0.85, 0.10)
+
+    def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
+        sql_upper = sql.upper()
+        idx = call_seq["idx"]
+        call_seq["idx"] += 1
+
+        # First call: SELECT inferred rows
+        if idx == 0 and "INFERRED" in sql_upper and "LIKE" in sql_upper:
+            return _CaptureResult(mapping_rows=inferred_rows)
+
+        # Second call: entity_match_score query
+        if "ENTITY_MATCH_SCORE" in sql_upper:
+            return _CaptureResult(rows=[match_row])
+
+        # Third call: DELETE
+        if "DELETE" in sql_upper:
+            assert params.get("id") == 100
+            return _CaptureResult(rowcount=1)
+
+        return _CaptureResult()
+
+    service.engine = _ExecuteFnEngine(_execute_fn, captured)
+    result = service.resolve_inferred_encumbrances()
+    assert result["pass1_deleted"] == 1
+    assert result["total_deleted"] == 1
+    assert result["kept"] == 0
+
+
+def test_resolve_inferred_pass1_keeps_unmatched(monkeypatch: Any) -> None:
+    """Pass 1 keeps inferred row when no real encumbrance matches."""
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+    call_seq = {"idx": 0}
+
+    inferred_rows = [
+        {
+            "id": 200,
+            "strap": "XYZ789",
+            "folio": "0002",
+            "instrument_number": "INFERRED-292025CA002",
+            "case_number": "292025CA002",
+            "encumbrance_type": "lien",
+            "party1": "UNKNOWN HOA INC",
+        },
+    ]
+
+    def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
+        sql_upper = sql.upper()
+        idx = call_seq["idx"]
+        call_seq["idx"] += 1
+
+        if idx == 0 and "INFERRED" in sql_upper and "LIKE" in sql_upper:
+            return _CaptureResult(mapping_rows=inferred_rows)
+
+        # No match from entity_match_score
+        if "ENTITY_MATCH_SCORE" in sql_upper:
+            return _CaptureResult(rows=[])
+
+        return _CaptureResult()
+
+    service.engine = _ExecuteFnEngine(_execute_fn, captured)
+
+    # Mock _search_case_pav to return nothing
+    monkeypatch.setattr(service, "_search_case_pav", lambda *_a, **_kw: [])
+
+    result = service.resolve_inferred_encumbrances()
+    assert result["pass1_deleted"] == 0
+    assert result["kept"] == 1
+    assert result["total_deleted"] == 0
+
+
+def test_resolve_inferred_pass2_searches_case_and_deletes(monkeypatch: Any) -> None:
+    """Pass 2 searches ORI by case, saves docs, and deletes inferred."""
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+    call_seq = {"idx": 0}
+
+    inferred_rows = [
+        {
+            "id": 300,
+            "strap": "DEF456",
+            "folio": "0003",
+            "instrument_number": "INFERRED-292025CA003",
+            "case_number": "292025CA003",
+            "encumbrance_type": "mortgage",
+            "party1": "RARE LENDER LLC",
+        },
+    ]
+
+    def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
+        sql_upper = sql.upper()
+        idx = call_seq["idx"]
+        call_seq["idx"] += 1
+
+        if idx == 0 and "INFERRED" in sql_upper and "LIKE" in sql_upper:
+            return _CaptureResult(mapping_rows=inferred_rows)
+
+        # No entity_match_score match in pass 1
+        if "ENTITY_MATCH_SCORE" in sql_upper:
+            return _CaptureResult(rows=[])
+
+        # DELETE in pass 2
+        if "DELETE" in sql_upper:
+            assert params.get("id") == 300
+            return _CaptureResult(rowcount=1)
+
+        return _CaptureResult()
+
+    service.engine = _ExecuteFnEngine(_execute_fn, captured)
+
+    # Mock _search_case_pav to return docs
+    monkeypatch.setattr(
+        service,
+        "_search_case_pav",
+        lambda _case, _stats: [{"DocType": "MTG", "Instrument": "2020999999"}],
+    )
+
+    # Mock _save_documents to return 1 saved
+    monkeypatch.setattr(service, "_save_documents", lambda _strap, _folio, _docs: 1)
+
+    result = service.resolve_inferred_encumbrances()
+    assert result["pass1_deleted"] == 0
+    assert result["pass2_deleted"] == 1
+    assert result["pass2_new_docs"] == 1
+    assert result["total_deleted"] == 1
+
+
+def test_resolve_inferred_pass2_keeps_when_no_new_docs(monkeypatch: Any) -> None:
+    """Pass 2 keeps inferred when case search finds docs but none are new."""
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+    call_seq = {"idx": 0}
+
+    inferred_rows = [
+        {
+            "id": 400,
+            "strap": "GHI012",
+            "folio": "0004",
+            "instrument_number": "INFERRED-292025CA004",
+            "case_number": "292025CA004",
+            "encumbrance_type": "mortgage",
+            "party1": "GHOST BANK NA",
+        },
+    ]
+
+    def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
+        sql_upper = sql.upper()
+        idx = call_seq["idx"]
+        call_seq["idx"] += 1
+
+        if idx == 0 and "INFERRED" in sql_upper and "LIKE" in sql_upper:
+            return _CaptureResult(mapping_rows=inferred_rows)
+
+        if "ENTITY_MATCH_SCORE" in sql_upper:
+            return _CaptureResult(rows=[])
+
+        return _CaptureResult()
+
+    service.engine = _ExecuteFnEngine(_execute_fn, captured)
+
+    monkeypatch.setattr(
+        service,
+        "_search_case_pav",
+        lambda _case, _stats: [{"DocType": "LP", "Instrument": "2020111111"}],
+    )
+
+    # _save_documents returns 0 (all docs already existed)
+    monkeypatch.setattr(service, "_save_documents", lambda _strap, _folio, _docs: 0)
+
+    result = service.resolve_inferred_encumbrances()
+    assert result["pass2_deleted"] == 0
+    assert result["kept"] == 1

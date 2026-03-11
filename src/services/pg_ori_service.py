@@ -748,6 +748,8 @@ class PgOriService:
         self,
         *,
         limit: int | None = None,
+        straps: list[str] | None = None,
+        enc_types: list[str] | None = None,
     ) -> dict[str, Any]:
         """Resolve PAV document IDs for encumbrances seeded without one.
 
@@ -773,9 +775,15 @@ class PgOriService:
             FROM ori_encumbrances
             WHERE ori_id IS NULL
               AND instrument_number NOT LIKE 'INFERRED-%%'
-            ORDER BY recording_date ASC NULLS LAST
         """
         params: dict[str, Any] = {}
+        if straps:
+            sql += " AND strap = ANY(:straps)"
+            params["straps"] = list(straps)
+        if enc_types:
+            sql += " AND encumbrance_type = ANY(:enc_types)"
+            params["enc_types"] = list(enc_types)
+        sql += " ORDER BY recording_date ASC NULLS LAST"
         if limit is not None:
             sql += " LIMIT :lim"
             params["lim"] = limit
@@ -874,6 +882,194 @@ class PgOriService:
             "api_calls": stats["api_calls"],
             "cache_hits": stats.get("cache_hits", 0),
             "retries": stats["retries"],
+        }
+
+    def resolve_inferred_encumbrances(
+        self,
+        *,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Replace or delete INFERRED-* placeholder encumbrances.
+
+        Two-pass algorithm:
+
+        **Pass 1 — Local party match** (no API calls):
+        For each inferred row, check if any real (non-inferred) encumbrance on
+        the same strap has a party matching the inferred ``party1`` (the
+        foreclosing plaintiff). Uses PG ``entity_match_score()`` function. If
+        match >= 0.60 → delete the inferred row (it's redundant).
+
+        **Pass 2 — ORI case search** (API calls for remaining):
+        For inferred rows that survive Pass 1, search ORI by case number via
+        ``_search_case_pav()``. If real docs are found and saved → delete the
+        inferred row. If the case search returns nothing, keep the inferred row
+        as a placeholder for survival analysis.
+        """
+        # ---- Find all inferred rows ----
+        sql = """
+            SELECT id, strap, folio, instrument_number, case_number,
+                   encumbrance_type, party1
+            FROM ori_encumbrances
+            WHERE instrument_number LIKE 'INFERRED-%%'
+        """
+        params: dict[str, Any] = {}
+        if limit is not None:
+            sql += " LIMIT :lim"
+            params["lim"] = limit
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(text(sql), params).mappings().all()
+
+        if not rows:
+            logger.info("resolve_inferred: nothing to do (0 inferred rows)")
+            return {"skipped": True, "reason": "no_inferred_rows"}
+
+        logger.info("resolve_inferred: {} inferred encumbrances to process", len(rows))
+
+        # ---- Pass 1: Local party match ----
+        pass1_deleted = 0
+        pass1_unresolved: list[dict[str, Any]] = []
+
+        for row in rows:
+            enc_id = row["id"]
+            strap = row["strap"]
+            party1 = row["party1"] or ""
+
+            if not strap or not party1:
+                pass1_unresolved.append(dict(row))
+                continue
+
+            # Check if any real encumbrance on same strap matches the plaintiff.
+            # Truncate to 250 chars — PG levenshtein() has a 255-char limit.
+            match_sql = text("""
+                SELECT id, instrument_number, encumbrance_type,
+                       entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party1, ''), 250)) AS p1_score,
+                       entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party2, ''), 250)) AS p2_score
+                FROM ori_encumbrances
+                WHERE strap = :strap
+                  AND instrument_number NOT LIKE 'INFERRED-%%'
+                  AND (
+                      entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party1, ''), 250)) >= 0.60
+                      OR entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party2, ''), 250)) >= 0.60
+                  )
+                ORDER BY GREATEST(
+                    entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party1, ''), 250)),
+                    entity_match_score(LEFT(:party, 250), LEFT(COALESCE(party2, ''), 250))
+                ) DESC
+                LIMIT 1
+            """)
+
+            with self.engine.connect() as conn:
+                match = conn.execute(
+                    match_sql, {"party": party1, "strap": strap}
+                ).fetchone()
+
+            if match:
+                with self.engine.begin() as conn:
+                    conn.execute(
+                        text("DELETE FROM ori_encumbrances WHERE id = :id"),
+                        {"id": enc_id},
+                    )
+                pass1_deleted += 1
+                best_score = max(match[3], match[4])
+                logger.info(
+                    "resolve_inferred: deleted id={} (matched real id={} inst={} score={:.2f})",
+                    enc_id,
+                    match[0],
+                    match[1],
+                    best_score,
+                )
+            else:
+                pass1_unresolved.append(dict(row))
+
+        logger.info(
+            "resolve_inferred pass 1 complete: deleted={} unresolved={}",
+            pass1_deleted,
+            len(pass1_unresolved),
+        )
+
+        # ---- Pass 2: ORI case search for remaining ----
+        pass2_deleted = 0
+        pass2_saved = 0
+        pass2_kept = 0
+        stats: dict[str, int] = {
+            "api_calls": 0,
+            "retries": 0,
+            "truncated": 0,
+            "unresolved_truncations": 0,
+            "cache_hits": 0,
+        }
+
+        for row in pass1_unresolved:
+            enc_id = row["id"]
+            strap = row["strap"]
+            folio = row["folio"]
+            case_number = row["case_number"] or ""
+
+            if not case_number:
+                pass2_kept += 1
+                continue
+
+            try:
+                docs = self._search_case_pav(case_number, stats)
+                if docs and strap and folio:
+                    saved = self._save_documents(strap, folio, docs)
+                    if saved > 0:
+                        # Real docs now exist — delete the inferred placeholder
+                        with self.engine.begin() as conn:
+                            conn.execute(
+                                text("DELETE FROM ori_encumbrances WHERE id = :id"),
+                                {"id": enc_id},
+                            )
+                        pass2_deleted += 1
+                        pass2_saved += saved
+                        logger.info(
+                            "resolve_inferred: case search for {} found {} docs, saved {}, deleted inferred id={}",
+                            case_number,
+                            len(docs),
+                            saved,
+                            enc_id,
+                        )
+                        continue
+
+                # No new docs saved — keep the inferred row
+                pass2_kept += 1
+                logger.info(
+                    "resolve_inferred: case search for {} returned {} docs but 0 new saves; keeping inferred id={}",
+                    case_number,
+                    len(docs) if docs else 0,
+                    enc_id,
+                )
+            except Exception as exc:
+                pass2_kept += 1
+                logger.warning(
+                    "resolve_inferred: error searching case={} for inferred id={}: {}",
+                    case_number,
+                    enc_id,
+                    exc,
+                )
+
+        logger.info(
+            "resolve_inferred pass 2 complete: deleted={} new_docs_saved={} kept={}",
+            pass2_deleted,
+            pass2_saved,
+            pass2_kept,
+        )
+
+        total_deleted = pass1_deleted + pass2_deleted
+        logger.info(
+            "resolve_inferred complete: {}/{} inferred rows deleted, {} kept",
+            total_deleted,
+            len(rows),
+            pass2_kept,
+        )
+        return {
+            "targets": len(rows),
+            "pass1_deleted": pass1_deleted,
+            "pass2_deleted": pass2_deleted,
+            "pass2_new_docs": pass2_saved,
+            "kept": pass2_kept,
+            "total_deleted": total_deleted,
         }
 
     def run_targeted_recovery(
@@ -3429,7 +3625,7 @@ class PgOriService:
         to_date: date,
         split_on_truncated: bool,
         depth: int = 0,
-    ) -> list[dict[str, Any]]:
+        ) -> list[dict[str, Any]]:
         """Public wrapper for legal-description PAV searches."""
         return self._search_legal_pav(
             text_value,
@@ -3439,6 +3635,78 @@ class PgOriService:
             split_on_truncated=split_on_truncated,
             depth=depth,
         )
+
+    def discover_exact_references(
+        self,
+        *,
+        strap: str,
+        folio: str | None,
+        instruments: list[str] | None = None,
+        book_pages: list[tuple[str, str]] | None = None,
+        allowed_types: set[str] | None = None,
+    ) -> dict[str, Any]:
+        """Discover and persist documents reachable by exact instrument/book-page refs."""
+
+        dedup_instruments = sorted({
+            str(instrument).strip()
+            for instrument in (instruments or [])
+            if str(instrument).strip()
+        })
+        dedup_book_pages = sorted({
+            (str(book).strip(), str(page).strip())
+            for book, page in (book_pages or [])
+            if str(book).strip() and str(page).strip()
+        })
+        if not dedup_instruments and not dedup_book_pages:
+            return {
+                "searched_instruments": 0,
+                "searched_book_pages": 0,
+                "docs_found": 0,
+                "saved": 0,
+                "api_calls": 0,
+                "linked_satisfactions": 0,
+                "linked_modifications": 0,
+            }
+
+        stats: dict[str, int] = {
+            "api_calls": 0,
+            "retries": 0,
+            "truncated": 0,
+            "unresolved_truncations": 0,
+            "cache_hits": 0,
+        }
+        docs_by_inst: dict[str, dict[str, Any]] = {}
+
+        for instrument in dedup_instruments:
+            self._merge_docs(docs_by_inst, self._search_instrument_pav(instrument, stats))
+
+        for book, page in dedup_book_pages:
+            self._merge_docs(docs_by_inst, self._search_book_page_pav(book, page, stats))
+
+        docs = list(docs_by_inst.values())
+        if allowed_types:
+            docs = [
+                doc
+                for doc in docs
+                if normalize_document_type(doc.get("DocType") or "") in allowed_types
+            ]
+
+        saved = self._save_documents(strap, folio, docs) if docs else 0
+        linked_satisfactions = 0
+        linked_modifications = 0
+        if saved > 0:
+            linked_satisfactions = self._link_satisfactions(strap)
+            linked_modifications = self._link_modifications(strap)
+
+        return {
+            "searched_instruments": len(dedup_instruments),
+            "searched_book_pages": len(dedup_book_pages),
+            "docs_found": len(docs),
+            "saved": saved,
+            "api_calls": int(stats.get("api_calls", 0)),
+            "linked_satisfactions": linked_satisfactions,
+            "linked_modifications": linked_modifications,
+        }
 
     def _search_book_page_pav(
         self,
