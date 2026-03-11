@@ -1730,7 +1730,11 @@ def _is_entity_name(name: str) -> bool:
 
 
 def _extract_defendant_names(row: dict[str, Any]) -> list[str]:
-    """Extract individual (non-entity) defendant names from judgment data."""
+    """Extract individual (non-entity) defendant names from judgment data.
+
+    Splits compound names on A/K/A, SPOUSE OF, and semicolons to produce
+    shorter, matchable name fragments for HCPA owner search.
+    """
     import json as _json
 
     raw = row.get("jd_defendants") or "[]"
@@ -1739,19 +1743,30 @@ def _extract_defendant_names(row: dict[str, Any]) -> list[str]:
     except (ValueError, TypeError):
         return []
 
+    _SPLIT_RE = re.compile(
+        r"\s*(?:A/K/A|AKA|F/K/A|FKA|SPOUSE\s+OF|;\s*(?:AND\s+)?)\s*",
+        re.IGNORECASE,
+    )
+    _STRIP_RE = re.compile(r"\s*\b(?:UNKNOWN\s+)?TENANT\(?S?\)?\s*", re.IGNORECASE)
+    _SKIP = {"ET AL.", "ET AL", "UNKNOWN", ""}
+
     names: list[str] = []
+    seen: set[str] = set()
     for defendant in defendants:
         name = _clean_text(defendant.get("name") if isinstance(defendant, dict) else None)
         if not name:
             continue
-        upper = name.upper()
-        # Skip placeholders and generic parties
-        if upper in ("ET AL.", "ET AL", "UNKNOWN"):
-            continue
-        # Skip entity names (banks, LLCs, associations, government)
-        if _is_entity_name(upper):
-            continue
-        names.append(upper)
+        # Split compound name into fragments
+        fragments = _SPLIT_RE.split(name.upper())
+        for frag in fragments:
+            frag = _STRIP_RE.sub("", frag).replace(".", "").strip()
+            if frag in _SKIP:
+                continue
+            if _is_entity_name(frag):
+                continue
+            if frag not in seen:
+                seen.add(frag)
+                names.append(frag)
     return names
 
 

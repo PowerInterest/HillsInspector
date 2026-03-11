@@ -456,6 +456,72 @@ def test_lookup_by_exact_address_returns_candidate() -> None:
     assert candidates[0].strap == "S-EXACT"
 
 
+def test_resolve_one_uses_exact_unit_address_before_fuzzy_unit_legal_path(
+    monkeypatch,
+) -> None:
+    service = _build_service()
+    fuzzy_calls: list[str] = []
+
+    ambiguous_head = [
+        identifier_recovery._ParcelCandidate(  # noqa: SLF001
+            folio="F-HEAD-1",
+            strap="S-HEAD-1",
+            property_address="3127 W SLIGH AVE",
+            legal_description="CONDO UNIT 101",
+            source_file_id=1,
+        ),
+        identifier_recovery._ParcelCandidate(  # noqa: SLF001
+            folio="F-HEAD-2",
+            strap="S-HEAD-2",
+            property_address="3127 W SLIGH AVE",
+            legal_description="CONDO UNIT 203B",
+            source_file_id=2,
+        ),
+    ]
+    exact_unit = [
+        identifier_recovery._ParcelCandidate(  # noqa: SLF001
+            folio="F-UNIT",
+            strap="S-UNIT",
+            property_address="3127 W SLIGH AVE 203B",
+            legal_description="CONDO UNIT 203B",
+            source_file_id=3,
+        )
+    ]
+
+    monkeypatch.setattr(service, "_lookup_by_parcel_tokens", lambda *_a, **_k: [])
+    monkeypatch.setattr(service, "_ori_search_case", lambda *_a, **_k: [])
+    monkeypatch.setattr(service, "_lookup_by_legal_description", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        service,
+        "_lookup_by_address",
+        lambda _conn, *, address: fuzzy_calls.append(address) or [],
+    )
+
+    def _fake_lookup_by_exact_address(_conn, *, address: str):
+        if address == "3127 W SLIGH AVE":
+            return ambiguous_head
+        if address == "3127 W SLIGH AVE 203B":
+            return exact_unit
+        return []
+
+    monkeypatch.setattr(service, "_lookup_by_exact_address", _fake_lookup_by_exact_address)
+
+    decision = service._resolve_one(  # noqa: SLF001
+        object(),  # type: ignore[arg-type]
+        {
+            "case_number_raw": "24-CA-000001",
+            "jd_property_address": "3127 W. Sligh Avenue, #203B, Tampa, FL 33614",
+            "jd_legal_description": "UNIT 203B OF TEST CONDOMINIUM",
+        },
+    )
+
+    assert decision.candidate is not None
+    assert decision.candidate.strap == "S-UNIT"
+    assert decision.method == "resolved_exact_address"
+    assert decision.reason == "jd_property_address_exact_unit"
+    assert fuzzy_calls == ["3127 W SLIGH AVE"]
+
+
 def test_hcpa_strap_from_a_prefix_parcel() -> None:
     result = identifier_recovery._hcpa_strap_from_segmented_parcel(  # noqa: SLF001
         "A-13-28-18-3C7-000004-00012.4"
@@ -487,5 +553,7 @@ def test_extract_defendant_names_filters_entities() -> None:
         "jd_defendants": '[{"name": "PASCO BAKER A/K/A PASCO BAKER, JR."}, {"name": "et al."}]',
     }
     names = identifier_recovery._extract_defendant_names(row)  # noqa: SLF001
-    assert len(names) == 1
-    assert "PASCO BAKER" in names[0]
+    # A/K/A splits into two fragments; "et al." is filtered out
+    assert len(names) == 2
+    assert "PASCO BAKER" in names
+    assert "PASCO BAKER, JR" in names
