@@ -211,6 +211,11 @@ class PgPipelineController:
                 self._run_municipal_liens_phase0,
             ),
             (
+                "ori_id_backfill",
+                self.settings.skip_ori_search,
+                self._run_ori_id_backfill,
+            ),
+            (
                 "encumbrance_extraction",
                 self.settings.skip_encumbrance_extraction,
                 self._run_encumbrance_extraction,
@@ -1264,6 +1269,31 @@ class PgPipelineController:
             status=status,
             updated=searched,
             errors=errs + save_skips,
+            details=result,
+        )
+
+    def _run_ori_id_backfill(self) -> StepResult:
+        from src.services.pg_ori_service import PgOriService
+
+        svc = PgOriService(dsn=self.dsn)
+        result = svc.backfill_missing_ori_ids(limit=self.settings.ori_limit)
+        resolved = int(result.get("resolved", 0))
+        errs = int(result.get("errors", 0))
+        if result.get("skipped"):
+            status = "noop"
+        elif errs > 0 and resolved == 0:
+            status = "failed"
+        elif errs > 0:
+            status = "degraded"
+        elif resolved > 0:
+            status = "success"
+        else:
+            status = "noop"
+        return StepResult(
+            step_name="ori_id_backfill",
+            status=status,
+            updated=resolved,
+            errors=errs,
             details=result,
         )
 

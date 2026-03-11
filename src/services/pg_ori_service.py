@@ -744,6 +744,138 @@ class PgOriService:
             "per_target": per_target,
         }
 
+    def backfill_missing_ori_ids(
+        self,
+        *,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Resolve PAV document IDs for encumbrances seeded without one.
+
+        Encumbrances seeded from ``official_records_daily_instruments`` via
+        ``_seed_from_official_records()`` carry an instrument number but no PAV
+        document ID (``ori_id``).  Without ``ori_id`` the extraction service
+        cannot build the download URL for the PDF.
+
+        This method:
+        1. Queries ``ori_encumbrances`` rows with ``ori_id IS NULL`` and a real
+           (non-inferred) instrument number.
+        2. For each instrument, searches the PAV KeywordSearch API (query 320,
+           keyword 1006) which is the same path ``_search_instrument_pav()``
+           uses.
+        3. When exactly one matching document is returned (or exactly one whose
+           instrument matches), writes ``ori_id`` back to the row.
+
+        The method is idempotent, uses the PAV disk cache, respects rate limits
+        via ``_post_pav`` retry logic, and is safe to call repeatedly.
+        """
+        sql = """
+            SELECT id, instrument_number
+            FROM ori_encumbrances
+            WHERE ori_id IS NULL
+              AND instrument_number NOT LIKE 'INFERRED-%%'
+            ORDER BY recording_date ASC NULLS LAST
+        """
+        params: dict[str, Any] = {}
+        if limit is not None:
+            sql += " LIMIT :lim"
+            params["lim"] = limit
+
+        with self.engine.connect() as conn:
+            rows = conn.execute(text(sql), params).mappings().all()
+
+        if not rows:
+            logger.info("ori_id backfill: nothing to do (0 rows with NULL ori_id)")
+            return {"skipped": True, "reason": "no_rows_need_ori_id"}
+
+        logger.info("ori_id backfill: {} encumbrances to resolve", len(rows))
+
+        resolved = 0
+        not_found = 0
+        ambiguous = 0
+        errors = 0
+        stats: dict[str, int] = {
+            "api_calls": 0,
+            "retries": 0,
+            "truncated": 0,
+            "unresolved_truncations": 0,
+            "cache_hits": 0,
+        }
+
+        for idx, row in enumerate(rows, start=1):
+            enc_id = row["id"]
+            instrument = str(row["instrument_number"]).strip()
+            if not instrument:
+                continue
+
+            try:
+                docs = self._search_instrument_pav(instrument, stats)
+
+                # Find documents whose instrument matches exactly
+                matching = [
+                    d for d in docs
+                    if str(d.get("Instrument") or "").strip() == instrument
+                    and d.get("ID")
+                ]
+
+                if len(matching) == 1:
+                    pav_id = str(matching[0]["ID"])
+                    with self.engine.begin() as conn:
+                        conn.execute(
+                            text("""
+                                UPDATE ori_encumbrances
+                                SET ori_id = :ori_id, updated_at = now()
+                                WHERE id = :enc_id AND ori_id IS NULL
+                            """),
+                            {"ori_id": pav_id, "enc_id": enc_id},
+                        )
+                    resolved += 1
+                    if idx % 25 == 0 or idx == len(rows):
+                        logger.info(
+                            "ori_id backfill progress: {}/{} processed, {} resolved",
+                            idx,
+                            len(rows),
+                            resolved,
+                        )
+                elif len(matching) == 0:
+                    not_found += 1
+                    logger.debug(
+                        "ori_id backfill: no PAV match for instrument={}",
+                        instrument,
+                    )
+                else:
+                    ambiguous += 1
+                    logger.debug(
+                        "ori_id backfill: {} PAV matches for instrument={}, skipping",
+                        len(matching),
+                        instrument,
+                    )
+            except Exception as exc:
+                errors += 1
+                logger.warning(
+                    "ori_id backfill error for instrument={}: {}",
+                    instrument,
+                    exc,
+                )
+
+        logger.info(
+            "ori_id backfill complete: resolved={} not_found={} ambiguous={} errors={} api_calls={}",
+            resolved,
+            not_found,
+            ambiguous,
+            errors,
+            stats["api_calls"],
+        )
+        return {
+            "targets": len(rows),
+            "resolved": resolved,
+            "not_found": not_found,
+            "ambiguous": ambiguous,
+            "errors": errors,
+            "api_calls": stats["api_calls"],
+            "cache_hits": stats.get("cache_hits", 0),
+            "retries": stats["retries"],
+        }
+
     def run_targeted_recovery(
         self,
         *,

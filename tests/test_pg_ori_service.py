@@ -55,6 +55,11 @@ class _CaptureResult:
     def mappings(self) -> Self:
         return self
 
+    def all(self) -> list[Any]:
+        if self._mapping_rows:
+            return self._mapping_rows
+        return self._rows
+
 
 class _CaptureConnection:
     def __init__(self, captured: dict[str, Any], rows: list[tuple[Any, ...]] | None = None) -> None:
@@ -1912,3 +1917,247 @@ def test_run_lis_pendens_backfill_stages_unresolved_docs_when_identity_missing(
     )
     assert staged_payload["lp_only"] is True
     assert staged_payload["documents"][0]["Instrument"] == "2024000123"
+
+
+# ===================================================================
+#  backfill_missing_ori_ids
+# ===================================================================
+
+
+def test_backfill_missing_ori_ids_noop_when_no_rows(monkeypatch: Any) -> None:
+    """When every encumbrance already has ori_id, the method should skip."""
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
+        # The SELECT for rows with NULL ori_id returns nothing
+        return _CaptureResult(mapping_rows=[])
+
+    service.engine = _ExecuteFnEngine(_execute_fn, captured)
+    result = service.backfill_missing_ori_ids()
+    assert result["skipped"] is True
+    assert result["reason"] == "no_rows_need_ori_id"
+
+
+def test_backfill_missing_ori_ids_resolves_single_match(monkeypatch: Any) -> None:
+    """When PAV returns exactly one matching document, ori_id is written back."""
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+    call_seq = {"idx": 0}
+
+    rows_needing_backfill = [
+        {"id": 42, "instrument_number": "2026038531"},
+    ]
+
+    def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
+        sql_upper = sql.upper()
+        idx = call_seq["idx"]
+        call_seq["idx"] += 1
+
+        # First call is the SELECT for rows with NULL ori_id
+        if idx == 0 and "ORI_ID IS NULL" in sql_upper:
+            return _CaptureResult(mapping_rows=rows_needing_backfill)
+
+        # Subsequent calls are UPDATE statements
+        if "UPDATE ORI_ENCUMBRANCES" in sql_upper:
+            assert params.get("ori_id") == "PAV-DOC-999"
+            assert params.get("enc_id") == 42
+            return _CaptureResult(rowcount=1)
+
+        return _CaptureResult()
+
+    service.engine = _ExecuteFnEngine(_execute_fn, captured)
+
+    # Mock _search_instrument_pav to return a single matching document
+    monkeypatch.setattr(
+        service,
+        "_search_instrument_pav",
+        lambda _instrument, _stats: [
+            {"Instrument": "2026038531", "ID": "PAV-DOC-999", "DocType": "LN"},
+        ],
+    )
+
+    result = service.backfill_missing_ori_ids()
+    assert result["resolved"] == 1
+    assert result["not_found"] == 0
+    assert result["ambiguous"] == 0
+    assert result["errors"] == 0
+    assert result["targets"] == 1
+
+
+def test_backfill_missing_ori_ids_skips_ambiguous(monkeypatch: Any) -> None:
+    """When PAV returns multiple docs for the same instrument, skip it."""
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+    call_seq = {"idx": 0}
+
+    rows_needing_backfill = [
+        {"id": 10, "instrument_number": "2026042141"},
+    ]
+
+    def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
+        idx = call_seq["idx"]
+        call_seq["idx"] += 1
+        if idx == 0:
+            return _CaptureResult(mapping_rows=rows_needing_backfill)
+        return _CaptureResult()
+
+    service.engine = _ExecuteFnEngine(_execute_fn, captured)
+
+    monkeypatch.setattr(
+        service,
+        "_search_instrument_pav",
+        lambda _instrument, _stats: [
+            {"Instrument": "2026042141", "ID": "ID-A", "DocType": "LN"},
+            {"Instrument": "2026042141", "ID": "ID-B", "DocType": "LN"},
+        ],
+    )
+
+    result = service.backfill_missing_ori_ids()
+    assert result["resolved"] == 0
+    assert result["ambiguous"] == 1
+    assert result["targets"] == 1
+
+
+def test_backfill_missing_ori_ids_handles_not_found(monkeypatch: Any) -> None:
+    """When PAV returns no docs, record as not_found."""
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+    call_seq = {"idx": 0}
+
+    rows_needing_backfill = [
+        {"id": 7, "instrument_number": "2026056127"},
+    ]
+
+    def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
+        idx = call_seq["idx"]
+        call_seq["idx"] += 1
+        if idx == 0:
+            return _CaptureResult(mapping_rows=rows_needing_backfill)
+        return _CaptureResult()
+
+    service.engine = _ExecuteFnEngine(_execute_fn, captured)
+
+    monkeypatch.setattr(
+        service,
+        "_search_instrument_pav",
+        lambda _instrument, _stats: [],
+    )
+
+    result = service.backfill_missing_ori_ids()
+    assert result["resolved"] == 0
+    assert result["not_found"] == 1
+    assert result["targets"] == 1
+
+
+def test_backfill_missing_ori_ids_respects_limit(monkeypatch: Any) -> None:
+    """The limit parameter should be forwarded to the SQL query."""
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+    call_seq = {"idx": 0}
+
+    rows_needing_backfill = [
+        {"id": 1, "instrument_number": "2026000001"},
+    ]
+
+    def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
+        idx = call_seq["idx"]
+        call_seq["idx"] += 1
+        if idx == 0:
+            assert params.get("lim") == 5
+            return _CaptureResult(mapping_rows=rows_needing_backfill)
+        return _CaptureResult(rowcount=1)
+
+    service.engine = _ExecuteFnEngine(_execute_fn, captured)
+
+    monkeypatch.setattr(
+        service,
+        "_search_instrument_pav",
+        lambda _instrument, _stats: [
+            {"Instrument": "2026000001", "ID": "ID-X", "DocType": "MTG"},
+        ],
+    )
+
+    result = service.backfill_missing_ori_ids(limit=5)
+    assert result["resolved"] == 1
+
+
+def test_backfill_missing_ori_ids_handles_search_exception(monkeypatch: Any) -> None:
+    """If PAV search throws, count it as an error and continue."""
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+    call_seq = {"idx": 0}
+
+    rows_needing_backfill = [
+        {"id": 1, "instrument_number": "2026000001"},
+        {"id": 2, "instrument_number": "2026000002"},
+    ]
+
+    def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
+        idx = call_seq["idx"]
+        call_seq["idx"] += 1
+        if idx == 0:
+            return _CaptureResult(mapping_rows=rows_needing_backfill)
+        return _CaptureResult(rowcount=1)
+
+    service.engine = _ExecuteFnEngine(_execute_fn, captured)
+
+    call_count = {"n": 0}
+
+    def _mock_search(instrument: str, stats: dict[str, int]) -> list[dict[str, Any]]:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("network timeout")
+        return [{"Instrument": instrument, "ID": "ID-OK", "DocType": "SAT"}]
+
+    monkeypatch.setattr(service, "_search_instrument_pav", _mock_search)
+
+    result = service.backfill_missing_ori_ids()
+    assert result["errors"] == 1
+    assert result["resolved"] == 1
+    assert result["targets"] == 2
+
+
+def test_backfill_missing_ori_ids_filters_non_matching_instruments(
+    monkeypatch: Any,
+) -> None:
+    """PAV may return docs for other instruments; only exact matches count."""
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+    call_seq = {"idx": 0}
+
+    rows_needing_backfill = [
+        {"id": 50, "instrument_number": "2026040896"},
+    ]
+
+    def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
+        idx = call_seq["idx"]
+        call_seq["idx"] += 1
+        if idx == 0:
+            return _CaptureResult(mapping_rows=rows_needing_backfill)
+        return _CaptureResult(rowcount=1)
+
+    service.engine = _ExecuteFnEngine(_execute_fn, captured)
+
+    monkeypatch.setattr(
+        service,
+        "_search_instrument_pav",
+        lambda _instrument, _stats: [
+            # PAV returned a different instrument in the batch
+            {"Instrument": "2026040897", "ID": "ID-WRONG", "DocType": "ASG"},
+            # And the one we want
+            {"Instrument": "2026040896", "ID": "ID-RIGHT", "DocType": "ASG"},
+        ],
+    )
+
+    result = service.backfill_missing_ori_ids()
+    assert result["resolved"] == 1
+
+    # Verify the correct ID was written
+    update_calls = [
+        (sql, params)
+        for sql, params in captured
+        if "UPDATE" in sql.upper() and "ori_id" in sql
+    ]
+    assert len(update_calls) == 1
+    assert update_calls[0][1]["ori_id"] == "ID-RIGHT"
