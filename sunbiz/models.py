@@ -1038,6 +1038,7 @@ class OriEncumbrance(Base):
     discovered_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     extracted_data: Mapped[dict | None] = mapped_column(JSONB)
+    raw: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
         Index("idx_ori_enc_folio", "folio"),
