@@ -744,3 +744,218 @@ class TestAttemptRepair:
         )
 
         assert result is None
+
+
+class TestRepairIntegration:
+    """End-to-end repair wiring: _process_one triggers repair when address doesn't resolve."""
+
+    def _make_mortgage_payload(self, address: str) -> dict[str, Any]:
+        return {
+            "instrument_number": "2024-0012345",
+            "recording_book": None,
+            "recording_page": None,
+            "recording_date": "2024-01-15",
+            "execution_date": "2024-01-10",
+            "property_address": address,
+            "legal_description": "LOT 5, BLOCK 3, TAMPA PALMS UNIT 1",
+            "parcel_id": "1929084000",
+            "confidence_score": 0.9,
+            "unclear_sections": [],
+            "mortgage_type": "MTG",
+            "mortgagor": "JOHN SMITH",
+            "mortgagee": "WELLS FARGO BANK",
+            "principal_amount": 250000.0,
+            "interest_rate": 6.5,
+            "maturity_date": "2054-01-15",
+            "is_adjustable_rate": False,
+            "mers_min": None,
+            "is_mers_nominee": False,
+            "association_name": None,
+            "has_pud_rider": False,
+            "has_condo_rider": False,
+        }
+
+    def test_process_one_triggers_repair_and_uses_repaired_address(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """When initial extraction has bad address but repair fixes it, the
+        repaired data is what gets cached and saved."""
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+            _cache_path_for,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+
+        # Create a minimal valid PDF
+        import fitz as _fitz
+
+        pdf_path = tmp_path / "mortgage_2024-0012345.pdf"
+        doc = _fitz.open()
+        pg = doc.new_page()
+        pg.insert_text((72, 72), "MORTGAGE DOCUMENT TEXT HERE")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        monkeypatch.setattr(
+            PgEncumbranceExtractionService,
+            "_pdf_path_for",
+            staticmethod(lambda _row: pdf_path),
+        )
+
+        # Mock _save_raw_to_pg to be a no-op
+        monkeypatch.setattr(svc, "_save_raw_to_pg", lambda _id, _text: None)
+
+        # Track what gets saved
+        saved: dict[str, Any] = {}
+
+        def _fake_save(encumbrance_id: int, data: dict[str, Any]) -> None:
+            saved["id"] = encumbrance_id
+            saved["data"] = data
+
+        monkeypatch.setattr(svc, "_save_to_pg", _fake_save)
+
+        # Vision call counter: first call returns bad address, second (repair) returns good
+        bad_address = "951 Yamato Road, Boca Raton, FL 33431"
+        good_address = "1202 E 15TH AVE, TAMPA, FL 33605"
+        call_count = {"n": 0}
+
+        def _fake_analyze_text(
+            prompt: str,
+            *,
+            max_tokens: int = 4000,
+            response_format: dict[str, Any] | None = None,
+        ) -> str:
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return json.dumps(self._make_mortgage_payload(bad_address))
+            return json.dumps(self._make_mortgage_payload(good_address))
+
+        mock_vision = MagicMock()
+        mock_vision.analyze_text = _fake_analyze_text
+        svc.vision = mock_vision
+
+        # Mock _address_resolves: only good_address resolves
+        def _fake_address_resolves(addr: str | None) -> bool:
+            if not addr:
+                return False
+            return "1202 E 15TH AVE" in addr.upper()
+
+        monkeypatch.setattr(svc, "_address_resolves", _fake_address_resolves)
+
+        # Mock engine so it doesn't hit a real DB
+        svc.engine = MagicMock()
+
+        row = {
+            "id": 140408,
+            "encumbrance_type": "mortgage",
+            "instrument_number": "2024-0012345",
+            "raw_document_type": "(MTG) MORTGAGE",
+            "case_number": "TESTCASE",
+            "book": None,
+            "page": None,
+            "recording_date": "2024-01-15",
+            "party1": "JOHN SMITH",
+            "party2": "WELLS FARGO BANK",
+            "strap": "1929084000",
+            "folio": None,
+            "ori_id": "test-ori-id",
+            "ori_uuid": None,
+        }
+
+        result = asyncio.run(svc._process_one(cast("Page", None), row))  # noqa: SLF001
+
+        assert result is not None
+        assert result["_status"] == "extracted"
+        # The repaired address should be what was saved
+        assert saved["data"]["property_address"] == good_address
+        assert result["property_address"] == good_address
+        # Vision was called twice: initial extraction + repair
+        assert call_count["n"] == 2
+        # Cache should have the repaired address
+        cache_path = _cache_path_for(pdf_path)
+        assert cache_path.exists()
+        cached = json.loads(cache_path.read_text())
+        assert cached["property_address"] == good_address
+
+    def test_process_one_keeps_original_when_repair_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """When repair doesn't improve the address, original extraction is kept."""
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+
+        import fitz as _fitz
+
+        pdf_path = tmp_path / "mortgage_2024-0099999.pdf"
+        doc = _fitz.open()
+        pg = doc.new_page()
+        pg.insert_text((72, 72), "MORTGAGE DOCUMENT TEXT HERE")
+        doc.save(str(pdf_path))
+        doc.close()
+
+        monkeypatch.setattr(
+            PgEncumbranceExtractionService,
+            "_pdf_path_for",
+            staticmethod(lambda _row: pdf_path),
+        )
+        monkeypatch.setattr(svc, "_save_raw_to_pg", lambda _id, _text: None)
+
+        saved: dict[str, Any] = {}
+
+        def _fake_save(encumbrance_id: int, data: dict[str, Any]) -> None:
+            saved["id"] = encumbrance_id
+            saved["data"] = data
+
+        monkeypatch.setattr(svc, "_save_to_pg", _fake_save)
+
+        bad_address = "951 Yamato Road, Boca Raton, FL 33431"
+
+        def _fake_analyze_text(
+            prompt: str,
+            *,
+            max_tokens: int = 4000,
+            response_format: dict[str, Any] | None = None,
+        ) -> str:
+            # Both initial and repair return the same bad address
+            return json.dumps(self._make_mortgage_payload(bad_address))
+
+        mock_vision = MagicMock()
+        mock_vision.analyze_text = _fake_analyze_text
+        svc.vision = mock_vision
+
+        # Address never resolves
+        monkeypatch.setattr(svc, "_address_resolves", lambda _addr: False)
+
+        svc.engine = MagicMock()
+
+        row = {
+            "id": 138560,
+            "encumbrance_type": "mortgage",
+            "instrument_number": "2024-0099999",
+            "raw_document_type": "(MTG) MORTGAGE",
+            "case_number": "TESTCASE2",
+            "book": None,
+            "page": None,
+            "recording_date": "2024-01-15",
+            "party1": "JANE DOE",
+            "party2": "CHASE BANK",
+            "strap": "9999999999",
+            "folio": None,
+            "ori_id": "test-ori-id-2",
+            "ori_uuid": None,
+        }
+
+        result = asyncio.run(svc._process_one(cast("Page", None), row))  # noqa: SLF001
+
+        assert result is not None
+        assert result["_status"] == "extracted"
+        # Original (bad) address is kept since repair didn't improve it
+        assert saved["data"]["property_address"] == bad_address
