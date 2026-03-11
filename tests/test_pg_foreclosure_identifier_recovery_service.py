@@ -364,50 +364,50 @@ def test_lookup_by_address_matches_blaine_place_to_blaine_top_pl() -> None:
 
 
 def test_address_head_normalizes_avenue_to_ave() -> None:
-    assert identifier_recovery._address_head("3127 W SLIGH AVENUE") == "3127 W SLIGH AVE"
+    assert identifier_recovery._address_head("3127 W SLIGH AVENUE") == "3127 W SLIGH AVE"  # noqa: SLF001
 
 
 def test_address_head_normalizes_drive_to_dr() -> None:
-    assert identifier_recovery._address_head("2303 Briana Drive, Brandon, FL 33511") == "2303 BRIANA DR"
+    assert identifier_recovery._address_head("2303 Briana Drive, Brandon, FL 33511") == "2303 BRIANA DR"  # noqa: SLF001
 
 
 def test_address_head_normalizes_court_to_ct() -> None:
-    assert identifier_recovery._address_head("821 Luent Sands Court, Brandon, FL 33511") == "821 LUENT SANDS CT"
+    assert identifier_recovery._address_head("821 Luent Sands Court, Brandon, FL 33511") == "821 LUENT SANDS CT"  # noqa: SLF001
 
 
 def test_address_head_normalizes_street_to_st() -> None:
-    assert identifier_recovery._address_head("123 Main Street, Tampa") == "123 MAIN ST"
+    assert identifier_recovery._address_head("123 Main Street, Tampa") == "123 MAIN ST"  # noqa: SLF001
 
 
 def test_address_head_normalizes_boulevard_to_blvd() -> None:
-    assert identifier_recovery._address_head("456 N Dale Mabry Boulevard") == "456 N DALE MABRY BLVD"
+    assert identifier_recovery._address_head("456 N Dale Mabry Boulevard") == "456 N DALE MABRY BLVD"  # noqa: SLF001
 
 
 def test_address_head_does_not_double_abbreviate() -> None:
-    assert identifier_recovery._address_head("1202 E 15TH AVE, TAMPA, FL 33605") == "1202 E 15TH AVE"
+    assert identifier_recovery._address_head("1202 E 15TH AVE, TAMPA, FL 33605") == "1202 E 15TH AVE"  # noqa: SLF001
 
 
 def test_address_head_strips_city_state_zip_when_no_comma() -> None:
     """Address without commas should still strip city/state/zip."""
-    assert identifier_recovery._address_head("1202 DESERT HILLS DR SUN CITY CENTER FL 33573") == "1202 DESERT HILLS DR"
+    assert identifier_recovery._address_head("1202 DESERT HILLS DR SUN CITY CENTER FL 33573") == "1202 DESERT HILLS DR"  # noqa: SLF001
 
 
 def test_address_head_returns_none_for_empty() -> None:
-    assert identifier_recovery._address_head("") is None
-    assert identifier_recovery._address_head(None) is None
+    assert identifier_recovery._address_head("") is None  # noqa: SLF001
+    assert identifier_recovery._address_head(None) is None  # noqa: SLF001
 
 
 def test_address_with_unit_from_hash() -> None:
     """Unit numbers after # should be appended when comma splits them off."""
     assert (
-        identifier_recovery._address_with_unit(
+        identifier_recovery._address_with_unit(  # noqa: SLF001
             "3127 W. Sligh Avenue, #203B, Tampa, FL 33614"
         )
         == "3127 W SLIGH AVE 203B"
     )
-    assert identifier_recovery._address_with_unit("100 Main St, Tampa, FL") is None
+    assert identifier_recovery._address_with_unit("100 Main St, Tampa, FL") is None  # noqa: SLF001
     assert (
-        identifier_recovery._address_with_unit("100 Main St #5, Tampa")
+        identifier_recovery._address_with_unit("100 Main St #5, Tampa")  # noqa: SLF001
         == "100 MAIN ST 5"
     )
 
@@ -457,7 +457,7 @@ def test_lookup_by_exact_address_returns_candidate() -> None:
 
 
 def test_hcpa_strap_from_a_prefix_parcel() -> None:
-    result = identifier_recovery._hcpa_strap_from_segmented_parcel(
+    result = identifier_recovery._hcpa_strap_from_segmented_parcel(  # noqa: SLF001
         "A-13-28-18-3C7-000004-00012.4"
     )
     assert result == "1828133C7000004000124A"
@@ -465,7 +465,7 @@ def test_hcpa_strap_from_a_prefix_parcel() -> None:
 
 def test_hcpa_strap_from_u_prefix_parcel_unchanged() -> None:
     """Existing U-prefix behavior still works."""
-    result = identifier_recovery._hcpa_strap_from_segmented_parcel(
+    result = identifier_recovery._hcpa_strap_from_segmented_parcel(  # noqa: SLF001
         "U-13-28-18-3C7-000004-00012.4"
     )
     assert result == "1828133C7000004000124U"
@@ -475,7 +475,7 @@ def test_extract_defendant_names_from_judgment_data() -> None:
     row = {
         "jd_defendants": '[{"name": "FRIENDS OF DOLPHINS, LLC"}, {"name": "TAZINE JAFFER"}, {"name": "UNKNOWN TENANT IN POSSESSION"}]',
     }
-    names = identifier_recovery._extract_defendant_names(row)
+    names = identifier_recovery._extract_defendant_names(row)  # noqa: SLF001
     # Should exclude entity names (LLC, BANK, UNKNOWN, TENANT, etc.)
     assert "TAZINE JAFFER" in names
     assert "FRIENDS OF DOLPHINS, LLC" not in names
@@ -486,6 +486,6 @@ def test_extract_defendant_names_filters_entities() -> None:
     row = {
         "jd_defendants": '[{"name": "PASCO BAKER A/K/A PASCO BAKER, JR."}, {"name": "et al."}]',
     }
-    names = identifier_recovery._extract_defendant_names(row)
+    names = identifier_recovery._extract_defendant_names(row)  # noqa: SLF001
     assert len(names) == 1
     assert "PASCO BAKER" in names[0]
