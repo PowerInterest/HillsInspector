@@ -410,3 +410,47 @@ def test_address_with_unit_from_hash() -> None:
         identifier_recovery._address_with_unit("100 Main St #5, Tampa")
         == "100 MAIN ST 5"
     )
+
+
+class _ExactAddressConnection:
+    """Fake connection that returns one parcel for exact address match."""
+
+    def __init__(self) -> None:
+        self.execute_calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    def execute(
+        self,
+        statement: Any,
+        params: dict[str, Any] | None = None,
+    ) -> _FakeResult:
+        sql = str(statement)
+        self.execute_calls.append((sql, params))
+        if "WHERE property_address = :address" in sql:
+            return _FakeResult(
+                rows=[
+                    {
+                        "folio": "F-EXACT",
+                        "strap": "S-EXACT",
+                        "property_address": "2303 BRIANA DR",
+                        "raw_legal1": "CUSCADEN A W",
+                        "raw_legal2": "LOT 4",
+                        "raw_legal3": "",
+                        "raw_legal4": "",
+                        "source_file_id": 99,
+                    }
+                ]
+            )
+        return _FakeResult(rows=[])
+
+
+def test_lookup_by_exact_address_returns_candidate() -> None:
+    service = _build_service()
+    conn = _ExactAddressConnection()
+
+    candidates = service._lookup_by_exact_address(  # noqa: SLF001
+        conn,  # type: ignore[arg-type]
+        address="2303 BRIANA DR",
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].strap == "S-EXACT"

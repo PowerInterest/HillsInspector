@@ -407,6 +407,7 @@ class PgForeclosureIdentifierRecoveryService:
             "resolved_ori_owner_cross_party": 0,
             "resolved_legal_description": 0,
             "resolved_address_plus_legal": 0,
+            "resolved_exact_address": 0,
             "resolved_address_unit_plus_legal": 0,
             "ambiguous": 0,
             "unresolved": 0,
@@ -691,6 +692,21 @@ class PgForeclosureIdentifierRecoveryService:
                         ambiguous=True,
                         reason=f"{address_source}_ambiguous",
                     )
+
+        # Exact address-only match (no legal cross-check required —
+        # a single exact HCPA match is high-confidence by itself)
+        for address_source in ("jd_property_address", "property_address"):
+            address = _address_head(row.get(address_source))
+            if not address:
+                continue
+            exact = self._lookup_by_exact_address(conn, address=address)
+            if len(exact) == 1:
+                return _ResolutionDecision(
+                    candidate=exact[0],
+                    method="resolved_exact_address",
+                    ambiguous=False,
+                    reason=f"{address_source}_exact",
+                )
 
         # Retry with unit number appended (e.g., "3127 W SLIGH AVE 203B")
         if judgment_legal:
@@ -1251,6 +1267,25 @@ class PgForeclosureIdentifierRecoveryService:
         )
         rows = conn.execute(sql, params).mappings().fetchall()
         return [_row_to_candidate(row) for row in rows]
+
+    def _lookup_by_exact_address(
+        self,
+        conn: Connection,
+        *,
+        address: str,
+    ) -> list[_ParcelCandidate]:
+        """Exact match against HCPA property_address. No fuzzy fallback."""
+        sql = text("""
+            SELECT folio, strap, property_address,
+                   raw_legal1, raw_legal2, raw_legal3, raw_legal4,
+                   source_file_id
+            FROM hcpa_bulk_parcels
+            WHERE property_address = :address
+            ORDER BY source_file_id DESC NULLS LAST
+            LIMIT 5
+        """)
+        rows = conn.execute(sql, {"address": address}).mappings().fetchall()
+        return _unique_candidates(rows)
 
     def _lookup_by_legal_description(
         self,
