@@ -199,7 +199,8 @@ SELECT
     NULLIF(TRIM(f.judgment_data->>'block'), '')              AS jd_block,
     NULLIF(TRIM(f.judgment_data->>'unit'), '')               AS jd_unit,
     NULLIF(TRIM(f.judgment_data->>'plat_book'), '')          AS jd_plat_book,
-    NULLIF(TRIM(f.judgment_data->>'plat_page'), '')          AS jd_plat_page
+    NULLIF(TRIM(f.judgment_data->>'plat_page'), '')          AS jd_plat_page,
+    f.judgment_data->>'defendants'                           AS jd_defendants
 FROM foreclosures f
 WHERE f.archived_at IS NULL
   AND f.judgment_data IS NOT NULL
@@ -409,6 +410,8 @@ class PgForeclosureIdentifierRecoveryService:
             "resolved_address_plus_legal": 0,
             "resolved_exact_address": 0,
             "resolved_address_unit_plus_legal": 0,
+            "resolved_defendant_owner": 0,
+            "resolved_defendant_owner_legal": 0,
             "ambiguous": 0,
             "unresolved": 0,
             "errors": 0,
@@ -737,6 +740,33 @@ class PgForeclosureIdentifierRecoveryService:
                 ambiguous=True,
                 reason=ambiguous_reason or "ori_ambiguous",
             )
+
+        # Defendant name -> HCPA owner match (last resort)
+        defendant_names = _extract_defendant_names(row)
+        for name in defendant_names[:_MAX_OWNER_NAMES]:
+            owner_matches = self._lookup_by_owner_name(conn, name=name)
+            if not owner_matches:
+                continue
+            if len(owner_matches) == 1:
+                return _ResolutionDecision(
+                    candidate=owner_matches[0],
+                    method="resolved_defendant_owner",
+                    ambiguous=False,
+                    reason=f"defendant_{name[:30]}",
+                )
+            if judgment_legal and len(owner_matches) <= 10:
+                picked = self._pick_single_legal_match(
+                    judgment_legal=judgment_legal,
+                    candidates=owner_matches,
+                    threshold=0.60,
+                )
+                if picked.candidate:
+                    return _ResolutionDecision(
+                        candidate=picked.candidate,
+                        method="resolved_defendant_owner_legal",
+                        ambiguous=False,
+                        reason=f"defendant_{name[:30]}_plus_legal",
+                    )
 
         return _ResolutionDecision(
             candidate=None,
@@ -1287,6 +1317,27 @@ class PgForeclosureIdentifierRecoveryService:
         rows = conn.execute(sql, {"address": address}).mappings().fetchall()
         return _unique_candidates(rows)
 
+    def _lookup_by_owner_name(
+        self,
+        conn: Connection,
+        *,
+        name: str,
+    ) -> list[_ParcelCandidate]:
+        """Search HCPA parcels by owner name (ILIKE match)."""
+        sql = text("""
+            SELECT folio, strap, property_address,
+                   raw_legal1, raw_legal2, raw_legal3, raw_legal4,
+                   source_file_id
+            FROM hcpa_bulk_parcels
+            WHERE owner_name ILIKE :pattern
+            ORDER BY source_file_id DESC NULLS LAST
+            LIMIT :limit
+        """)
+        rows = conn.execute(
+            sql, {"pattern": f"%{name}%", "limit": _MAX_OWNER_MATCHES}
+        ).mappings().fetchall()
+        return _unique_candidates(rows)
+
     def _lookup_by_legal_description(
         self,
         conn: Connection,
@@ -1662,6 +1713,32 @@ def _condo_seed(legal: str) -> str | None:
 def _is_entity_name(name: str) -> bool:
     upper_name = name.upper()
     return any(keyword in upper_name for keyword in _ENTITY_KEYWORDS)
+
+
+def _extract_defendant_names(row: dict[str, Any]) -> list[str]:
+    """Extract individual (non-entity) defendant names from judgment data."""
+    import json as _json
+
+    raw = row.get("jd_defendants") or "[]"
+    try:
+        defendants = _json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        return []
+
+    names: list[str] = []
+    for defendant in defendants:
+        name = _clean_text(defendant.get("name") if isinstance(defendant, dict) else None)
+        if not name:
+            continue
+        upper = name.upper()
+        # Skip placeholders and generic parties
+        if upper in ("ET AL.", "ET AL", "UNKNOWN"):
+            continue
+        # Skip entity names (banks, LLCs, associations, government)
+        if _is_entity_name(upper):
+            continue
+        names.append(upper)
+    return names
 
 
 def _extract_party_two_individuals(case_docs: list[dict[str, Any]]) -> list[str]:

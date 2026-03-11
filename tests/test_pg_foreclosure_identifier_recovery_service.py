@@ -469,3 +469,23 @@ def test_hcpa_strap_from_u_prefix_parcel_unchanged() -> None:
         "U-13-28-18-3C7-000004-00012.4"
     )
     assert result == "1828133C7000004000124U"
+
+
+def test_extract_defendant_names_from_judgment_data() -> None:
+    row = {
+        "jd_defendants": '[{"name": "FRIENDS OF DOLPHINS, LLC"}, {"name": "TAZINE JAFFER"}, {"name": "UNKNOWN TENANT IN POSSESSION"}]',
+    }
+    names = identifier_recovery._extract_defendant_names(row)
+    # Should exclude entity names (LLC, BANK, UNKNOWN, TENANT, etc.)
+    assert "TAZINE JAFFER" in names
+    assert "FRIENDS OF DOLPHINS, LLC" not in names
+    assert "UNKNOWN TENANT IN POSSESSION" not in names
+
+
+def test_extract_defendant_names_filters_entities() -> None:
+    row = {
+        "jd_defendants": '[{"name": "PASCO BAKER A/K/A PASCO BAKER, JR."}, {"name": "et al."}]',
+    }
+    names = identifier_recovery._extract_defendant_names(row)
+    assert len(names) == 1
+    assert "PASCO BAKER" in names[0]
