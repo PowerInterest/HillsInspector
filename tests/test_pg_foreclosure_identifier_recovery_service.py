@@ -395,3 +395,18 @@ def test_address_head_strips_city_state_zip_when_no_comma() -> None:
 def test_address_head_returns_none_for_empty() -> None:
     assert identifier_recovery._address_head("") is None
     assert identifier_recovery._address_head(None) is None
+
+
+def test_address_with_unit_from_hash() -> None:
+    """Unit numbers after # should be appended when comma splits them off."""
+    assert (
+        identifier_recovery._address_with_unit(
+            "3127 W. Sligh Avenue, #203B, Tampa, FL 33614"
+        )
+        == "3127 W SLIGH AVE 203B"
+    )
+    assert identifier_recovery._address_with_unit("100 Main St, Tampa, FL") is None
+    assert (
+        identifier_recovery._address_with_unit("100 Main St #5, Tampa")
+        == "100 MAIN ST 5"
+    )

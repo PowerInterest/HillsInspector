@@ -407,6 +407,7 @@ class PgForeclosureIdentifierRecoveryService:
             "resolved_ori_owner_cross_party": 0,
             "resolved_legal_description": 0,
             "resolved_address_plus_legal": 0,
+            "resolved_address_unit_plus_legal": 0,
             "ambiguous": 0,
             "unresolved": 0,
             "errors": 0,
@@ -689,6 +690,28 @@ class PgForeclosureIdentifierRecoveryService:
                         method=None,
                         ambiguous=True,
                         reason=f"{address_source}_ambiguous",
+                    )
+
+        # Retry with unit number appended (e.g., "3127 W SLIGH AVE 203B")
+        if judgment_legal:
+            for address_source in ("property_address", "jd_property_address"):
+                address_unit = _address_with_unit(row.get(address_source))
+                if not address_unit:
+                    continue
+                unit_candidates = self._lookup_by_address(conn, address=address_unit)
+                if not unit_candidates:
+                    continue
+                picked = self._pick_single_legal_match(
+                    judgment_legal=judgment_legal,
+                    candidates=unit_candidates,
+                    threshold=0.60,
+                )
+                if picked.candidate:
+                    return _ResolutionDecision(
+                        candidate=picked.candidate,
+                        method="resolved_address_unit_plus_legal",
+                        ambiguous=False,
+                        reason=f"{address_source}_unit",
                     )
 
         if saw_ambiguous:
@@ -1415,7 +1438,9 @@ def _address_head(value: Any) -> str | None:
     if not first:
         return None
 
-    tokens = first.split()
+    # Strip periods (common in "W.", "N.", "S.", "E.") for clean matching
+    tokens = [t.replace(".", "") for t in first.split()]
+    tokens = [t for t in tokens if t]
     normalized: list[str] = []
     for idx, token in enumerate(tokens):
         abbrev = _SUFFIX_TO_ABBREV.get(token)
@@ -1434,6 +1459,24 @@ def _address_head(value: Any) -> str | None:
         normalized.append(token)
 
     return " ".join(normalized) if normalized else None
+
+
+_UNIT_RE = re.compile(r"#\s*([A-Z0-9]+)", re.IGNORECASE)
+
+
+def _address_with_unit(value: Any) -> str | None:
+    """Return normalized address with unit appended, or None if no unit found."""
+    cleaned = _clean_text(value)
+    if not cleaned:
+        return None
+    match = _UNIT_RE.search(cleaned)
+    if not match:
+        return None
+    head = _address_head(cleaned)
+    if not head:
+        return None
+    unit = match.group(1).upper()
+    return f"{head} {unit}"
 
 
 def _address_lookup_terms(value: str | None) -> tuple[str | None, list[str]]:
