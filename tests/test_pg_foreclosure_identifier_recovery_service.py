@@ -454,3 +454,18 @@ def test_lookup_by_exact_address_returns_candidate() -> None:
 
     assert len(candidates) == 1
     assert candidates[0].strap == "S-EXACT"
+
+
+def test_hcpa_strap_from_a_prefix_parcel() -> None:
+    result = identifier_recovery._hcpa_strap_from_segmented_parcel(
+        "A-13-28-18-3C7-000004-00012.4"
+    )
+    assert result == "1828133C7000004000124A"
+
+
+def test_hcpa_strap_from_u_prefix_parcel_unchanged() -> None:
+    """Existing U-prefix behavior still works."""
+    result = identifier_recovery._hcpa_strap_from_segmented_parcel(
+        "U-13-28-18-3C7-000004-00012.4"
+    )
+    assert result == "1828133C7000004000124U"

@@ -97,7 +97,7 @@ _PAV_HEADERS = {
 _CASE_NUM_RE = re.compile(r"^\d{0,4}\s*(CA|CC)\s*\d+$", re.IGNORECASE)
 _INSTRUMENT_FROM_STEM_RE = re.compile(r"(\d{8,12})$")
 _PARCEL_SEGMENT_RE = re.compile(
-    r"^(?:U-)?(\d{2})-(\d{2})-(\d{2})-([A-Z0-9]+)-(\d+)-(\d+)\.(\d)$"
+    r"^([A-Z])-(\d{2})-(\d{2})-(\d{2})-([A-Z0-9]+)-(\d+)-(\d+)\.(\d)$"
 )
 _PLACEHOLDER_PARCEL_IDS = frozenset(
     {
@@ -1714,8 +1714,8 @@ def _hcpa_strap_from_segmented_parcel(parcel_id: str) -> str | None:
     match = _PARCEL_SEGMENT_RE.match(token)
     if not match:
         return None
-    seg1, seg2, seg3, seg4, seg5, seg6, decimal = match.groups()
-    return f"{seg3}{seg2}{seg1}{seg4}{seg5}{seg6}{decimal}U"
+    suffix, sec, twp, rge, code, block, lot, decimal = match.groups()
+    return f"{rge}{twp}{sec}{code}{block}{lot}{decimal}{suffix}"
 
 
 def _subdivision_terms(subdivision: str | None) -> list[str]:
