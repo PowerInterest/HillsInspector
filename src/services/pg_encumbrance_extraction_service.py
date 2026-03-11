@@ -826,6 +826,32 @@ class PgEncumbranceExtractionService:
         with self.engine.begin() as conn:
             conn.execute(sql, {"jdata": json.dumps(data, default=str), "id": encumbrance_id})
 
+    def _address_resolves(self, address: str | None) -> bool:
+        """Check if extracted address matches any HCPA parcel."""
+        if not address or len(address.strip()) < 5:
+            return False
+        normalized = address.upper().strip().split(",")[0].strip()
+        if not normalized:
+            return False
+        sql = text("""
+            SELECT 1 FROM hcpa_bulk_parcels
+            WHERE property_address = :addr
+            LIMIT 1
+        """)
+        with self.engine.connect() as conn:
+            return conn.execute(sql, {"addr": normalized}).fetchone() is not None
+
+    def _save_raw_to_pg(self, encumbrance_id: int, ocr_text: str) -> None:
+        """Persist raw OCR text before LLM extraction."""
+        sql = text("""
+            UPDATE ori_encumbrances
+            SET raw = :ocr_text,
+                updated_at = NOW()
+            WHERE id = :id
+        """)
+        with self.engine.begin() as conn:
+            conn.execute(sql, {"ocr_text": ocr_text, "id": encumbrance_id})
+
     # ------------------------------------------------------------------
     # Single-row orchestration
     # ------------------------------------------------------------------
@@ -910,6 +936,9 @@ class PgEncumbranceExtractionService:
                     "_status": "error",
                     "_reason": "ocr_empty",
                 }
+
+            # Persist raw OCR text before LLM call
+            self._save_raw_to_pg(row["id"], ocr_text)
 
             raw = self._extract_from_ocr_text(ocr_text, enc_type)
             if not raw:

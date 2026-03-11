@@ -5,6 +5,7 @@ import json
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import MagicMock
 
 import fitz
 import pytest
@@ -570,3 +571,50 @@ class TestEndToEnd:
         PgEncumbranceExtractionService._tally_result(stats, None)  # noqa: SLF001
 
         assert stats == {"extracted": 1, "cached": 1, "errors": 1, "skipped": 1}
+
+
+@pytest.fixture()
+def mock_engine():
+    return MagicMock()
+
+
+class TestAddressResolves:
+    def test_address_resolves_returns_false_for_non_hillsborough(self, mock_engine):
+        """Out-of-county addresses should not resolve."""
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchone.return_value = None
+        mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+        svc.engine = mock_engine
+
+        assert svc._address_resolves("951 Yamato Road, Suite 175, Boca Raton, FL 33431") is False
+
+    def test_address_resolves_returns_true_for_matching_hcpa(self, mock_engine):
+        """Known HCPA address should resolve."""
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchone.return_value = (1,)
+        mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
+        mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+        svc.engine = mock_engine
+
+        assert svc._address_resolves("1202 E 15TH AVE, TAMPA, FL 33605") is True
+
+    def test_address_resolves_returns_false_for_null(self):
+        """Null and empty addresses should not resolve."""
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        assert svc._address_resolves(None) is False
+        assert svc._address_resolves("") is False
