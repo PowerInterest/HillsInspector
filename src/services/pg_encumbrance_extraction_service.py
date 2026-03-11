@@ -914,6 +914,42 @@ class PgEncumbranceExtractionService:
             conn.execute(sql, {"ocr_text": ocr_text, "id": encumbrance_id})
 
     # ------------------------------------------------------------------
+    # Repair pass
+    # ------------------------------------------------------------------
+
+    def _attempt_repair(
+        self,
+        ocr_text: str,
+        validated: dict[str, Any],
+        enc_type: str,
+    ) -> dict[str, Any] | None:
+        """Fire a repair prompt when the extracted address doesn't resolve."""
+        address = validated.get("property_address")
+        error_desc = self._build_repair_error_description(address)
+
+        prompt = _REPAIR_PROMPT_TEMPLATE.format(
+            previous_json=json.dumps(validated, indent=2, default=str),
+            error_description=error_desc,
+            zips=_HILLSBOROUGH_ZIPS,
+            ocr_text=ocr_text,
+        )
+
+        _, model_cls = EXTRACTION_DISPATCH[enc_type]
+        schema_guidance = _schema_contract_text(model_cls)
+        full_prompt = f"{prompt}\n\n{schema_guidance}"
+
+        raw = self.vision.analyze_text(full_prompt, max_tokens=4000)
+        if not raw:
+            return None
+
+        parsed = robust_json_parse(raw, f"{enc_type}_repair")
+        if not parsed:
+            return None
+
+        repaired, _ = self._validate(parsed, enc_type, row_context={}, source="repair")
+        return repaired
+
+    # ------------------------------------------------------------------
     # Single-row orchestration
     # ------------------------------------------------------------------
 
@@ -1034,10 +1070,35 @@ class PgEncumbranceExtractionService:
                     "_reason": "validation_failed",
                 }
 
-            # 6. Cache
+            # 6. Repair if address doesn't resolve
+            address = validated.get("property_address")
+            if not self._address_resolves(address):
+                logger.info(
+                    "Address '{}' for id={} type={} inst={} does not resolve; attempting repair",
+                    address,
+                    row["id"],
+                    enc_type,
+                    row.get("instrument_number"),
+                )
+                repaired = self._attempt_repair(ocr_text, validated, enc_type)
+                if repaired and self._address_resolves(repaired.get("property_address")):
+                    logger.info(
+                        "Repair succeeded for id={}: '{}' -> '{}'",
+                        row["id"],
+                        address,
+                        repaired.get("property_address"),
+                    )
+                    validated = repaired
+                else:
+                    logger.info(
+                        "Repair did not improve address for id={}; keeping original",
+                        row["id"],
+                    )
+
+            # 7. Cache
             _write_cache(downloaded, validated)
 
-            # 7. Save to DB
+            # 8. Save to DB
             self._save_to_pg(row["id"], validated)
             logger.info(
                 "Extracted id={} type={} inst={}",

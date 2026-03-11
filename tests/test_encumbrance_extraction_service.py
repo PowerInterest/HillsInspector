@@ -573,7 +573,7 @@ class TestEndToEnd:
         assert stats == {"extracted": 1, "cached": 1, "errors": 1, "skipped": 1}
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_engine():
     return MagicMock()
 
@@ -592,7 +592,7 @@ class TestAddressResolves:
         mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
         svc.engine = mock_engine
 
-        assert svc._address_resolves("951 Yamato Road, Suite 175, Boca Raton, FL 33431") is False
+        assert svc._address_resolves("951 Yamato Road, Suite 175, Boca Raton, FL 33431") is False  # noqa: SLF001
 
     def test_address_resolves_returns_true_for_matching_hcpa(self, mock_engine):
         """Known HCPA address should resolve."""
@@ -607,7 +607,7 @@ class TestAddressResolves:
         mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
         svc.engine = mock_engine
 
-        assert svc._address_resolves("1202 E 15TH AVE, TAMPA, FL 33605") is True
+        assert svc._address_resolves("1202 E 15TH AVE, TAMPA, FL 33605") is True  # noqa: SLF001
 
     def test_address_resolves_returns_false_for_null(self):
         """Null and empty addresses should not resolve."""
@@ -616,8 +616,8 @@ class TestAddressResolves:
         )
 
         svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
-        assert svc._address_resolves(None) is False
-        assert svc._address_resolves("") is False
+        assert svc._address_resolves(None) is False  # noqa: SLF001
+        assert svc._address_resolves("") is False  # noqa: SLF001
 
 
 class TestRepairErrorDescription:
@@ -628,7 +628,7 @@ class TestRepairErrorDescription:
         )
 
         svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
-        desc = svc._build_repair_error_description("951 Yamato Road, Boca Raton, FL 33431")
+        desc = svc._build_repair_error_description("951 Yamato Road, Boca Raton, FL 33431")  # noqa: SLF001
         assert "33431" in desc
         assert "not in Hillsborough County" in desc
 
@@ -639,7 +639,7 @@ class TestRepairErrorDescription:
         )
 
         svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
-        desc = svc._build_repair_error_description(None)
+        desc = svc._build_repair_error_description(None)  # noqa: SLF001
         assert "No property address" in desc
 
     def test_repair_error_description_handles_hcpa_mismatch(self):
@@ -649,5 +649,98 @@ class TestRepairErrorDescription:
         )
 
         svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
-        desc = svc._build_repair_error_description("999 FAKE ST, TAMPA, FL 33601")
+        desc = svc._build_repair_error_description("999 FAKE ST, TAMPA, FL 33601")  # noqa: SLF001
         assert "does not match any known parcel" in desc
+
+
+class TestAttemptRepair:
+    def test_attempt_repair_returns_repaired_data_on_success(self):
+        """When vision returns valid corrected JSON, _attempt_repair returns it."""
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        mock_vision = MagicMock()
+        # Return a valid mortgage JSON from the repair prompt
+        mock_vision.analyze_text.return_value = json.dumps({
+            "instrument_number": "2024-0012345",
+            "recording_book": None,
+            "recording_page": None,
+            "recording_date": "2024-01-15",
+            "execution_date": "2024-01-10",
+            "property_address": "1202 E 15TH AVE, TAMPA, FL 33605",
+            "legal_description": "LOT 5, BLOCK 3, TAMPA PALMS UNIT 1",
+            "parcel_id": "1929084000",
+            "confidence_score": 0.9,
+            "unclear_sections": [],
+            "mortgage_type": "MTG",
+            "mortgagor": "JOHN SMITH",
+            "mortgagee": "WELLS FARGO BANK",
+            "principal_amount": 250000.0,
+            "interest_rate": 6.5,
+            "maturity_date": "2054-01-15",
+            "is_adjustable_rate": False,
+            "mers_min": None,
+            "is_mers_nominee": False,
+            "association_name": None,
+            "has_pud_rider": False,
+            "has_condo_rider": False,
+        })
+        svc.vision = mock_vision
+
+        original = {
+            "instrument_number": "2024-0012345",
+            "property_address": "951 Yamato Road, Boca Raton, FL 33431",
+            "mortgagor": "JOHN SMITH",
+            "mortgagee": "WELLS FARGO BANK",
+        }
+
+        result = svc._attempt_repair("--- PAGE 1 ---\nMortgage text", original, "mortgage")  # noqa: SLF001
+
+        assert result is not None
+        assert result["property_address"] == "1202 E 15TH AVE, TAMPA, FL 33605"
+        mock_vision.analyze_text.assert_called_once()
+        # Verify the repair prompt contains expected content
+        call_args = mock_vision.analyze_text.call_args
+        prompt = call_args[0][0]
+        assert "951 Yamato Road" in prompt
+        assert "not in Hillsborough County" in prompt
+
+    def test_attempt_repair_returns_none_on_empty_vision_response(self):
+        """When vision returns nothing, _attempt_repair returns None."""
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        mock_vision = MagicMock()
+        mock_vision.analyze_text.return_value = None
+        svc.vision = mock_vision
+
+        result = svc._attempt_repair(  # noqa: SLF001
+            "--- PAGE 1 ---\nMortgage text",
+            {"property_address": "bad address"},
+            "mortgage",
+        )
+
+        assert result is None
+
+    def test_attempt_repair_returns_none_on_invalid_json(self):
+        """When vision returns garbage, _attempt_repair returns None."""
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        mock_vision = MagicMock()
+        mock_vision.analyze_text.return_value = "not valid json at all"
+        svc.vision = mock_vision
+
+        result = svc._attempt_repair(  # noqa: SLF001
+            "--- PAGE 1 ---\nMortgage text",
+            {"property_address": "bad address"},
+            "mortgage",
+        )
+
+        assert result is None
