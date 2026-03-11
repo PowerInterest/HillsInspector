@@ -6,6 +6,8 @@ guided_json which builds a grammar FSM from the full schema.
 """
 
 import json
+from pathlib import Path
+import tempfile
 import time
 
 from openai import OpenAI
@@ -18,8 +20,12 @@ client = OpenAI(
     timeout=600.0,
 )
 
+tmp_dir = Path(tempfile.gettempdir())
+ocr_path = tmp_dir / "navy_fed_ocr.txt"
+response_path = tmp_dir / "qwen_raw_response.txt"
+
 # Load OCR text
-with open("/tmp/navy_fed_ocr.txt") as f:
+with ocr_path.open() as f:
     ocr_text = f.read()
 
 # Get schema for prompt embedding (compact)
@@ -76,7 +82,7 @@ print(f"Response in {elapsed:.1f}s ({len(content)} chars)")
 print(f"Usage: {completion.usage}")
 
 # Save raw response
-with open("/tmp/qwen_raw_response.txt", "w") as f:
+with response_path.open("w") as f:
     f.write(content)
 
 # Parse and validate

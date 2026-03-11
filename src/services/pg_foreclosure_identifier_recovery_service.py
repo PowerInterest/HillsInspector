@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import Iterable
 
 from loguru import logger
 import requests
@@ -1807,7 +1808,7 @@ def _owner_name_variants(name: str) -> list[str]:
     return deduped
 
 
-def _unique_candidates(rows: list[Any]) -> list[_ParcelCandidate]:
+def _unique_candidates(rows: Iterable[Any]) -> list[_ParcelCandidate]:
     deduped: dict[tuple[str | None, str | None], _ParcelCandidate] = {}
     for row in rows:
         candidate = _row_to_candidate(row)
