@@ -331,6 +331,99 @@ def _json_scalar(value: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Legacy key remapping
+#
+# Old cache files use different field names than the current Pydantic models.
+# When loaded, mismatched keys are silently dropped, losing data.  This
+# remapping converts old-format keys to current-schema keys so cached
+# extractions survive model renames.  The function is idempotent — if keys
+# are already in the new format, it's a no-op.
+# ---------------------------------------------------------------------------
+
+_CONFIDENCE_WORD_TO_SCORE: dict[str, float] = {
+    "high": 0.95,
+    "medium": 0.80,
+    "low": 0.60,
+}
+
+_LEGACY_KEY_MAPS: dict[str, dict[str, str | None]] = {
+    "mortgage": {
+        "borrower": "mortgagor",
+        "lender": "mortgagee",
+        "book": "recording_book",
+        "page": "recording_page",
+        "is_mers": "is_mers_nominee",
+        "confidence": "confidence_score",
+        "document_type": None,   # remove — not in new schema
+        "red_flags": None,       # remove
+        "prior_assignments": None,  # remove
+    },
+    "assignment": {
+        "confidence": "confidence_score",
+        "red_flags": None,
+    },
+    "lien": {
+        "creditor": "lienor",
+        "debtor": "lienee",
+        "amount": "lien_amount",
+        "document_type": "lien_type",
+        "confidence": "confidence_score",
+    },
+}
+
+_ASSIGNMENT_NESTED_REMAP: dict[str, str | None] = {
+    "book": "recording_book",
+    "page": "recording_page",
+    "original_amount": None,  # remove
+}
+
+
+def _remap_legacy_keys(payload: dict[str, Any], enc_type: str) -> dict[str, Any]:
+    """Remap legacy cache field names to current Pydantic model keys.
+
+    Old cache files (written before schema renames) use different field names.
+    When loaded, mismatched keys are silently dropped by Pydantic's
+    ``extra="forbid"`` policy, losing data.  This function translates legacy
+    keys into the current schema so cached extractions survive model renames.
+
+    The function is idempotent: if keys are already in the new format, the
+    payload passes through unchanged.
+    """
+    key_map = _LEGACY_KEY_MAPS.get(enc_type)
+    if not key_map:
+        return payload
+
+    remapped: dict[str, Any] = {}
+    for key, value in payload.items():
+        target = key_map.get(key, key)  # default: keep the key as-is
+        if target is None:
+            # Explicitly removed legacy key
+            continue
+        # Special handling: convert word confidence to numeric score
+        if key == "confidence" and target == "confidence_score" and isinstance(value, str):
+            value = _CONFIDENCE_WORD_TO_SCORE.get(value.lower(), 0.80)
+        remapped[target] = value
+
+    # Assignment: remap nested original_mortgage → parent_instrument
+    if enc_type == "assignment" and "original_mortgage" in remapped:
+        nested = remapped.pop("original_mortgage")
+        if isinstance(nested, dict):
+            child: dict[str, Any] = {}
+            for k, v in nested.items():
+                child_target = _ASSIGNMENT_NESTED_REMAP.get(k, k)
+                if child_target is None:
+                    continue
+                child[child_target] = v
+            # Only set if the key isn't already present (idempotent)
+            if "parent_instrument" not in remapped:
+                remapped["parent_instrument"] = child
+        elif nested is not None and "parent_instrument" not in remapped:
+            remapped["parent_instrument"] = nested
+
+    return remapped
+
+
+# ---------------------------------------------------------------------------
 # Cache helpers
 #
 # Follow the same {stem}_extracted.json convention used by
@@ -367,6 +460,42 @@ def _write_cache(pdf_path: Path, data: dict[str, Any]) -> None:
         logger.debug(f"Cached extraction to {cache}")
     except OSError as exc:
         logger.warning(f"Failed to write cache {cache}: {exc}")
+
+
+def _delete_cache(downloaded_path: Path) -> None:
+    """Remove the ``_extracted.json`` cache file next to a downloaded PDF."""
+    cache = _cache_path_for(downloaded_path)
+    try:
+        if cache.exists():
+            cache.unlink()
+            logger.debug("Deleted stale cache {}", cache)
+    except OSError as exc:
+        logger.warning("Failed to delete cache {}: {}", cache, exc)
+
+
+def _normalize_case_number(raw: str) -> str | None:
+    """Convert ORI clerk case number format to standard civil case format.
+
+    ORI stores case numbers like ``292025CA006599A001HC`` which encode:
+    - ``29`` = county prefix (always 29 for Hillsborough)
+    - ``YYYY`` = filing year
+    - ``XX`` = case type (CA, CC, DR, etc.)
+    - ``NNNNNN`` = sequence number
+    - ``A001HC`` = suffix
+
+    This converts to standard format: ``YY-XX-NNNNNN`` (e.g. ``25-CA-006599``).
+    Returns None if the input doesn't match the expected pattern.
+    """
+    if not raw or len(raw) < 14:
+        return None
+    # Pattern: 29YYYYXXNNNNNNA001HC
+    match = re.match(r"^29(\d{4})([A-Z]{2})(\d{6})", raw)
+    if not match:
+        return None
+    year = match.group(1)
+    case_type = match.group(2)
+    number = match.group(3)
+    return f"{year[2:]}-{case_type}-{number}"
 
 
 # ---------------------------------------------------------------------------

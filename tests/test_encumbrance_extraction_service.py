@@ -959,3 +959,268 @@ class TestRepairIntegration:
         assert result["_status"] == "extracted"
         # Original (bad) address is kept since repair didn't improve it
         assert saved["data"]["property_address"] == bad_address
+
+    def test_process_one_persists_raw_ocr_before_llm_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        class _CaptureConn:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, Any]]] = []
+
+            def execute(self, sql: Any, params: dict[str, Any]) -> None:
+                self.calls.append((str(sql), params))
+
+        class _BeginCtx:
+            def __init__(self, conn: _CaptureConn) -> None:
+                self._conn = conn
+
+            def __enter__(self) -> _CaptureConn:
+                return self._conn
+
+            def __exit__(
+                self,
+                _exc_type: object,
+                _exc: object,
+                _tb: object,
+            ) -> bool:
+                return False
+
+        class _CaptureEngine:
+            def __init__(self, conn: _CaptureConn) -> None:
+                self._conn = conn
+
+            def begin(self) -> _BeginCtx:
+                return _BeginCtx(self._conn)
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        capture_conn = _CaptureConn()
+        svc.engine = _CaptureEngine(capture_conn)
+
+        pdf_path = tmp_path / "mortgage_2024-0012345.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4\n")
+
+        monkeypatch.setattr(
+            PgEncumbranceExtractionService,
+            "_pdf_path_for",
+            staticmethod(lambda _row: pdf_path),
+        )
+
+        async def _fake_download(_page: Any, _row: dict[str, Any]) -> Path:
+            return pdf_path
+
+        monkeypatch.setattr(svc, "_download_pdf", _fake_download)
+        monkeypatch.setattr(svc, "_render_pages", lambda _pdf: [tmp_path / "page-1.png"])
+        monkeypatch.setattr(
+            svc,
+            "_ocr_images_to_text",
+            lambda _images: ("--- PAGE 1 ---\nRAW OCR TEXT", []),
+        )
+
+        def _fake_extract(ocr_text: str, enc_type: str) -> None:
+            assert capture_conn.calls, "raw OCR must be persisted before LLM extraction"
+            assert ocr_text == "--- PAGE 1 ---\nRAW OCR TEXT"
+            assert enc_type == "mortgage"
+
+        monkeypatch.setattr(svc, "_extract_from_ocr_text", _fake_extract)
+
+        row = {
+            "id": 140409,
+            "encumbrance_type": "mortgage",
+            "instrument_number": "2024-0012345",
+            "raw_document_type": "(MTG) MORTGAGE",
+            "case_number": "TESTCASE",
+        }
+
+        result = asyncio.run(svc._process_one(cast("Page", None), row))  # noqa: SLF001
+
+        assert result == {
+            "_status": "error",
+            "_reason": "llm_no_structured_output",
+        }
+        assert len(capture_conn.calls) == 1
+        sql, params = capture_conn.calls[0]
+        assert "UPDATE ori_encumbrances" in sql
+        assert "SET raw = :ocr_text" in sql
+        assert params == {
+            "ocr_text": "--- PAGE 1 ---\nRAW OCR TEXT",
+            "id": 140409,
+        }
+
+
+class TestRemapLegacyKeys:
+    """Tests for _remap_legacy_keys — converting old cache field names to current schema."""
+
+    def test_mortgage_remap_borrower_lender(self):
+        from src.services.pg_encumbrance_extraction_service import _remap_legacy_keys
+
+        legacy = {
+            "borrower": "JOHN SMITH",
+            "lender": "WELLS FARGO BANK",
+            "book": "12345",
+            "page": "678",
+            "is_mers": True,
+            "confidence": "high",
+            "document_type": "MTG",
+            "red_flags": ["some flag"],
+            "prior_assignments": [{"assignee": "X"}],
+            "instrument_number": "2024-0012345",
+        }
+
+        result = _remap_legacy_keys(legacy, "mortgage")
+
+        assert result["mortgagor"] == "JOHN SMITH"
+        assert result["mortgagee"] == "WELLS FARGO BANK"
+        assert result["recording_book"] == "12345"
+        assert result["recording_page"] == "678"
+        assert result["is_mers_nominee"] is True
+        assert result["confidence_score"] == 0.95
+        assert "document_type" not in result
+        assert "red_flags" not in result
+        assert "prior_assignments" not in result
+        assert result["instrument_number"] == "2024-0012345"
+
+    def test_mortgage_remap_confidence_medium(self):
+        from src.services.pg_encumbrance_extraction_service import _remap_legacy_keys
+
+        legacy = {"confidence": "medium", "instrument_number": "X"}
+        result = _remap_legacy_keys(legacy, "mortgage")
+        assert result["confidence_score"] == 0.80
+
+    def test_mortgage_remap_confidence_low(self):
+        from src.services.pg_encumbrance_extraction_service import _remap_legacy_keys
+
+        legacy = {"confidence": "low", "instrument_number": "X"}
+        result = _remap_legacy_keys(legacy, "mortgage")
+        assert result["confidence_score"] == 0.60
+
+    def test_mortgage_remap_idempotent_when_already_new_format(self):
+        from src.services.pg_encumbrance_extraction_service import _remap_legacy_keys
+
+        new_format = {
+            "mortgagor": "JOHN SMITH",
+            "mortgagee": "WELLS FARGO BANK",
+            "recording_book": "12345",
+            "recording_page": "678",
+            "is_mers_nominee": True,
+            "confidence_score": 0.9,
+            "instrument_number": "2024-0012345",
+        }
+
+        result = _remap_legacy_keys(new_format, "mortgage")
+
+        assert result == new_format
+
+    def test_assignment_remap_original_mortgage_to_parent_instrument(self):
+        from src.services.pg_encumbrance_extraction_service import _remap_legacy_keys
+
+        legacy = {
+            "original_mortgage": {
+                "book": "15000",
+                "page": "200",
+                "original_amount": 250000,
+                "instrument_number": "2020-001",
+            },
+            "confidence": "high",
+            "red_flags": ["flag"],
+            "assignor": "OLD BANK",
+            "assignee": "NEW BANK",
+        }
+
+        result = _remap_legacy_keys(legacy, "assignment")
+
+        assert result["confidence_score"] == 0.95
+        assert "red_flags" not in result
+        assert result["parent_instrument"]["recording_book"] == "15000"
+        assert result["parent_instrument"]["recording_page"] == "200"
+        assert result["parent_instrument"]["instrument_number"] == "2020-001"
+        assert "original_amount" not in result["parent_instrument"]
+        assert result["assignor"] == "OLD BANK"
+        assert result["assignee"] == "NEW BANK"
+
+    def test_assignment_remap_idempotent_parent_instrument(self):
+        from src.services.pg_encumbrance_extraction_service import _remap_legacy_keys
+
+        new_format = {
+            "parent_instrument": {"recording_book": "15000", "recording_page": "200"},
+            "confidence_score": 0.9,
+            "assignor": "OLD BANK",
+            "assignee": "NEW BANK",
+        }
+
+        result = _remap_legacy_keys(new_format, "assignment")
+
+        assert result["parent_instrument"] == {"recording_book": "15000", "recording_page": "200"}
+        assert result["confidence_score"] == 0.9
+
+    def test_lien_remap_creditor_debtor(self):
+        from src.services.pg_encumbrance_extraction_service import _remap_legacy_keys
+
+        legacy = {
+            "creditor": "CITY OF TAMPA",
+            "debtor": "JOHN DOE",
+            "amount": 5000.0,
+            "document_type": "CEL",
+            "confidence": "medium",
+            "instrument_number": "2023-999",
+        }
+
+        result = _remap_legacy_keys(legacy, "lien")
+
+        assert result["lienor"] == "CITY OF TAMPA"
+        assert result["lienee"] == "JOHN DOE"
+        assert result["lien_amount"] == 5000.0
+        assert result["lien_type"] == "CEL"
+        assert result["confidence_score"] == 0.80
+        assert result["instrument_number"] == "2023-999"
+
+    def test_no_remap_for_unknown_type(self):
+        from src.services.pg_encumbrance_extraction_service import _remap_legacy_keys
+
+        payload = {"grantor": "A", "grantee": "B"}
+        result = _remap_legacy_keys(payload, "easement")
+
+        assert result is payload  # exact same object, no copy
+
+    def test_no_remap_for_satisfaction(self):
+        from src.services.pg_encumbrance_extraction_service import _remap_legacy_keys
+
+        payload = {"releasor": "X", "releasee": "Y"}
+        result = _remap_legacy_keys(payload, "satisfaction")
+
+        assert result is payload
+
+
+class TestNormalizeCaseNumber:
+    """Tests for _normalize_case_number — ORI clerk format to standard."""
+
+    def test_standard_ca_case(self):
+        from src.services.pg_encumbrance_extraction_service import _normalize_case_number
+
+        assert _normalize_case_number("292025CA006599A001HC") == "25-CA-006599"
+
+    def test_cc_case(self):
+        from src.services.pg_encumbrance_extraction_service import _normalize_case_number
+
+        assert _normalize_case_number("292024CC012345A001HC") == "24-CC-012345"
+
+    def test_returns_none_for_short_input(self):
+        from src.services.pg_encumbrance_extraction_service import _normalize_case_number
+
+        assert _normalize_case_number("29") is None
+        assert _normalize_case_number("") is None
+
+    def test_returns_none_for_non_matching(self):
+        from src.services.pg_encumbrance_extraction_service import _normalize_case_number
+
+        assert _normalize_case_number("ABCDEF1234567890") is None
+
+    def test_returns_none_for_none(self):
+        from src.services.pg_encumbrance_extraction_service import _normalize_case_number
+
+        assert _normalize_case_number("") is None
