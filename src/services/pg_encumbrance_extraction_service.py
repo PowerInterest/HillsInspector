@@ -142,6 +142,7 @@ EXTRACTION_DISPATCH: dict[str, tuple[str, type[BaseDocumentExtraction]]] = {
     "lis_pendens": (LIS_PENDENS_PROMPT, LisPendensExtraction),
     "lien": (LIEN_PROMPT, LienExtraction),
     "satisfaction": (SATISFACTION_PROMPT, SatisfactionExtraction),
+    "release": (SATISFACTION_PROMPT, SatisfactionExtraction),
     "assignment": (ASSIGNMENT_PROMPT, AssignmentExtraction),
     "noc": (NOC_PROMPT, NOCExtraction),
     "easement": (DEED_PROMPT, DeedExtraction),
@@ -658,7 +659,6 @@ class PgEncumbranceExtractionService:
             FROM ori_encumbrances
             WHERE extracted_data IS NULL
               AND ori_id IS NOT NULL
-              AND encumbrance_type != 'release'
         """
         params: dict[str, Any] = {}
         if straps:

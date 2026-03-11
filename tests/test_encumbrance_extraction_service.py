@@ -34,6 +34,7 @@ class TestDispatchTable:
             ("lis_pendens", LisPendensExtraction),
             ("lien", LienExtraction),
             ("satisfaction", SatisfactionExtraction),
+            ("release", SatisfactionExtraction),
             ("assignment", AssignmentExtraction),
             ("noc", NOCExtraction),
             ("easement", DeedExtraction),
@@ -181,6 +182,7 @@ class TestCacheLogic:
 
         assert rows == []
         assert "WHERE extracted_data IS NULL" in captured["sql"]
+        assert "!= 'release'" not in captured["sql"], "release should no longer be excluded"
         assert captured["params"] == {
             "straps": ["123"],
             "enc_types": ["mortgage"],
