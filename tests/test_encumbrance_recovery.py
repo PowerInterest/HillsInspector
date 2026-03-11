@@ -129,14 +129,32 @@ def test_recovery_maps_buckets_to_targeted_services(monkeypatch: Any) -> None:
                 ],
             }
 
-    class _FakeMortgageService:
+    class _FakeExtractionService:
         def __init__(self, dsn: str | None = None) -> None:
-            calls["mortgage_dsn"] = dsn
+            calls["extraction_dsn"] = dsn
 
         def run(self, *, straps: list[str] | None = None, limit: int | None = None) -> dict[str, Any]:
-            calls["mortgage_straps"] = straps
-            calls["mortgage_limit"] = limit
-            return {"mortgages_found": 2, "mortgages_extracted": 2, "errors": 0}
+            calls["extraction_straps"] = straps
+            calls["extraction_limit"] = limit
+            return {"extracted": 2, "cached": 0, "errors": 0}
+
+    class _FakeRelationshipService:
+        def __init__(self, dsn: str | None = None) -> None:
+            calls["relationship_dsn"] = dsn
+
+        def run(
+            self,
+            *,
+            straps: list[str] | None = None,
+            foreclosure_ids: list[int] | None = None,
+            limit: int | None = None,
+            max_passes: int = 2,
+        ) -> dict[str, Any]:
+            calls["relationship_straps"] = straps
+            calls["relationship_ids"] = foreclosure_ids
+            calls["relationship_limit"] = limit
+            calls["relationship_max_passes"] = max_passes
+            return {"saved": 1, "holder_updates": 1, "errors": 0}
 
     class _FakeSurvivalService:
         def __init__(self, dsn: str | None = None) -> None:
@@ -167,8 +185,12 @@ def test_recovery_maps_buckets_to_targeted_services(monkeypatch: Any) -> None:
         _FakeOriService,
     )
     monkeypatch.setattr(
-        "src.services.audit.encumbrance_recovery.PgMortgageExtractionService",
-        _FakeMortgageService,
+        "src.services.audit.encumbrance_recovery.PgEncumbranceExtractionService",
+        _FakeExtractionService,
+    )
+    monkeypatch.setattr(
+        "src.services.audit.encumbrance_recovery.PgEncumbranceRelationshipService",
+        _FakeRelationshipService,
     )
     monkeypatch.setattr(
         "src.services.audit.encumbrance_recovery.PgSurvivalService",
@@ -185,7 +207,9 @@ def test_recovery_maps_buckets_to_targeted_services(monkeypatch: Any) -> None:
         3: ["sat_parent_gap"],
     }
     assert calls["noc_kwargs"]["foreclosure_ids"] == [2]
-    assert calls["mortgage_straps"] == ["S1", "S2", "S3"]
+    assert calls["extraction_straps"] == ["S1", "S2", "S3"]
+    assert calls["relationship_straps"] == ["S1", "S2", "S3"]
+    assert calls["relationship_ids"] == [1, 2, 3]
     assert calls["survival_ids"] == [1, 2, 3]
     assert calls["survival_force"] is True
     assert result["recoverable_bucket_counts_before"]["lp_missing"] == 1
@@ -231,4 +255,5 @@ def test_recovery_marks_step_degraded_when_actions_error(monkeypatch: Any) -> No
     assert result["degraded"] is True
     assert result["errors"] == 1
     assert result["actions"]["mortgage_extract"]["reason"] == "no_recovered_straps"
+    assert result["actions"]["encumbrance_relationships"]["reason"] == "no_recovered_relationship_targets"
     assert result["actions"]["survival_analysis"]["reason"] == "no_recovered_foreclosures"

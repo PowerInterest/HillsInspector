@@ -32,6 +32,7 @@ those new payloads can contribute additional exact references.
 
 from __future__ import annotations
 
+from datetime import date
 import json
 from typing import Any
 
@@ -64,6 +65,27 @@ def _recording_ref_parts(ref: Any) -> tuple[str | None, tuple[str, str] | None]:
     page = str(payload.get("recording_page") or payload.get("page") or "").strip()
     book_page = (book, page) if book and page else None
     return instrument, book_page
+
+
+def _parse_iso_date(value: Any) -> date | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(raw[:10])
+    except ValueError:
+        return None
+
+
+def _latest_assignment_candidate(
+    candidates: list[tuple[date | None, str]],
+) -> tuple[date | None, str] | None:
+    if not candidates:
+        return None
+    known_dates = [candidate for candidate in candidates if candidate[0] is not None]
+    if known_dates:
+        return max(known_dates, key=lambda candidate: candidate[0] or date.min)
+    return candidates[-1]
 
 
 class PgEncumbranceRelationshipService:
@@ -358,7 +380,8 @@ class PgEncumbranceRelationshipService:
         rows = self._load_rows_for_strap(strap)
         bases_by_instrument: dict[str, int] = {}
         bases_by_book_page: dict[tuple[str, str], int] = {}
-        updates: list[tuple[int, str]] = []
+        assignment_candidates: dict[int, list[tuple[date | None, str]]] = {}
+        final_updates: list[tuple[int, str]] = []
 
         for row in rows:
             if row.get("encumbrance_type") in {"assignment", "satisfaction", "release", "noc", "lis_pendens", "other"}:
@@ -372,21 +395,6 @@ class PgEncumbranceRelationshipService:
             if book and page:
                 bases_by_book_page[(book, page)] = base_id
 
-        # Judgment holder first — serves as baseline that assignments can override.
-        # Assignments are recorded after the mortgage origination and reflect the
-        # most recent holder, so they must come last in the updates list.
-        foreclosed = _as_dict(judgment_data.get("foreclosed_mortgage"))
-        current_holder = str(foreclosed.get("current_holder") or "").strip()
-        if current_holder:
-            instrument, book_page = _recording_ref_parts(foreclosed)
-            base_id = None
-            if instrument:
-                base_id = bases_by_instrument.get(instrument)
-            if base_id is None and book_page:
-                base_id = bases_by_book_page.get(book_page)
-            if base_id:
-                updates.append((base_id, current_holder))
-
         for row in rows:
             if row.get("encumbrance_type") != "assignment":
                 continue
@@ -399,14 +407,52 @@ class PgEncumbranceRelationshipService:
             if base_id is None and book_page:
                 base_id = bases_by_book_page.get(book_page)
             if base_id and assignee:
-                updates.append((base_id, assignee))
+                assignment_candidates.setdefault(base_id, []).append((
+                    _parse_iso_date(row.get("recording_date")),
+                    assignee,
+                ))
 
-        if not updates:
+        for base_id, candidates in assignment_candidates.items():
+            latest_assignment = _latest_assignment_candidate(candidates)
+            if latest_assignment is not None:
+                _assignment_date, holder = latest_assignment
+                final_updates.append((base_id, holder))
+
+        foreclosed = _as_dict(judgment_data.get("foreclosed_mortgage"))
+        current_holder = str(foreclosed.get("current_holder") or "").strip()
+        judgment_effective_date = _parse_iso_date(
+            judgment_data.get("judgment_date") or judgment_data.get("recording_date")
+        )
+        if current_holder:
+            instrument, book_page = _recording_ref_parts(foreclosed)
+            base_id = None
+            if instrument:
+                base_id = bases_by_instrument.get(instrument)
+            if base_id is None and book_page:
+                base_id = bases_by_book_page.get(book_page)
+            if base_id:
+                latest_assignment = _latest_assignment_candidate(
+                    assignment_candidates.get(base_id, [])
+                )
+                winner = current_holder
+                if latest_assignment is not None:
+                    assignment_date, assignment_holder = latest_assignment
+                    if judgment_effective_date is None:
+                        if assignment_date is not None:
+                            winner = assignment_holder
+                    elif assignment_date is not None and assignment_date > judgment_effective_date:
+                        winner = assignment_holder
+                final_updates = [
+                    update for update in final_updates if update[0] != base_id
+                ]
+                final_updates.append((base_id, winner))
+
+        if not final_updates:
             return 0
 
         updated = 0
         with self.engine.begin() as conn:
-            for encumbrance_id, holder in updates:
+            for encumbrance_id, holder in final_updates:
                 result = conn.execute(
                     text("""
                         UPDATE ori_encumbrances

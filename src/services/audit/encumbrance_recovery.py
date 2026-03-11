@@ -10,6 +10,8 @@ load real source data into PostgreSQL:
 - ``PgOriService`` for targeted ORI rediscovery and gap backfills,
 - ``PgEncumbranceExtractionService`` for encumbrance PDF extraction on newly-touched
   straps,
+- ``PgEncumbranceRelationshipService`` for exact-reference discovery and holder
+  propagation from extracted JSON,
 - ``PgSurvivalService`` for targeted re-analysis after encumbrance changes.
 
 This service does not invent new facts and it does not require audit-specific
@@ -25,6 +27,7 @@ from typing import Any
 
 from src.services.audit.pg_audit_encumbrance import AuditReport, run_audit
 from src.services.pg_encumbrance_extraction_service import PgEncumbranceExtractionService
+from src.services.pg_encumbrance_relationship_service import PgEncumbranceRelationshipService
 from src.services.pg_ori_service import PgOriService
 from src.services.pg_survival_service import PgSurvivalService
 
@@ -282,6 +285,20 @@ class EncumbranceRecoveryService:
             mortgage_result = {"skipped": True, "reason": "no_recovered_straps"}
         actions["mortgage_extract"] = mortgage_result
         action_errors += int(mortgage_result.get("errors") or 0)
+
+        relationship_result: dict[str, Any]
+        if changed_straps or changed_foreclosure_ids:
+            relationship_result = PgEncumbranceRelationshipService(dsn=self.dsn).run(
+                straps=sorted(changed_straps) or None,
+                foreclosure_ids=sorted(changed_foreclosure_ids) or None,
+            )
+        else:
+            relationship_result = {
+                "skipped": True,
+                "reason": "no_recovered_relationship_targets",
+            }
+        actions["encumbrance_relationships"] = relationship_result
+        action_errors += int(relationship_result.get("errors") or 0)
 
         survival_result: dict[str, Any]
         if changed_foreclosure_ids:

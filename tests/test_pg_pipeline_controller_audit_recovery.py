@@ -61,7 +61,8 @@ def _build_controller(
         settings.skip_identifier_recovery = True
         settings.skip_ori_search = True
         settings.skip_municipal_liens = True
-        settings.skip_mortgage_extract = True
+        settings.skip_encumbrance_extraction = True
+        settings.skip_encumbrance_relationships = True
         settings.skip_survival = True
         settings.skip_final_refresh = True
         settings.skip_market_data = True

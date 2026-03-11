@@ -194,6 +194,7 @@ class TestCacheLogic:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from src.services.pg_encumbrance_extraction_service import (
+            EXTRACTION_DISPATCH,
             PgEncumbranceExtractionService,
         )
 
@@ -208,7 +209,8 @@ class TestCacheLogic:
                 assert kwargs == {
                     "limit": None,
                     "straps": None,
-                    "enc_types": None,
+                    "enc_types": sorted(EXTRACTION_DISPATCH),
+                    "only_unextracted": True,
                 }
                 return {"resolved": 1, "api_calls": 3}
 
@@ -218,6 +220,41 @@ class TestCacheLogic:
 
         assert result["updated"] == 1
         assert result["api_calls"] == 3
+
+    def test_backfill_missing_ori_ids_preserves_explicit_type_scope(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from src.services.pg_encumbrance_extraction_service import (
+            PgEncumbranceExtractionService,
+        )
+
+        svc = PgEncumbranceExtractionService.__new__(PgEncumbranceExtractionService)
+        svc.dsn = "postgresql://db"
+
+        class _FakeOriService:
+            def __init__(self, dsn: str | None = None) -> None:
+                assert dsn == "postgresql://db"
+
+            def backfill_missing_ori_ids(self, **kwargs: Any) -> dict[str, Any]:
+                assert kwargs == {
+                    "limit": 5,
+                    "straps": ["strap-1"],
+                    "enc_types": ["assignment", "mortgage"],
+                    "only_unextracted": True,
+                }
+                return {"resolved": 2, "api_calls": 4}
+
+        monkeypatch.setattr("src.services.pg_ori_service.PgOriService", _FakeOriService)
+
+        result = svc._backfill_missing_ori_ids(  # noqa: SLF001
+            limit=5,
+            straps=["strap-1"],
+            enc_types=["mortgage", "assignment"],
+        )
+
+        assert result["updated"] == 2
+        assert result["api_calls"] == 4
 
     def test_process_one_ignores_stale_mortgage_cache_and_falls_through_to_download(
         self,

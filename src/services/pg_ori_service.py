@@ -750,6 +750,7 @@ class PgOriService:
         limit: int | None = None,
         straps: list[str] | None = None,
         enc_types: list[str] | None = None,
+        only_unextracted: bool = False,
     ) -> dict[str, Any]:
         """Resolve PAV document IDs for encumbrances seeded without one.
 
@@ -761,6 +762,9 @@ class PgOriService:
         This method:
         1. Queries ``ori_encumbrances`` rows with ``ori_id IS NULL`` and a real
            (non-inferred) instrument number.
+           When ``only_unextracted`` is true, it further scopes to
+           ``extracted_data IS NULL`` so extraction-limited runs spend their
+           budget only on still-extractable rows.
         2. For each instrument, searches the PAV KeywordSearch API (query 320,
            keyword 1006) which is the same path ``_search_instrument_pav()``
            uses.
@@ -777,6 +781,8 @@ class PgOriService:
               AND instrument_number NOT LIKE 'INFERRED-%%'
         """
         params: dict[str, Any] = {}
+        if only_unextracted:
+            sql += " AND extracted_data IS NULL"
         if straps:
             sql += " AND strap = ANY(:straps)"
             params["straps"] = list(straps)

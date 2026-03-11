@@ -153,7 +153,7 @@ def test_process_target_chases_missing_refs_and_updates_holder(monkeypatch: Any)
 
 
 def test_assignment_holder_overrides_judgment_holder(monkeypatch: Any) -> None:
-    """Assignment holders should take precedence over judgment current_holder."""
+    """Only assignments recorded after judgment should override the judgment holder."""
     captured_sql: list[tuple[str, dict[str, Any]]] = []
     service = PgEncumbranceRelationshipService.__new__(PgEncumbranceRelationshipService)
     service.engine = _Engine(captured_sql)
@@ -190,6 +190,7 @@ def test_assignment_holder_overrides_judgment_holder(monkeypatch: Any) -> None:
     result = service._apply_holder_updates(  # noqa: SLF001
         strap="STRAP-X",
         judgment_data={
+            "judgment_date": "2024-05-15",
             "foreclosed_mortgage": {
                 "instrument_number": "2024000001",
                 "current_holder": "JUDGMENT ERA BANK",
@@ -197,16 +198,120 @@ def test_assignment_holder_overrides_judgment_holder(monkeypatch: Any) -> None:
         },
     )
 
-    assert result == 2  # both updates executed (judgment then assignment)
+    assert result == 1
     holder_updates = [
         params for sql, params in captured_sql if "current_holder" in sql
     ]
-    # The last update for base_id=10 should be the assignment holder
-    assert holder_updates[-1]["id"] == 10
-    assert holder_updates[-1]["holder"] == "LATEST SERVICER LLC"
-    # The first update should be the judgment holder (applied as baseline)
-    assert holder_updates[0]["id"] == 10
-    assert holder_updates[0]["holder"] == "JUDGMENT ERA BANK"
+    assert holder_updates == [{"id": 10, "holder": "LATEST SERVICER LLC"}]
+
+
+def test_judgment_holder_beats_prejudgment_assignment(monkeypatch: Any) -> None:
+    """Assignments recorded before judgment should not replace the judgment holder."""
+    captured_sql: list[tuple[str, dict[str, Any]]] = []
+    service = PgEncumbranceRelationshipService.__new__(PgEncumbranceRelationshipService)
+    service.engine = _Engine(captured_sql)
+    service.extraction_service = None
+
+    rows = [
+        {
+            "id": 30,
+            "encumbrance_type": "mortgage",
+            "instrument_number": "2024000100",
+            "book": "",
+            "page": "",
+            "current_holder": "ORIGINAL LENDER",
+            "extracted_data": None,
+            "recording_date": "2024-01-01",
+        },
+        {
+            "id": 31,
+            "encumbrance_type": "assignment",
+            "instrument_number": "2024000101",
+            "book": "",
+            "page": "",
+            "current_holder": None,
+            "extracted_data": {
+                "assignee": "OLDER ASSIGNEE LLC",
+                "parent_instrument": {"instrument_number": "2024000100"},
+            },
+            "recording_date": "2024-06-01",
+        },
+    ]
+    monkeypatch.setattr(service, "_load_rows_for_strap", lambda _strap: rows)
+
+    result = service._apply_holder_updates(  # noqa: SLF001
+        strap="STRAP-Y",
+        judgment_data={
+            "judgment_date": "2024-07-01",
+            "foreclosed_mortgage": {
+                "instrument_number": "2024000100",
+                "current_holder": "FORECLOSING PLAINTIFF BANK",
+            },
+        },
+    )
+
+    assert result == 1
+    holder_updates = [
+        params for sql, params in captured_sql if "current_holder" in sql
+    ]
+    assert holder_updates == [{"id": 30, "holder": "FORECLOSING PLAINTIFF BANK"}]
+
+
+def test_run_counts_reextract_errors_as_relationship_errors(monkeypatch: Any) -> None:
+    service = PgEncumbranceRelationshipService.__new__(PgEncumbranceRelationshipService)
+    service.engine = None
+    service.ori_service = None
+
+    target = {
+        "foreclosure_id": 11,
+        "strap": "S11",
+        "folio": "F11",
+        "judgment_data": {},
+    }
+    find_calls = {"n": 0}
+
+    def _fake_find_targets(**_kwargs: Any) -> list[dict[str, Any]]:
+        find_calls["n"] += 1
+        if find_calls["n"] == 1:
+            return [target]
+        return []
+
+    monkeypatch.setattr(service, "_find_targets", _fake_find_targets)
+    monkeypatch.setattr(
+        service,
+        "_process_target",
+        lambda _target: {
+            "foreclosure_id": 11,
+            "strap": "S11",
+            "leads_total": 1,
+            "local_matches": 0,
+            "searched_instruments": 1,
+            "searched_book_pages": 0,
+            "docs_found": 1,
+            "saved": 1,
+            "linked_satisfactions": 0,
+            "linked_modifications": 0,
+            "holder_updates": 0,
+            "changed": True,
+        },
+    )
+
+    class _FakeExtractionService:
+        def run(self, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "extracted": 0,
+                "cached": 0,
+                "errors": 2,
+                "skipped": 0,
+                "ori_id_backfilled": 0,
+            }
+
+    service.extraction_service = _FakeExtractionService()
+
+    result = service.run(max_passes=2)
+
+    assert result["reextract_errors"] == 2
+    assert result["errors"] == 2
 
 
 def test_run_reextracts_changed_straps_between_passes(monkeypatch: Any) -> None:

@@ -52,6 +52,7 @@ def test_run_executes_municipal_step_between_ori_and_mortgage(monkeypatch: Any) 
         "skip_auction_scrape",
         "skip_judgment_extract",
         "skip_identifier_recovery",
+        "skip_encumbrance_relationships",
         "skip_survival",
         "skip_encumbrance_audit",
         "skip_encumbrance_recovery",
@@ -76,15 +77,14 @@ def test_run_executes_municipal_step_between_ori_and_mortgage(monkeypatch: Any) 
     )
     monkeypatch.setattr(
         controller,
-        "_run_mortgage_extract",
-        lambda: call_order.append("mortgage_extract") or {"update": {"ok": True}},
+        "_run_encumbrance_extraction",
+        lambda: call_order.append("encumbrance_extraction") or {"update": {"ok": True}},
     )
 
     result = controller.run()
     step_status = {step["name"]: step["status"] for step in result["steps"]}
 
-    assert call_order == ["ori_search", "municipal_liens_phase0", "mortgage_extract"]
+    assert call_order == ["ori_search", "municipal_liens_phase0", "encumbrance_extraction"]
     assert step_status["ori_search"] == "success"
     assert step_status["municipal_liens_phase0"] == "success"
-    assert step_status["mortgage_extract"] == "success"
-
+    assert step_status["encumbrance_extraction"] == "success"

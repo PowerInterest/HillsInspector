@@ -718,14 +718,19 @@ class PgEncumbranceExtractionService:
         straps: Sequence[str] | None = None,
         enc_types: Sequence[str] | None = None,
     ) -> dict[str, int]:
-        """Resolve missing ``ori_id`` values by delegating to ORI exact lookup."""
+        """Resolve missing ``ori_id`` values for rows this extractor can process."""
 
         from src.services.pg_ori_service import PgOriService
 
+        target_types = sorted(
+            str(enc_type)
+            for enc_type in (enc_types or EXTRACTION_DISPATCH.keys())
+        )
         result = PgOriService(dsn=self.dsn).backfill_missing_ori_ids(
             limit=limit,
             straps=list(straps) if straps else None,
-            enc_types=list(enc_types) if enc_types else None,
+            enc_types=target_types,
+            only_unextracted=True,
         )
         return {
             "updated": int(result.get("resolved", 0)),

@@ -2082,6 +2082,27 @@ def test_backfill_missing_ori_ids_respects_limit(monkeypatch: Any) -> None:
     assert result["resolved"] == 1
 
 
+def test_backfill_missing_ori_ids_can_filter_to_unextracted_rows(monkeypatch: Any) -> None:
+    """Extraction-scoped backfill should only query rows lacking extracted data."""
+    service = _build_service(monkeypatch)
+    captured: list[tuple[str, dict[str, Any]]] = []
+
+    def _execute_fn(sql: str, params: dict[str, Any]) -> _CaptureResult:
+        assert "EXTRACTED_DATA IS NULL" in sql.upper()
+        assert params.get("enc_types") == ["mortgage", "assignment"]
+        return _CaptureResult(mapping_rows=[])
+
+    service.engine = _ExecuteFnEngine(_execute_fn, captured)
+
+    result = service.backfill_missing_ori_ids(
+        enc_types=["mortgage", "assignment"],
+        only_unextracted=True,
+    )
+
+    assert result["skipped"] is True
+    assert result["reason"] == "no_rows_need_ori_id"
+
+
 def test_backfill_missing_ori_ids_handles_search_exception(monkeypatch: Any) -> None:
     """If PAV search throws, count it as an error and continue."""
     service = _build_service(monkeypatch)
