@@ -39,3 +39,20 @@ class TestEntityExpand:
         from app.web.routers.connections import _expand_entity
         # Will use real DB or mock; for unit test, just confirm function exists
         assert _expand_entity is not None
+
+
+class TestPersonExpand:
+    def test_expand_person_callable(self):
+        from app.web.routers.connections import _expand_person
+        assert callable(_expand_person)
+
+    def test_expand_person_empty_name(self):
+        from app.web.routers.connections import _expand_person
+        result = _expand_person("")
+        assert result == {"entities": [], "properties": []}
+
+
+class TestPropertyExpand:
+    def test_expand_property_callable(self):
+        from app.web.routers.connections import _expand_property
+        assert callable(_expand_property)
