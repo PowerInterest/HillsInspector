@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Connections — Truck's List{% endblock %}
+{% block content %}
+<div class="connections-page">
+    <div class="connections-search">
+        <h2>Entity Connections</h2>
+        <p class="text-muted">Search for a Sunbiz entity to explore its network of people and properties.</p>
+        <div class="connections-search-box">
+            <input type="text"
+                   id="entity-search"
+                   placeholder="Search entity name (e.g. ACME HOLDINGS LLC)..."
+                   autocomplete="off">
+            <div id="entity-results" class="entity-results-dropdown"></div>
+        </div>
+    </div>
+    <div class="connections-toolbar" style="display:none" id="graph-toolbar">
+        <button id="reset-graph" class="btn btn-sm">Reset</button>
+        <span id="graph-status" class="text-muted"></span>
+    </div>
+    <div class="connections-graph-container">
+        <svg id="connections-graph"></svg>
+    </div>
+</div>
+<script src="{{ url_for('static', path='connections.js') }}"></script>
+{% endblock %}
