@@ -2246,3 +2246,172 @@ body.lightbox-open { overflow: hidden; }
         justify-content: flex-end;
     }
 }
+
+/* ---- Connections Graph ---- */
+.connections-page {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 120px);
+}
+
+.connections-search {
+    padding: 1.5rem 2rem 0.5rem;
+}
+
+.connections-search h2 {
+    margin: 0 0 0.25rem;
+    font-size: 1.4rem;
+}
+
+.connections-search-box {
+    position: relative;
+    max-width: 500px;
+    margin-top: 0.75rem;
+}
+
+.connections-search-box input {
+    width: 100%;
+    padding: 0.6rem 1rem;
+    font-size: 0.95rem;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    outline: none;
+}
+
+.connections-search-box input:focus {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.entity-results-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    background: #fff;
+    border: 1px solid var(--color-border);
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    max-height: 300px;
+    overflow-y: auto;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    display: none;
+}
+
+.entity-result-item {
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.entity-result-item:hover {
+    background: var(--color-primary);
+    color: #fff;
+}
+
+.entity-result-item .entity-name {
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+
+.entity-result-item .entity-meta {
+    font-size: 0.75rem;
+    opacity: 0.7;
+}
+
+.connections-toolbar {
+    padding: 0.25rem 2rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.connections-graph-container {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+}
+
+#connections-graph {
+    width: 100%;
+    height: 100%;
+}
+
+/* Node shapes */
+.node-entity rect {
+    fill: var(--color-primary);
+    stroke: #1d4ed8;
+    stroke-width: 1.5;
+    rx: 4;
+    cursor: pointer;
+}
+
+.node-person circle {
+    fill: var(--color-success);
+    stroke: #059669;
+    stroke-width: 1.5;
+    cursor: pointer;
+}
+
+.node-property polygon {
+    fill: var(--color-warning);
+    stroke: #d97706;
+    stroke-width: 1.5;
+    cursor: pointer;
+}
+
+.node-entity rect:hover,
+.node-person circle:hover,
+.node-property polygon:hover {
+    filter: brightness(1.15);
+}
+
+.node-label {
+    font-size: 10px;
+    text-anchor: middle;
+    pointer-events: none;
+    fill: var(--color-text);
+}
+
+.edge-line {
+    stroke: #ccc;
+    stroke-width: 1;
+}
+
+.edge-label {
+    font-size: 8px;
+    fill: var(--color-text-muted);
+    pointer-events: none;
+}
+
+/* Tooltip */
+.graph-tooltip {
+    position: absolute;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    font-size: 0.8rem;
+    line-height: 1.5;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+    pointer-events: none;
+    z-index: 2000;
+    max-width: 300px;
+}
+
+.graph-tooltip strong {
+    display: block;
+    font-size: 0.9rem;
+    margin-bottom: 0.25rem;
+}
+
+.graph-tooltip .tooltip-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.graph-tooltip .tooltip-label {
+    color: var(--color-text-muted);
+}
