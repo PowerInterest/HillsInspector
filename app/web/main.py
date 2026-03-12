@@ -30,7 +30,7 @@ from contextlib import asynccontextmanager
 from loguru import logger
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.web.routers import dashboard, properties, api, review, history, database_view, auction_intel
+from app.web.routers import dashboard, properties, api, review, history, database_view, auction_intel, connections
 from app.web.exceptions import DatabaseLockedError, DatabaseUnavailableError
 
 
@@ -74,6 +74,7 @@ app.include_router(review.router, prefix="/review")
 app.include_router(history.router)
 app.include_router(database_view.router)
 app.include_router(auction_intel.router)
+app.include_router(connections.router)
 
 
 # =============================================================================

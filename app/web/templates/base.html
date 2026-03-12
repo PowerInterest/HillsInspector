@@ -14,6 +14,7 @@
               href="{{ url_for('static', path='leaflet/leaflet.css') }}">
         <script src="/static/leaflet/leaflet.js"></script>
         <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+        <script src="https://d3js.org/d3.v7.min.js"></script>
         <script>
         // Allow HTMX to swap content on error responses (4xx/5xx)
         // so server-rendered error fragments display instead of silent failures.
@@ -79,6 +80,8 @@
                        class="nav-link{% if request.url.path.startswith('/history') %} is-active{% endif %}">History</a>
                     <a href="/database"
                        class="nav-link{% if request.url.path.startswith('/database') %} is-active{% endif %}">Database</a>
+                    <a href="/connections"
+                       class="nav-link{% if request.url.path.startswith('/connections') %} is-active{% endif %}">Connections</a>
                 </nav>
                 <div class="search-box" style="position:relative;">
                     <input type="text"
