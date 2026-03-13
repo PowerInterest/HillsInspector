@@ -831,7 +831,7 @@
     // Build photo array from Jinja data and init gallery
     const _photos = [
         {% for p in (photos_fb if photos_fb else photos) %}
-    { url: { { (p.url if p is mapping else p)| tojson } }, fallback: { { (p.cdn_fallback if p is mapping and p.cdn_fallback else none)| tojson } } },
+    { url: {{ (p.url if p is mapping else p)|tojson }}, fallback: {{ (p.cdn_fallback if p is mapping and p.cdn_fallback else none)|tojson }} },
     {% endfor %}
 ];
     const gallery = new PropertyGallery(_photos);
