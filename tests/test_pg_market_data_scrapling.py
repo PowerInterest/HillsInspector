@@ -183,6 +183,47 @@ class TestToRealtorUrl:
             PgMarketDataScraplingService._to_realtor_url("   ")
 
 
+class TestRedfinAutocompleteQuery:
+    def test_with_city_formats_location_once(self) -> None:
+        assert (
+            PgMarketDataScraplingService._build_redfin_autocomplete_query(
+                "2535 MIDDLETON GROVE DR",
+                "Brandon",
+            )
+            == "2535 MIDDLETON GROVE DR, Brandon, FL"
+        )
+
+    def test_without_city_does_not_duplicate_state(self) -> None:
+        assert (
+            PgMarketDataScraplingService._build_redfin_autocomplete_query(
+                "2535 MIDDLETON GROVE DR",
+                "",
+            )
+            == "2535 MIDDLETON GROVE DR, FL"
+        )
+
+
+def test_resolve_redfin_url_prefers_autocomplete(monkeypatch: Any) -> None:
+    svc = object.__new__(PgMarketDataScraplingService)
+
+    async def _fake_autocomplete(address: str, city: str = "") -> str | None:
+        assert address == "2535 MIDDLETON GROVE DR"
+        assert city == "Brandon"
+        return "https://www.redfin.com/FL/Brandon/2535-Middleton-Grove-Dr-33511/home/12345678"
+
+    async def _unexpected_google(*_args: Any, **_kwargs: Any) -> str | None:
+        raise AssertionError("google fallback should not run when autocomplete succeeds")
+
+    monkeypatch.setattr(svc, "_resolve_redfin_url_via_autocomplete", _fake_autocomplete)
+    monkeypatch.setattr(svc, "_resolve_redfin_url_via_google", _unexpected_google)
+
+    result = asyncio.run(
+        svc._resolve_redfin_url("2535 MIDDLETON GROVE DR", city="Brandon")
+    )
+
+    assert result == "https://www.redfin.com/FL/Brandon/2535-Middleton-Grove-Dr-33511/home/12345678"
+
+
 # ---------------------------------------------------------------------------
 # JSON extraction tests
 # ---------------------------------------------------------------------------

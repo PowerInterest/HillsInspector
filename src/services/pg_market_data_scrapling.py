@@ -32,6 +32,7 @@ import random
 import inspect
 import json
 import re
+from pathlib import Path
 from typing import Any
 import bs4
 from loguru import logger
@@ -153,6 +154,12 @@ class PgMarketDataScraplingService(MarketDataService):
         self._force = force
         self._enrichment_state_failures = 0
         self._enrichment_state_failure_straps: list[str] = []
+
+        # Persistent Chrome profile (preserves cookies/login state for Redfin etc.)
+        _project_root = Path(__file__).resolve().parent.parent.parent
+        profile_path = _project_root / "data" / "browser_profiles" / "user_chrome"
+        profile_path.mkdir(parents=True, exist_ok=True)
+        self._redfin_profile_dir = str(profile_path)
 
         self._fetcher_cls = self._detect_scrapling_fetcher()
 
@@ -739,15 +746,100 @@ class PgMarketDataScraplingService(MarketDataService):
     # ------------------------------------------------------------------
 
     async def _resolve_redfin_url(self, address: str, city: str = "") -> str | None:
-        """Resolve a Redfin property URL via Google ``site:`` search.
+        """Resolve a Redfin property URL.
 
-        Redfin detail pages require an internal home ID in the URL path
-        (e.g. ``/home/148365970``).  Constructing URLs without that ID
-        always returns 404.  Google indexes these pages, so a quick
-        ``site:redfin.com "ADDRESS" CITY FL`` query reliably finds them.
+        Tries two strategies:
+        1. Redfin's own autocomplete API (fast, no browser needed)
+        2. Google ``site:redfin.com`` search (fallback if autocomplete misses)
 
         Returns the first matching URL or *None* if not found.
         """
+        # Strategy 1: Redfin autocomplete API (lightweight, avoids Google)
+        url = await self._resolve_redfin_url_via_autocomplete(address, city=city)
+        if url:
+            return url
+
+        # Strategy 2: Google site: search (may be rate-limited)
+        return await self._resolve_redfin_url_via_google(address, city=city)
+
+    @staticmethod
+    def _build_redfin_autocomplete_query(address: str, city: str = "") -> str:
+        """Build a stable Redfin autocomplete location string."""
+        address_text = address.strip()
+        city_text = city.strip()
+        if not address_text:
+            return ""
+        if city_text:
+            return f"{address_text}, {city_text}, FL"
+        return f"{address_text}, FL"
+
+    async def _resolve_redfin_url_via_autocomplete(
+        self, address: str, city: str = "",
+    ) -> str | None:
+        """Resolve a Redfin URL via Redfin's location-autocomplete endpoint.
+
+        This avoids Google entirely. The endpoint returns JSON with the
+        property's canonical URL path including the home ID.
+        """
+        from urllib.parse import quote
+        from urllib.request import Request, urlopen
+
+        query = self._build_redfin_autocomplete_query(address, city)
+        if not query:
+            return None
+        autocomplete_url = (
+            f"https://www.redfin.com/stingray/do/location-autocomplete"
+            f"?location={quote(query)}&v=2&al=1&num_homes=1"
+        )
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            "Referer": "https://www.redfin.com/",
+        }
+        try:
+            loop = asyncio.get_running_loop()
+            req = Request(autocomplete_url, headers=headers)  # noqa: S310
+
+            def _do_fetch():
+                return urlopen(req, timeout=15).read().decode()  # noqa: S310
+
+            text = await loop.run_in_executor(None, _do_fetch)
+        except Exception:
+            logger.debug("Redfin autocomplete request failed for '{}'", address)
+            return None
+
+        # Response is prefixed with "{}&&" before the JSON
+        json_text = text.lstrip().removeprefix("{}&&")
+
+        try:
+            data = json.loads(json_text)
+        except (json.JSONDecodeError, ValueError):
+            logger.debug("Redfin autocomplete: invalid JSON for '{}'", address)
+            return None
+
+        # Walk the payload to find an exact-match result with a URL
+        results = data.get("payload", {}).get("sections", [])
+        for section in results:
+            for row in section.get("rows", []):
+                row_url = row.get("url")
+                if not row_url:
+                    continue
+                # Ensure it looks like a property page (has /home/ with an ID)
+                if "/home/" in row_url:
+                    full_url = f"https://www.redfin.com{row_url}"
+                    logger.debug("Redfin autocomplete resolved '{}' → {}", address, full_url)
+                    return full_url
+
+        logger.debug("Redfin autocomplete: no property match for '{}'", address)
+        return None
+
+    async def _resolve_redfin_url_via_google(
+        self, address: str, city: str = "",
+    ) -> str | None:
+        """Resolve a Redfin URL via Google ``site:`` search (original method)."""
         addr_quoted = address.strip().replace(" ", "+")
         city_clean = (city or "").strip().replace(" ", "+") or "FL"
         google_url = (
@@ -756,8 +848,11 @@ class PgMarketDataScraplingService(MarketDataService):
         )
         fetcher = self._fetcher()
         try:
+            fetch_kwargs: dict[str, Any] = {"headless": True, "wait": 3}
+            if getattr(self, "_redfin_profile_dir", None):
+                fetch_kwargs["user_data_dir"] = self._redfin_profile_dir
             if hasattr(fetcher, "async_fetch"):
-                resp = await fetcher.async_fetch(google_url, headless=True, wait=3)
+                resp = await fetcher.async_fetch(google_url, **fetch_kwargs)
             else:
                 loop = asyncio.get_running_loop()
                 resp = await loop.run_in_executor(None, lambda: fetcher.fetch(google_url))
@@ -1265,7 +1360,13 @@ class PgMarketDataScraplingService(MarketDataService):
             await page.evaluate("window.scrollBy(0, window.innerHeight)")
             await page.wait_for_timeout(800)
 
-    async def _fetch_site_html(self, url: str, *, scroll: bool = False) -> tuple[str, str]:
+    async def _fetch_site_html(
+        self,
+        url: str,
+        *,
+        scroll: bool = False,
+        user_data_dir: str | None = None,
+    ) -> tuple[str, str]:
         """Fetch a URL via scrapling and return (final_url, html)."""
         fetcher = self._fetcher()
         try:
@@ -1277,6 +1378,8 @@ class PgMarketDataScraplingService(MarketDataService):
                 "hide_canvas": True,
                 "wait": 5,
             }
+            if user_data_dir:
+                kwargs["user_data_dir"] = user_data_dir
             if scroll:
                 kwargs["page_action"] = self._scroll_page
                 kwargs["wait"] = 3000  # 3s after scroll completes
@@ -1503,7 +1606,7 @@ class PgMarketDataScraplingService(MarketDataService):
                 redfin_url = None
 
             if not redfin_url:
-                logger.debug("Redfin scrapling: no Google result for '{}'", address)
+                logger.debug("Redfin scrapling: no URL resolved for '{}'", address)
                 self._mark_source_attempted(strap, folio, case_number, _REDFIN_SOURCE)
                 consecutive_failures += 1
                 if attempted % 10 == 0:
@@ -1513,9 +1616,15 @@ class PgMarketDataScraplingService(MarketDataService):
             # Brief pause between Google lookup and detail fetch
             await asyncio.sleep(random.uniform(2, 5))  # noqa: S311
 
-            # Step 2: Fetch the real detail page
+            # Step 2: Fetch the real detail page.
             try:
-                _, html = await self._fetch_site_html(redfin_url, scroll=True)
+                fetch_kwargs: dict[str, Any] = {"scroll": True}
+                if getattr(self, "_redfin_profile_dir", None):
+                    fetch_kwargs["user_data_dir"] = self._redfin_profile_dir
+                _, html = await self._fetch_site_html(
+                    redfin_url,
+                    **fetch_kwargs,
+                )
             except Exception:
                 logger.exception("Redfin scrapling: fetch failed for {}", redfin_url)
                 self._mark_source_attempted(strap, folio, case_number, _REDFIN_SOURCE)
