@@ -341,29 +341,26 @@ DDL: list[str] = [
     CREATE OR REPLACE FUNCTION normalize_party_name(raw TEXT)
     RETURNS TEXT AS $$
         WITH src AS (
-            SELECT lower(unaccent(COALESCE(raw, ''))) AS v
+            SELECT upper(COALESCE(raw, '')) AS v
         ),
         stripped AS (
             SELECT regexp_replace(
-                regexp_replace(v, '[^a-z0-9 ]+', ' ', 'g'),
+                regexp_replace(v, '[^A-Z0-9 ]+', ' ', 'g'),
                 '\s+', ' ', 'g'
             ) AS v
             FROM src
         ),
-        no_suffix AS (
-            SELECT regexp_replace(
-                ' ' || trim(v) || ' ',
-                '\m(llc|inc|incorporated|corp|corporation|co|company|ltd|limited|lp|llp|pllc|trust|trustee|estate|holdings?)\M',
-                ' ',
-                'gi'
-            ) AS v
-            FROM stripped
-        ),
         tokens AS (
-            SELECT token
-            FROM no_suffix, regexp_split_to_table(trim(v), '\s+') AS token
+            SELECT DISTINCT token
+            FROM stripped, regexp_split_to_table(trim(v), '\s+') AS token
             WHERE token <> ''
-              AND length(token) > 1
+              AND token NOT IN (
+                  'A', 'AN', 'AND', 'AS', 'ATTORNEY', 'ATTY', 'CO', 'COMPANY',
+                  'CORP', 'CORPORATION', 'ESQ', 'ET', 'ETAL', 'FKA', 'HOLDING',
+                  'HOLDINGS', 'INC', 'INCORPORATED', 'LLC', 'LLP', 'LP', 'LTD',
+                  'NKA', 'OF', 'PLLC', 'PR', 'REP', 'REPRESENTATIVE', 'SR',
+                  'SUCCESSOR', 'THE', 'TRU', 'TRUST', 'TRUSTEE', 'TRUSTEES'
+              )
         )
         SELECT NULLIF(
             trim(COALESCE((SELECT string_agg(token, ' ' ORDER BY token) FROM tokens), '')),
@@ -374,27 +371,58 @@ DDL: list[str] = [
     r"""
     CREATE OR REPLACE FUNCTION entity_match_score(a TEXT, b TEXT)
     RETURNS NUMERIC AS $$
-        WITH names AS (
-            SELECT normalize_party_name(a) AS na, normalize_party_name(b) AS nb
+        WITH a_parts AS (
+            SELECT DISTINCT normalize_party_name(part) AS part
+            FROM regexp_split_to_table(COALESCE(a, ''), '\s*;\s*') AS part
+            WHERE normalize_party_name(part) IS NOT NULL
+        ),
+        b_parts AS (
+            SELECT DISTINCT normalize_party_name(part) AS part
+            FROM regexp_split_to_table(COALESCE(b, ''), '\s*;\s*') AS part
+            WHERE normalize_party_name(part) IS NOT NULL
+        ),
+        pairwise AS (
+            SELECT
+                a_parts.part AS a_part,
+                b_parts.part AS b_part,
+                COALESCE((
+                    SELECT COUNT(DISTINCT token)
+                    FROM unnest(regexp_split_to_array(a_parts.part, '\s+')) AS token
+                    WHERE token = ANY(regexp_split_to_array(b_parts.part, '\s+'))
+                ), 0) AS shared_count,
+                GREATEST(
+                    LEAST(
+                        COALESCE(array_length(regexp_split_to_array(a_parts.part, '\s+'), 1), 0),
+                        COALESCE(array_length(regexp_split_to_array(b_parts.part, '\s+'), 1), 0)
+                    ),
+                    1
+                ) AS shorter_len
+            FROM a_parts
+            CROSS JOIN b_parts
+        ),
+        scored AS (
+            SELECT
+                GREATEST(
+                    CASE
+                        WHEN a_part = b_part THEN 1.0::NUMERIC
+                        ELSE round(similarity(a_part, b_part)::NUMERIC, 4)
+                    END,
+                    LEAST(
+                        0.99::NUMERIC,
+                        round(
+                            (shared_count::NUMERIC / shorter_len)
+                            + CASE
+                                WHEN shared_count >= 2 AND shorter_len <= 3
+                                    THEN 0.05
+                                ELSE 0
+                              END,
+                            4
+                        )
+                    )
+                ) AS score
+            FROM pairwise
         )
-        SELECT
-            CASE
-                WHEN na IS NULL OR nb IS NULL THEN NULL
-                WHEN na = nb THEN 1.0::NUMERIC
-                ELSE round(
-                    (
-                        greatest(
-                        similarity(na, nb),
-                        1 - (
-                            levenshtein(na, nb)::NUMERIC
-                            / greatest(length(na), length(nb), 1)
-                        )
-                        )
-                    )::NUMERIC,
-                    4
-                )
-            END
-        FROM names;
+        SELECT MAX(score) FROM scored;
     $$ LANGUAGE sql STABLE;
     """,
     r"""
@@ -479,8 +507,16 @@ DDL: list[str] = [
                 s.sale_date,
                 s.sale_type::TEXT AS sale_type,
                 s.sale_amount,
-                COALESCE(s.grantor, backfill.grantor, ori_g.grantor_agg)::TEXT AS grantor,
-                COALESCE(s.grantee, backfill.grantee, ori_g.grantee_agg)::TEXT AS grantee,
+                COALESCE(
+                    NULLIF(btrim(backfill.grantor), ''),
+                    NULLIF(btrim(ori_g.grantor_agg), ''),
+                    NULLIF(btrim(s.grantor), '')
+                )::TEXT AS grantor,
+                COALESCE(
+                    NULLIF(btrim(backfill.grantee), ''),
+                    NULLIF(btrim(ori_g.grantee_agg), ''),
+                    NULLIF(btrim(s.grantee), '')
+                )::TEXT AS grantee,
                 s.or_book::TEXT AS or_book,
                 s.or_page::TEXT AS or_page,
                 s.doc_num::TEXT AS doc_num
@@ -490,8 +526,7 @@ DDL: list[str] = [
                     p.parties_from_text AS grantor_agg,
                     p.parties_to_text AS grantee_agg
                 FROM official_records_daily_instruments p
-                WHERE (s.grantor IS NULL OR s.grantee IS NULL)
-                  AND s.doc_num IS NOT NULL AND p.instrument_number = s.doc_num
+                WHERE s.doc_num IS NOT NULL AND p.instrument_number = s.doc_num
                   AND (p.parties_from_text IS NOT NULL OR p.parties_to_text IS NOT NULL)
                 ORDER BY p.recording_date DESC NULLS LAST
                 LIMIT 1
@@ -589,13 +624,21 @@ DDL: list[str] = [
                 END AS days_since_prev,
                 CASE
                     WHEN a.seq_no = 1 THEN NULL
-                    WHEN a.prev_grantee_norm IS NULL OR a.grantor_norm IS NULL THEN NULL
-                    ELSE entity_match_score(a.prev_grantee, a.grantor)
+                    WHEN COALESCE(entity_match_score(a.prev_grantee, a.grantor), 0)
+                         >= COALESCE(entity_match_score(a.prev_grantee, a.grantee), 0)
+                         THEN entity_match_score(a.prev_grantee, a.grantor)
+                    ELSE entity_match_score(a.prev_grantee, a.grantee)
                 END AS link_score,
                 CASE
                     WHEN a.seq_no = 1 THEN TRUE
-                    WHEN a.prev_grantee_norm IS NULL OR a.grantor_norm IS NULL THEN FALSE
-                    ELSE is_same_entity(a.prev_grantee, a.grantor, p_match_threshold)
+                    WHEN is_same_entity(a.prev_grantee, a.grantor, p_match_threshold)
+                         THEN TRUE
+                    WHEN is_same_entity(a.prev_grantee, a.grantee, p_match_threshold)
+                         THEN TRUE
+                    WHEN a.prev_grantee_norm IS NULL
+                         OR (a.grantor_norm IS NULL AND a.grantee_norm IS NULL)
+                         THEN FALSE
+                    ELSE FALSE
                 END AS link_ok
             FROM annotated a
         )
@@ -619,9 +662,13 @@ DDL: list[str] = [
             s.link_ok,
             CASE
                 WHEN s.seq_no = 1 THEN 'ROOT_BOUNDARY'
-                WHEN s.prev_grantee_norm IS NULL OR s.grantor_norm IS NULL THEN 'MISSING_PARTY'
-                WHEN s.prev_grantee_norm = s.grantor_norm THEN 'EXACT_MATCH'
+                WHEN entity_match_score(s.prev_grantee, s.grantor) = 1.0
+                     OR entity_match_score(s.prev_grantee, s.grantee) = 1.0
+                     THEN 'EXACT_MATCH'
                 WHEN s.link_ok THEN 'FUZZY_MATCH'
+                WHEN s.prev_grantee_norm IS NULL
+                     OR (s.grantor_norm IS NULL AND s.grantee_norm IS NULL)
+                     THEN 'MISSING_PARTY'
                 ELSE 'NAME_MISMATCH'
             END AS link_reason
         FROM scored s

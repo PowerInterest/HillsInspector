@@ -27,6 +27,7 @@ from datetime import date
 from typing import Any
 
 from loguru import logger
+from scourgify import normalize_address_record
 from sqlalchemy import text
 
 from src.db.type_normalizer import normalize_document_type
@@ -65,6 +66,41 @@ _HIGH_VOLUME_BUILDER_TOKENS = (
 )
 
 _SEARCH_NO_RESULT_RETRY_DAYS = 14
+_MAX_CONTEXT_SEARCH_NAMES = 6
+_HISTORICAL_CONTEXT_LIMIT = 8
+_ADDRESS_SUFFIX_TOKENS = frozenset({
+    "ST",
+    "AVE",
+    "BLVD",
+    "DR",
+    "RD",
+    "LN",
+    "CT",
+    "CIR",
+    "PL",
+    "PKWY",
+    "TER",
+    "TRL",
+    "HWY",
+    "WAY",
+})
+_ADDRESS_UNIT_TOKENS = frozenset({
+    "APT",
+    "UNIT",
+    "STE",
+    "SUITE",
+    "#",
+})
+_ADDRESS_DIRECTION_TOKENS = frozenset({
+    "N",
+    "S",
+    "E",
+    "W",
+    "NE",
+    "NW",
+    "SE",
+    "SW",
+})
 
 
 class PgTitleBreakService:
@@ -74,6 +110,8 @@ class PgTitleBreakService:
         self.dsn = resolve_pg_dsn(dsn)
         self.engine = get_engine(self.dsn)
         self._ori = PgOriService(dsn=self.dsn)
+        self._case_party_context_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._historical_party_context_cache: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
 
     def run(
         self,
@@ -156,6 +194,8 @@ class PgTitleBreakService:
         sql = """
             SELECT DISTINCT f.foreclosure_id, f.case_number_raw,
                    f.case_number_norm, f.strap, f.folio,
+                   COALESCE(NULLIF(btrim(f.property_address), ''), bp.property_address) AS property_address,
+                   bp.owner_name,
                    bp.raw_legal1 AS legal1,
                    bp.raw_legal2 AS legal2,
                    bp.raw_legal3 AS legal3,
@@ -358,91 +398,216 @@ class PgTitleBreakService:
         to_date: date,
     ) -> list[dict[str, Any]]:
         party = gap["expected_from_party"] or gap["observed_to_party"]
-        if not party:
+        search_context = self._build_gap_search_context(target, gap)
+        search_names = search_context["search_names"]
+        support_names = search_context["support_names"]
+        legal_terms = search_context["legal_terms"]
+        if not search_names:
             return []
 
-        stats: dict[str, int] = {
-            "api_calls": 0,
-            "retries": 0,
-            "truncated": 0,
-            "unresolved_truncations": 0,
-        }
-        high_volume_builder = self._looks_high_volume_builder(party)
+        original_party = (party or "").strip()
+        for idx, search_name in enumerate(search_names):
+            stats: dict[str, int] = {
+                "api_calls": 0,
+                "retries": 0,
+                "truncated": 0,
+                "unresolved_truncations": 0,
+            }
+            alias_search = idx > 0
+            high_volume_builder = self._looks_high_volume_builder(search_name)
 
-        if high_volume_builder:
-            docs = self._search_gap_in_local_ori(
-                target,
+            if high_volume_builder:
+                docs = self._search_gap_in_local_ori(
+                    target,
+                    gap,
+                    party=search_name,
+                    from_date=from_date,
+                    to_date=to_date,
+                    extra_targets=support_names,
+                )
+                if docs:
+                    logger.info(
+                        "title_breaks: local ORI builder recovery hit for search_name={!r} folio={}",
+                        search_name,
+                        target["folio"],
+                    )
+                    return docs
+
+                docs = self._search_gap_by_legal(
+                    target,
+                    gap,
+                    from_date=from_date,
+                    to_date=to_date,
+                    extra_targets=support_names,
+                )
+                if docs:
+                    logger.info(
+                        "title_breaks: legal-first builder recovery hit for search_name={!r} folio={}",
+                        search_name,
+                        target["folio"],
+                    )
+                    return docs
+                continue
+
+            try:
+                party_results = self._ori.search_party_pav(
+                    search_name,
+                    stats,
+                    from_date=from_date,
+                    to_date=to_date,
+                    split_on_truncated=True,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "title_breaks: PAV search failed for party={!r} folio={}: {}",
+                    search_name,
+                    target["folio"],
+                    exc,
+                )
+                party_results = []
+
+            deeds = self._filter_party_search_deeds(
+                party_results,
                 gap,
-                party=party,
-                from_date=from_date,
-                to_date=to_date,
+                support_names=support_names,
+                legal_terms=legal_terms,
+                alias_search=alias_search,
             )
-            if docs:
-                logger.info(
-                    "title_breaks: local ORI builder recovery hit for party={!r} folio={}",
-                    party,
-                    target["folio"],
+            if deeds:
+                if alias_search:
+                    logger.info(
+                        "title_breaks: civil context alias {!r} recovered deed candidates after primary {!r} for folio={}",
+                        search_name,
+                        original_party,
+                        target["folio"],
+                    )
+                time.sleep(0.5)
+                return deeds
+
+            should_try_local_fallback = alias_search or stats["unresolved_truncations"] > 0
+            if should_try_local_fallback:
+                docs = self._search_gap_in_local_ori(
+                    target,
+                    gap,
+                    party=search_name,
+                    from_date=from_date,
+                    to_date=to_date,
+                    extra_targets=support_names,
                 )
-                return docs
+                if docs:
+                    logger.info(
+                        "title_breaks: local ORI fallback recovered search_name={!r} folio={}",
+                        search_name,
+                        target["folio"],
+                    )
+                    return docs
 
-            docs = self._search_gap_by_legal(target, gap, from_date=from_date, to_date=to_date)
-            if docs:
-                logger.info(
-                    "title_breaks: legal-first builder recovery hit for party={!r} folio={}",
-                    party,
-                    target["folio"],
+                docs = self._search_gap_by_legal(
+                    target,
+                    gap,
+                    from_date=from_date,
+                    to_date=to_date,
+                    extra_targets=support_names,
                 )
-                return docs
+                if docs:
+                    logger.info(
+                        "title_breaks: legal fallback recovered search_name={!r} folio={}",
+                        search_name,
+                        target["folio"],
+                    )
+                    return docs
 
-        try:
-            party_results = self._ori.search_party_pav(
-                party,
-                stats,
-                from_date=from_date,
-                to_date=to_date,
-                split_on_truncated=True,
-            )
-        except Exception as exc:
-            logger.warning(
-                "title_breaks: PAV search failed for party={!r} folio={}: {}",
-                party,
-                target["folio"],
-                exc,
-            )
-            party_results = []
-
-        deeds = self._deed_docs(party_results)
-        if deeds:
             time.sleep(0.5)
-            return deeds
-
-        if stats["unresolved_truncations"] > 0:
-            docs = self._search_gap_in_local_ori(
-                target,
-                gap,
-                party=party,
-                from_date=from_date,
-                to_date=to_date,
-            )
-            if docs:
-                logger.info(
-                    "title_breaks: local ORI fallback recovered truncated party search for {!r} folio={}",
-                    party,
-                    target["folio"],
-                )
-                return docs
-
-            docs = self._search_gap_by_legal(target, gap, from_date=from_date, to_date=to_date)
-            if docs:
-                logger.info(
-                    "title_breaks: legal fallback recovered truncated party search for {!r} folio={}",
-                    party,
-                    target["folio"],
-                )
-                return docs
-
-        time.sleep(0.5)
         return []
+
+    def _build_gap_search_context(
+        self,
+        target: dict[str, Any],
+        gap: dict[str, Any],
+    ) -> dict[str, Any]:
+        search_names: list[str] = []
+        support_names: set[str] = set()
+        prioritized_aliases: list[tuple[int, str]] = []
+        address_backed_names: set[str] = set()
+        property_address_norm = self._normalize_address_text(target.get("property_address"))
+        original_party = (gap.get("expected_from_party") or gap.get("observed_to_party") or "").strip()
+        original_norm = self._normalize_party_text(original_party)
+        gap_type = (gap.get("gap_type") or "").strip().lower()
+        address_first = gap_type == "missing_party" and bool(property_address_norm)
+        legal_terms = self._legal_search_terms(target)
+
+        def _add_search_name(name: str | None) -> None:
+            text_value = (name or "").strip()
+            if not text_value:
+                return
+            if all(self._normalize_party_text(existing) != self._normalize_party_text(text_value) for existing in search_names):
+                search_names.append(text_value)
+
+        def _add_alias(priority: int, name: str | None) -> None:
+            text_value = (name or "").strip()
+            norm_value = self._normalize_party_text(text_value)
+            if not norm_value:
+                return
+            support_names.add(norm_value)
+            if norm_value == original_norm:
+                return
+            if any(self._normalize_party_text(existing) == norm_value for _, existing in prioritized_aliases):
+                return
+            prioritized_aliases.append((priority, text_value))
+
+        if original_norm:
+            support_names.add(original_norm)
+
+        case_rows = self._load_case_party_context_rows(target, property_address_norm)
+        address_case_rows = [row for row in case_rows if row.get("address_match")]
+        non_address_case_rows = [row for row in case_rows if not row.get("address_match")]
+        historical_rows = self._load_historical_party_context_rows(
+            target=target,
+            property_address_norm=property_address_norm,
+        )
+
+        if address_first:
+            for row in address_case_rows:
+                for alias in self._party_aliases_from_context_row(row):
+                    address_backed_names.add(self._normalize_party_text(alias))
+                    _add_alias(0, alias)
+            for row in historical_rows:
+                for alias in self._party_aliases_from_context_row(row):
+                    address_backed_names.add(self._normalize_party_text(alias))
+                    _add_alias(1, alias)
+            if original_norm and original_norm in address_backed_names:
+                _add_search_name(original_party)
+            if original_party:
+                _add_alias(2, original_party)
+        else:
+            _add_search_name(original_party)
+            for row in address_case_rows:
+                for alias in self._party_aliases_from_context_row(row):
+                    _add_alias(1, alias)
+            for row in historical_rows:
+                for alias in self._party_aliases_from_context_row(row):
+                    _add_alias(2, alias)
+
+        for row in non_address_case_rows:
+            for alias in self._party_aliases_from_context_row(row):
+                _add_alias(4, alias)
+
+        owner_name = (target.get("owner_name") or "").strip()
+        if owner_name:
+            _add_alias(5, owner_name)
+
+        if address_first and not prioritized_aliases:
+            _add_search_name(original_party)
+
+        prioritized_aliases.sort(key=lambda item: (item[0], item[1]))
+        for _, alias in prioritized_aliases[: max(0, _MAX_CONTEXT_SEARCH_NAMES - len(search_names))]:
+            _add_search_name(alias)
+
+        return {
+            "search_names": search_names,
+            "support_names": support_names,
+            "legal_terms": legal_terms,
+        }
 
     def _search_gap_by_legal(
         self,
@@ -451,6 +616,7 @@ class PgTitleBreakService:
         *,
         from_date: date,
         to_date: date,
+        extra_targets: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         terms = self._legal_search_terms(target)
         if not terms:
@@ -482,7 +648,7 @@ class PgTitleBreakService:
                 continue
 
             for doc in self._deed_docs(docs):
-                if not self._doc_matches_gap_parties(doc, gap):
+                if not self._doc_matches_gap_parties(doc, gap, extra_targets=extra_targets):
                     continue
                 instrument = (doc.get("Instrument") or "").strip()
                 if instrument:
@@ -499,6 +665,7 @@ class PgTitleBreakService:
         party: str,
         from_date: date,
         to_date: date,
+        extra_targets: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         legal_terms = self._legal_search_terms(target)
         like_party = f"%{party.strip()}%"
@@ -533,7 +700,7 @@ class PgTitleBreakService:
                 .fetchall()
             )
 
-        scored_docs: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
+        scored_docs: list[tuple[tuple[int, int, int, int], dict[str, Any]]] = []
         expected = self._normalize_party_text(gap.get("expected_from_party"))
         observed = self._normalize_party_text(gap.get("observed_to_party"))
         for row in rows:
@@ -547,7 +714,7 @@ class PgTitleBreakService:
                 "PartiesOne": self._split_party_text(row["parties_from_text"]),
                 "PartiesTwo": self._split_party_text(row["parties_to_text"]),
             }
-            if not self._doc_matches_gap_parties(doc, gap):
+            if not self._doc_matches_gap_parties(doc, gap, extra_targets=extra_targets):
                 continue
             if legal_terms and not self._doc_matches_legal_terms(doc, legal_terms):
                 if row["legal_description"]:
@@ -558,6 +725,7 @@ class PgTitleBreakService:
                 doc,
                 expected=expected,
                 observed=observed,
+                extra_targets=extra_targets,
             )
             if score[0] <= 0:
                 continue
@@ -611,10 +779,14 @@ class PgTitleBreakService:
         cls,
         doc: dict[str, Any],
         gap: dict[str, Any],
+        *,
+        extra_targets: set[str] | None = None,
     ) -> bool:
         expected = cls._normalize_party_text(gap.get("expected_from_party"))
         observed = cls._normalize_party_text(gap.get("observed_to_party"))
         targets = [value for value in (expected, observed) if value]
+        if extra_targets:
+            targets.extend(value for value in extra_targets if value)
         if not targets:
             return True
 
@@ -653,7 +825,8 @@ class PgTitleBreakService:
         *,
         expected: str,
         observed: str,
-    ) -> tuple[int, int, int]:
+        extra_targets: set[str] | None = None,
+    ) -> tuple[int, int, int, int]:
         grantor_blob = cls._normalize_party_text(" ; ".join(doc.get("PartiesOne") or []))
         grantee_blob = cls._normalize_party_text(" ; ".join(doc.get("PartiesTwo") or []))
 
@@ -674,7 +847,349 @@ class PgTitleBreakService:
             exact_side_bonus = observed_in_grantee
         if expected and not observed:
             exact_side_bonus = expected_in_grantor
-        return (exact_side_bonus, directional_hits, total_hits)
+        support_hits = 0
+        for support_name in extra_targets or set():
+            if not support_name or support_name in {expected, observed}:
+                continue
+            support_hits += int(support_name in grantor_blob or support_name in grantee_blob)
+        return (exact_side_bonus, directional_hits, total_hits, support_hits)
+
+    @classmethod
+    def _normalize_address_text(
+        cls,
+        value: str | None,
+        *,
+        address2: str | None = None,
+        city: str | None = None,
+        state: str | None = None,
+        postal_code: str | None = None,
+    ) -> str:
+        address1_value = html.unescape(value or "").strip()
+        if not address1_value:
+            return ""
+
+        address2_value = html.unescape(address2 or "").strip() or None
+        city_value = html.unescape(city or "").strip() or None
+        state_value = html.unescape(state or "").strip() or None
+        postal_code_value = html.unescape(postal_code or "").strip() or None
+
+        try:
+            normalized = normalize_address_record(
+                {
+                    "address_line_1": address1_value,
+                    "address_line_2": address2_value,
+                    "city": city_value,
+                    "state": state_value,
+                    "postal_code": postal_code_value,
+                }
+                if any((address2_value, city_value, state_value, postal_code_value))
+                else address1_value
+            )
+            normalized_line1 = (normalized.get("address_line_1") or "").strip()
+            normalized_line2 = (normalized.get("address_line_2") or "").strip()
+            normalized_text = " ".join(
+                part for part in (normalized_line1, normalized_line2) if part
+            )
+            if normalized_text:
+                return normalized_text.upper()
+        except Exception as exc:
+            logger.debug(
+                "title_breaks: scourgify normalization failed for address={!r}: {}",
+                address1_value,
+                exc,
+            )
+
+        return cls._fallback_normalize_address_text(
+            " ".join(part for part in (address1_value, address2_value or "") if part)
+        )
+
+    @classmethod
+    def _fallback_normalize_address_text(cls, value: str | None) -> str:
+        text_value = html.unescape(value or "").upper()
+        text_value = text_value.split(",", 1)[0].strip()
+        if not text_value:
+            return ""
+        replacements = {
+            " STREET": " ST",
+            " AVENUE": " AVE",
+            " BOULEVARD": " BLVD",
+            " DRIVE": " DR",
+            " ROAD": " RD",
+            " LANE": " LN",
+            " COURT": " CT",
+            " CIRCLE": " CIR",
+            " PLACE": " PL",
+            " NORTH": " N",
+            " SOUTH": " S",
+            " EAST": " E",
+            " WEST": " W",
+            " NORTHEAST": " NE",
+            " NORTHWEST": " NW",
+            " SOUTHEAST": " SE",
+            " SOUTHWEST": " SW",
+        }
+        for full, abbr in replacements.items():
+            text_value = text_value.replace(full, abbr)
+        text_value = re.sub(r"[^A-Z0-9# ]+", " ", text_value)
+        return re.sub(r"\s+", " ", text_value).strip()
+
+    @classmethod
+    def _address_search_terms(cls, value: str | None) -> tuple[str | None, list[str]]:
+        normalized = cls._normalize_address_text(value)
+        if not normalized:
+            return None, []
+
+        tokens = [token for token in re.findall(r"[A-Z0-9#]+", normalized) if token]
+        if not tokens:
+            return None, []
+
+        house_number = tokens[0] if tokens[0][0].isdigit() else None
+        if not house_number:
+            return None, []
+
+        street_tokens: list[str] = []
+        for token in tokens[1:]:
+            if token in _ADDRESS_UNIT_TOKENS:
+                break
+            if token in _ADDRESS_SUFFIX_TOKENS:
+                break
+            if token in _ADDRESS_DIRECTION_TOKENS:
+                if street_tokens:
+                    street_tokens.append(token)
+                continue
+            street_tokens.append(token)
+
+        if not street_tokens:
+            street_tokens = [
+                token
+                for token in tokens[1:]
+                if token not in _ADDRESS_UNIT_TOKENS
+            ][:1]
+
+        return f"{house_number}%", street_tokens[:2]
+
+    @classmethod
+    def _split_aka_text(cls, value: str | None) -> list[str]:
+        text_value = html.unescape(value or "").strip()
+        if not text_value:
+            return []
+        return [
+            part.strip()
+            for part in re.split(r"\s*[;|/]\s*", text_value)
+            if part.strip()
+        ]
+
+    @classmethod
+    def _party_aliases_from_context_row(cls, row: dict[str, Any]) -> list[str]:
+        aliases: list[str] = []
+        for value in [
+            row.get("name"),
+            row.get("business_name"),
+            *cls._split_aka_text(row.get("akas")),
+        ]:
+            text_value = (value or "").strip()
+            if not text_value:
+                continue
+            if all(cls._normalize_party_text(existing) != cls._normalize_party_text(text_value) for existing in aliases):
+                aliases.append(text_value)
+        return aliases
+
+    def _load_case_party_context_rows(
+        self,
+        target: dict[str, Any],
+        property_address_norm: str,
+    ) -> list[dict[str, Any]]:
+        case_number_norm = (target.get("case_number_norm") or "").strip()
+        case_number_raw = (target.get("case_number_raw") or "").strip()
+        cache_key = (case_number_norm, case_number_raw)
+        cache = getattr(self, "_case_party_context_cache", None)
+        if cache is None:
+            cache = {}
+            self._case_party_context_cache = cache
+        if cache_key in cache:
+            return cache[cache_key]
+
+        if not case_number_norm and not case_number_raw:
+            cache[cache_key] = []
+            return []
+
+        sql = text("""
+            SELECT
+                c.case_number,
+                c.filing_date,
+                p.party_type,
+                p.name,
+                p.business_name,
+                p.akas,
+                p.address1,
+                p.address2,
+                p.city,
+                p.state,
+                p.zip
+            FROM clerk_civil_parties p
+            JOIN clerk_civil_cases c
+              ON c.case_number = p.case_number
+            WHERE (
+                    (:case_number_norm <> '' AND c.case_number = :case_number_norm)
+                 OR (:case_number_raw <> '' AND c.case_number = :case_number_raw)
+            )
+              AND COALESCE(p.party_type, '') NOT ILIKE 'Plaintiff%'
+              AND NULLIF(btrim(COALESCE(p.name, p.business_name, '')), '') IS NOT NULL
+            ORDER BY
+                CASE
+                    WHEN NULLIF(btrim(COALESCE(p.address1, '')), '') IS NOT NULL THEN 0
+                    ELSE 1
+                END,
+                c.filing_date DESC NULLS LAST,
+                p.party_type,
+                p.name
+        """)
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                sql,
+                {
+                    "case_number_norm": case_number_norm,
+                    "case_number_raw": case_number_raw,
+                },
+            ).mappings().fetchall()
+
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["address_match"] = (
+                bool(property_address_norm)
+                and self._normalize_address_text(
+                    item.get("address1"),
+                    address2=item.get("address2"),
+                    city=item.get("city"),
+                    state=item.get("state"),
+                    postal_code=item.get("zip"),
+                )
+                == property_address_norm
+            )
+            result.append(item)
+        cache[cache_key] = result
+        return result
+
+    def _load_historical_party_context_rows(
+        self,
+        *,
+        target: dict[str, Any],
+        property_address_norm: str,
+    ) -> list[dict[str, Any]]:
+        if not property_address_norm:
+            return []
+
+        house_prefix, street_tokens = self._address_search_terms(property_address_norm)
+        if not house_prefix:
+            return []
+
+        case_number_norm = (target.get("case_number_norm") or "").strip()
+        case_number_raw = (target.get("case_number_raw") or "").strip()
+        cache_key = (property_address_norm, case_number_norm, case_number_raw)
+        cache = getattr(self, "_historical_party_context_cache", None)
+        if cache is None:
+            cache = {}
+            self._historical_party_context_cache = cache
+        if cache_key in cache:
+            return cache[cache_key]
+
+        where_clauses = [
+            "c.is_foreclosure IS TRUE",
+            "(:case_number_norm = '' OR c.case_number <> :case_number_norm)",
+            "(:case_number_raw = '' OR c.case_number <> :case_number_raw)",
+            "COALESCE(p.party_type, '') NOT ILIKE 'Plaintiff%'",
+            "NULLIF(btrim(COALESCE(p.address1, '')), '') IS NOT NULL",
+            "UPPER(COALESCE(p.address1, '')) LIKE :house_prefix",
+            "NULLIF(btrim(COALESCE(p.name, p.business_name, '')), '') IS NOT NULL",
+        ]
+        params: dict[str, Any] = {
+            "case_number_norm": case_number_norm,
+            "case_number_raw": case_number_raw,
+            "house_prefix": house_prefix,
+            "row_limit": _HISTORICAL_CONTEXT_LIMIT,
+        }
+        for idx, token in enumerate(street_tokens[:2]):
+            where_clauses.append(
+                f"UPPER(COALESCE(p.address1, '')) LIKE :street_token_{idx}"
+            )
+            params[f"street_token_{idx}"] = f"%{token}%"
+        sql_text = f"""
+            SELECT
+                c.case_number,
+                c.filing_date,
+                p.party_type,
+                p.name,
+                p.business_name,
+                p.akas,
+                p.address1,
+                p.address2,
+                p.city,
+                p.state,
+                p.zip
+            FROM clerk_civil_parties p
+            JOIN clerk_civil_cases c
+              ON c.case_number = p.case_number
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY
+                CASE
+                    WHEN COALESCE(p.party_type, '') ILIKE 'Defendant%' THEN 0
+                    ELSE 1
+                END,
+                c.filing_date DESC NULLS LAST,
+                c.case_number
+            LIMIT :row_limit
+        """
+
+        sql = text(sql_text)
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                sql,
+                params,
+            ).mappings().fetchall()
+
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["address_match"] = (
+                self._normalize_address_text(
+                    item.get("address1"),
+                    address2=item.get("address2"),
+                    city=item.get("city"),
+                    state=item.get("state"),
+                    postal_code=item.get("zip"),
+                )
+                == property_address_norm
+            )
+            if not item["address_match"]:
+                continue
+            result.append(item)
+        cache[cache_key] = result
+        return result
+
+    def _filter_party_search_deeds(
+        self,
+        docs: list[dict[str, Any]],
+        gap: dict[str, Any],
+        *,
+        support_names: set[str],
+        legal_terms: list[str],
+        alias_search: bool,
+    ) -> list[dict[str, Any]]:
+        matched: list[dict[str, Any]] = []
+        seen_instruments: set[str] = set()
+        for doc in self._deed_docs(docs):
+            if not self._doc_matches_gap_parties(doc, gap, extra_targets=support_names):
+                continue
+            if alias_search and legal_terms and not self._doc_matches_legal_terms(doc, legal_terms):
+                continue
+            instrument = (doc.get("Instrument") or "").strip()
+            if instrument and instrument in seen_instruments:
+                continue
+            if instrument:
+                seen_instruments.add(instrument)
+            matched.append(doc)
+        return matched
 
     def _insert_deeds(self, target: dict[str, Any], deeds: list[dict[str, Any]]) -> int:
         """Insert found deeds into foreclosure_title_events."""

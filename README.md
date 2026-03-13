@@ -88,6 +88,7 @@ The `docs/` folder contains comprehensive guides and technical design artifacts,
 - [Pipeline Quality Thresholds](docs/domain/PIPELINE_QUALITY_THRESHOLDS.md) - Hard gates and diagnostics for judging title-chain and encumbrance quality.
 - [Auction Expiration Rules](docs/domain/AUCTION_EXPIRE.md) - Modeling property forfeiture and expiration mechanics.
 - [Chain of Title Recovery](docs/domain/TITLE_CHAIN_RECOVERY.md) - Scraping and verifying a complete chain of title.
+- [Missing Party Analysis](docs/domain/MISSING_PARTY.md) - Root-cause analysis of blank-party title-chain gaps, Sunbiz non-usage, and where normalization tooling fits.
 - [NOC & Permit Linking](docs/domain/NOC_PERMIT_LINKING.md) - Notice of commencement linking to active building permits.
 - [ORI Property Matching](docs/domain/ORI_PROPERTY_MATCHING.md) - ORI document filter to prevent cross-property contamination.
 - [ORI SQL Parameter Typing](docs/domain/ORI_SQL_PARAMETER_TYPING.md) - Preventing psycopg `AmbiguousParameter` skips.

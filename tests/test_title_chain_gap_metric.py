@@ -121,13 +121,18 @@ def test_reset_outputs_preserves_overlay_rows_for_full_runs() -> None:
 def test_insert_sales_events_sql_uses_recovery_overlay_rows() -> None:
     sql = TitleChainController._insert_sales_events_sql()  # noqa: SLF001
 
-    assert "COALESCE(s.grantor, backfill.grantor, ori.parties_from_text)" in sql
-    assert "COALESCE(s.grantee, backfill.grantee, ori.parties_to_text)" in sql
+    assert "NULLIF(btrim(backfill.grantor), '')" in sql
+    assert "NULLIF(btrim(ori.parties_from_text), '')" in sql
+    assert "NULLIF(btrim(s.grantor), '')" in sql
+    assert "NULLIF(btrim(backfill.grantee), '')" in sql
+    assert "NULLIF(btrim(ori.parties_to_text), '')" in sql
+    assert "NULLIF(btrim(s.grantee), '')" in sql
     assert "LEFT JOIN LATERAL (" in sql
     assert "e.event_source IN ('ORI_DEED_SEARCH', 'ORI_DEED_BACKFILL')" in sql
     assert "JOIN foreclosure_title_events e" in sql
     assert "e.event_source = 'ORI_DEED_SEARCH'" in sql
     assert "UNION ALL" in sql
+    assert "AND (s.grantor IS NULL OR s.grantee IS NULL)" not in sql
 
 
 def test_insert_sales_events_sql_excludes_search_no_result_sentinels() -> None:
@@ -146,3 +151,45 @@ def test_bootstrap_fn_title_chain_excludes_search_no_result_sentinels() -> None:
     assert "NULLIF(btrim(COALESCE(e.instrument_number, '')), '') IS NOT NULL" in ddl
     assert "NULLIF(btrim(COALESCE(e.grantor, '')), '') IS NOT NULL" in ddl
     assert "NULLIF(btrim(COALESCE(e.grantee, '')), '') IS NOT NULL" in ddl
+
+
+def test_normalize_party_name_py_strips_representative_tokens() -> None:
+    observed = TitleChainController._normalize_party_name_py("Silva Matthew Tru")  # noqa: SLF001
+
+    assert observed == "MATTHEW SILVA"
+
+
+def test_entity_match_score_py_uses_best_party_from_semicolon_list() -> None:
+    observed = TitleChainController._entity_match_score_py(  # noqa: SLF001
+        "AMADOR NANCY C; TRUJILLO ERNESTO",
+        "TRUJILLO NANCY C",
+    )
+
+    assert observed is not None
+    assert observed >= 0.68
+
+
+def test_classify_sale_link_accepts_same_owner_continuation() -> None:
+    status, score = TitleChainController.classify_sale_link(
+        seq=2,
+        grantor="SILVA MATTHEW TRU",
+        grantee="TRUJILLO ERNESTO",
+        prev_grantee="TRUJILLO ERNESTO",
+    )
+
+    assert status == "LINKED_EXACT"
+    assert score == 1.0
+
+
+def test_score_sales_links_sql_checks_current_grantee_for_same_owner_continuity() -> None:
+    sql = TitleChainController._score_sales_links_sql()  # noqa: SLF001
+
+    assert "entity_match_score(os.grantee, os.prev_grantee)" in sql
+    assert "entity_match_score(os.grantor, os.prev_grantee)" in sql
+
+
+def test_bootstrap_fn_title_chain_uses_current_grantee_as_same_owner_guard() -> None:
+    ddl = next(stmt for stmt in DDL if "CREATE OR REPLACE FUNCTION fn_title_chain(" in stmt)
+
+    assert "entity_match_score(a.prev_grantee, a.grantee)" in ddl
+    assert "is_same_entity(a.prev_grantee, a.grantee, p_match_threshold)" in ddl

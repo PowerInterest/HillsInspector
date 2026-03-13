@@ -370,3 +370,91 @@ def test_same_case_judgment_matches_five_digit_clerk_sequence() -> None:
     assert same_case_judgment["survival_reason"] == (
         "Recorded in the current foreclosure case; not an independent encumbrance"
     )
+
+
+def test_last_resort_foreclosing_selection_skips_same_case_judgment() -> None:
+    service = SurvivalService("STRAP-10")
+    encumbrances = [
+        {
+            "id": 90,
+            "encumbrance_type": "judgment",
+            "creditor": "OMEGA HOMEOWNERS ASSOCIATION INC",
+            "debtor": "JOHN DOE",
+            "recording_date": "2026-02-05",
+            "instrument": "2026123456",
+            "is_satisfied": False,
+            "case_number": "292025CC014501A001HC",
+        },
+        {
+            "id": 91,
+            "encumbrance_type": "lien",
+            "creditor": "OMEGA HOMEOWNERS ASSOCIATION INC",
+            "debtor": "JOHN DOE",
+            "recording_date": "2024-04-01",
+            "instrument": "2024123456",
+            "is_satisfied": False,
+            "case_number": "",
+        },
+    ]
+    judgment_data = {
+        "plaintiff": "Omega Homeowners Association, Inc.",
+        "foreclosure_type": "HOA",
+        "case_number": "25-CC-14501",
+        "defendants": [],
+    }
+
+    result = service.analyze(encumbrances, judgment_data, [], None)
+
+    foreclosing = result["results"]["foreclosing"]
+    assert len(foreclosing) == 1
+    assert foreclosing[0]["id"] == 91
+    assert foreclosing[0]["survival_status"] == "FORECLOSING"
+
+    same_case_judgment = next(enc for enc in result["results"]["historical"] if enc["id"] == 90)
+    assert same_case_judgment["survival_reason"] == (
+        "Recorded in the current foreclosure case; not an independent encumbrance"
+    )
+
+
+def test_plaintiff_match_selection_skips_same_case_judgment() -> None:
+    service = SurvivalService("STRAP-11")
+    encumbrances = [
+        {
+            "id": 100,
+            "encumbrance_type": "judgment",
+            "creditor": "YES RIVER BAY, LLC",
+            "debtor": "JANE DOE",
+            "recording_date": "2025-05-06",
+            "instrument": "2025197250",
+            "is_satisfied": False,
+            "case_number": "292025CC014501A001HC",
+        },
+        {
+            "id": 101,
+            "encumbrance_type": "lien",
+            "creditor": "YES RIVER BAY, LLC",
+            "debtor": "JANE DOE",
+            "recording_date": "2026-01-26",
+            "instrument": "INFERRED-292025CC014501A001HC",
+            "is_satisfied": False,
+            "case_number": "292025CC014501A001HC",
+        },
+    ]
+    judgment_data = {
+        "plaintiff": "YES RIVER BAY, LLC",
+        "foreclosure_type": "OTHER",
+        "case_number": "25-CC-14501",
+        "defendants": [],
+    }
+
+    result = service.analyze(encumbrances, judgment_data, [], None)
+
+    foreclosing = result["results"]["foreclosing"]
+    assert len(foreclosing) == 1
+    assert foreclosing[0]["id"] == 101
+    assert foreclosing[0]["survival_status"] == "FORECLOSING"
+
+    same_case_judgment = next(enc for enc in result["results"]["historical"] if enc["id"] == 100)
+    assert same_case_judgment["survival_reason"] == (
+        "Recorded in the current foreclosure case; not an independent encumbrance"
+    )

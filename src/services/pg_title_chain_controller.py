@@ -12,8 +12,10 @@ Architectural role:
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any
 
 from sqlalchemy import text
@@ -35,22 +37,107 @@ DDL_STATEMENTS: list[str] = [
     # Similarity support (safe if already installed)
     "CREATE EXTENSION IF NOT EXISTS pg_trgm;",
     # Party normalization helper for link scoring
-    """
+    r"""
     CREATE OR REPLACE FUNCTION normalize_party_name(raw TEXT)
     RETURNS TEXT AS $$
-    DECLARE
-        cleaned TEXT;
-    BEGIN
-        IF raw IS NULL THEN
-            RETURN NULL;
-        END IF;
-        cleaned := UPPER(raw);
-        cleaned := regexp_replace(cleaned, '[^A-Z0-9 ]+', ' ', 'g');
-        cleaned := regexp_replace(cleaned, '\\s+', ' ', 'g');
-        cleaned := btrim(cleaned);
-        RETURN NULLIF(cleaned, '');
-    END;
-    $$ LANGUAGE plpgsql IMMUTABLE;
+        WITH src AS (
+            SELECT upper(COALESCE(raw, '')) AS v
+        ),
+        stripped AS (
+            SELECT regexp_replace(
+                regexp_replace(v, '[^A-Z0-9 ]+', ' ', 'g'),
+                '\s+',
+                ' ',
+                'g'
+            ) AS v
+            FROM src
+        ),
+        tokens AS (
+            SELECT DISTINCT token
+            FROM stripped, regexp_split_to_table(trim(v), '\s+') AS token
+            WHERE token <> ''
+              AND token NOT IN (
+                  'A', 'AN', 'AND', 'AS', 'ATTORNEY', 'ATTY', 'CO', 'COMPANY',
+                  'CORP', 'CORPORATION', 'ESQ', 'ET', 'ETAL', 'FKA', 'HOLDING',
+                  'HOLDINGS', 'INC', 'INCORPORATED', 'LLC', 'LLP', 'LP', 'LTD',
+                  'NKA', 'OF', 'PLLC', 'PR', 'REP', 'REPRESENTATIVE', 'SR',
+                  'SUCCESSOR', 'THE', 'TRU', 'TRUST', 'TRUSTEE', 'TRUSTEES'
+              )
+        )
+        SELECT NULLIF(
+            trim(COALESCE((SELECT string_agg(token, ' ' ORDER BY token) FROM tokens), '')),
+            ''
+        );
+    $$ LANGUAGE sql IMMUTABLE;
+    """,
+    r"""
+    CREATE OR REPLACE FUNCTION entity_match_score(a TEXT, b TEXT)
+    RETURNS NUMERIC AS $$
+        WITH a_parts AS (
+            SELECT DISTINCT normalize_party_name(part) AS part
+            FROM regexp_split_to_table(COALESCE(a, ''), '\s*;\s*') AS part
+            WHERE normalize_party_name(part) IS NOT NULL
+        ),
+        b_parts AS (
+            SELECT DISTINCT normalize_party_name(part) AS part
+            FROM regexp_split_to_table(COALESCE(b, ''), '\s*;\s*') AS part
+            WHERE normalize_party_name(part) IS NOT NULL
+        ),
+        pairwise AS (
+            SELECT
+                a_parts.part AS a_part,
+                b_parts.part AS b_part,
+                COALESCE((
+                    SELECT COUNT(DISTINCT token)
+                    FROM unnest(regexp_split_to_array(a_parts.part, '\s+')) AS token
+                    WHERE token = ANY(regexp_split_to_array(b_parts.part, '\s+'))
+                ), 0) AS shared_count,
+                GREATEST(
+                    LEAST(
+                        COALESCE(array_length(regexp_split_to_array(a_parts.part, '\s+'), 1), 0),
+                        COALESCE(array_length(regexp_split_to_array(b_parts.part, '\s+'), 1), 0)
+                    ),
+                    1
+                ) AS shorter_len
+            FROM a_parts
+            CROSS JOIN b_parts
+        ),
+        scored AS (
+            SELECT
+                GREATEST(
+                    CASE
+                        WHEN a_part = b_part THEN 1.0::NUMERIC
+                        ELSE round(similarity(a_part, b_part)::NUMERIC, 4)
+                    END,
+                    LEAST(
+                        0.99::NUMERIC,
+                        round(
+                            (shared_count::NUMERIC / shorter_len)
+                            + CASE
+                                WHEN shared_count >= 2 AND shorter_len <= 3
+                                    THEN 0.05
+                                ELSE 0
+                              END,
+                            4
+                        )
+                    )
+                ) AS score
+            FROM pairwise
+        )
+        SELECT MAX(score) FROM scored;
+    $$ LANGUAGE sql STABLE;
+    """,
+    r"""
+    CREATE OR REPLACE FUNCTION is_same_entity(
+        a TEXT,
+        b TEXT,
+        p_threshold NUMERIC DEFAULT 0.68
+    ) RETURNS BOOLEAN AS $$
+        WITH scored AS (
+            SELECT entity_match_score(a, b) AS score
+        )
+        SELECT COALESCE(score >= p_threshold, FALSE) FROM scored;
+    $$ LANGUAGE sql STABLE;
     """,
     # Unified timeline events tied to a foreclosure property
     """
@@ -146,6 +233,47 @@ DDL_STATEMENTS: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_fts_status ON foreclosure_title_summary(chain_status);",
 ]
 
+_PARTY_NOISE_TOKENS: frozenset[str] = frozenset({
+    "A",
+    "AN",
+    "AND",
+    "AS",
+    "ATTORNEY",
+    "ATTY",
+    "CO",
+    "COMPANY",
+    "CORP",
+    "CORPORATION",
+    "ESQ",
+    "ET",
+    "ETAL",
+    "FKA",
+    "HOLDING",
+    "HOLDINGS",
+    "INC",
+    "INCORPORATED",
+    "LLC",
+    "LLP",
+    "LP",
+    "LTD",
+    "NKA",
+    "OF",
+    "PLLC",
+    "PR",
+    "REP",
+    "REPRESENTATIVE",
+    "SR",
+    "SUCCESSOR",
+    "THE",
+    "TRU",
+    "TRUST",
+    "TRUSTEE",
+    "TRUSTEES",
+})
+_PARTY_SEGMENT_RE = re.compile(r"\s*;\s*")
+_PARTY_CLEAN_RE = re.compile(r"[^A-Z0-9 ]+")
+_PARTY_SPACE_RE = re.compile(r"\s+")
+
 
 class TitleChainController:
     """Build foreclosure title chain from PG-only sources."""
@@ -189,6 +317,90 @@ class TitleChainController:
             f"OR NULLIF(btrim(COALESCE({alias}.grantee, '')), '') IS NOT NULL"
             f")"
         )
+
+    @staticmethod
+    def _normalize_party_name_py(raw: str | None) -> str | None:
+        if raw is None:
+            return None
+        cleaned = _PARTY_CLEAN_RE.sub(" ", raw.upper())
+        cleaned = _PARTY_SPACE_RE.sub(" ", cleaned).strip()
+        if not cleaned:
+            return None
+        tokens = sorted({
+            token
+            for token in cleaned.split(" ")
+            if token and token not in _PARTY_NOISE_TOKENS
+        })
+        normalized = " ".join(tokens).strip()
+        return normalized or None
+
+    @classmethod
+    def _entity_match_score_py(cls, left: str | None, right: str | None) -> float | None:
+        left_parts = {
+            normalized
+            for part in _PARTY_SEGMENT_RE.split(left or "")
+            if (normalized := cls._normalize_party_name_py(part)) is not None
+        }
+        right_parts = {
+            normalized
+            for part in _PARTY_SEGMENT_RE.split(right or "")
+            if (normalized := cls._normalize_party_name_py(part)) is not None
+        }
+        if not left_parts or not right_parts:
+            return None
+        best = 0.0
+        for left_part in left_parts:
+            for right_part in right_parts:
+                if left_part == right_part:
+                    return 1.0
+                left_tokens = set(left_part.split())
+                right_tokens = set(right_part.split())
+                shared_count = len(left_tokens & right_tokens)
+                shorter_len = max(min(len(left_tokens), len(right_tokens)), 1)
+                overlap_score = shared_count / shorter_len
+                if shared_count >= 2 and shorter_len <= 3:
+                    overlap_score = min(overlap_score + 0.05, 0.99)
+                best = max(
+                    best,
+                    SequenceMatcher(a=left_part, b=right_part).ratio(),
+                    overlap_score,
+                )
+        return best
+
+    @classmethod
+    def classify_sale_link(
+        cls,
+        *,
+        seq: int,
+        grantor: str | None,
+        grantee: str | None,
+        prev_grantee: str | None,
+        threshold: float = 0.68,
+    ) -> tuple[str, float | None]:
+        if seq == 1:
+            return ("ROOT", 1.0)
+
+        grantor_score = cls._entity_match_score_py(grantor, prev_grantee)
+        if grantor_score is not None:
+            if grantor_score == 1.0:
+                return ("LINKED_EXACT", 1.0)
+            if grantor_score >= threshold:
+                return ("LINKED_FUZZY", grantor_score)
+
+        grantee_score = cls._entity_match_score_py(grantee, prev_grantee)
+        if grantee_score is not None:
+            if grantee_score == 1.0:
+                return ("LINKED_EXACT", 1.0)
+            if grantee_score >= threshold:
+                return ("LINKED_FUZZY", grantee_score)
+
+        if cls._normalize_party_name_py(prev_grantee) is None or (
+            cls._normalize_party_name_py(grantor) is None
+            and cls._normalize_party_name_py(grantee) is None
+        ):
+            return ("MISSING_PARTY", None)
+
+        return ("CHAINED_BY_FOLIO", grantor_score or grantee_score)
 
     @classmethod
     def is_gap_status(cls, link_status: str | None) -> bool:
@@ -396,15 +608,33 @@ class TitleChainController:
                     s.doc_num AS instrument_number,
                     s.or_book,
                     s.or_page,
-                    COALESCE(s.grantor, backfill.grantor, ori.parties_from_text) AS grantor,
-                    COALESCE(s.grantee, backfill.grantee, ori.parties_to_text) AS grantee,
+                    COALESCE(
+                        NULLIF(btrim(backfill.grantor), ''),
+                        NULLIF(btrim(ori.parties_from_text), ''),
+                        NULLIF(btrim(s.grantor), '')
+                    ) AS grantor,
+                    COALESCE(
+                        NULLIF(btrim(backfill.grantee), ''),
+                        NULLIF(btrim(ori.parties_to_text), ''),
+                        NULLIF(btrim(s.grantee), '')
+                    ) AS grantee,
                     s.sale_amount AS amount,
                     concat_ws(
                         ' ',
                         coalesce(s.sale_type, 'UNK'),
-                        coalesce(s.grantor, backfill.grantor, ori.parties_from_text, ''),
+                        coalesce(
+                            NULLIF(btrim(backfill.grantor), ''),
+                            NULLIF(btrim(ori.parties_from_text), ''),
+                            NULLIF(btrim(s.grantor), ''),
+                            ''
+                        ),
                         '->',
-                        coalesce(s.grantee, backfill.grantee, ori.parties_to_text, '')
+                        coalesce(
+                            NULLIF(btrim(backfill.grantee), ''),
+                            NULLIF(btrim(ori.parties_to_text), ''),
+                            NULLIF(btrim(s.grantee), ''),
+                            ''
+                        )
                     ) AS description,
                     s.id AS sale_row_id
                 FROM controller_scope sc
@@ -421,7 +651,6 @@ class TitleChainController:
                 LEFT JOIN official_records_daily_instruments ori
                   ON s.doc_num IS NOT NULL
                  AND ori.instrument_number = s.doc_num
-                 AND (s.grantor IS NULL OR s.grantee IS NULL)
                 WHERE sc.folio IS NOT NULL
                   AND s.sale_date IS NOT NULL
                   AND s.sale_date <= sc.auction_date
@@ -928,28 +1157,26 @@ class TitleChainController:
                     os.prev_sale_event_id,
                     CASE
                         WHEN os.seq = 1 THEN 'ROOT'
-                        WHEN normalize_party_name(os.grantor) IS NULL
-                             OR normalize_party_name(os.prev_grantee) IS NULL
-                             THEN 'MISSING_PARTY'
-                        WHEN normalize_party_name(os.grantor)
-                             = normalize_party_name(os.prev_grantee)
+                        WHEN entity_match_score(os.grantor, os.prev_grantee) = 1.0
+                             OR entity_match_score(os.grantee, os.prev_grantee) = 1.0
                              THEN 'LINKED_EXACT'
-                        WHEN similarity(
-                            normalize_party_name(os.grantor),
-                            normalize_party_name(os.prev_grantee)
-                        ) >= :threshold
+                        WHEN entity_match_score(os.grantor, os.prev_grantee) >= :threshold
+                             OR entity_match_score(os.grantee, os.prev_grantee) >= :threshold
                              THEN 'LINKED_FUZZY'
+                        WHEN normalize_party_name(os.prev_grantee) IS NULL
+                             OR (
+                                 normalize_party_name(os.grantor) IS NULL
+                                 AND normalize_party_name(os.grantee) IS NULL
+                             )
+                             THEN 'MISSING_PARTY'
                         ELSE 'CHAINED_BY_FOLIO'
                     END AS link_status,
                     CASE
                         WHEN os.seq = 1 THEN 1.0
-                        WHEN normalize_party_name(os.grantor) IS NULL
-                             OR normalize_party_name(os.prev_grantee) IS NULL
-                             THEN NULL
-                        ELSE similarity(
-                            normalize_party_name(os.grantor),
-                            normalize_party_name(os.prev_grantee)
-                        )
+                        WHEN COALESCE(entity_match_score(os.grantor, os.prev_grantee), 0)
+                             >= COALESCE(entity_match_score(os.grantee, os.prev_grantee), 0)
+                             THEN entity_match_score(os.grantor, os.prev_grantee)
+                        ELSE entity_match_score(os.grantee, os.prev_grantee)
                     END AS link_score
                 FROM ordered_sales os
             )

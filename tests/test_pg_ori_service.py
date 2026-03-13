@@ -1624,6 +1624,82 @@ def test_process_target_logs_zero_persistence_context(monkeypatch: Any) -> None:
     assert "existing_foreclosing=1" in warnings[-1]
 
 
+def test_process_target_infers_anchor_when_only_procedural_docs_saved(
+    monkeypatch: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+    marks: list[int] = []
+    inferred_calls: list[tuple[str | None, str | None, str]] = []
+    target = {
+        "foreclosure_id": 15329,
+        "case_number": "292025CA000984A001HC",
+        "strap": "202827ZZZ000002195800U",
+        "folio": "0000000000",
+        "judgment_data": {
+            "plaintiff": "Freddie Mac",
+            "defendant": "Example Borrower",
+        },
+        "property_address": "11713 PRUETT RD",
+    }
+
+    monkeypatch.setattr(
+        service,
+        "_prepare_target_identity",
+        _passthrough_prepare_target_identity,
+    )
+    monkeypatch.setattr(
+        service,
+        "_discover_property",
+        lambda _target: (
+            [{"Instrument": "2026024198", "DocType": "JUDGMENT"}],
+            {
+                "api_calls": 1,
+                "retries": 0,
+                "truncated": 0,
+                "unresolved_truncations": 0,
+                "deed_count": 0,
+                "clerk_case_count": 0,
+                "official_seed_docs": 0,
+            },
+        ),
+    )
+
+    def _save_one(_strap: str | None, _folio: str | None, _docs: list[dict[str, Any]]) -> int:
+        service._last_save_documents_stats = {  # noqa: SLF001
+            "saved": 1,
+            "skipped": 0,
+            "eligible": 1,
+        }
+        return 1
+
+    def _infer_one(_strap: str | None, _folio: str | None, _target: dict[str, Any]) -> int:
+        inferred_calls.append((_strap, _folio, _target["case_number"]))
+        service._last_infer_from_judgment_stats = {  # noqa: SLF001
+            "saved": 1,
+            "reason": "created",
+        }
+        return 1
+
+    monkeypatch.setattr(service, "_save_documents", _save_one)
+    monkeypatch.setattr(service, "_has_survival_anchor_candidate", lambda *_args: False)
+    monkeypatch.setattr(service, "_infer_from_judgment", _infer_one)
+    monkeypatch.setattr(service, "_link_satisfactions", lambda _strap: 0)
+    monkeypatch.setattr(service, "_link_modifications", lambda _strap: None)
+    monkeypatch.setattr(service, "_chase_unlinked_sat_parents", lambda _strap, _folio: 0)
+    monkeypatch.setattr(service, "_clear_case_only_stage_files", lambda _case: None)
+    monkeypatch.setattr(service, "_mark_searched", lambda fid: marks.append(fid))
+
+    result = service._process_target(target, persist=True)  # noqa: SLF001
+
+    assert result["saved"] == 2
+    assert result["inferred"] == 1
+    assert inferred_calls == [
+        ("202827ZZZ000002195800U", "0000000000", "292025CA000984A001HC"),
+    ]
+    assert result["marked_ori_searched"] is True
+    assert marks == [15329]
+
+
 def test_infer_from_judgment_tracks_existing_inferred_reason(monkeypatch: Any) -> None:
     service = _build_service(monkeypatch)
     captured: list[tuple[str, dict[str, Any]]] = []

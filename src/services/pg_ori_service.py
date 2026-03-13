@@ -1870,6 +1870,55 @@ class PgOriService:
 
         return {key: int(row.get(key) or 0) for key in snapshot}
 
+    def _has_survival_anchor_candidate(
+        self,
+        strap: str | None,
+        case_number: str | None,
+    ) -> bool:
+        """Return True when ORI already has a non-procedural foreclosure anchor candidate.
+
+        Survival analysis can use unsatisfied mortgages, liens, lis pendens, or
+        cross-case judgments as the foreclosing anchor. Same-case recorded
+        judgments are procedural and must not block inferred-lien creation.
+        """
+        if not strap:
+            return False
+        if not hasattr(self.engine, "connect"):
+            logger.debug(
+                "Skipping survival anchor lookup for strap={} because engine has no connect()",
+                strap,
+            )
+            return False
+
+        params: dict[str, Any] = {"strap": strap}
+        same_case_clause = ""
+        if case_number:
+            params["case_number"] = case_number
+            same_case_clause = """
+                OR (
+                    oe.encumbrance_type = 'judgment'
+                    AND normalize_case_number_fn(COALESCE(oe.case_number, '')) <>
+                        normalize_case_number_fn(:case_number)
+                )
+            """
+        else:
+            same_case_clause = "OR oe.encumbrance_type = 'judgment'"
+
+        sql = text(f"""
+            SELECT EXISTS (
+                SELECT 1
+                FROM ori_encumbrances oe
+                WHERE oe.strap = :strap
+                  AND COALESCE(oe.is_satisfied, FALSE) = FALSE
+                  AND (
+                      oe.encumbrance_type IN ('mortgage', 'lien', 'lis_pendens')
+                      {same_case_clause}
+                  )
+            )
+        """)
+        with self.engine.connect() as conn:
+            return bool(conn.execute(sql, params).scalar())
+
     def _find_lis_pendens_gap_targets(
         self,
         *,
@@ -2204,7 +2253,11 @@ class PgOriService:
                 save_stats = dict(self._last_save_documents_stats)
                 save_skips = int(save_stats.get("skipped", 0))
                 eligible_documents = int(save_stats.get("eligible", 0))
-                if saved == 0 and not bool(target.get("skip_inferred_fallback")):
+                needs_anchor_fallback = (
+                    not bool(target.get("skip_inferred_fallback"))
+                    and not self._has_survival_anchor_candidate(strap, case_number)
+                )
+                if needs_anchor_fallback:
                     inferred = self._infer_from_judgment(strap, folio, target)
                     saved += inferred
                     if inferred == 0:

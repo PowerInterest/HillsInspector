@@ -235,7 +235,7 @@ def test_search_gap_deeds_uses_legal_first_for_high_volume_builder(monkeypatch) 
     monkeypatch.setattr(
         service,
         "_search_gap_in_local_ori",
-        lambda target, gap, *, party, from_date, to_date: [],  # noqa: ARG005
+        lambda target, gap, *, party, from_date, to_date, extra_targets=None: [],  # noqa: ARG005
     )
 
     docs = service._search_gap_deeds(  # noqa: SLF001
@@ -283,7 +283,7 @@ def test_search_gap_deeds_falls_back_to_legal_after_party_truncation(monkeypatch
     monkeypatch.setattr(
         service,
         "_search_gap_in_local_ori",
-        lambda target, gap, *, party, from_date, to_date: [],  # noqa: ARG005
+        lambda target, gap, *, party, from_date, to_date, extra_targets=None: [],  # noqa: ARG005
     )
 
     docs = service._search_gap_deeds(  # noqa: SLF001
@@ -309,7 +309,7 @@ def test_search_gap_deeds_prefers_local_ori_for_high_volume_builder(monkeypatch)
     monkeypatch.setattr(
         service,
         "_search_gap_in_local_ori",
-        lambda target, gap, *, party, from_date, to_date: [  # noqa: ARG005
+        lambda target, gap, *, party, from_date, to_date, extra_targets=None: [  # noqa: ARG005
             {
                 "Instrument": "96115832",
                 "DocType": "(D) DEED",
@@ -321,7 +321,7 @@ def test_search_gap_deeds_prefers_local_ori_for_high_volume_builder(monkeypatch)
     monkeypatch.setattr(
         service,
         "_search_gap_by_legal",
-        lambda target, gap, *, from_date, to_date: [],  # noqa: ARG005
+        lambda target, gap, *, from_date, to_date, extra_targets=None: [],  # noqa: ARG005
     )
 
     docs = service._search_gap_deeds(  # noqa: SLF001
@@ -358,6 +358,257 @@ def test_local_ori_doc_score_prefers_directional_party_match() -> None:
     )
 
     assert better > weaker
+
+
+def test_doc_matches_gap_parties_accepts_context_aliases() -> None:
+    matched = PgTitleBreakService._doc_matches_gap_parties(  # noqa: SLF001
+        {
+            "PartiesOne": ["CATO MINNIE L"],
+            "PartiesTwo": ["BAILEY BERNICE C"],
+        },
+        {
+            "expected_from_party": "",
+            "observed_to_party": "CATO MILLAGE R",
+        },
+        extra_targets={PgTitleBreakService._normalize_party_text("CATO MINNIE L")},  # noqa: SLF001
+    )
+
+    assert matched is True
+
+
+def test_build_gap_search_context_prioritizes_address_backed_aliases(monkeypatch) -> None:
+    service = PgTitleBreakService.__new__(PgTitleBreakService)
+    monkeypatch.setattr(
+        service,
+        "_legal_search_terms",
+        lambda target: ["OAK GROVE LOT 7 BLOCK 2"],  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_case_party_context_rows",
+        lambda target, property_address_norm: [  # noqa: ARG005
+            {
+                "name": "DOE, JOHN",
+                "business_name": None,
+                "akas": "DOE, JOHN A",
+                "address_match": True,
+            },
+            {
+                "name": "SMITH, JANE",
+                "business_name": None,
+                "akas": None,
+                "address_match": False,
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_historical_party_context_rows",
+        lambda *, target, property_address_norm: [  # noqa: ARG005
+            {
+                "name": "DOE, JOHNNY",
+                "business_name": None,
+                "akas": None,
+                "address_match": True,
+            }
+        ],
+    )
+
+    context = service._build_gap_search_context(  # noqa: SLF001
+        {
+            "property_address": "123 MAIN STREET",
+            "owner_name": "DOE JOHN",
+        },
+        {
+            "gap_type": "missing_party",
+            "expected_from_party": "",
+            "observed_to_party": "DOE, JOHN",
+        },
+    )
+
+    assert context["search_names"] == [
+        "DOE, JOHN",
+        "DOE, JOHN A",
+        "DOE, JOHNNY",
+        "SMITH, JANE",
+    ]
+    assert PgTitleBreakService._normalize_party_text("DOE, JOHN A") in context["support_names"]  # noqa: SLF001
+    assert PgTitleBreakService._normalize_party_text("DOE, JOHNNY") in context["support_names"]  # noqa: SLF001
+    assert context["legal_terms"] == ["OAK GROVE LOT 7 BLOCK 2"]
+
+
+def test_build_gap_search_context_keeps_original_party_first_for_non_missing_party(monkeypatch) -> None:
+    service = PgTitleBreakService.__new__(PgTitleBreakService)
+    monkeypatch.setattr(
+        service,
+        "_legal_search_terms",
+        lambda target: ["OAK GROVE LOT 7 BLOCK 2"],  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_case_party_context_rows",
+        lambda target, property_address_norm: [  # noqa: ARG005
+            {
+                "name": "DOE, JOHN",
+                "business_name": None,
+                "akas": "DOE, JOHN A",
+                "address_match": True,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_historical_party_context_rows",
+        lambda *, target, property_address_norm: [  # noqa: ARG005
+            {
+                "name": "DOE, JOHNNY",
+                "business_name": None,
+                "akas": None,
+                "address_match": True,
+            }
+        ],
+    )
+
+    context = service._build_gap_search_context(  # noqa: SLF001
+        {
+            "property_address": "123 MAIN STREET",
+            "owner_name": "DOE JOHN",
+        },
+        {
+            "gap_type": "chained_by_folio",
+            "expected_from_party": "",
+            "observed_to_party": "DOE, JOHN",
+        },
+    )
+
+    assert context["search_names"] == [
+        "DOE, JOHN",
+        "DOE, JOHN A",
+        "DOE, JOHNNY",
+    ]
+
+
+def test_address_search_terms_extract_house_and_street_tokens() -> None:
+    house_prefix, street_tokens = PgTitleBreakService._address_search_terms(  # noqa: SLF001
+        "123 West Main Street, Tampa, FL 33602"
+    )
+
+    assert house_prefix == "123%"
+    assert street_tokens == ["MAIN"]
+
+
+def test_build_gap_search_context_uses_historical_address_matches_without_name_seed(monkeypatch) -> None:
+    service = PgTitleBreakService.__new__(PgTitleBreakService)
+    monkeypatch.setattr(
+        service,
+        "_legal_search_terms",
+        lambda target: [],  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_case_party_context_rows",
+        lambda target, property_address_norm: [  # noqa: ARG005
+            {
+                "name": "UNKNOWN OCCUPANT",
+                "business_name": None,
+                "akas": None,
+                "address_match": False,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_historical_party_context_rows",
+        lambda *, target, property_address_norm: [  # noqa: ARG005
+            {
+                "name": "DOE, JOHN",
+                "business_name": None,
+                "akas": "DOE, JOHN A",
+                "address_match": True,
+            }
+        ],
+    )
+
+    context = service._build_gap_search_context(  # noqa: SLF001
+        {
+            "property_address": "123 MAIN STREET",
+            "owner_name": None,
+        },
+        {
+            "gap_type": "missing_party",
+            "expected_from_party": "",
+            "observed_to_party": "NOISY NAME VARIANT",
+        },
+    )
+
+    assert context["search_names"] == ["DOE, JOHN", "DOE, JOHN A", "UNKNOWN OCCUPANT"]
+    assert "NOISY NAME VARIANT" not in context["search_names"]
+    assert PgTitleBreakService._normalize_party_text("DOE, JOHN A") in context["support_names"]  # noqa: SLF001
+
+
+def test_search_gap_deeds_uses_civil_context_alias_after_primary_miss(monkeypatch) -> None:
+    service = PgTitleBreakService.__new__(PgTitleBreakService)
+    fake_ori = _GapOri()
+
+    def _party_search(
+        name: str,
+        stats: dict[str, int],
+        *,
+        from_date: object,
+        to_date: object,
+        split_on_truncated: bool,
+        depth: int = 0,
+    ) -> list[dict]:
+        fake_ori.party_calls.append((name, dict(stats)))
+        if name == "CATO MINNIE L":
+            return [
+                {
+                    "Instrument": "94237836",
+                    "DocType": "(D) DEED",
+                    "PartiesOne": ["CATO MINNIE L"],
+                    "PartiesTwo": ["BAILEY BERNICE C"],
+                    "Legal": "LOT 7 BLOCK 2 OAK GROVE",
+                }
+            ]
+        return []
+
+    fake_ori.search_party_pav = _party_search  # type: ignore[method-assign]
+    service._ori = fake_ori  # noqa: SLF001
+    monkeypatch.setattr(
+        service,
+        "_build_gap_search_context",
+        lambda target, gap: {  # noqa: ARG005
+            "search_names": ["CATO MILLAGE R", "CATO MINNIE L"],
+            "support_names": {
+                PgTitleBreakService._normalize_party_text("CATO MINNIE L"),  # noqa: SLF001
+            },
+            "legal_terms": ["LOT 7 BLOCK 2 OAK GROVE"],
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_search_gap_in_local_ori",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        service,
+        "_search_gap_by_legal",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(pg_title_break_service.time, "sleep", lambda *_args, **_kwargs: None)
+
+    docs = service._search_gap_deeds(  # noqa: SLF001
+        {"folio": "0123456789", "property_address": "123 MAIN ST"},
+        {
+            "expected_from_party": "",
+            "observed_to_party": "CATO MILLAGE R",
+        },
+        from_date=__import__("datetime").date(1994, 1, 1),
+        to_date=__import__("datetime").date(1994, 12, 31),
+    )
+
+    assert [doc["Instrument"] for doc in docs] == ["94237836"]
+    assert [call[0] for call in fake_ori.party_calls] == ["CATO MILLAGE R", "CATO MINNIE L"]
 
 
 def test_process_one_inserts_search_sentinel_when_no_deeds_found(monkeypatch) -> None:

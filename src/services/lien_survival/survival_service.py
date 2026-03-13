@@ -103,6 +103,18 @@ def _match_parties_to_plaintiff(encumbrance: Dict[str, Any], plaintiff: str) -> 
     return max(scores)
 
 
+def _is_same_case_judgment(
+    encumbrance: Dict[str, Any],
+    current_case_number: str,
+) -> bool:
+    """Return True when a recorded judgment belongs to the active foreclosure case."""
+    if (encumbrance.get("encumbrance_type") or "").lower() != "judgment":
+        return False
+    if not current_case_number:
+        return False
+    return _normalize_case_number(encumbrance.get("case_number")) == current_case_number
+
+
 class SurvivalService:
     """Orchestrates the lien survival analysis process."""
 
@@ -219,6 +231,7 @@ class SurvivalService:
                 for enc in encumbrances
                 if not enc.get("is_satisfied")
                 and not _is_assignment_type(enc.get("encumbrance_type", ""))
+                and not _is_same_case_judgment(enc, current_case_number)
                 and (
                     not is_mortgage_fc
                     or _is_mortgage_type(enc.get("encumbrance_type", ""))
@@ -245,6 +258,8 @@ class SurvivalService:
                         continue
                     enc_type = enc.get("encumbrance_type", "")
                     if _is_lis_pendens_type(enc_type) or _is_assignment_type(enc_type):
+                        continue
+                    if _is_same_case_judgment(enc, current_case_number):
                         continue
                     score = _match_parties_to_plaintiff(enc, plaintiff)
                     if score > best_score:
@@ -410,6 +425,7 @@ class SurvivalService:
                 e for e in encumbrances
                 if _unsatisfied(e)
                 and not _is_assignment_type(e.get('encumbrance_type', ''))
+                and not _is_same_case_judgment(e, current_case_number)
             ]
             if remaining:
                 # Prefer judgment encumbrances (the final judgment is always recorded)
@@ -470,7 +486,6 @@ class SurvivalService:
                 continue
 
             enc_type = enc.get("encumbrance_type", "")
-            enc_case_number = _normalize_case_number(enc.get("case_number"))
 
             # A. Check if already satisfied
             if enc.get('is_satisfied'):
@@ -494,7 +509,7 @@ class SurvivalService:
                 )
                 results['historical'].append(enc)
                 continue
-            if enc_type == 'judgment' and current_case_number and enc_case_number == current_case_number:
+            if _is_same_case_judgment(enc, current_case_number):
                 enc['survival_status'] = 'HISTORICAL'
                 enc['survival_reason'] = (
                     "Recorded in the current foreclosure case; not an independent encumbrance"
