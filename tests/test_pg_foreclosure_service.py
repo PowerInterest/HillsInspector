@@ -124,7 +124,7 @@ def _valid_judgment_cache(
 
 
 def test_persist_judgment_sets_all_step_flags() -> None:
-    """persist_judgment must set step_pdf_downloaded and step_judgment_extracted."""
+    """persist_judgment must refresh downstream step flags when judgment data changes."""
     captured: dict[str, Any] = {}
     conn = _FakeConnection(captured)
 
@@ -137,6 +137,7 @@ def test_persist_judgment_sets_all_step_flags() -> None:
 
     assert result is True
     sql_text = captured["sql"].lower()
+    assert "step_survival_analyzed = null" in sql_text
     assert "step_pdf_downloaded" in sql_text, "persist_judgment must set step_pdf_downloaded"
     assert "step_judgment_extracted" in sql_text, "persist_judgment must set step_judgment_extracted"
     assert "final_judgment_amount" in sql_text, "persist_judgment must set final_judgment_amount"

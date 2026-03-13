@@ -655,6 +655,7 @@ class PgJudgmentService:
                 "  judgment_data = CAST(:jd AS jsonb), "
                 "  pdf_path = COALESCE(:pp, pdf_path), "
                 "  final_judgment_amount = COALESCE(:fja, final_judgment_amount), "
+                "  step_survival_analyzed = NULL, "
                 "  step_pdf_downloaded = COALESCE("
                 "      step_pdf_downloaded, "
                 "      CASE WHEN COALESCE(:pp, pdf_path, '') <> '' THEN now() END"

@@ -139,6 +139,26 @@ def test_find_targets_checks_per_foreclosure_survival_rows_when_not_forced(
     assert "oe.survival_status is null" not in sql_text
 
 
+def test_find_targets_reanalyzes_cleared_foreclosures_without_null_encumbrance_status(
+    monkeypatch: Any,
+) -> None:
+    service = _build_service(monkeypatch)
+    captured: dict[str, Any] = {}
+    service.engine = _CaptureEngine(
+        captured,
+        rows=[
+            (9, "25-CA-000009", "S9", {"plaintiff": "ASSOCIATION"}, False),
+        ],
+    )
+
+    targets = service._find_targets(50, foreclosure_ids=[9], force_reanalysis=False)  # noqa: SLF001
+
+    assert targets[0]["foreclosure_id"] == 9
+    sql_text = captured["sql"].lower()
+    assert "f.step_survival_analyzed is null" in sql_text
+    assert "oe.survival_status is null" not in sql_text
+
+
 def test_save_survival_results_upserts_per_foreclosure_rows(
     monkeypatch: Any,
 ) -> None:
