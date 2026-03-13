@@ -1,41 +1,139 @@
-{% if documents %}
-<ul class="document-list">
-    {% for doc in documents %}
-    <li class="document-item">
-        <span class="doc-icon">
-            {% if 'JUDGMENT' in (doc.document_type or '')|upper or 'JUD' in (doc.document_type or '')|upper %}PDF
-            {% elif 'LIS_PENDENS' in (doc.document_type or '')|upper or 'LP' in (doc.document_type or '')|upper %}LP
-            {% elif 'MORTGAGE' in (doc.document_type or '')|upper or 'MTG' in (doc.document_type or '')|upper %}MTG
-            {% else %}DOC{% endif %}
-        </span>
-        <div class="doc-info">
-            <span class="doc-type">{{ doc.document_type or 'Document' }}</span>
-            <span class="doc-date">{{ doc.recording_date or '' }}</span>
-            {% if doc.party1 %}
-            <span class="doc-party" style="font-size:0.85em;color:var(--color-text-muted);">{{ doc.party1 }}</span>
-            {% endif %}
-        </div>
-        {% if doc.file_path %}
-        {% if doc.id %}
-        <a href="/property/{{ folio }}/doc/{{ doc.id }}" target="_blank" class="doc-download">View</a>
-        {% else %}
-        <a href="/property/{{ folio }}/documents/{{ doc.file_path|replace('data/Foreclosure/', '')|replace('data\\Foreclosure\\', '') }}" target="_blank" class="doc-download">View PDF</a>
-        {% endif %}
-        {% elif doc.instrument_number %}
-        <a href="https://publicaccess.hillsclerk.com/PAVDirectSearch/index.html?CQID=320&OBKey__1006_1={{ doc.instrument_number }}" target="_blank" class="doc-download" title="View in ORI">ORI</a>
-        {% endif %}
-        {% if doc.instrument_number %}
-        <span class="doc-instrument" style="font-size:0.8em;color:var(--color-text-muted);">Inst: {{ doc.instrument_number }}</span>
-        {% endif %}
-    </li>
-    {% endfor %}
-</ul>
+{% if file_groups %}
+{% set category_order = ['documents', 'properties_documents', 'photos', 'screenshots', 'raw', 'vision', 'case_root', 'properties_raw'] %}
+{% set total_files = file_groups.values() | map('length') | sum %}
+<p class="file-count" style="font-size:0.85em;color:var(--color-text-muted);margin-bottom:0.75rem;">
+    {{ total_files }} file{{ 's' if total_files != 1 else '' }} on disk
+</p>
+
+{# Render categories in preferred order, then any remaining #}
+{% for cat_key in category_order %}
+    {% if cat_key in file_groups %}
+        {% set files = file_groups[cat_key] %}
+        <details class="file-group" {% if cat_key in ('documents', 'properties_documents') %}open{% endif %}>
+            <summary class="file-group-header">
+                <span class="file-group-label">{{ files[0].category_label }}</span>
+                <span class="file-group-count">({{ files | length }})</span>
+            </summary>
+            <ul class="document-list">
+                {% for doc in files %}
+                <li class="document-item">
+                    <span class="doc-icon">
+                        {% if doc.suffix == '.pdf' %}
+                            {% if 'JUDGMENT' in (doc.document_type or '')|upper %}JUD
+                            {% elif 'LIS_PENDENS' in (doc.document_type or '')|upper %}LP
+                            {% elif 'MORTGAGE' in (doc.document_type or '')|upper %}MTG
+                            {% elif 'DEED' in (doc.document_type or '')|upper %}DED
+                            {% elif 'LIEN' in (doc.document_type or '')|upper %}LN
+                            {% elif 'SATISFACTION' in (doc.document_type or '')|upper %}SAT
+                            {% elif 'ASSIGNMENT' in (doc.document_type or '')|upper %}ASG
+                            {% else %}PDF{% endif %}
+                        {% elif doc.suffix in ('.png', '.jpg', '.jpeg', '.gif') %}IMG
+                        {% elif doc.suffix == '.json' %}
+                            {% if 'EXTRACTED' in (doc.document_type or '')|upper %}EXT
+                            {% else %}JSON{% endif %}
+                        {% elif doc.suffix == '.parquet' %}PQT
+                        {% else %}FILE{% endif %}
+                    </span>
+                    <div class="doc-info">
+                        <span class="doc-type">{{ doc.document_type or 'Document' }}</span>
+                        <span class="doc-filename" style="font-size:0.8em;color:var(--color-text-muted);">{{ doc.filename }}</span>
+                        {% if doc.case_number %}
+                        <span class="doc-case" style="font-size:0.75em;color:var(--color-text-muted);">Case: {{ doc.case_number }}</span>
+                        {% endif %}
+                        {% if doc.size_kb is not none %}
+                        <span class="doc-size" style="font-size:0.75em;color:var(--color-text-muted);">{{ doc.size_kb }} KB</span>
+                        {% endif %}
+                    </div>
+                    <a href="/property/{{ folio }}/files/{{ doc.href_path or doc.serve_path }}"
+                       target="_blank"
+                       class="doc-download">
+                        {% if doc.suffix == '.pdf' %}View PDF
+                        {% elif doc.suffix in ('.png', '.jpg', '.jpeg', '.gif') %}View
+                        {% elif doc.suffix == '.json' %}View JSON
+                        {% else %}Download{% endif %}
+                    </a>
+                </li>
+                {% endfor %}
+            </ul>
+        </details>
+    {% endif %}
+{% endfor %}
+
+{# Render any categories not in the preferred order #}
+{% for cat_key, files in file_groups.items() %}
+    {% if cat_key not in category_order %}
+    <details class="file-group">
+        <summary class="file-group-header">
+            <span class="file-group-label">{{ files[0].category_label }}</span>
+            <span class="file-group-count">({{ files | length }})</span>
+        </summary>
+        <ul class="document-list">
+            {% for doc in files %}
+            <li class="document-item">
+                <span class="doc-icon">
+                    {% if doc.suffix == '.pdf' %}PDF
+                    {% elif doc.suffix in ('.png', '.jpg', '.jpeg', '.gif') %}IMG
+                    {% elif doc.suffix == '.json' %}JSON
+                    {% else %}FILE{% endif %}
+                </span>
+                <div class="doc-info">
+                    <span class="doc-type">{{ doc.document_type or 'Document' }}</span>
+                    <span class="doc-filename" style="font-size:0.8em;color:var(--color-text-muted);">{{ doc.filename }}</span>
+                    {% if doc.size_kb is not none %}
+                    <span class="doc-size" style="font-size:0.75em;color:var(--color-text-muted);">{{ doc.size_kb }} KB</span>
+                    {% endif %}
+                </div>
+                <a href="/property/{{ folio }}/files/{{ doc.href_path or doc.serve_path }}"
+                   target="_blank"
+                   class="doc-download">Download</a>
+            </li>
+            {% endfor %}
+        </ul>
+    </details>
+    {% endif %}
+{% endfor %}
+
 {% else %}
-<p class="no-data">No documents available.</p>
-<p class="no-data-hint">Documents will appear here after:
+<p class="no-data">No files found on disk.</p>
+<div class="no-data-hint">Files will appear here after:
     <ul>
         <li>Final Judgment PDF is downloaded</li>
         <li>ORI documents are retrieved</li>
+        <li>Scrapers collect property data</li>
     </ul>
-</p>
+</div>
 {% endif %}
+
+<style>
+.file-group {
+    margin-bottom: 0.5rem;
+    border: 1px solid var(--color-border, #333);
+    border-radius: 6px;
+    overflow: hidden;
+}
+.file-group-header {
+    padding: 0.5rem 0.75rem;
+    background: var(--color-bg-secondary, #1a1a2e);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 600;
+    font-size: 0.9em;
+    user-select: none;
+}
+.file-group-header:hover {
+    background: var(--color-bg-hover, #222244);
+}
+.file-group-count {
+    font-weight: 400;
+    color: var(--color-text-muted, #888);
+    font-size: 0.85em;
+}
+.file-group > .document-list {
+    border-top: 1px solid var(--color-border, #333);
+}
+.file-count {
+    margin-top: 0;
+}
+</style>

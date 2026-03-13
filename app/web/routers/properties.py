@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from loguru import logger
@@ -244,7 +244,103 @@ def _pg_chain_gaps_for_property(
         return [dict(r) for r in rows]
 
 
+def _pg_straps_for_property(identifier: str) -> list[str]:
+    """Resolve all STRAP values associated with a folio/strap/case_number."""
+    if not identifier:
+        return []
+    with _pg_engine().connect() as conn:
+        rows = conn.execute(
+            sa_text("""
+                SELECT DISTINCT strap FROM (
+                    SELECT f.strap FROM foreclosures f
+                    WHERE f.case_number_raw = :id OR f.strap = :id OR f.folio = :id
+                    UNION ALL
+                    SELECT fh.strap FROM foreclosures_history fh
+                    WHERE fh.case_number_raw = :id OR fh.strap = :id OR fh.folio = :id
+                ) t
+                WHERE strap IS NOT NULL AND btrim(strap) != ''
+                ORDER BY strap
+            """),
+            {"id": identifier},
+        ).fetchall()
+        return [str(r[0]) for r in rows if r and r[0]]
+
+
+# File categories and their display metadata
+_FILE_CATEGORIES: dict[str, dict[str, str]] = {
+    "documents": {"label": "Legal Documents", "icon": "DOC"},
+    "photos": {"label": "Property Photos", "icon": "IMG"},
+    "screenshots": {"label": "Screenshots", "icon": "IMG"},
+    "raw": {"label": "Raw Scraped Data", "icon": "DAT"},
+    "vision": {"label": "OCR / Extraction Cache", "icon": "DAT"},
+}
+
+# Extensions we display/serve from property detail pages.
+# HTML is intentionally excluded so scraped artifacts cannot execute in-origin.
+_VIEWABLE_EXTENSIONS = {
+    ".pdf",
+    ".json",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".parquet",
+    ".csv",
+    ".txt",
+}
+
+
+def _classify_file(filepath: Path) -> str:
+    """Derive a human-readable document type from a filename."""
+    name = filepath.stem.lower()
+    suffix = filepath.suffix.lower()
+    if suffix == ".pdf":
+        if "judgment" in name or "jud" in name:
+            return "FINAL_JUDGMENT"
+        if "mortgage" in name or "mtg" in name:
+            return "MORTGAGE"
+        if "deed" in name:
+            return "DEED"
+        if "lis_pendens" in name or "lis pendens" in name or "_lp_" in name or name.startswith("(lp)"):
+            return "LIS_PENDENS"
+        if "lien" in name or "_ln_" in name:
+            return "LIEN"
+        if "satisfaction" in name or "_sat_" in name:
+            return "SATISFACTION"
+        if "assignment" in name or "_asg_" in name:
+            return "ASSIGNMENT"
+        return "PDF"
+    if suffix == ".json":
+        if "extracted" in name:
+            return "EXTRACTED_JSON"
+        if "hcpa_gis" in name:
+            return "HCPA_GIS"
+        if "sunbiz" in name:
+            return "SUNBIZ"
+        return "JSON"
+    if suffix in {".png", ".jpg", ".jpeg", ".gif"}:
+        if "tax_collector" in name:
+            return "TAX_COLLECTOR_SCREENSHOT"
+        return "IMAGE"
+    if suffix == ".parquet":
+        return "PARQUET"
+    return suffix.lstrip(".").upper() or "FILE"
+
+
+def _normalize_serve_path(filepath: str) -> str | None:
+    """Normalize a requested file path and reject traversal attempts."""
+    normalized = filepath.replace("\\", "/").strip().strip("/")
+    if not normalized:
+        return None
+
+    parts = PurePosixPath(normalized).parts
+    if not parts or any(part in {"..", "."} for part in parts):
+        return None
+    return "/".join(parts)
+
+
 def _pg_documents_for_property(identifier: str) -> list[dict[str, Any]]:
+    """Return only legal document PDFs (backward compat for doc/{id} route)."""
     project_root = Path(__file__).resolve().parents[3]
     foreclosure_root = (project_root / "data" / "Foreclosure").resolve()
     docs: list[dict[str, Any]] = []
@@ -273,6 +369,171 @@ def _pg_documents_for_property(identifier: str) -> list[dict[str, Any]]:
             })
             next_id += 1
     return docs
+
+
+def _pg_all_files_for_property(identifier: str) -> dict[str, list[dict[str, Any]]]:
+    """
+    Scan ALL on-disk files for a property, grouped by category.
+
+    Searches:
+      - data/Foreclosure/{case_number}/ (all subfolders)
+      - data/properties/{strap}/       (ORI-downloaded docs)
+
+    Returns dict keyed by category name → list of file dicts.
+    """
+    project_root = Path(__file__).resolve().parents[3]
+    foreclosure_root = (project_root / "data" / "Foreclosure").resolve()
+    properties_root = (project_root / "data" / "properties").resolve()
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    next_id = 1
+
+    # --- Foreclosure case folders ---
+    for case_num in _pg_case_numbers_for_property(identifier):
+        case_dir = foreclosure_root / case_num
+        if not case_dir.is_dir():
+            continue
+        # Root-level files in the case folder (e.g. auction.parquet)
+        for filepath in sorted(case_dir.iterdir()):
+            if not filepath.is_file():
+                continue
+            if filepath.suffix.lower() not in _VIEWABLE_EXTENSIONS:
+                continue
+            try:
+                rel_path = str(filepath.resolve().relative_to(project_root.resolve()))
+            except Exception:
+                rel_path = str(filepath.resolve())
+            serve_path = f"{case_num}/{filepath.name}"
+            doc_type = _classify_file(filepath)
+            grouped.setdefault("case_root", []).append({
+                "id": next_id,
+                "folio": identifier,
+                "case_number": case_num,
+                "document_type": doc_type,
+                "file_path": rel_path,
+                "serve_path": serve_path,
+                "href_path": quote(serve_path, safe="/"),
+                "filename": filepath.name,
+                "suffix": filepath.suffix.lower(),
+                "size_kb": round(filepath.stat().st_size / 1024, 1),
+                "category": "case_root",
+                "category_label": "Case Data",
+                "icon": "DAT",
+                "recording_date": None,
+                "instrument_number": None,
+                "party1": None,
+                "party2": None,
+            })
+            next_id += 1
+        # Subfolders
+        for subfolder_name, meta in _FILE_CATEGORIES.items():
+            subfolder = case_dir / subfolder_name
+            if not subfolder.is_dir():
+                continue
+            for filepath in sorted(subfolder.iterdir()):
+                if not filepath.is_file():
+                    continue
+                if filepath.suffix.lower() not in _VIEWABLE_EXTENSIONS:
+                    continue
+                try:
+                    rel_path = str(filepath.resolve().relative_to(project_root.resolve()))
+                except Exception:
+                    rel_path = str(filepath.resolve())
+                # Build a serve URL relative to case folder: {subfolder}/{filename}
+                serve_path = f"{case_num}/{subfolder_name}/{filepath.name}"
+                doc_type = _classify_file(filepath)
+                grouped.setdefault(subfolder_name, []).append({
+                    "id": next_id,
+                    "folio": identifier,
+                    "case_number": case_num,
+                    "document_type": doc_type,
+                    "file_path": rel_path,
+                    "serve_path": serve_path,
+                    "href_path": quote(serve_path, safe="/"),
+                    "filename": filepath.name,
+                    "suffix": filepath.suffix.lower(),
+                    "size_kb": round(filepath.stat().st_size / 1024, 1),
+                    "category": subfolder_name,
+                    "category_label": meta["label"],
+                    "icon": meta["icon"],
+                    "recording_date": None,
+                    "instrument_number": None,
+                    "party1": None,
+                    "party2": None,
+                })
+                next_id += 1
+
+    # --- data/properties/{strap}/ folders (ORI docs) ---
+    for strap in _pg_straps_for_property(identifier):
+        prop_dir = properties_root / strap
+        if not prop_dir.is_dir():
+            continue
+        for filepath in sorted(prop_dir.rglob("*")):
+            if not filepath.is_file():
+                continue
+            if filepath.suffix.lower() not in _VIEWABLE_EXTENSIONS:
+                continue
+            try:
+                rel_from_prop = filepath.relative_to(prop_dir)
+            except Exception:
+                logger.debug(f"Cannot resolve relative path for {filepath} under {prop_dir}")
+                continue
+            try:
+                rel_path = str(filepath.resolve().relative_to(project_root.resolve()))
+            except Exception:
+                rel_path = str(filepath.resolve())
+            # Determine subfolder category
+            parts = rel_from_prop.parts
+            subfolder_name = parts[0] if len(parts) > 1 else "documents"
+            meta = _FILE_CATEGORIES.get(subfolder_name, {"label": subfolder_name.title(), "icon": "DOC"})
+            doc_type = _classify_file(filepath)
+            cat_key = f"properties_{subfolder_name}"
+            serve_path = f"props/{strap}/{rel_from_prop.as_posix()}"
+            grouped.setdefault(cat_key, []).append({
+                "id": next_id,
+                "folio": identifier,
+                "case_number": None,
+                "document_type": doc_type,
+                "file_path": rel_path,
+                "serve_path": serve_path,
+                "href_path": quote(serve_path, safe="/"),
+                "filename": filepath.name,
+                "suffix": filepath.suffix.lower(),
+                "size_kb": round(filepath.stat().st_size / 1024, 1),
+                "category": cat_key,
+                "category_label": f"ORI {meta['label']}",
+                "icon": meta["icon"],
+                "recording_date": None,
+                "instrument_number": None,
+                "party1": None,
+                "party2": None,
+            })
+            next_id += 1
+
+    return grouped
+
+
+def _resolve_property_file_path(identifier: str, filepath: str) -> Path | None:
+    """Resolve a requested property file only if it belongs to the property."""
+    normalized = _normalize_serve_path(filepath)
+    if not normalized:
+        return None
+
+    project_root = Path(__file__).resolve().parents[3]
+    data_dir = (project_root / "data").resolve()
+
+    for files in _pg_all_files_for_property(identifier).values():
+        for file_info in files:
+            if str(file_info.get("serve_path") or "") != normalized:
+                continue
+            file_path = str(file_info.get("file_path") or "").strip()
+            if not file_path:
+                return None
+
+            candidate = (project_root / file_path).resolve()
+            if not str(candidate).startswith(str(data_dir)):
+                return None
+            return candidate if candidate.is_file() else None
+    return None
 
 
 def _coerce_json_dict(value: Any) -> dict[str, Any]:
@@ -1563,11 +1824,14 @@ async def property_liens(request: Request, folio: str):
 @router.get("/{folio}/documents", response_class=HTMLResponse)
 async def property_documents(request: Request, folio: str):
     """
-    HTMX partial - documents list for a property.
+    HTMX partial - all on-disk files for a property, grouped by category.
     """
-    documents = _pg_documents_for_property(folio)
+    file_groups = _pg_all_files_for_property(folio)
 
-    return templates.TemplateResponse("partials/documents.html", {"request": request, "documents": documents, "folio": folio})
+    return templates.TemplateResponse(
+        "partials/documents.html",
+        {"request": request, "file_groups": file_groups, "folio": folio},
+    )
 
 
 @router.get("/{folio}/analysis", response_class=HTMLResponse)
@@ -2187,6 +2451,26 @@ async def serve_photo(folio: str, filename: str):
             return FileResponse(path=resolved, filename=filename)
 
     raise HTTPException(status_code=404, detail="Photo not found on disk")
+
+
+@router.api_route("/{folio}/files/{filepath:path}", methods=["GET", "HEAD"])
+async def serve_property_file(folio: str, filepath: str):
+    """
+    Serve any on-disk file for a property.
+
+    filepath format:
+      - {case_number}/{subfolder}/{filename}  (Foreclosure files)
+      - props/{strap}/{relative_path}          (ORI property files)
+    """
+    normalized = _normalize_serve_path(filepath)
+    if normalized is None:
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    candidate = _resolve_property_file_path(folio, normalized)
+    if candidate is None or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+
+    return FileResponse(path=candidate, filename=candidate.name)
 
 
 @router.get("/{folio}/title-report", response_class=HTMLResponse)
