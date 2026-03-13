@@ -201,3 +201,93 @@ def test_normalize_judgment_payload_repairs_legacy_enum_drift(
     ]
     assert "Pages 1-5 are missing from the cache export." in normalized["unclear_sections"]
     assert validation["is_valid"] is True
+
+
+def test_normalize_judgment_payload_preserves_raw_text_for_credit_reconciliation(
+    monkeypatch: Any,
+) -> None:
+    svc = _build_service(monkeypatch)
+    payload = {
+        "instrument_number": "2025001111",
+        "recording_book": None,
+        "recording_page": None,
+        "recording_date": "2025-01-01",
+        "execution_date": None,
+        "property_address": "123 MAIN ST TAMPA, FL 33602",
+        "legal_description": "LOT 1, BLOCK 1, TEST SUBDIVISION",
+        "parcel_id": None,
+        "confidence_score": 0.9,
+        "unclear_sections": [],
+        "case_number": "25-CA-000111",
+        "court_circuit": "13th",
+        "county": "Hillsborough",
+        "judge_name": "JANE DOE",
+        "judgment_date": "2025-01-01",
+        "plaintiff": "TEST BANK",
+        "plaintiff_type": "bank",
+        "defendants": [
+            {
+                "name": "JOHN DOE",
+                "party_type": "borrower",
+                "is_federal_entity": False,
+                "is_deceased": False,
+                "lien_recording_reference": None,
+            }
+        ],
+        "subdivision": None,
+        "lot": None,
+        "block": None,
+        "unit": None,
+        "plat_book": None,
+        "plat_page": None,
+        "is_condo": False,
+        "foreclosed_mortgage": {
+            "original_date": None,
+            "original_amount": None,
+            "recording_date": None,
+            "recording_book": None,
+            "recording_page": None,
+            "instrument_number": None,
+            "original_lender": None,
+            "current_holder": None,
+        },
+        "lis_pendens": {
+            "recording_date": None,
+            "recording_book": None,
+            "recording_page": None,
+            "instrument_number": None,
+        },
+        "principal_amount": 100.0,
+        "interest_amount": 50.0,
+        "interest_through_date": None,
+        "per_diem_rate": None,
+        "per_diem_interest": None,
+        "late_charges": None,
+        "escrow_advances": None,
+        "title_search_costs": 20.0,
+        "court_costs": 10.0,
+        "attorney_fees": 30.0,
+        "other_costs": 0.0,
+        "total_judgment_amount": 185.0,
+        "foreclosure_sale_date": "2025-02-01",
+        "sale_location": "http://www.hillsborough.realforeclose.com",
+        "is_online_sale": True,
+        "foreclosure_type": "FIRST MORTGAGE",
+        "hoa_safe_harbor_mentioned": False,
+        "superiority_language": None,
+        "plaintiff_maximum_bid": None,
+        "monthly_payment": None,
+        "default_date": None,
+        "service_by_publication": False,
+        "red_flags": [],
+        "raw_text": "Amounts Due\\nLess: Suspense Balance ($25.00)\\nTOTAL SUM $185.00",
+    }
+
+    normalized, _, _ = svc.normalize_judgment_payload(payload)
+
+    assert normalized["raw_text"] == payload["raw_text"]
+    assert svc.validate_judgment_payload(normalized)["is_valid"] is True
+
+    without_raw = dict(normalized)
+    without_raw.pop("raw_text")
+    assert svc.validate_judgment_payload(without_raw)["is_valid"] is False

@@ -20,6 +20,7 @@ analysis.
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import re
@@ -31,11 +32,21 @@ from typing import Any, Callable, Dict, Optional
 import fitz  # PyMuPDF
 import pytesseract
 from loguru import logger
-from PIL import Image
+from PIL import Image, ImageFilter, ImageOps
 from pydantic import ValidationError
 
 from src.models.judgment_extraction import JudgmentExtraction
 from src.services.vision_service import VisionService, robust_json_parse
+
+cv2: Any | None
+np: Any | None
+
+try:  # pragma: no cover - optional dependency
+    cv2 = importlib.import_module("cv2")
+    np = importlib.import_module("numpy")
+except ImportError:
+    cv2 = None
+    np = None
 
 
 class FinalJudgmentProcessor:
@@ -46,6 +57,9 @@ class FinalJudgmentProcessor:
     _BATCH_SIZE = 3
     _TEXT_BATCH_SIZE = 6
     _SCHEMA_NAME = "JudgmentExtraction"
+    _BASE_RENDER_DPI = 150
+    _OCR_RESCUE_RENDER_DPI = 300
+    _TESSERACT_CONFIG = "--oem 1 --psm 6 -c preserve_interword_spaces=1"
     _CASE_FIELDS = (
         "case_number",
         "court_circuit",
@@ -171,32 +185,28 @@ class FinalJudgmentProcessor:
                 logger.warning(f"Bad cache file {cache_path}, re-extracting: {e}")
 
         page_images: list[str] = []
+        rescue_page_images: list[str] = []
         ocr_page_texts: list[str] = []
         try:
             logger.info(f"Processing Final Judgment PDF for case {case_number}...")
 
-            # Open PDF with PyMuPDF
-            doc = fitz.open(pdf_path)
-            total_pages = len(doc)
+            page_images, total_pages = self._render_pdf_to_images(
+                pdf_path,
+                case_number,
+                dpi=self._BASE_RENDER_DPI,
+            )
             num_pages = total_pages  # Process all pages; chunked extraction avoids context issues
 
             logger.info(f"PDF has {total_pages} pages, rendering all pages")
-
-            # Render all pages to images
-            for page_num in range(num_pages):
-                page = doc[page_num]
-                temp_image_path = self.temp_dir / f"{case_number}_page_{page_num + 1}.png"
-                pix = page.get_pixmap(dpi=150)
-                pix.save(str(temp_image_path))
-                page_images.append(str(temp_image_path))
-
-            doc.close()
 
             merged_json: Optional[dict[str, Any]] = None
             strategies: list[str] = []
 
             # Primary pass: OCR the full document to text, then extract from text.
-            ocr_page_texts = self._ocr_images_to_page_texts(page_images)
+            ocr_page_texts = self._ocr_images_to_page_texts(
+                page_images,
+                user_defined_dpi=self._BASE_RENDER_DPI,
+            )
             ocr_complete = len(ocr_page_texts) == total_pages and self._ocr_text_covers_all_pages(
                 self._combine_page_texts(ocr_page_texts),
                 total_pages,
@@ -288,6 +298,60 @@ class FinalJudgmentProcessor:
                 return None
 
             assessment = self.validation_summary(merged_json)
+            if not assessment["is_valid"]:
+                rescue_candidate: dict[str, Any] | None = None
+                rescue_assessment: dict[str, Any] | None = None
+                try:
+                    rescue_page_images, _ = self._render_pdf_to_images(
+                        pdf_path,
+                        case_number,
+                        dpi=self._OCR_RESCUE_RENDER_DPI,
+                        suffix="ocr_rescue",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Judgment OCR rescue render failed for case {}: {}",
+                        case_number,
+                        exc,
+                    )
+                else:
+                    rescue_page_texts = self._ocr_images_to_page_texts(
+                        rescue_page_images,
+                        preprocess=True,
+                        user_defined_dpi=self._OCR_RESCUE_RENDER_DPI,
+                    )
+                    rescue_complete = len(rescue_page_texts) == total_pages and self._ocr_text_covers_all_pages(
+                        self._combine_page_texts(rescue_page_texts),
+                        total_pages,
+                    )
+                    if rescue_page_texts:
+                        strategies.append("ocr_text_rescue")
+                        logger.info(
+                            "Running high-resolution OCR rescue for case {} (complete={})",
+                            case_number,
+                            rescue_complete,
+                        )
+                        rescue_candidate = self._extract_candidate_from_text(
+                            self._combine_page_texts(rescue_page_texts),
+                            current_candidate=merged_json,
+                            validation_failures=assessment["failures"],
+                        )
+                        if rescue_candidate:
+                            rescue_assessment = self.validation_summary(rescue_candidate)
+                            if self._candidate_rank(
+                                rescue_candidate,
+                                rescue_assessment,
+                            ) > self._candidate_rank(merged_json, assessment):
+                                merged_json = rescue_candidate
+                                assessment = rescue_assessment
+                                ocr_page_texts = rescue_page_texts
+                                logger.info(
+                                    "High-resolution OCR rescue improved judgment extraction for case {}: valid={} failures={}",
+                                    case_number,
+                                    assessment["is_valid"],
+                                    len(assessment["failures"]),
+                                )
+
             if not assessment["is_valid"]:
                 strategies.append("repair_pass")
                 logger.warning(
@@ -385,6 +449,9 @@ class FinalJudgmentProcessor:
             for img_path in page_images:
                 with suppress(Exception):
                     Path(img_path).unlink()
+            for img_path in rescue_page_images:
+                with suppress(Exception):
+                    Path(img_path).unlink()
     
     def _build_extraction_prompt(
         self,
@@ -401,11 +468,14 @@ Critical rules:
 - Never output markdown fences or explanatory text.
 - legal_description must be verbatim. If Exhibit A / Schedule A contains a fuller legal, use that version.
 - property_address often appears in the sale paragraph or legal-description exhibit. Capture it if stated.
+- sale_location and is_online_sale must come from the actual sale paragraph, not from the clerk header, recording stamp, filing metadata, footer, email block, or any unrelated URL.
 - judgment_date means the entered/filed date of the judgment order, not the hearing date, unless no filed/entered date appears.
 - judge_name means the signing judge on the order, not a judge mentioned only in procedural history.
-- attorney_fees is the awarded fee total, not the hourly rate.
+- attorney_fees is the awarded fee total, not the hourly rate. If the order shows hourly support and also states a flat fee or "Attorney Fees Total", use the final awarded total only.
+- If the order gives one combined line for attorneys' fees and costs, or unpaid attorneys' fees and costs, store that amount once only. Do not duplicate it into both attorney_fees and court_costs.
 - court_costs should include filing, service, publication, and online-sale fees when those are itemized as court costs.
 - Use other_costs for residual named monetary items that do not fit the explicit fields.
+- Credit/reduction lines often use labels such as Less Payments Received, Credit - Payment received, Funds Held in Suspense, Suspense Balance, Escrow Credits, Recoverable Balance, or held in trust. Treat those as negative adjustments.
 - If the document states a total_judgment_amount, review the line items until they reconcile to that total within about one dollar. If a separate accrued per-diem carry amount is stated, put it in per_diem_interest.
 - If the sale is at hillsborough.realforeclose.com or another web URL, set is_online_sale=true.
 
@@ -421,6 +491,14 @@ JSON Schema:
                 "\n\nRe-read the document images and return a corrected full JSON object. "
                 "Do not preserve a prior value if the document contradicts it."
             )
+            repair_focus = self._repair_focus_instructions(
+                current_candidate=current_candidate,
+                validation_failures=validation_failures,
+            )
+            if repair_focus:
+                prompt += "\n\nRepair focus:\n" + "\n".join(
+                    f"- {instruction}" for instruction in repair_focus
+                )
         return prompt
 
     def _build_text_extraction_prompt(
@@ -440,11 +518,14 @@ Critical rules:
 - The OCR text may contain spacing or character noise. Resolve obvious OCR artifacts, but do not invent facts.
 - legal_description must be verbatim from the OCR text. If Exhibit A / Schedule A contains a fuller legal, use that version.
 - property_address often appears in the sale paragraph or legal-description exhibit. Capture it if stated.
+- sale_location and is_online_sale must come from the actual sale paragraph, not from the clerk header, recording stamp, filing metadata, footer, email block, or any unrelated URL.
 - judgment_date means the entered/filed date of the judgment order, not the hearing date, unless no filed/entered date appears.
 - judge_name means the signing judge on the order, not a judge mentioned only in procedural history.
-- attorney_fees is the awarded fee total, not the hourly rate.
+- attorney_fees is the awarded fee total, not the hourly rate. If the order shows hourly support and also states a flat fee or "Attorney Fees Total", use the final awarded total only.
+- If the OCR text gives one combined line for attorneys' fees and costs, or unpaid attorneys' fees and costs, store that amount once only. Do not duplicate it into both attorney_fees and court_costs.
 - court_costs should include filing, service, publication, and online-sale fees when those are itemized as court costs.
 - Use other_costs for residual named monetary items that do not fit the explicit fields.
+- Credit/reduction lines often use labels such as Less Payments Received, Credit - Payment received, Funds Held in Suspense, Suspense Balance, Escrow Credits, Recoverable Balance, or held in trust. Treat those as negative adjustments.
 - If the OCR text states a total_judgment_amount, review the line items until they reconcile to that total within about one dollar. If a separate accrued per-diem carry amount is stated, put it in per_diem_interest.
 - If the sale is at hillsborough.realforeclose.com or another web URL, set is_online_sale=true.
 
@@ -463,7 +544,62 @@ OCR Text:
                 "\n\nReturn a corrected full JSON object. "
                 "Do not preserve a prior value if the OCR text contradicts it."
             )
+            repair_focus = self._repair_focus_instructions(
+                current_candidate=current_candidate,
+                validation_failures=validation_failures,
+            )
+            if repair_focus:
+                prompt += "\n\nRepair focus:\n" + "\n".join(
+                    f"- {instruction}" for instruction in repair_focus
+                )
         return prompt
+
+    @staticmethod
+    def _repair_focus_instructions(
+        *,
+        current_candidate: dict[str, Any],
+        validation_failures: list[str],
+    ) -> list[str]:
+        failures = " ".join(validation_failures)
+        instructions: list[str] = []
+
+        if (
+            "Known line items $" in failures
+            or "total_judgment_amount" in failures
+            or "attorney_fees" in failures
+        ):
+            instructions.extend(
+                [
+                    "Rebuild the money section from the authoritative 'Amounts Due' table and the final 'TOTAL SUM' line before keeping any prior amount.",
+                    "Use only the final awarded attorney fee total. Do not add hourly support lines, lodestar examples, flat-fee components, or duplicate sub-lines on top of an 'Attorney Fees Total', 'Outstanding Attorneys' Fee Total', or other final awarded fee.",
+                    "Treat any line that begins with Less, credit, suspense balance, funds held in suspense, recoverable balance, escrow credits, unapplied balance, or payments received as a negative adjustment, not as a positive cost.",
+                    "If the document gives one combined amount for attorneys' fees and costs, or unpaid attorneys' fees and costs, store that amount only once instead of duplicating it into both attorney_fees and court_costs.",
+                    "Do not double-count SUBTOTAL lines. Either use the subtotal or the underlying components, not both.",
+                    "Put residual named charges that do not fit explicit fields into other_costs, including deferred amounts, inspection fees, property inspections, BPOs, mediation, probate review, expert affidavit, mail or admin cost, UPS shipping, collection costs, force-placed insurance, tax payment advances, insurance, taxes, and similar labeled items.",
+                    "If the text states both a per-diem rate and a larger accrued amount for a date range, the daily dollar figure is per_diem_rate and the larger carry amount belongs in per_diem_interest.",
+                ]
+            )
+
+        if (
+            "foreclosure_sale_date" in failures
+            or "legal_description or property_address" in failures
+            or "is_online_sale" in failures
+        ):
+            instructions.extend(
+                [
+                    "Re-read the 'Lien on Property' paragraph and any Exhibit A or legal-description attachment for legal_description and property_address.",
+                    "Re-read the 'Sale of Property' paragraph for foreclosure_sale_date, sale time, and sale_location.",
+                    "Only set sale_location or is_online_sale=true if the actual sale paragraph states an online sale website. Ignore unrelated URLs in headers, recording stamps, footers, attorney blocks, or filing metadata.",
+                ]
+            )
+            if current_candidate.get("sale_location") and not current_candidate.get(
+                "foreclosure_sale_date"
+            ):
+                instructions.append(
+                    "If no sale paragraph states a sale date, clear sale_location and set is_online_sale=false instead of inferring an online sale from a stray URL."
+                )
+
+        return instructions
 
     def _extract_candidate_from_images(
         self,
@@ -902,12 +1038,83 @@ OCR Text:
     def _combine_page_texts(page_texts: list[str]) -> str:
         return "\n\n".join(text.strip() for text in page_texts if text.strip())
 
-    def _ocr_images_to_page_texts(self, image_paths: list[str]) -> list[str]:
+    def _render_pdf_to_images(
+        self,
+        pdf_path: str,
+        case_number: str,
+        *,
+        dpi: int,
+        suffix: str = "",
+    ) -> tuple[list[str], int]:
+        """Render every judgment page to a temporary PNG at the requested DPI."""
+        doc = fitz.open(pdf_path)
+        try:
+            total_pages = len(doc)
+            image_paths: list[str] = []
+            for page_num in range(total_pages):
+                page = doc[page_num]
+                stem = f"{case_number}_page_{page_num + 1}"
+                if suffix:
+                    stem = f"{stem}_{suffix}"
+                temp_image_path = self.temp_dir / f"{stem}.png"
+                pix = page.get_pixmap(dpi=dpi)
+                pix.save(str(temp_image_path))
+                image_paths.append(str(temp_image_path))
+            return image_paths, total_pages
+        finally:
+            doc.close()
+
+    @staticmethod
+    def _preprocess_image_for_ocr(image: Image.Image) -> Image.Image:
+        """Normalize a scanned page before OCR.
+
+        Rescue OCR should spend a little compute to improve line clarity. If
+        OpenCV is installed we use adaptive thresholding; otherwise we fall back
+        to a lighter-weight Pillow pipeline that is already available in the
+        repo.
+        """
+        normalized = ImageOps.exif_transpose(image).convert("L")
+
+        if cv2 is not None and np is not None:  # pragma: no branch - optional path
+            cv_image = np.array(normalized)
+            cv_image = cv2.GaussianBlur(cv_image, (3, 3), 0)
+            cv_image = cv2.adaptiveThreshold(
+                cv_image,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                35,
+                11,
+            )
+            return Image.fromarray(cv_image)
+
+        normalized = ImageOps.autocontrast(normalized)
+        normalized = normalized.filter(ImageFilter.MedianFilter(size=3))
+        return normalized.point(lambda value: 0 if value < 180 else 255, mode="L")
+
+    def _ocr_images_to_page_texts(
+        self,
+        image_paths: list[str],
+        *,
+        preprocess: bool = False,
+        user_defined_dpi: int | None = None,
+    ) -> list[str]:
         page_texts: list[str] = []
+        config = self._TESSERACT_CONFIG
+        if user_defined_dpi is not None:
+            config = f"{config} -c user_defined_dpi={user_defined_dpi}"
         for idx, image_path in enumerate(image_paths, start=1):
             try:
                 with Image.open(image_path) as image:
-                    text = pytesseract.image_to_string(image).strip()
+                    prepared = (
+                        self._preprocess_image_for_ocr(image)
+                        if preprocess
+                        else image
+                    )
+                    text = pytesseract.image_to_string(
+                        prepared,
+                        config=config,
+                    ).strip()
             except Exception as exc:
                 logger.warning(
                     "Tesseract OCR failed for judgment page {} ({}): {}",

@@ -571,6 +571,14 @@ class PgJudgmentService:
             JudgmentExtraction,
             public_payload,
         )
+        # ``raw_text`` is intentionally excluded from the JSON schema contract,
+        # but validation logic still uses it to recover credits / per-diem
+        # details from OCR text. Preserve it across normalization so a cache
+        # that validated immediately after extraction does not become invalid
+        # again during PG load/refresh.
+        raw_text = public_payload.get("raw_text")
+        if isinstance(raw_text, str) and raw_text:
+            normalized["raw_text"] = raw_text
         return _normalize_legacy_judgment_payload(normalized), missing, extras
 
     @staticmethod

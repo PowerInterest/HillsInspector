@@ -18,6 +18,7 @@ import time
 from typing import Any, Dict, Optional
 
 import requests
+from dotenv import load_dotenv
 from json_repair import repair_json
 from loguru import logger
 from PIL import Image
@@ -1214,6 +1215,9 @@ class VisionService:
         """Build endpoint list once (includes cloud fallbacks if API keys are set)."""
         if cls._endpoints_built:
             return
+        # Direct service entrypoints do not always flow through Controller.py,
+        # so load .env here before we snapshot endpoint configuration.
+        load_dotenv(override=False)
         cls.API_ENDPOINTS = cls._build_endpoints()
         cls.API_URLS = [ep["url"] for ep in cls.API_ENDPOINTS]
         cloud_count = sum(1 for ep in cls.API_ENDPOINTS if ep.get("api_key"))
@@ -1320,6 +1324,13 @@ class VisionService:
 
         Returns healthy endpoints if health check was done, otherwise all endpoints.
         """
+        if not cls._health_check_done:
+            try:
+                # Warm the endpoint pool once so dead LAN hosts do not dominate
+                # mixed cloud/local runs after a transient cloud failure.
+                cls.health_check_endpoints(timeout=3)
+            except Exception as exc:
+                logger.debug("Vision endpoint health check bootstrap failed: {}", exc)
         if cls._health_check_done and cls._healthy_endpoints is not None:
             return cls._healthy_endpoints
         return cls.API_ENDPOINTS
@@ -1396,6 +1407,7 @@ class VisionService:
         errors = []
         tried_endpoints: set[tuple[str, str]] = set()
         _single_ep_retries = 0
+        skipped_suspended: list[tuple[float, dict[str, Any]]] = []
 
         def _attempt(endpoints: list[dict], read_timeout: int) -> Optional[requests.Response]:
             nonlocal _single_ep_retries
@@ -1415,6 +1427,7 @@ class VisionService:
                 resume_at = VisionService._suspended_endpoints.get(url)
                 if resume_at is not None:
                     if now < resume_at:
+                        skipped_suspended.append((resume_at, endpoint))
                         logger.debug(
                             "Skipping suspended endpoint {} (model: {}) ({:.0f}s remaining)",
                             url,
@@ -1527,6 +1540,31 @@ class VisionService:
         response = _attempt(available, timeout)
         if response is not None:
             return response
+
+        # A previous call may have suspended every candidate. In that case,
+        # probing the earliest suspended endpoint is better than immediately
+        # failing every subsequent extraction with an empty error list.
+        if not tried_endpoints and skipped_suspended:
+            skipped_suspended.sort(
+                key=lambda item: (
+                    not bool(item[1].get("api_key")),
+                    item[0],
+                )
+            )
+            resume_at, endpoint = skipped_suspended[0]
+            url = endpoint["url"]
+            model = endpoint["model"]
+            remaining = max(0.0, resume_at - time.monotonic())
+            logger.warning(
+                "All available vision endpoints are suspended; probing {} (model: {}) early with {:.0f}s remaining",
+                url,
+                model,
+                remaining,
+            )
+            VisionService._suspended_endpoints.pop(url, None)
+            response = _attempt([endpoint], timeout)
+            if response is not None:
+                return response
 
         # If healthy endpoints failed, try remaining endpoints with a shorter timeout.
         if VisionService._health_check_done and VisionService._healthy_endpoints is not None:

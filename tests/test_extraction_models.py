@@ -285,6 +285,89 @@ def test_judgment_multiline_credit_and_duplicate_late_fee_are_normalized() -> No
     assert warnings == []
 
 
+def test_judgment_combined_fees_and_costs_line_is_counted_once() -> None:
+    payload = _judgment_payload()
+    payload["principal_amount"] = 7721.42
+    payload["interest_amount"] = 1028.82
+    payload["per_diem_rate"] = None
+    payload["late_charges"] = None
+    payload["escrow_advances"] = None
+    payload["title_search_costs"] = None
+    payload["court_costs"] = 3162.76
+    payload["attorney_fees"] = 3162.76
+    payload["total_judgment_amount"] = 11913.00
+    payload["raw_text"] = (
+        "Unpaid monthly assessments from 1/1/22 to 1/1/26: $ 7,721.42\n"
+        "Interest on unpaid monthly assessments from 1/1/22 to 1/6/26: $ 1,028.82\n"
+        "Unpaid attorneys’ fees and costs: $ 3,162.76\n"
+        "TOTAL SUM: $11,913.00\n"
+    )
+
+    model = JudgmentExtraction.model_validate(payload)
+    failures, warnings = model.validate_extraction()
+
+    assert failures == []
+    assert model.court_costs is None
+    assert model.attorney_fees == 3162.76
+    assert model.other_costs == 0.0
+    assert warnings == []
+
+
+def test_judgment_credit_payment_received_line_is_detected() -> None:
+    payload = _judgment_payload()
+    payload["principal_amount"] = 12904.00
+    payload["interest_amount"] = 2124.30
+    payload["per_diem_rate"] = None
+    payload["late_charges"] = None
+    payload["escrow_advances"] = None
+    payload["title_search_costs"] = None
+    payload["court_costs"] = 861.45
+    payload["attorney_fees"] = 3368.50
+    payload["total_judgment_amount"] = 12258.25
+    payload["raw_text"] = (
+        "$12,904.00 as principal through January 6, 2026;\n"
+        "$ 3,368.50 for attorney's fees;\n"
+        "$ 861.45 for Court costs;\n"
+        "$2,124.30 for Interest at 18% per annum through July 24, 2025;\n"
+        "$ (7,000.00) Credit - Payment received through August 25, 2025 (held in trust)\n"
+        "$ 12,258.25 TOTAL\n"
+    )
+
+    model = JudgmentExtraction.model_validate(payload)
+    failures, warnings = model.validate_extraction()
+
+    assert failures == []
+    assert model.other_costs == 0.0
+    assert warnings == []
+
+
+def test_judgment_credit_totalling_line_ignores_trailing_statutory_rate() -> None:
+    payload = _judgment_payload()
+    payload["principal_amount"] = 923.96
+    payload["interest_amount"] = None
+    payload["per_diem_rate"] = None
+    payload["late_charges"] = None
+    payload["escrow_advances"] = None
+    payload["title_search_costs"] = None
+    payload["court_costs"] = 815.24
+    payload["attorney_fees"] = 3555.00
+    payload["total_judgment_amount"] = 3909.69
+    payload["raw_text"] = (
+        "the sum of $923.96 as principal, pre-judgment interest in the amount of $0.00, "
+        "late fees in the amount of $0.00, costs in the amount of $815.24 and attorney’s "
+        "fees due in the amount $3,555.00, less payments received (totalling $1,384.51), "
+        "for a total of $3,909.69. This judgment shall bear interest at the prevailing "
+        "statutory rate of eight point fourty-four percent (8.44%) per annum from this date.\n"
+    )
+
+    model = JudgmentExtraction.model_validate(payload)
+    failures, warnings = model.validate_extraction()
+
+    assert failures == []
+    assert model.other_costs == 0.0
+    assert warnings == []
+
+
 def test_judgment_attorney_fee_breakout_uses_authoritative_total() -> None:
     payload = _judgment_payload()
     payload["principal_amount"] = 98932.06
@@ -310,6 +393,40 @@ def test_judgment_attorney_fee_breakout_uses_authoritative_total() -> None:
     assert failures == []
     assert model.attorney_fees == 20146.50
     assert model.other_costs == 7921.29
+    assert warnings == []
+
+
+def test_judgment_subtotal_structure_drops_duplicated_court_costs() -> None:
+    payload = _judgment_payload()
+    payload["principal_amount"] = 123029.77
+    payload["interest_amount"] = 67133.39
+    payload["per_diem_rate"] = 4.21
+    payload["per_diem_interest"] = 1305.36
+    payload["late_charges"] = None
+    payload["escrow_advances"] = 39333.02
+    payload["title_search_costs"] = None
+    payload["court_costs"] = 3216.85
+    payload["attorney_fees"] = 5045.00
+    payload["other_costs"] = 200.0
+    payload["total_judgment_amount"] = 238804.87
+    payload["raw_text"] = (
+        "Principal due on the Note secured by the Mortgage $123,029.77\n"
+        "Interest on the Note and Mortgage to 10/31/2025: $67,133.39\n"
+        "MIP: $2,118.33\n"
+        "Servicing Fees: $840.00\n"
+        "Per Diem Interest from 11/1/2025 good through $1,305.36\n"
+        "Corporate Advances: $39,333.02\n"
+        "SUBTOTAL $233,759.87\n"
+        "Outstanding Attorneys' Fee Total: $5,045.00\n"
+        "TOTAL SUM $238,804.87\n"
+    )
+
+    model = JudgmentExtraction.model_validate(payload)
+    failures, warnings = model.validate_extraction()
+
+    assert failures == []
+    assert model.court_costs is None
+    assert model.other_costs == 2958.33
     assert warnings == []
 
 
@@ -372,6 +489,76 @@ def test_judgment_corporate_advances_subtotal_does_not_double_count_embedded_cos
     assert model.per_diem_interest == 418.05
     assert model.court_costs is None
     assert model.other_costs == 3678.87
+    assert warnings == []
+
+
+def test_judgment_post_judgment_sale_interest_is_not_counted_in_total() -> None:
+    payload = _judgment_payload()
+    payload["principal_amount"] = 193856.00
+    payload["interest_amount"] = 29951.37
+    payload["per_diem_rate"] = None
+    payload["per_diem_interest"] = 4272.45
+    payload["late_charges"] = 225.00
+    payload["escrow_advances"] = 8972.64
+    payload["title_search_costs"] = None
+    payload["court_costs"] = 2842.89
+    payload["attorney_fees"] = 11272.50
+    payload["other_costs"] = 412.77
+    payload["total_judgment_amount"] = 247533.17
+    payload["raw_text"] = (
+        "Unpaid Principal Balance: $193,856.00\n"
+        "Total Accrued Interest Due 04/01/2025 to 02/03/2026: $29,951.37\n"
+        "Unpaid Loan Charges: $225.00\n"
+        "Foreclosure Attorney Fees Incurred: $11,272.50\n"
+        "Foreclosure Costs Incurred: $2,842.89\n"
+        "Lender Force Placed Insurance: $412.77\n"
+        "Tax Payment Advance: $8,972.64\n"
+        "Final Judgment Amount As Of 02/03/2026: $247,533.17\n"
+        "Post-Judgment Default Interest To Property Sale on 03/09/2026: $4,272.45\n"
+        "FINAL PAYOFF ON PROPERTY SALE DATE OF $251,805.62\n"
+    )
+
+    model = JudgmentExtraction.model_validate(payload)
+    failures, warnings = model.validate_extraction()
+
+    assert failures == []
+    assert model.per_diem_interest is None
+    assert model.other_costs == 412.77
+    assert warnings == []
+
+
+def test_judgment_legal_fees_can_be_dropped_when_mortgage_table_double_counts() -> None:
+    payload = _judgment_payload()
+    payload["principal_amount"] = 237999.00
+    payload["interest_amount"] = 93078.82
+    payload["per_diem_rate"] = None
+    payload["per_diem_interest"] = 4561.64
+    payload["late_charges"] = 2540.66
+    payload["escrow_advances"] = 46525.37
+    payload["title_search_costs"] = None
+    payload["court_costs"] = None
+    payload["attorney_fees"] = 15718.85
+    payload["other_costs"] = 15495.97
+    payload["total_judgment_amount"] = 390759.12
+    payload["raw_text"] = (
+        "Principal Balance: $237,999.00\n"
+        "Interest Workings (01/01/26-01/31/26): $4,561.64\n"
+        "Interest In Arears: $93,078.82\n"
+        "Late Fees: $2,540.66\n"
+        "Servicer Fees Total: $750.00\n"
+        "Protective Advances Total: $46,525.37\n"
+        "Legal Fees: $15,718.85\n"
+        "Other Fees Total: $5,949.97\n"
+        "Reserves ($646.34)\n"
+        "TOTAL: $390,759.12\n"
+    )
+
+    model = JudgmentExtraction.model_validate(payload)
+    failures, warnings = model.validate_extraction()
+
+    assert failures == []
+    assert model.attorney_fees is None
+    assert model.other_costs == 6053.63
     assert warnings == []
 
 

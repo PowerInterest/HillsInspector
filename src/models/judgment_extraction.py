@@ -67,8 +67,17 @@ _CREDIT_AMOUNT_RE = re.compile(
     r"(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})\)?",
     re.IGNORECASE,
 )
-_CREDIT_LINE_MARKERS = (
+_NEGATIVE_CREDIT_AMOUNT_RE = re.compile(
+    r"(?:\(\$?|\$ ?\(|-\$|- ?\$)\s*(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})\)?(?!\s*%)",
+    re.IGNORECASE,
+)
+_TOTALING_CREDIT_AMOUNT_RE = re.compile(
+    r"\bTOTAL(?:L)?ING\b[^\d$()\-]{0,20}\$?\(?(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})\)?",
+    re.IGNORECASE,
+)
+_HARD_CREDIT_LINE_MARKERS = (
     "LESS PAYMENTS",
+    "PAYMENT RECEIVED",
     "PAYMENTS RECEIVED",
     "LESS CREDITS",
     "ESCROW CREDIT",
@@ -76,12 +85,31 @@ _CREDIT_LINE_MARKERS = (
     "MISCELLANEOUS DEDUCTIONS",
     "LESS:",
 )
+_SOFT_CREDIT_LINE_MARKERS = (
+    "CREDIT",
+    "HELD IN TRUST",
+    "FUNDS HELD IN SUSPENSE",
+    "SUSPENSE BALANCE",
+    "RECOVERABLE BALANCE",
+)
 _ATTORNEY_FEE_LINE_RE = re.compile(
     r"^\s*(?:ADDITIONAL\s+)?ATTORNEY[’']?S?\s+FEES?\s+\$?(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})\s*$",
     re.IGNORECASE,
 )
+_COMBINED_FEE_COST_LINE_RE = re.compile(
+    r"\b(?:UNPAID\s+)?ATTORNEYS?[’']?\s+FEES?\s+AND\s+COSTS\b.*?\$?(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})",
+    re.IGNORECASE,
+)
 _PER_DIEM_INTEREST_GOOD_THROUGH_RE = re.compile(
     r"PER\s+DIEM\s+INTEREST\b.*?\bGOOD\s+THROUGH\b.*?\$?(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})",
+    re.IGNORECASE,
+)
+_POST_JUDGMENT_SALE_INTEREST_RE = re.compile(
+    r"POST[- ]JUDGMENT\b.*?\b(?:PROPERTY\s+SALE|SALE\s+DATE)\b.*?\$?(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})",
+    re.IGNORECASE,
+)
+_SUBTOTAL_LINE_RE = re.compile(
+    r"\bSUB-?TOTAL\b.*?\$?(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})",
     re.IGNORECASE,
 )
 _AMOUNT_LINE_RE = re.compile(
@@ -132,25 +160,64 @@ def extract_credit_adjustments(raw_text: str) -> float:
 
     for idx, line in enumerate(lines):
         upper = line.upper()
-        for marker in _CREDIT_LINE_MARKERS:
+        for marker in _HARD_CREDIT_LINE_MARKERS:
             pos = upper.find(marker)
             if pos == -1:
                 continue
             segment = " ".join(lines[idx : idx + 2])
             tail = segment[pos:]
-            match = _CREDIT_AMOUNT_RE.search(tail)
+            match = (
+                _NEGATIVE_CREDIT_AMOUNT_RE.search(tail)
+                or _NEGATIVE_CREDIT_AMOUNT_RE.search(line)
+                or _TOTALING_CREDIT_AMOUNT_RE.search(tail)
+                or _CREDIT_AMOUNT_RE.search(tail)
+                or _CREDIT_AMOUNT_RE.search(line)
+                or _CREDIT_AMOUNT_RE.search(segment)
+            )
             if match:
                 adjustments.append(_parse_credit_amount(match.group("amount")))
             break
         else:
-            if "SUB-TOTAL" in upper or "SUBTOTAL" in upper:
-                for candidate in lines[idx + 1 : idx + 3]:
-                    if not ("(" in candidate or "-$" in candidate):
-                        continue
-                    for match in _CREDIT_AMOUNT_RE.finditer(candidate):
-                        adjustments.append(_parse_credit_amount(match.group("amount")))
+            for marker in _SOFT_CREDIT_LINE_MARKERS:
+                pos = upper.find(marker)
+                if pos == -1:
+                    continue
+                segment = " ".join(lines[idx : idx + 2])
+                tail = segment[pos:]
+                if not any(token in tail for token in ("(", "-$", " - ", "—", "–")):
+                    continue
+                match = (
+                    _NEGATIVE_CREDIT_AMOUNT_RE.search(tail)
+                    or _NEGATIVE_CREDIT_AMOUNT_RE.search(line)
+                    or _TOTALING_CREDIT_AMOUNT_RE.search(tail)
+                    or _CREDIT_AMOUNT_RE.search(tail)
+                    or _CREDIT_AMOUNT_RE.search(line)
+                    or _CREDIT_AMOUNT_RE.search(segment)
+                )
+                if match:
+                    adjustments.append(_parse_credit_amount(match.group("amount")))
+                break
+            else:
+                if "SUB-TOTAL" in upper or "SUBTOTAL" in upper:
+                    for candidate in lines[idx + 1 : idx + 3]:
+                        if not ("(" in candidate or "-$" in candidate):
+                            continue
+                        for match in _CREDIT_AMOUNT_RE.finditer(candidate):
+                            adjustments.append(_parse_credit_amount(match.group("amount")))
 
     return round(sum(adjustments), 2)
+
+
+def extract_combined_fee_cost_total(raw_text: str) -> float | None:
+    """Recover a single combined fees-and-costs amount from OCR text."""
+    if not raw_text:
+        return None
+
+    for line in raw_text.splitlines():
+        match = _COMBINED_FEE_COST_LINE_RE.search(line)
+        if match:
+            return _parse_credit_amount(match.group("amount"))
+    return None
 
 
 def extract_authoritative_attorney_fees(raw_text: str) -> float | None:
@@ -206,6 +273,30 @@ def extract_accrued_per_diem_interest(raw_text: str) -> float | None:
     return None
 
 
+def extract_post_judgment_sale_interest(raw_text: str) -> float | None:
+    """Recover payoff-only post-judgment interest that should not hit the judgment total."""
+    if not raw_text:
+        return None
+
+    for line in raw_text.splitlines():
+        match = _POST_JUDGMENT_SALE_INTEREST_RE.search(line)
+        if match:
+            return _parse_credit_amount(match.group("amount"))
+    return None
+
+
+def extract_subtotal_amount(raw_text: str) -> float | None:
+    """Recover a pre-fee subtotal from OCR text when the order itemizes a subtotal."""
+    if not raw_text:
+        return None
+
+    for line in raw_text.splitlines():
+        match = _SUBTOTAL_LINE_RE.search(line)
+        if match:
+            return _parse_credit_amount(match.group("amount"))
+    return None
+
+
 def extract_embedded_corporate_advance_total(raw_text: str) -> float | None:
     """Sum embedded cost lines when a judgment itemizes a Corporate Advances subtotal.
 
@@ -234,6 +325,19 @@ def extract_embedded_corporate_advance_total(raw_text: str) -> float | None:
         return None
 
     return round(sum(label_totals.values()), 2)
+
+
+def has_legal_fee_duplication_pattern(raw_text: str) -> bool:
+    """Detect mortgage-style amount tables where legal fees are often double counted."""
+    if not raw_text:
+        return False
+
+    upper = raw_text.upper()
+    return (
+        ("LEGAL FEE:" in upper or "LEGAL FEES:" in upper)
+        and "OTHER FEES TOTAL" in upper
+        and "PROTECTIVE ADVANCES TOTAL" in upper
+    )
 
 class PlaintiffType(StrEnum):
     BANK = "bank"
@@ -1211,6 +1315,16 @@ class JudgmentExtraction(BaseDocumentExtraction):
                 ):
                     self.per_diem_rate = None
 
+        post_judgment_sale_interest = extract_post_judgment_sale_interest(
+            self.raw_text
+        )
+        if (
+            self.per_diem_interest is not None
+            and post_judgment_sale_interest is not None
+            and abs(self.per_diem_interest - post_judgment_sale_interest) <= 1.0
+        ):
+            self.per_diem_interest = None
+
         attorney_fees = self.attorney_fees
         authoritative_attorney_fees = extract_authoritative_attorney_fees(
             self.raw_text
@@ -1234,6 +1348,17 @@ class JudgmentExtraction(BaseDocumentExtraction):
             self.late_charges = None
 
         court_costs = self.court_costs
+        combined_fee_cost_total = extract_combined_fee_cost_total(self.raw_text)
+        if (
+            court_costs is not None
+            and attorney_fees is not None
+            and combined_fee_cost_total is not None
+            and abs(court_costs - combined_fee_cost_total) <= 1.0
+            and abs(attorney_fees - combined_fee_cost_total) <= 1.0
+        ):
+            court_costs = None
+            self.court_costs = None
+
         embedded_corporate_total = extract_embedded_corporate_advance_total(
             self.raw_text
         )
@@ -1245,6 +1370,71 @@ class JudgmentExtraction(BaseDocumentExtraction):
         ):
             court_costs = None
             self.court_costs = None
+
+        subtotal_amount = extract_subtotal_amount(self.raw_text)
+        if (
+            court_costs is not None
+            and subtotal_amount is not None
+            and attorney_fees is not None
+            and self.total_judgment_amount is not None
+        ):
+            fee_delta = round(self.total_judgment_amount - subtotal_amount, 2)
+            pre_fee_sum = sum(
+                amount
+                for amount in (
+                    self.principal_amount,
+                    self.interest_amount,
+                    self.per_diem_interest,
+                    late_charges,
+                    self.escrow_advances,
+                    self.title_search_costs,
+                    court_costs,
+                )
+                if amount is not None
+            )
+            if (
+                abs(fee_delta - attorney_fees) <= 1.0
+                and pre_fee_sum > subtotal_amount
+                and pre_fee_sum - court_costs <= subtotal_amount + 1.0
+            ):
+                court_costs = None
+                self.court_costs = None
+
+        if attorney_fees is not None and self.total_judgment_amount is not None:
+            current_known_sum = sum(
+                amount
+                for amount in (
+                    self.principal_amount,
+                    self.interest_amount,
+                    self.per_diem_interest,
+                    late_charges,
+                    self.escrow_advances,
+                    self.title_search_costs,
+                    court_costs,
+                    attorney_fees,
+                )
+                if amount is not None
+            )
+            known_without_fees = sum(
+                amount
+                for amount in (
+                    self.principal_amount,
+                    self.interest_amount,
+                    self.per_diem_interest,
+                    late_charges,
+                    self.escrow_advances,
+                    self.title_search_costs,
+                    court_costs,
+                )
+                if amount is not None
+            )
+            if (
+                has_legal_fee_duplication_pattern(self.raw_text)
+                and current_known_sum > self.total_judgment_amount
+                and known_without_fees <= self.total_judgment_amount
+            ):
+                attorney_fees = None
+                self.attorney_fees = None
 
         return [
             self.principal_amount,
